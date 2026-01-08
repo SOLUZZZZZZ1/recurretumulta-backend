@@ -1,0 +1,72 @@
+import os
+import uuid
+from typing import Optional, Tuple
+
+import boto3
+from botocore.config import Config
+
+
+def _env(name: str) -> str:
+    v = (os.getenv(name) or "").strip()
+    if not v:
+        raise RuntimeError(f"Falta variable de entorno: {name}")
+    return v
+
+
+def get_b2_bucket() -> str:
+    return _env("B2_BUCKET")
+
+
+def get_s3_client():
+    endpoint = _env("B2_ENDPOINT")  # e.g. https://s3.us-west-004.backblazeb2.com
+    key_id = _env("B2_KEY_ID")
+    app_key = _env("B2_APPLICATION_KEY")
+
+    cfg = Config(signature_version="s3v4")
+
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=key_id,
+        aws_secret_access_key=app_key,
+        config=cfg,
+    )
+
+
+def guess_ext(filename: Optional[str], mime: Optional[str]) -> str:
+    fn = (filename or "").lower()
+    if fn.endswith(".pdf"):
+        return ".pdf"
+    if fn.endswith(".png"):
+        return ".png"
+    if fn.endswith(".jpg") or fn.endswith(".jpeg"):
+        return ".jpg"
+    if fn.endswith(".webp"):
+        return ".webp"
+    if mime == "application/pdf":
+        return ".pdf"
+    if mime == "image/png":
+        return ".png"
+    if mime in ("image/jpg", "image/jpeg"):
+        return ".jpg"
+    if mime == "image/webp":
+        return ".webp"
+    return ""
+
+
+def upload_original(case_id: str, content: bytes, filename: Optional[str], mime: str) -> Tuple[str, str]:
+    """Sube el archivo original a B2 y devuelve (bucket, key)."""
+    bucket = get_b2_bucket()
+    s3 = get_s3_client()
+
+    ext = guess_ext(filename, mime)
+    key = f"cases/{case_id}/original/{uuid.uuid4().hex}{ext}"
+
+    s3.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=content,
+        ContentType=mime or "application/octet-stream",
+    )
+
+    return bucket, key

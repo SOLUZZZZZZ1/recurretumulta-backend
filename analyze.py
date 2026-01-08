@@ -6,6 +6,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from sqlalchemy import text
 
 from database import get_engine
+from b2_storage import upload_original
 
 router = APIRouter(tags=["analyze"])
 
@@ -16,9 +17,9 @@ def _sha256_bytes(data: bytes) -> str:
 
 @router.post("/analyze")
 async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
-    """STEP A (sin B2, sin GPT):
-    - Guarda case + document + extraction(mock) + events en Postgres
-    - Devuelve JSON para que el frontend ya funcione end-to-end
+    """STEP B:
+    - Sube el archivo original a Backblaze B2
+    - Guarda case + document (con b2_bucket/b2_key) + extraction(mock) + events en Postgres
     """
     try:
         content = await file.read()
@@ -38,12 +39,21 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                 text("INSERT INTO cases(status, created_at, updated_at) VALUES ('uploaded', NOW(), NOW()) RETURNING id")
             ).scalar()
 
+            b2_bucket, b2_key = upload_original(str(case_id), content, file.filename, mime)
+
             conn.execute(
                 text(
                     """INSERT INTO documents(case_id, kind, b2_bucket, b2_key, sha256, mime, size_bytes, created_at)
-                         VALUES (:case_id, 'original', NULL, NULL, :sha256, :mime, :size_bytes, NOW())"""
+                         VALUES (:case_id, 'original', :b2_bucket, :b2_key, :sha256, :mime, :size_bytes, NOW())"""
                 ),
-                {"case_id": case_id, "sha256": sha256, "mime": mime, "size_bytes": size_bytes},
+                {
+                    "case_id": case_id,
+                    "b2_bucket": b2_bucket,
+                    "b2_key": b2_key,
+                    "sha256": sha256,
+                    "mime": mime,
+                    "size_bytes": size_bytes,
+                },
             )
 
             extracted = {
@@ -51,7 +61,8 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                 "mime": mime,
                 "size_bytes": size_bytes,
                 "sha256": sha256,
-                "note": "Extracción mock (Step A). En Step C se reemplaza por GPT-4o visión.",
+                "storage": {"bucket": b2_bucket, "key": b2_key},
+                "note": "Extracción mock (Step B). En Step C se reemplaza por GPT-4o visión.",
                 "detected": {
                     "organismo": None,
                     "expediente": None,
@@ -73,9 +84,13 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                     """INSERT INTO events(case_id, type, payload, created_at)
                          VALUES (:case_id, 'upload_ok', CAST(:payload AS JSONB), NOW())"""
                 ),
-                {"case_id": case_id, "payload": __import__("json").dumps({"sha256": sha256, "mime": mime, "size_bytes": size_bytes})},
+                {
+                    "case_id": case_id,
+                    "payload": __import__("json").dumps(
+                        {"sha256": sha256, "mime": mime, "size_bytes": size_bytes, "b2_bucket": b2_bucket, "b2_key": b2_key}
+                    ),
+                },
             )
-
             conn.execute(
                 text(
                     """INSERT INTO events(case_id, type, payload, created_at)
@@ -86,7 +101,12 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
 
             conn.execute(text("UPDATE cases SET status='analyzed', updated_at=NOW() WHERE id=:case_id"), {"case_id": case_id})
 
-        return {"ok": True, "message": "Análisis mock creado y guardado en Postgres.", "case_id": str(case_id), "extracted": extracted}
+        return {
+            "ok": True,
+            "message": "Archivo guardado en Backblaze B2 y expediente creado en Postgres.",
+            "case_id": str(case_id),
+            "extracted": extracted,
+        }
 
     except HTTPException:
         raise
