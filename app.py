@@ -5,6 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from schemas import HealthResponse
 from database import get_engine, ping_db
 from admin_migrate import router as admin_migrate_router
+from analyze import router as analyze_router
+
 
 app = FastAPI(title="RecurreTuMulta Backend", version="0.1.0")
 
@@ -20,6 +22,8 @@ app.add_middleware(
 )
 
 app.include_router(admin_migrate_router)
+app.include_router(analyze_router)
+
 
 @app.get("/health", response_model=HealthResponse)
 def health():
