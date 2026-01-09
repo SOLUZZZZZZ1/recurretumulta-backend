@@ -18,17 +18,11 @@ def get_b2_bucket() -> str:
 
 
 def get_s3_client():
-    # IMPORTANTE:
-    # - Backblaze B2 S3 requiere endpoint completo (https://...)
-    # - y addressing_style="path" para evitar firmas malformadas
-    endpoint = _env("B2_ENDPOINT")  # ej: https://s3.eu-central-003.backblazeb2.com
+    endpoint = _env("B2_ENDPOINT")
     key_id = _env("B2_KEY_ID")
     app_key = _env("B2_APPLICATION_KEY")
 
-    cfg = Config(
-        signature_version="s3v4",
-        s3={"addressing_style": "path"},
-    )
+    cfg = Config(signature_version="s3v4", s3={"addressing_style": "path"})
 
     return boto3.client(
         "s3",
@@ -49,7 +43,8 @@ def guess_ext(filename: Optional[str], mime: Optional[str]) -> str:
         return ".jpg"
     if fn.endswith(".webp"):
         return ".webp"
-    # Fallback por mime
+    if fn.endswith(".docx"):
+        return ".docx"
     if mime == "application/pdf":
         return ".pdf"
     if mime == "image/png":
@@ -58,16 +53,15 @@ def guess_ext(filename: Optional[str], mime: Optional[str]) -> str:
         return ".jpg"
     if mime == "image/webp":
         return ".webp"
+    if mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        return ".docx"
     return ""
 
 
-def upload_original(case_id: str, content: bytes, filename: Optional[str], mime: str) -> Tuple[str, str]:
-    """Sube el archivo original a Backblaze B2 y devuelve (bucket, key)."""
+def upload_bytes(case_id: str, kind_folder: str, content: bytes, ext: str, mime: str) -> Tuple[str, str]:
     bucket = get_b2_bucket()
     s3 = get_s3_client()
-
-    ext = guess_ext(filename, mime)
-    key = f"cases/{case_id}/original/{uuid.uuid4().hex}{ext}"
+    key = f"cases/{case_id}/{kind_folder}/{uuid.uuid4().hex}{ext}"
 
     s3.put_object(
         Bucket=bucket,
@@ -75,5 +69,9 @@ def upload_original(case_id: str, content: bytes, filename: Optional[str], mime:
         Body=content,
         ContentType=mime or "application/octet-stream",
     )
-
     return bucket, key
+
+
+def upload_original(case_id: str, content: bytes, filename: Optional[str], mime: str) -> Tuple[str, str]:
+    ext = guess_ext(filename, mime)
+    return upload_bytes(case_id, "original", content, ext or "", mime)
