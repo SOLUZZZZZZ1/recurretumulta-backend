@@ -7,6 +7,8 @@ from database import get_engine, ping_db
 from admin_migrate import router as admin_migrate_router
 from analyze import router as analyze_router
 from generate import router as generate_router
+from files import router as files_router
+
 
 
 app = FastAPI(title="RecurreTuMulta Backend", version="0.1.0")
