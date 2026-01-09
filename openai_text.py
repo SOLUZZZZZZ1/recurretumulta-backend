@@ -13,17 +13,22 @@ def _env(name: str) -> str:
 
 
 def extract_from_text(text: str) -> Dict[str, Any]:
+    """
+    Extracción de datos desde TEXTO (PDF/DOCX) usando OpenAI Responses API.
+    Devuelve SIEMPRE un JSON estructurado.
+    """
+
     api_key = _env("OPENAI_API_KEY")
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
 
     system = (
         "Eres un asistente experto en sanciones administrativas en España. "
-        "Analiza textos de multas para extraer datos clave y preparar recursos."
+        "Analizas documentos de multas y extraes datos clave para preparar recursos administrativos."
     )
 
     user_text = (
-        "Analiza el siguiente texto de una sanción/multa y devuelve SOLO un JSON válido "
-        "con estas claves EXACTAS:\n"
+        "Analiza el siguiente texto de una sanción administrativa y devuelve "
+        "EXCLUSIVAMENTE un objeto JSON válido con estas claves EXACTAS:\n\n"
         "{\n"
         '  "organismo": string|null,\n'
         '  "expediente_ref": string|null,\n'
@@ -35,17 +40,27 @@ def extract_from_text(text: str) -> Dict[str, Any]:
         '  "plazo_recurso_sugerido": string|null,\n'
         '  "observaciones": string\n'
         "}\n\n"
-        "Texto:\n"
+        "Texto del documento:\n\n"
         f"{text[:12000]}"
     )
 
     payload = {
         "model": model,
         "input": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_text},
+            {
+                "role": "system",
+                "content": system
+            },
+            {
+                "role": "user",
+                "content": user_text
+            }
         ],
-        "response_format": {"type": "json_object"},
+        "text": {
+            "format": {
+                "type": "json_object"
+            }
+        }
     }
 
     r = requests.post(
@@ -63,14 +78,17 @@ def extract_from_text(text: str) -> Dict[str, Any]:
 
     data = r.json()
 
-    text_out = ""
+    output_text = ""
     for item in data.get("output", []):
         if item.get("type") == "message":
             for c in item.get("content", []):
                 if c.get("type") in ("output_text", "text"):
-                    text_out += c.get("text", "")
+                    output_text += c.get("text", "")
 
-    if not text_out.strip():
+    if not output_text.strip():
         raise RuntimeError("OpenAI no devolvió contenido.")
 
-    return json.loads(text_out)
+    try:
+        return json.loads(output_text)
+    except Exception as e:
+        raise RuntimeError(f"JSON inválido devuelto por OpenAI: {e}. Texto: {output_text[:400]}")

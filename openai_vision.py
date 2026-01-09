@@ -13,11 +13,6 @@ def _env(name: str) -> str:
     return v
 
 
-def _optional(name: str, default: str) -> str:
-    v = (os.getenv(name) or "").strip()
-    return v or default
-
-
 def _b64_data_url(mime: str, content: bytes) -> str:
     b64 = base64.b64encode(content).decode("utf-8")
     return f"data:{mime};base64,{b64}"
@@ -28,18 +23,24 @@ def extract_from_image_bytes(
     mime: str,
     filename: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """
+    Extracción de datos desde IMÁGENES usando OpenAI Responses API (visión).
+    Devuelve SIEMPRE un JSON estructurado.
+    """
+
     api_key = _env("OPENAI_API_KEY")
-    model = _optional("OPENAI_MODEL", "gpt-4o")
+    model = os.getenv("OPENAI_MODEL", "gpt-4o")
 
     data_url = _b64_data_url(mime, content)
 
     system = (
-        "Eres un asistente especializado en analizar sanciones administrativas en España. "
-        "Tu objetivo es extraer datos clave del documento para preparar recursos administrativos."
+        "Eres un asistente experto en sanciones administrativas en España. "
+        "Analizas imágenes de multas y extraes datos clave para preparar recursos administrativos."
     )
 
     user_text = (
-        "Analiza el documento (multa/sanción). Devuelve SOLO un objeto JSON válido con estas claves EXACTAS:\n"
+        "Analiza la imagen de la sanción administrativa y devuelve "
+        "EXCLUSIVAMENTE un objeto JSON válido con estas claves EXACTAS:\n\n"
         "{\n"
         '  "organismo": string|null,\n'
         '  "expediente_ref": string|null,\n'
@@ -50,14 +51,19 @@ def extract_from_image_bytes(
         '  "pone_fin_via_administrativa": boolean|null,\n'
         '  "plazo_recurso_sugerido": string|null,\n'
         '  "observaciones": string\n'
-        "}\n"
-        "Si algún dato no se ve con claridad, pon null y explica en observaciones."
+        "}\n\n"
+        "Si algún dato no se ve con claridad, usa null y explica el motivo en observaciones."
     )
 
     payload = {
         "model": model,
         "input": [
-            {"role": "system", "content": [{"type": "text", "text": system}]},
+            {
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": system}
+                ],
+            },
             {
                 "role": "user",
                 "content": [
@@ -66,31 +72,39 @@ def extract_from_image_bytes(
                 ],
             },
         ],
-        "response_format": {"type": "json_object"},
+        "text": {
+            "format": {
+                "type": "json_object"
+            }
+        }
     }
 
     r = requests.post(
         "https://api.openai.com/v1/responses",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
         json=payload,
         timeout=60,
     )
+
     if not r.ok:
-        raise RuntimeError(f"OpenAI error {r.status_code}: {r.text[:500]}")
+        raise RuntimeError(f"OpenAI error {r.status_code}: {r.text[:400]}")
 
     data = r.json()
 
-    text_out = ""
+    output_text = ""
     for item in data.get("output", []):
         if item.get("type") == "message":
             for c in item.get("content", []):
                 if c.get("type") in ("output_text", "text"):
-                    text_out += c.get("text", "")
+                    output_text += c.get("text", "")
 
-    if not text_out.strip():
+    if not output_text.strip():
         raise RuntimeError("OpenAI no devolvió contenido.")
 
     try:
-        return json.loads(text_out)
+        return json.loads(output_text)
     except Exception as e:
-        raise RuntimeError(f"OpenAI devolvió JSON inválido: {e}. Texto: {text_out[:400]}")
+        raise RuntimeError(f"JSON inválido devuelto por OpenAI: {e}. Texto: {output_text[:400]}")
