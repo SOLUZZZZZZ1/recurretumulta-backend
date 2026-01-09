@@ -14,21 +14,20 @@ def _env(name: str) -> str:
 
 def extract_from_text(text: str) -> Dict[str, Any]:
     """
-    Extracción de datos desde TEXTO (PDF/DOCX) usando OpenAI Responses API.
-    Devuelve SIEMPRE un JSON estructurado.
+    Extracción desde TEXTO (PDF/DOCX) usando OpenAI Responses API.
+    Devuelve un JSON estructurado.
     """
-
     api_key = _env("OPENAI_API_KEY")
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
 
-    system = (
+    system_text = (
         "Eres un asistente experto en sanciones administrativas en España. "
-        "Analizas documentos de multas y extraes datos clave para preparar recursos administrativos."
+        "Analizas textos de multas y extraes datos clave para preparar recursos administrativos."
     )
 
     user_text = (
-        "Analiza el siguiente texto de una sanción administrativa y devuelve "
-        "EXCLUSIVAMENTE un objeto JSON válido con estas claves EXACTAS:\n\n"
+        "Analiza el siguiente texto de una sanción administrativa y devuelve EXCLUSIVAMENTE "
+        "un objeto JSON válido con estas claves EXACTAS:\n\n"
         "{\n"
         '  "organismo": string|null,\n'
         '  "expediente_ref": string|null,\n'
@@ -49,12 +48,16 @@ def extract_from_text(text: str) -> Dict[str, Any]:
         "input": [
             {
                 "role": "system",
-                "content": system
+                "content": [
+                    {"type": "input_text", "text": system_text}
+                ],
             },
             {
                 "role": "user",
-                "content": user_text
-            }
+                "content": [
+                    {"type": "input_text", "text": user_text}
+                ],
+            },
         ],
         "text": {
             "format": {
@@ -65,16 +68,13 @@ def extract_from_text(text: str) -> Dict[str, Any]:
 
     r = requests.post(
         "https://api.openai.com/v1/responses",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json=payload,
         timeout=60,
     )
 
     if not r.ok:
-        raise RuntimeError(f"OpenAI error {r.status_code}: {r.text[:400]}")
+        raise RuntimeError(f"OpenAI error {r.status_code}: {r.text[:500]}")
 
     data = r.json()
 
@@ -82,7 +82,7 @@ def extract_from_text(text: str) -> Dict[str, Any]:
     for item in data.get("output", []):
         if item.get("type") == "message":
             for c in item.get("content", []):
-                if c.get("type") in ("output_text", "text"):
+                if c.get("type") == "output_text":
                     output_text += c.get("text", "")
 
     if not output_text.strip():
