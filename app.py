@@ -25,6 +25,8 @@ app.add_middleware(
 app.include_router(admin_migrate_router)
 app.include_router(analyze_router)
 app.include_router(generate_router)
+app.include_router(files_router)
+
 
 
 @app.get("/health", response_model=HealthResponse)
