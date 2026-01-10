@@ -8,6 +8,8 @@ from admin_migrate import router as admin_migrate_router
 from analyze import router as analyze_router
 from generate import router as generate_router
 from files import router as files_router
+from billing import router as billing_router
+from admin_migrate_payments import router as admin_payments_router
 
 
 
@@ -28,6 +30,8 @@ app.include_router(admin_migrate_router)
 app.include_router(analyze_router)
 app.include_router(generate_router)
 app.include_router(files_router)
+app.include_router(billing_router)
+app.include_router(admin_payments_router)
 
 
 
