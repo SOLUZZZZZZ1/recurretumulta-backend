@@ -156,6 +156,18 @@ def mark_ready(
 ) -> Dict[str, Any]:
     """Marca listo para presentar (requiere paid)."""
     _require_operator(x_operator_token)
+@router.post("/login")
+def ops_login(pin: str = Form(...)):
+    expected = (os.getenv("OPERATOR_PIN") or "").strip()
+    if not expected:
+        raise HTTPException(status_code=500, detail="OPERATOR_PIN no configurado")
+
+    if pin.strip() != expected:
+        raise HTTPException(status_code=401, detail="PIN incorrecto")
+
+    # Devuelve el token real para guardarlo en localStorage
+    return {"ok": True, "token": _env("OPERATOR_TOKEN")}
+
 
     engine = get_engine()
     with engine.begin() as conn:
