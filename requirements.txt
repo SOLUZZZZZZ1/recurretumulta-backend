@@ -12,5 +12,7 @@ openai>=1.37,<1.38
 pypdf==4.3.1
 python-docx==1.1.2
 reportlab==4.1.0
+email-validator==2.2.0
+
 
 
