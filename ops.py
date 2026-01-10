@@ -1,4 +1,4 @@
-# ops.py — Panel Operador (cola + docs + logs + justificante)
+# ops.py — Operaciones (login PIN + cola + docs + eventos + presentado + justificante)
 import json
 import os
 from typing import Any, Dict, Optional, List
@@ -26,6 +26,24 @@ def _require_operator(x_operator_token: Optional[str]):
         raise HTTPException(status_code=401, detail="Unauthorized operator")
 
 
+@router.post("/login")
+def ops_login(pin: str = Form(...)) -> Dict[str, Any]:
+    """
+    PIN corto -> devuelve el OPERATOR_TOKEN real para guardarlo en localStorage.
+    Env requeridas:
+      OPERATOR_PIN (ej. 6 dígitos)
+      OPERATOR_TOKEN (token largo)
+    """
+    expected = (os.getenv("OPERATOR_PIN") or "").strip()
+    if not expected:
+        raise HTTPException(status_code=500, detail="OPERATOR_PIN no configurado")
+
+    if pin.strip() != expected:
+        raise HTTPException(status_code=401, detail="PIN incorrecto")
+
+    return {"ok": True, "token": _env("OPERATOR_TOKEN")}
+
+
 @router.get("/queue")
 def queue(
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
@@ -33,30 +51,22 @@ def queue(
     limit: int = Query(50, ge=1, le=200),
 ) -> Dict[str, Any]:
     _require_operator(x_operator_token)
-
     engine = get_engine()
     with engine.begin() as conn:
         rows = conn.execute(
             text(
                 """
-                SELECT
-                    c.id,
-                    c.status,
-                    c.payment_status,
-                    c.product_code,
-                    c.contact_email,
-                    c.created_at,
-                    c.updated_at
-                FROM cases c
-                WHERE c.status = :status
-                ORDER BY c.updated_at ASC
+                SELECT id, status, payment_status, product_code, contact_email, created_at, updated_at
+                FROM cases
+                WHERE status = :status
+                ORDER BY updated_at ASC
                 LIMIT :limit
                 """
             ),
             {"status": status, "limit": limit},
         ).fetchall()
 
-    items: List[Dict[str, Any]] = []
+    items = []
     for r in rows:
         items.append(
             {
@@ -69,7 +79,6 @@ def queue(
                 "updated_at": r[6],
             }
         )
-
     return {"ok": True, "status": status, "count": len(items), "items": items}
 
 
@@ -78,9 +87,7 @@ def list_documents(
     case_id: str,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ) -> Dict[str, Any]:
-    """Lista documentos del expediente (operador)."""
     _require_operator(x_operator_token)
-
     engine = get_engine()
     with engine.begin() as conn:
         rows = conn.execute(
@@ -107,7 +114,6 @@ def list_documents(
                 "created_at": r[5],
             }
         )
-
     return {"ok": True, "case_id": case_id, "items": items}
 
 
@@ -117,9 +123,7 @@ def list_events(
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     limit: int = Query(200, ge=1, le=500),
 ) -> Dict[str, Any]:
-    """Logs del expediente (operador)."""
     _require_operator(x_operator_token)
-
     engine = get_engine()
     with engine.begin() as conn:
         rows = conn.execute(
@@ -135,67 +139,8 @@ def list_events(
             {"case_id": case_id, "limit": limit},
         ).fetchall()
 
-    items = []
-    for r in rows:
-        items.append(
-            {
-                "type": r[0],
-                "payload": r[1],
-                "created_at": r[2],
-            }
-        )
-
+    items = [{"type": r[0], "payload": r[1], "created_at": r[2]} for r in rows]
     return {"ok": True, "case_id": case_id, "items": items}
-
-
-@router.post("/cases/{case_id}/mark-ready")
-def mark_ready(
-    case_id: str,
-    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
-    note: Optional[str] = Form(default=None),
-) -> Dict[str, Any]:
-    """Marca listo para presentar (requiere paid)."""
-    _require_operator(x_operator_token)
-@router.post("/login")
-def ops_login(pin: str = Form(...)):
-    expected = (os.getenv("OPERATOR_PIN") or "").strip()
-    if not expected:
-        raise HTTPException(status_code=500, detail="OPERATOR_PIN no configurado")
-
-    if pin.strip() != expected:
-        raise HTTPException(status_code=401, detail="PIN incorrecto")
-
-    # Devuelve el token real para guardarlo en localStorage
-    return {"ok": True, "token": _env("OPERATOR_TOKEN")}
-
-
-    engine = get_engine()
-    with engine.begin() as conn:
-        row = conn.execute(
-            text("SELECT payment_status, status FROM cases WHERE id=:id"),
-            {"id": case_id},
-        ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Case not found")
-
-        payment_status, current_status = row[0], row[1]
-        if payment_status != "paid":
-            raise HTTPException(status_code=402, detail="Pago requerido")
-
-        conn.execute(
-            text("UPDATE cases SET status='ready_to_submit', updated_at=NOW() WHERE id=:id"),
-            {"id": case_id},
-        )
-
-        conn.execute(
-            text(
-                """INSERT INTO events(case_id, type, payload, created_at)
-                   VALUES (:case_id, 'ops_mark_ready', CAST(:payload AS JSONB), NOW())"""
-            ),
-            {"case_id": case_id, "payload": json.dumps({"from": current_status, "to": "ready_to_submit", "note": note})},
-        )
-
-    return {"ok": True, "case_id": case_id, "status": "ready_to_submit"}
 
 
 @router.post("/cases/{case_id}/mark-submitted")
@@ -206,9 +151,7 @@ def mark_submitted(
     registro: Optional[str] = Form(default=None),
     note: Optional[str] = Form(default=None),
 ) -> Dict[str, Any]:
-    """Marca presentado (requiere paid)."""
     _require_operator(x_operator_token)
-
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(
@@ -217,24 +160,26 @@ def mark_submitted(
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Case not found")
-
-        payment_status, current_status = row[0], row[1]
-        if payment_status != "paid":
+        if (row[0] or "") != "paid":
             raise HTTPException(status_code=402, detail="Pago requerido")
 
+        current_status = row[1]
         conn.execute(
             text("UPDATE cases SET status='submitted', updated_at=NOW() WHERE id=:id"),
             {"id": case_id},
         )
-
         conn.execute(
             text(
                 """INSERT INTO events(case_id, type, payload, created_at)
                    VALUES (:case_id, 'ops_mark_submitted', CAST(:payload AS JSONB), NOW())"""
             ),
-            {"case_id": case_id, "payload": json.dumps({"from": current_status, "to": "submitted", "channel": channel, "registro": registro, "note": note})},
+            {
+                "case_id": case_id,
+                "payload": json.dumps(
+                    {"from": current_status, "to": "submitted", "channel": channel, "registro": registro, "note": note}
+                ),
+            },
         )
-
     return {"ok": True, "case_id": case_id, "status": "submitted"}
 
 
@@ -245,10 +190,9 @@ async def upload_justificante(
     file: UploadFile = File(...),
     kind: str = Form("justificante_presentacion"),
 ) -> Dict[str, Any]:
-    """Sube justificante a B2 y lo registra en documents + event (requiere paid)."""
     _require_operator(x_operator_token)
 
-    filename = (file.filename or "").strip().lower()
+    filename = (file.filename or "").strip()
     if not filename:
         raise HTTPException(status_code=400, detail="Filename requerido")
 
@@ -259,16 +203,15 @@ async def upload_justificante(
 
     engine = get_engine()
     with engine.begin() as conn:
-        row = conn.execute(
-            text("SELECT payment_status FROM cases WHERE id=:id"),
-            {"id": case_id},
-        ).fetchone()
+        row = conn.execute(text("SELECT payment_status FROM cases WHERE id=:id"), {"id": case_id}).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Case not found")
         if (row[0] or "") != "paid":
             raise HTTPException(status_code=402, detail="Pago requerido")
 
-        ext = os.path.splitext(filename)[1] or ".bin"
+        _, ext = os.path.splitext(filename.lower())
+        ext = ext or ".bin"
+
         b2_bucket, b2_key = upload_bytes(
             case_id,
             "justificantes",
@@ -282,7 +225,14 @@ async def upload_justificante(
                 """INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
                    VALUES (:case_id, :kind, :b2_bucket, :b2_key, :mime, :size_bytes, NOW())"""
             ),
-            {"case_id": case_id, "kind": kind, "b2_bucket": b2_bucket, "b2_key": b2_key, "mime": content_type, "size_bytes": len(data)},
+            {
+                "case_id": case_id,
+                "kind": kind,
+                "b2_bucket": b2_bucket,
+                "b2_key": b2_key,
+                "mime": content_type,
+                "size_bytes": len(data),
+            },
         )
 
         conn.execute(
@@ -290,7 +240,12 @@ async def upload_justificante(
                 """INSERT INTO events(case_id, type, payload, created_at)
                    VALUES (:case_id, 'justificante_uploaded', CAST(:payload AS JSONB), NOW())"""
             ),
-            {"case_id": case_id, "payload": json.dumps({"kind": kind, "bucket": b2_bucket, "key": b2_key, "mime": content_type, "size_bytes": len(data)})},
+            {
+                "case_id": case_id,
+                "payload": json.dumps(
+                    {"kind": kind, "bucket": b2_bucket, "key": b2_key, "mime": content_type, "size_bytes": len(data)}
+                ),
+            },
         )
 
     return {"ok": True, "case_id": case_id, "kind": kind, "bucket": b2_bucket, "key": b2_key}
