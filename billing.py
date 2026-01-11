@@ -70,7 +70,7 @@ def create_checkout(req: CheckoutRequest):
             mode="payment",
             line_items=[{"price": price_id, "quantity": 1}],
             customer_email=str(req.email),
-            success_url=f"{frontend_url}/#/pago-ok?case={req.case_id}",
+            success_url = f"{https://www.recurretumulta.eu/}/#/pago-ok?case={case_id}",
             cancel_url=f"{frontend_url}/#/pago-cancel?case={req.case_id}",
             metadata={
                 "case_id": req.case_id,
