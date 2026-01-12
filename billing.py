@@ -1,4 +1,4 @@
-# billing.py — Stripe Checkout + Webhook + Payment Status
+# billing.py — Stripe Checkout + Webhook + Payment Status (con authorized)
 import json
 import os
 import stripe
@@ -35,7 +35,6 @@ def create_checkout(req: CheckoutRequest):
             text("SELECT payment_status FROM cases WHERE id=:id"),
             {"id": req.case_id},
         ).fetchone()
-
         if not row:
             raise HTTPException(status_code=404, detail="case_id no existe")
 
@@ -43,7 +42,7 @@ def create_checkout(req: CheckoutRequest):
             return {
                 "ok": True,
                 "already_paid": True,
-                "redirect": f"{frontend_url}/#/pago-ok?case={req.case_id}",
+                "redirect": f"{frontend_url}/#/resumen?case={req.case_id}",
             }
 
         conn.execute(
@@ -57,17 +56,12 @@ def create_checkout(req: CheckoutRequest):
                 WHERE id=:id
                 """
             ),
-            {
-                "id": req.case_id,
-                "product": req.product,
-                "email": req.email,
-            },
+            {"id": req.case_id, "product": req.product, "email": req.email},
         )
 
+    price_id = _env("STRIPE_PRICE_ID_DGT")
     success_url = f"{frontend_url}/#/pago-ok?case={req.case_id}"
     cancel_url = f"{frontend_url}/#/resumen?case={req.case_id}"
-
-    price_id = _env("STRIPE_PRICE_ID_DGT")
 
     session = stripe.checkout.Session.create(
         mode="payment",
@@ -86,13 +80,10 @@ def create_checkout(req: CheckoutRequest):
 async def stripe_webhook(request: Request):
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
-
     try:
         stripe.api_key = _env("STRIPE_SECRET_KEY")
         event = stripe.Webhook.construct_event(
-            payload,
-            sig_header,
-            _env("STRIPE_WEBHOOK_SECRET"),
+            payload, sig_header, _env("STRIPE_WEBHOOK_SECRET")
         )
     except Exception:
         raise HTTPException(status_code=400, detail="Webhook inválido")
@@ -100,7 +91,6 @@ async def stripe_webhook(request: Request):
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
         case_id = session["metadata"]["case_id"]
-
         engine = get_engine()
         with engine.begin() as conn:
             conn.execute(
@@ -115,13 +105,8 @@ async def stripe_webhook(request: Request):
                     WHERE id=:id
                     """
                 ),
-                {
-                    "id": case_id,
-                    "sid": session["id"],
-                    "pi": session.get("payment_intent"),
-                },
+                {"id": case_id, "sid": session["id"], "pi": session.get("payment_intent")},
             )
-
             conn.execute(
                 text(
                     """
@@ -131,7 +116,6 @@ async def stripe_webhook(request: Request):
                 ),
                 {"id": case_id, "p": json.dumps({"session": session["id"]})},
             )
-
     return {"ok": True}
 
 
@@ -142,14 +126,12 @@ def payment_status(case_id: str):
         row = conn.execute(
             text(
                 """
-                SELECT payment_status, paid_at, product_code
-                FROM cases
-                WHERE id=:id
+                SELECT payment_status, paid_at, product_code, authorized
+                FROM cases WHERE id=:id
                 """
             ),
             {"id": case_id},
         ).fetchone()
-
         if not row:
             raise HTTPException(status_code=404, detail="case_id no existe")
 
@@ -158,4 +140,5 @@ def payment_status(case_id: str):
         "payment_status": row.payment_status,
         "paid_at": row.paid_at,
         "product_code": row.product_code,
+        "authorized": bool(row.authorized),
     }
