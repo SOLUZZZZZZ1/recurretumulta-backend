@@ -1,3 +1,4 @@
+# admin_migrate.py — migraciones admin (init + ampliaciones)
 import os
 from typing import List, Tuple
 from fastapi import APIRouter, Header, HTTPException
@@ -7,17 +8,28 @@ from schemas import MigrateResponse
 
 router = APIRouter(prefix="/admin/migrate", tags=["admin"])
 
+
 def _require_admin_token(x_admin_token: str | None) -> None:
     expected = os.getenv("ADMIN_TOKEN", "").strip()
     if not expected:
-        raise HTTPException(status_code=500, detail="ADMIN_TOKEN no está configurado en el backend.")
+        raise HTTPException(
+            status_code=500,
+            detail="ADMIN_TOKEN no está configurado en el backend.",
+        )
     if not x_admin_token or x_admin_token.strip() != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-def _ddl_statements() -> List[Tuple[str, str]]:
+
+# =========================
+# MIGRACIÓN INICIAL (YA EXISTENTE)
+# =========================
+
+def _ddl_init() -> List[Tuple[str, str]]:
     return [
         ("extensions", "CREATE EXTENSION IF NOT EXISTS pgcrypto;"),
-        ("cases", '''
+        (
+            "cases",
+            """
             CREATE TABLE IF NOT EXISTS cases (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
               contact_email TEXT,
@@ -30,8 +42,11 @@ def _ddl_statements() -> List[Tuple[str, str]]:
               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
               updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
-        '''),
-        ("documents", '''
+            """,
+        ),
+        (
+            "documents",
+            """
             CREATE TABLE IF NOT EXISTS documents (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
               case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
@@ -43,8 +58,11 @@ def _ddl_statements() -> List[Tuple[str, str]]:
               size_bytes BIGINT,
               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
-        '''),
-        ("extractions", '''
+            """,
+        ),
+        (
+            "extractions",
+            """
             CREATE TABLE IF NOT EXISTS extractions (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
               case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
@@ -53,8 +71,11 @@ def _ddl_statements() -> List[Tuple[str, str]]:
               model TEXT,
               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
-        '''),
-        ("events", '''
+            """,
+        ),
+        (
+            "events",
+            """
             CREATE TABLE IF NOT EXISTS events (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
               case_id UUID REFERENCES cases(id) ON DELETE CASCADE,
@@ -62,18 +83,21 @@ def _ddl_statements() -> List[Tuple[str, str]]:
               payload JSONB,
               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
-        '''),
+            """,
+        ),
         ("idx_cases_status", "CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status);"),
         ("idx_events_case", "CREATE INDEX IF NOT EXISTS idx_events_case ON events(case_id);"),
     ]
 
-def run_migration(engine: Engine) -> List[str]:
-    created: List[str] = []
+
+def _run(engine: Engine, ddl: List[Tuple[str, str]]) -> List[str]:
+    applied: List[str] = []
     with engine.begin() as conn:
-        for name, sql in _ddl_statements():
+        for name, sql in ddl:
             conn.execute(text(sql))
-            created.append(name)
-    return created
+            applied.append(name)
+    return applied
+
 
 @router.post("/init", response_model=MigrateResponse)
 def migrate_init(x_admin_token: str | None = Header(default=None, alias="x-admin-token")):
@@ -83,7 +107,52 @@ def migrate_init(x_admin_token: str | None = Header(default=None, alias="x-admin
     engine = get_engine()
 
     try:
-        created = run_migration(engine)
+        created = _run(engine, _ddl_init())
         return MigrateResponse(ok=True, message="Migración inicial aplicada.", created=created)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error migrando: {e}")
+        raise HTTPException(status_code=500, detail=f"Error migrando init: {e}")
+
+
+# =========================
+# NUEVA MIGRACIÓN: DATOS DEL INTERESADO + AUTORIZACIÓN
+# =========================
+
+@router.post("/cases_details", response_model=MigrateResponse)
+def migrate_cases_details(
+    x_admin_token: str | None = Header(default=None, alias="x-admin-token")
+):
+    """
+    Añade columnas necesarias para:
+    - Datos del interesado (post-pago)
+    - Autorización expresa
+    SAFE: usa IF NOT EXISTS
+    """
+    _require_admin_token(x_admin_token)
+
+    from database import get_engine
+    engine = get_engine()
+
+    ddl = [
+        (
+            "cases_interested_data",
+            "ALTER TABLE cases ADD COLUMN IF NOT EXISTS interested_data JSONB;",
+        ),
+        (
+            "cases_authorized",
+            "ALTER TABLE cases ADD COLUMN IF NOT EXISTS authorized BOOLEAN NOT NULL DEFAULT FALSE;",
+        ),
+        (
+            "cases_authorized_at",
+            "ALTER TABLE cases ADD COLUMN IF NOT EXISTS authorized_at TIMESTAMPTZ;",
+        ),
+    ]
+
+    try:
+        applied = _run(engine, ddl)
+        return MigrateResponse(
+            ok=True,
+            message="Migración cases_details aplicada.",
+            created=applied,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error migrando cases_details: {e}")
