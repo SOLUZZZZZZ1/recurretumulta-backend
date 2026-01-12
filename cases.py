@@ -1,4 +1,4 @@
-# cases.py — Gestión del expediente (datos interesado + autorización)
+# cases.py — Gestión del expediente (datos interesado + autorización) ✅ robusto JSONB
 import json
 from datetime import datetime
 from typing import Optional
@@ -12,10 +12,6 @@ from database import get_engine
 router = APIRouter(prefix="/cases", tags=["cases"])
 
 
-# =========================
-# MODELOS
-# =========================
-
 class CaseDetailsIn(BaseModel):
     full_name: str = Field(..., description="Nombre y apellidos")
     dni_nie: str = Field(..., description="DNI o NIE")
@@ -24,88 +20,65 @@ class CaseDetailsIn(BaseModel):
     telefono: Optional[str] = None
 
 
-class CaseDetailsOut(CaseDetailsIn):
-    case_id: str
-    authorized: bool
-    authorized_at: Optional[datetime] = None
-
-
-# =========================
-# HELPERS
-# =========================
-
-def _get_case_or_404(conn, case_id: str):
+def _case_exists(conn, case_id: str) -> None:
     row = conn.execute(
-        text("SELECT id FROM cases WHERE id = :case_id"),
-        {"case_id": case_id},
+        text("SELECT 1 FROM cases WHERE id=:id"),
+        {"id": case_id},
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="case_id no existe")
 
 
-# =========================
-# ENDPOINTS
-# =========================
-
 @router.post("/{case_id}/details")
 def save_case_details(case_id: str, data: CaseDetailsIn):
     """
     Guarda los datos del interesado (post-pago, pre-autorización).
+    Requiere columnas en cases:
+      - interested_data JSONB
+      - authorized BOOLEAN
+      - authorized_at TIMESTAMPTZ
     """
     engine = get_engine()
     with engine.begin() as conn:
-        _get_case_or_404(conn, case_id)
+        _case_exists(conn, case_id)
 
-        # Guardamos en JSON dentro de cases (campo flexible)
+        payload = data.dict()
+
         conn.execute(
             text(
                 """
                 UPDATE cases
-                SET interested_data = :data,
+                SET interested_data = CAST(:payload AS JSONB),
                     updated_at = NOW()
                 WHERE id = :case_id
                 """
             ),
-            {
-                "case_id": case_id,
-                "data": json.dumps(data.dict()),
-            },
+            {"case_id": case_id, "payload": json.dumps(payload)},
         )
 
-        # Evento
         conn.execute(
             text(
                 """
-                INSERT INTO events (case_id, type, payload, created_at)
-                VALUES (:case_id, 'details_saved', CAST(:payload AS JSONB), NOW())
+                INSERT INTO events(case_id, type, payload, created_at)
+                VALUES (:case_id, 'details_saved', CAST(:ev AS JSONB), NOW())
                 """
             ),
-            {
-                "case_id": case_id,
-                "payload": json.dumps({"fields": list(data.dict().keys())}),
-            },
+            {"case_id": case_id, "ev": json.dumps({"fields": list(payload.keys())})},
         )
 
     return {"ok": True}
 
 
-@router.get("/{case_id}/details", response_model=CaseDetailsOut)
+@router.get("/{case_id}/details")
 def get_case_details(case_id: str):
-    """
-    Devuelve los datos del interesado (para OPS y frontend).
-    """
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(
             text(
                 """
-                SELECT
-                    id,
-                    interested_data,
-                    authorized,
-                    authorized_at
+                SELECT interested_data, authorized, authorized_at
                 FROM cases
-                WHERE id = :case_id
+                WHERE id=:case_id
                 """
             ),
             {"case_id": case_id},
@@ -114,12 +87,13 @@ def get_case_details(case_id: str):
         if not row:
             raise HTTPException(status_code=404, detail="case_id no existe")
 
-        interested_data = row.interested_data or {}
+        interested = row[0] or {}
         return {
-            "case_id": row.id,
-            **interested_data,
-            "authorized": bool(row.authorized),
-            "authorized_at": row.authorized_at,
+            "ok": True,
+            "case_id": case_id,
+            "interested_data": interested,
+            "authorized": bool(row[1]),
+            "authorized_at": row[2],
         }
 
 
@@ -131,26 +105,20 @@ def authorize_case(case_id: str):
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(
-            text(
-                """
-                SELECT interested_data, authorized
-                FROM cases
-                WHERE id = :case_id
-                """
-            ),
+            text("SELECT interested_data, authorized FROM cases WHERE id=:case_id"),
             {"case_id": case_id},
         ).fetchone()
 
         if not row:
             raise HTTPException(status_code=404, detail="case_id no existe")
 
-        if not row.interested_data:
-            raise HTTPException(
-                status_code=400,
-                detail="Faltan los datos del interesado",
-            )
+        interested_data = row[0] or {}
+        already = bool(row[1])
 
-        if row.authorized:
+        if not interested_data:
+            raise HTTPException(status_code=400, detail="Faltan los datos del interesado")
+
+        if already:
             return {"ok": True, "authorized": True}
 
         conn.execute(
@@ -169,13 +137,13 @@ def authorize_case(case_id: str):
         conn.execute(
             text(
                 """
-                INSERT INTO events (case_id, type, payload, created_at)
-                VALUES (:case_id, 'authorized', CAST(:payload AS JSONB), NOW())
+                INSERT INTO events(case_id, type, payload, created_at)
+                VALUES (:case_id, 'authorized', CAST(:ev AS JSONB), NOW())
                 """
             ),
             {
                 "case_id": case_id,
-                "payload": json.dumps(
+                "ev": json.dumps(
                     {
                         "authorized_to": "LA TALAMANQUINA, S.L.",
                         "purpose": "presentacion recurso administrativo",
