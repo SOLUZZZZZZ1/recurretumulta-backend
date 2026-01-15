@@ -1,4 +1,4 @@
-# ops.py — Operaciones (login PIN + cola + docs + eventos + presentado + justificante)
+# ops.py — Panel Operador (PIN + cola + docs + logs + presentado + justificante)
 import json
 import os
 from typing import Any, Dict, Optional, List
@@ -28,19 +28,11 @@ def _require_operator(x_operator_token: Optional[str]):
 
 @router.post("/login")
 def ops_login(pin: str = Form(...)) -> Dict[str, Any]:
-    """
-    PIN corto -> devuelve el OPERATOR_TOKEN real para guardarlo en localStorage.
-    Env requeridas:
-      OPERATOR_PIN (ej. 6 dígitos)
-      OPERATOR_TOKEN (token largo)
-    """
     expected = (os.getenv("OPERATOR_PIN") or "").strip()
     if not expected:
         raise HTTPException(status_code=500, detail="OPERATOR_PIN no configurado")
-
     if pin.strip() != expected:
         raise HTTPException(status_code=401, detail="PIN incorrecto")
-
     return {"ok": True, "token": _env("OPERATOR_TOKEN")}
 
 
@@ -48,23 +40,65 @@ def ops_login(pin: str = Form(...)) -> Dict[str, Any]:
 def queue(
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     status: str = Query("ready_to_submit"),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(100, ge=1, le=500),
 ) -> Dict[str, Any]:
+    """
+    Cola de casos para operador.
+
+    IMPORTANTE:
+    - Multi-documento recién creado por /analyze/expediente queda en status='uploaded'
+      y debe poder verse en OPS para ejecutar Modo Dios y decidir.
+    - 'ready_to_submit' se filtra a paid+authorized.
+    - 'all' devuelve todo excepto cerrados/archivados.
+    """
     _require_operator(x_operator_token)
+
     engine = get_engine()
     with engine.begin() as conn:
-        rows = conn.execute(
-            text(
-                """
-                SELECT id, status, payment_status, product_code, contact_email, created_at, updated_at
-                FROM cases
-                WHERE status = :status
-                ORDER BY updated_at ASC
-                LIMIT :limit
-                """
-            ),
-            {"status": status, "limit": limit},
-        ).fetchall()
+        if status == "ready_to_submit":
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT id, status, payment_status, product_code, contact_email, created_at, updated_at
+                    FROM cases
+                    WHERE status = 'ready_to_submit'
+                      AND payment_status = 'paid'
+                      AND authorized = TRUE
+                    ORDER BY created_at ASC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            ).fetchall()
+
+        elif status == "all":
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT id, status, payment_status, product_code, contact_email, created_at, updated_at
+                    FROM cases
+                    WHERE status NOT IN ('closed','archived')
+                    ORDER BY updated_at DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            ).fetchall()
+
+        else:
+            # ✅ Aquí entran: uploaded / generated / submitted / etc.
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT id, status, payment_status, product_code, contact_email, created_at, updated_at
+                    FROM cases
+                    WHERE status = :status
+                    ORDER BY updated_at DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"status": status, "limit": limit},
+            ).fetchall()
 
     items = []
     for r in rows:
@@ -79,6 +113,7 @@ def queue(
                 "updated_at": r[6],
             }
         )
+
     return {"ok": True, "status": status, "count": len(items), "items": items}
 
 
@@ -88,6 +123,7 @@ def list_documents(
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ) -> Dict[str, Any]:
     _require_operator(x_operator_token)
+
     engine = get_engine()
     with engine.begin() as conn:
         rows = conn.execute(
@@ -114,16 +150,18 @@ def list_documents(
                 "created_at": r[5],
             }
         )
-    return {"ok": True, "case_id": case_id, "items": items}
+
+    return {"ok": True, "case_id": case_id, "documents": items}
 
 
 @router.get("/cases/{case_id}/events")
 def list_events(
     case_id: str,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
-    limit: int = Query(200, ge=1, le=500),
+    limit: int = Query(200, ge=1, le=1000),
 ) -> Dict[str, Any]:
     _require_operator(x_operator_token)
+
     engine = get_engine()
     with engine.begin() as conn:
         rows = conn.execute(
@@ -140,7 +178,20 @@ def list_events(
         ).fetchall()
 
     items = [{"type": r[0], "payload": r[1], "created_at": r[2]} for r in rows]
-    return {"ok": True, "case_id": case_id, "items": items}
+    return {"ok": True, "case_id": case_id, "events": items}
+
+
+def _require_paid_and_authorized(conn, case_id: str):
+    row = conn.execute(
+        text("SELECT payment_status, authorized FROM cases WHERE id=:id"),
+        {"id": case_id},
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Case not found")
+    if (row[0] or "") != "paid":
+        raise HTTPException(status_code=402, detail="Pago requerido")
+    if not bool(row[1]):
+        raise HTTPException(status_code=409, detail="Falta autorización del cliente")
 
 
 @router.post("/cases/{case_id}/mark-submitted")
@@ -152,34 +203,43 @@ def mark_submitted(
     note: Optional[str] = Form(default=None),
 ) -> Dict[str, Any]:
     _require_operator(x_operator_token)
+
     engine = get_engine()
     with engine.begin() as conn:
+        _require_paid_and_authorized(conn, case_id)
+
         row = conn.execute(
-            text("SELECT payment_status, status FROM cases WHERE id=:id"),
+            text("SELECT status FROM cases WHERE id=:id"),
             {"id": case_id},
         ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Case not found")
-        if (row[0] or "") != "paid":
-            raise HTTPException(status_code=402, detail="Pago requerido")
+        current_status = row[0] if row else ""
 
-        current_status = row[1]
         conn.execute(
             text("UPDATE cases SET status='submitted', updated_at=NOW() WHERE id=:id"),
             {"id": case_id},
         )
+
         conn.execute(
             text(
-                """INSERT INTO events(case_id, type, payload, created_at)
-                   VALUES (:case_id, 'ops_mark_submitted', CAST(:payload AS JSONB), NOW())"""
+                """
+                INSERT INTO events(case_id, type, payload, created_at)
+                VALUES (:case_id, 'ops_mark_submitted', CAST(:payload AS JSONB), NOW())
+                """
             ),
             {
                 "case_id": case_id,
                 "payload": json.dumps(
-                    {"from": current_status, "to": "submitted", "channel": channel, "registro": registro, "note": note}
+                    {
+                        "from": current_status,
+                        "to": "submitted",
+                        "channel": channel,
+                        "registro": registro,
+                        "note": note,
+                    }
                 ),
             },
         )
+
     return {"ok": True, "case_id": case_id, "status": "submitted"}
 
 
@@ -203,11 +263,7 @@ async def upload_justificante(
 
     engine = get_engine()
     with engine.begin() as conn:
-        row = conn.execute(text("SELECT payment_status FROM cases WHERE id=:id"), {"id": case_id}).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Case not found")
-        if (row[0] or "") != "paid":
-            raise HTTPException(status_code=402, detail="Pago requerido")
+        _require_paid_and_authorized(conn, case_id)
 
         _, ext = os.path.splitext(filename.lower())
         ext = ext or ".bin"
@@ -222,8 +278,10 @@ async def upload_justificante(
 
         conn.execute(
             text(
-                """INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
-                   VALUES (:case_id, :kind, :b2_bucket, :b2_key, :mime, :size_bytes, NOW())"""
+                """
+                INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
+                VALUES (:case_id, :kind, :b2_bucket, :b2_key, :mime, :size_bytes, NOW())
+                """
             ),
             {
                 "case_id": case_id,
@@ -237,13 +295,21 @@ async def upload_justificante(
 
         conn.execute(
             text(
-                """INSERT INTO events(case_id, type, payload, created_at)
-                   VALUES (:case_id, 'justificante_uploaded', CAST(:payload AS JSONB), NOW())"""
+                """
+                INSERT INTO events(case_id, type, payload, created_at)
+                VALUES (:case_id, 'justificante_uploaded', CAST(:payload AS JSONB), NOW())
+                """
             ),
             {
                 "case_id": case_id,
                 "payload": json.dumps(
-                    {"kind": kind, "bucket": b2_bucket, "key": b2_key, "mime": content_type, "size_bytes": len(data)}
+                    {
+                        "kind": kind,
+                        "bucket": b2_bucket,
+                        "key": b2_key,
+                        "mime": content_type,
+                        "size_bytes": len(data),
+                    }
                 ),
             },
         )
