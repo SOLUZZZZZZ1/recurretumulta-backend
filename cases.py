@@ -27,6 +27,11 @@ class CaseDetailsIn(BaseModel):
     telefono: Optional[str] = None
 
 
+class CaseContactIn(BaseModel):
+    name: str = Field(..., description="Nombre (contacto)")
+    email: EmailStr
+
+
 # =========================
 # HELPERS
 # =========================
@@ -64,6 +69,40 @@ def _event(case_id: str, typ: str, payload: Dict[str, Any]) -> None:
             ),
             {"case_id": case_id, "type": typ, "payload": json.dumps(payload)},
         )
+
+
+# =========================
+# CONTACTO (PRE-PAGO): NOMBRE + EMAIL
+# =========================
+@router.post("/{case_id}/contact")
+def save_case_contact(case_id: str, data: CaseContactIn):
+    """
+    Guarda el contacto mínimo del expediente (pre-pago):
+    - contact_name
+    - contact_email
+
+    Esto permite enviar emails automáticos (pendiente docs, listo para pagar, etc.)
+    sin exigir DNI/domicilio antes de tiempo.
+    """
+    engine = get_engine()
+    with engine.begin() as conn:
+        _case_exists(conn, case_id)
+
+        conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET contact_name = :name,
+                    contact_email = :email,
+                    updated_at = NOW()
+                WHERE id = :case_id
+                """
+            ),
+            {"case_id": case_id, "name": data.name.strip(), "email": str(data.email).strip()},
+        )
+
+    _event(case_id, "contact_saved", {"fields": ["contact_name", "contact_email"]})
+    return {"ok": True}
 
 
 # =========================
@@ -252,7 +291,7 @@ def public_status(case_id: str):
         row = conn.execute(
             text(
                 """
-                SELECT status, payment_status, authorized
+                SELECT status, payment_status, authorized, contact_name, contact_email
                 FROM cases
                 WHERE id=:id
                 """
@@ -266,6 +305,8 @@ def public_status(case_id: str):
     status = row[0] or "uploaded"
     payment_status = row[1] or ""
     authorized = bool(row[2])
+    contact_name = (row[3] or "").strip() if len(row) > 3 else ""
+    contact_email = (row[4] or "").strip() if len(row) > 4 else ""
 
     # Mensajes UX (sin IA)
     if status == "pending_documents":
@@ -282,4 +323,6 @@ def public_status(case_id: str):
         "payment_status": payment_status,
         "authorized": authorized,
         "message": msg,
+        "contact_name": contact_name or None,
+        "contact_email": contact_email or None,
     }

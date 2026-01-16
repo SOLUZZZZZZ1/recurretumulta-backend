@@ -156,3 +156,42 @@ def migrate_cases_details(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error migrando cases_details: {e}")
+
+# =========================
+# NUEVA MIGRACIÓN: CONTACTO (NOMBRE + EMAIL) PRE-PAGO
+# =========================
+
+@router.post("/cases_contact", response_model=MigrateResponse)
+def migrate_cases_contact(
+    x_admin_token: str | None = Header(default=None, alias="x-admin-token")
+):
+    """
+    Añade columnas necesarias para:
+    - Contacto del expediente (pre-pago): nombre + email
+    SAFE: usa IF NOT EXISTS
+    """
+    _require_admin_token(x_admin_token)
+
+    from database import get_engine
+    engine = get_engine()
+
+    ddl = [
+        (
+            "cases_contact_name",
+            "ALTER TABLE cases ADD COLUMN IF NOT EXISTS contact_name TEXT;",
+        ),
+        (
+            "cases_contact_email",
+            "ALTER TABLE cases ADD COLUMN IF NOT EXISTS contact_email TEXT;",
+        ),
+    ]
+
+    try:
+        applied = _run(engine, ddl)
+        return MigrateResponse(
+            ok=True,
+            message="Migración cases_contact aplicada.",
+            created=applied,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error migrando cases_contact: {e}")
