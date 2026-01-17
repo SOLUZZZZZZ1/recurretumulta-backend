@@ -11,6 +11,7 @@ from analyze_expediente import router as analyze_expediente_router
 from generate import router as generate_router
 from files import router as files_router
 from billing import router as billing_router
+from billing_dynamic import router as billing_dynamic_router
 from admin_migrate_payments import router as admin_payments_router
 from ai_router import router as ai_router
 
@@ -39,6 +40,7 @@ app.include_router(analyze_expediente_router)
 app.include_router(generate_router)
 app.include_router(files_router)
 app.include_router(billing_router)
+app.include_router(billing_dynamic_router)
 app.include_router(admin_payments_router)
 app.include_router(ai_router)
 
