@@ -18,7 +18,6 @@ router = APIRouter(prefix="/cases", tags=["cases"])
 
 MAX_APPEND_FILES = 5
 
-
 # =========================
 # EMAILS AUTOMÁTICOS (SILENCIOSO)
 # =========================
@@ -35,6 +34,7 @@ def _smtp_ok() -> bool:
 def _send_email(to_email: str, subject: str, body: str) -> None:
     if not to_email or not _smtp_ok():
         return
+
     host = _env("SMTP_HOST")
     port = int(_env("SMTP_PORT", "587") or "587")
     user = _env("SMTP_USER")
@@ -99,22 +99,19 @@ def _email_ready(case_id: str, name: str, email: str) -> None:
         f"— RecurreTuMulta",
     )
 
-
 # =========================
 # MODELOS
 # =========================
 class CaseDetailsIn(BaseModel):
-    full_name: str = Field(..., description="Nombre y apellidos")
-    dni_nie: str = Field(..., description="DNI/NIE")
-    domicilio_notif: str = Field(..., description="Domicilio notificaciones")
+    full_name: str = Field(...)
+    dni_nie: str = Field(...)
+    domicilio_notif: str = Field(...)
     email: EmailStr
     telefono: Optional[str] = None
 
-
 class CaseContactIn(BaseModel):
-    name: str = Field(..., description="Nombre (contacto)")
+    name: str = Field(...)
     email: EmailStr
-
 
 # =========================
 # HELPERS
@@ -122,11 +119,8 @@ class CaseContactIn(BaseModel):
 def _case_exists(conn, case_id: str) -> Dict[str, Any]:
     row = conn.execute(
         text(
-            """
-            SELECT id, status, payment_status, authorized, interested_data
-            FROM cases
-            WHERE id=:id
-            """
+            "SELECT id, status, payment_status, authorized, interested_data, contact_name, contact_email "
+            "FROM cases WHERE id=:id"
         ),
         {"id": case_id},
     ).fetchone()
@@ -138,136 +132,47 @@ def _case_exists(conn, case_id: str) -> Dict[str, Any]:
         "payment_status": row[2],
         "authorized": bool(row[3]),
         "interested_data": row[4] or {},
+        "contact_name": row[5] or "",
+        "contact_email": row[6] or "",
     }
-
 
 def _event(case_id: str, typ: str, payload: Dict[str, Any]) -> None:
     engine = get_engine()
     with engine.begin() as conn:
         conn.execute(
             text(
-                """
-                INSERT INTO events(case_id, type, payload, created_at)
-                VALUES (:case_id, :type, CAST(:payload AS JSONB), NOW())
-                """
+                "INSERT INTO events(case_id, type, payload, created_at) "
+                "VALUES (:c,:t,CAST(:p AS JSONB),NOW())"
             ),
-            {"case_id": case_id, "type": typ, "payload": json.dumps(payload)},
+            {"c": case_id, "t": typ, "p": json.dumps(payload)},
         )
 
-
 # =========================
-# CONTACTO (PRE-PAGO): NOMBRE + EMAIL
+# CONTACTO (PRE-PAGO)
 # =========================
 @router.post("/{case_id}/contact")
 def save_case_contact(case_id: str, data: CaseContactIn, background_tasks: BackgroundTasks):
-    """
-    Guarda el contacto mínimo del expediente (pre-pago):
-    - contact_name
-    - contact_email
-
-    Esto permite enviar emails automáticos (pendiente docs, listo para pagar, etc.)
-    sin exigir DNI/domicilio antes de tiempo.
-    """
     engine = get_engine()
     with engine.begin() as conn:
         _case_exists(conn, case_id)
-
-        r = conn.execute(text("SELECT status, contact_name, contact_email FROM cases WHERE id=:id"), {"id": case_id}).fetchone()
-        old_status = (r[0] or "uploaded") if r else "uploaded"
-        contact_name = (r[1] or "").strip() if r else ""
-        contact_email = (r[2] or "").strip() if r else ""
-
         conn.execute(
             text(
-                """
-                UPDATE cases
-                SET contact_name = :name,
-                    contact_email = :email,
-                    updated_at = NOW()
-                WHERE id = :case_id
-                """
+                "UPDATE cases SET contact_name=:n, contact_email=:e, updated_at=NOW() WHERE id=:id"
             ),
-            {"case_id": case_id, "name": data.name.strip(), "email": str(data.email).strip()},
+            {"id": case_id, "n": data.name.strip(), "e": str(data.email).strip()},
         )
 
-        try:
-        background_tasks.add_task(_email_contact_saved, case_id, data.name.strip(), str(data.email).strip())
-    except Exception:
-        pass
-
-    _event(case_id, "contact_saved", {"fields": ["contact_name", "contact_email"]})
+    background_tasks.add_task(
+        _email_contact_saved, case_id, data.name.strip(), str(data.email)
+    )
+    _event(case_id, "contact_saved", {})
     return {"ok": True}
 
-
 # =========================
-# DATOS DEL INTERESADO
-# =========================
-@router.post("/{case_id}/details")
-def save_case_details(case_id: str, data: CaseDetailsIn):
-    engine = get_engine()
-    with engine.begin() as conn:
-        _case_exists(conn, case_id)
-
-        r = conn.execute(text("SELECT status, contact_name, contact_email FROM cases WHERE id=:id"), {"id": case_id}).fetchone()
-        old_status = (r[0] or "uploaded") if r else "uploaded"
-        contact_name = (r[1] or "").strip() if r else ""
-        contact_email = (r[2] or "").strip() if r else ""
-
-        conn.execute(
-            text(
-                """
-                UPDATE cases
-                SET interested_data = CAST(:payload AS JSONB),
-                    updated_at = NOW()
-                WHERE id = :case_id
-                """
-            ),
-            {"case_id": case_id, "payload": json.dumps(data.dict())},
-        )
-
-    _event(case_id, "details_saved", {"fields": list(data.dict().keys())})
-    return {"ok": True}
-
-
-@router.post("/{case_id}/authorize")
-def authorize_case(case_id: str):
-    engine = get_engine()
-    with engine.begin() as conn:
-        meta = _case_exists(conn, case_id)
-        if not meta["interested_data"]:
-            raise HTTPException(status_code=400, detail="Faltan los datos del interesado")
-
-        if meta["authorized"]:
-            return {"ok": True, "authorized": True}
-
-        conn.execute(
-            text(
-                """
-                UPDATE cases
-                SET authorized = TRUE,
-                    authorized_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = :case_id
-                """
-            ),
-            {"case_id": case_id},
-        )
-
-    _event(case_id, "authorized", {"authorized_to": "LA TALAMANQUINA, S.L."})
-    return {"ok": True, "authorized": True}
-
-
-# =========================
-# AÑADIR DOCUMENTOS AL EXPEDIENTE
+# AÑADIR DOCUMENTOS
 # =========================
 @router.post("/{case_id}/append-documents")
 async def append_documents(case_id: str, files: List[UploadFile] = File(...)):
-    """
-    Añade documentos al mismo expediente (case_id).
-    - Sube a B2 (folder: original)
-    - Inserta documents(kind='original')
-    - Evento 'expediente_documents_appended'
-    """
     if not files:
         raise HTTPException(status_code=400, detail="No se han recibido archivos.")
     if len(files) > MAX_APPEND_FILES:
@@ -277,60 +182,37 @@ async def append_documents(case_id: str, files: List[UploadFile] = File(...)):
     with engine.begin() as conn:
         _case_exists(conn, case_id)
 
-        r = conn.execute(text("SELECT status, contact_name, contact_email FROM cases WHERE id=:id"), {"id": case_id}).fetchone()
-        old_status = (r[0] or "uploaded") if r else "uploaded"
-        contact_name = (r[1] or "").strip() if r else ""
-        contact_email = (r[2] or "").strip() if r else ""
-
     uploaded_docs = []
-    for idx, uf in enumerate(files, start=1):
+    for uf in files:
         data = await uf.read()
         if not data:
             continue
-
-        filename = (uf.filename or f"doc_{idx}").replace("/", "_").replace("\\", "_")
-        ext = ".bin"
-        if "." in filename:
-            ext = "." + filename.split(".")[-1].lower()
-            if len(ext) > 8:
-                ext = ".bin"
 
         b2_bucket, b2_key = upload_bytes(
             case_id,
             "original",
             data,
-            ext=ext,
+            ext=".bin",
             content_type=(uf.content_type or "application/octet-stream"),
         )
 
-        uploaded_docs.append(
-            {
-                "filename": filename,
-                "bucket": b2_bucket,
-                "key": b2_key,
-                "mime": uf.content_type or "application/octet-stream",
-                "size_bytes": len(data),
-            }
-        )
+        uploaded_docs.append({"bucket": b2_bucket, "key": b2_key})
 
         with engine.begin() as conn:
             conn.execute(
                 text(
-                    """
-                    INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
-                    VALUES (:case_id, 'original', :b, :k, :m, :s, NOW())
-                    """
+                    "INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at) "
+                    "VALUES (:id,'original',:b,:k,:m,:s,NOW())"
                 ),
                 {
-                    "case_id": case_id,
+                    "id": case_id,
                     "b": b2_bucket,
                     "k": b2_key,
-                    "m": uf.content_type or "application/octet-stream",
+                    "m": uf.content_type,
                     "s": len(data),
                 },
             )
 
-    # Estado: volvemos a "uploaded" (hay nuevo material)
     with engine.begin() as conn:
         conn.execute(
             text("UPDATE cases SET status='uploaded', updated_at=NOW() WHERE id=:id"),
@@ -338,81 +220,55 @@ async def append_documents(case_id: str, files: List[UploadFile] = File(...)):
         )
 
     _event(case_id, "expediente_documents_appended", {"documents": uploaded_docs})
-    return {"ok": True, "case_id": case_id, "added": uploaded_docs}
-
+    return {"ok": True}
 
 # =========================
-# REVISIÓN PREVIA (ANTES DE COBRAR)
+# REVIEW
 # =========================
 @router.post("/{case_id}/review")
 def review_case(case_id: str, background_tasks: BackgroundTasks):
-    """
-    Ejecuta la revisión (Modo Dios interno) y fija el estado de UX:
-    - Si NOT_ADMISSIBLE / esperar_resolucion_final => status = pending_documents
-    - Si ADMISSIBLE => status = ready_to_pay
-    Guarda el resultado en events.
-    """
     engine = get_engine()
     with engine.begin() as conn:
-        _case_exists(conn, case_id)
+        meta = _case_exists(conn, case_id)
+        old_status = meta["status"]
 
-        r = conn.execute(text("SELECT status, contact_name, contact_email FROM cases WHERE id=:id"), {"id": case_id}).fetchone()
-        old_status = (r[0] or "uploaded") if r else "uploaded"
-        contact_name = (r[1] or "").strip() if r else ""
-        contact_email = (r[2] or "").strip() if r else ""
+    result = run_expediente_ai(case_id)
+    admiss = (result.get("admissibility") or {}).get("admissibility")
 
-    result = run_expediente_ai(case_id)  # guarda ai_expediente_result en events
-
-    admiss = (result.get("admissibility", {}) or {}).get("admissibility")
-    action = (result.get("phase", {}) or {}).get("recommended_action", {}).get("action")
-
-    # Por defecto
-    new_status = "uploaded"
-
+    new_status = "pending_documents"
     if (admiss or "").upper() == "ADMISSIBLE":
         new_status = "ready_to_pay"
-    else:
-        # Si recomienda esperar resolución final → pendiente documentación
-        if (action or "").lower() in ("esperar_resolucion_final", "wait_final_resolution"):
-            new_status = "pending_documents"
-        else:
-            new_status = "pending_documents"
 
     with engine.begin() as conn:
         conn.execute(
-            text("UPDATE cases SET status=:st, updated_at=NOW() WHERE id=:id"),
-            {"st": new_status, "id": case_id},
+            text("UPDATE cases SET status=:s, updated_at=NOW() WHERE id=:id"),
+            {"s": new_status, "id": case_id},
         )
 
-        try:
-        if contact_email and new_status != old_status:
-            if new_status == "pending_documents":
-                background_tasks.add_task(_email_pending, case_id, contact_name or "Usuario", contact_email)
-            elif new_status == "ready_to_pay":
-                background_tasks.add_task(_email_ready, case_id, contact_name or "Usuario", contact_email)
-    except Exception:
-        pass
+    if meta["contact_email"] and new_status != old_status:
+        if new_status == "pending_documents":
+            background_tasks.add_task(
+                _email_pending, case_id, meta["contact_name"] or "Usuario", meta["contact_email"]
+            )
+        elif new_status == "ready_to_pay":
+            background_tasks.add_task(
+                _email_ready, case_id, meta["contact_name"] or "Usuario", meta["contact_email"]
+            )
 
-    _event(case_id, "case_reviewed", {"status": new_status, "admissibility": admiss, "action": action})
-    return {"ok": True, "case_id": case_id, "status": new_status, "admissibility": admiss, "action": action}
+    _event(case_id, "case_reviewed", {"status": new_status})
+    return {"ok": True, "status": new_status}
 
-
+# =========================
+# ESTADO PÚBLICO
+# =========================
 @router.get("/{case_id}/public-status")
 def public_status(case_id: str):
-    """
-    Estado que consume el frontend SIN mencionar IA:
-    - pending_documents: falta documento (no se cobra)
-    - ready_to_pay: recurso puede presentarse ahora (se permite pagar)
-    """
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(
             text(
-                """
-                SELECT status, payment_status, authorized, contact_name, contact_email
-                FROM cases
-                WHERE id=:id
-                """
+                "SELECT status, payment_status, authorized, contact_name, contact_email "
+                "FROM cases WHERE id=:id"
             ),
             {"id": case_id},
         ).fetchone()
@@ -423,10 +279,9 @@ def public_status(case_id: str):
     status = row[0] or "uploaded"
     payment_status = row[1] or ""
     authorized = bool(row[2])
-    contact_name = (row[3] or "").strip() if len(row) > 3 else ""
-    contact_email = (row[4] or "").strip() if len(row) > 4 else ""
+    contact_name = row[3]
+    contact_email = row[4]
 
-    # Mensajes UX (sin IA)
     if status == "pending_documents":
         msg = "Aún no se puede presentar el recurso. Falta documentación o el acto recurrible."
     elif status == "ready_to_pay":
@@ -441,6 +296,6 @@ def public_status(case_id: str):
         "payment_status": payment_status,
         "authorized": authorized,
         "message": msg,
-        "contact_name": contact_name or None,
-        "contact_email": contact_email or None,
+        "contact_name": contact_name,
+        "contact_email": contact_email,
     }
