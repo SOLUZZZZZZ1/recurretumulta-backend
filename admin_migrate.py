@@ -157,19 +157,16 @@ def migrate_cases_details(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error migrando cases_details: {e}")
 
+
 # =========================
-# NUEVA MIGRACIÓN: CONTACTO (NOMBRE + EMAIL) PRE-PAGO
+# NUEVA MIGRACIÓN: PARTNERS (GESTORÍAS) + CANAL EN CASES
 # =========================
 
-@router.post("/cases_contact", response_model=MigrateResponse)
-def migrate_cases_contact(
+@router.post("/partners_channel", response_model=MigrateResponse)
+def migrate_partners_channel(
     x_admin_token: str | None = Header(default=None, alias="x-admin-token")
 ):
-    """
-    Añade columnas necesarias para:
-    - Contacto del expediente (pre-pago): nombre + email
-    SAFE: usa IF NOT EXISTS
-    """
+    """Añade tabla partners y columnas de canal partner en cases. SAFE: IF NOT EXISTS."""
     _require_admin_token(x_admin_token)
 
     from database import get_engine
@@ -177,21 +174,28 @@ def migrate_cases_contact(
 
     ddl = [
         (
-            "cases_contact_name",
-            "ALTER TABLE cases ADD COLUMN IF NOT EXISTS contact_name TEXT;",
+            "partners_table",
+            """CREATE TABLE IF NOT EXISTS partners (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              name TEXT NOT NULL,
+              email TEXT UNIQUE NOT NULL,
+              password_salt TEXT NOT NULL,
+              password_hash TEXT NOT NULL,
+              api_token TEXT UNIQUE,
+              active BOOLEAN NOT NULL DEFAULT TRUE,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );""",
         ),
-        (
-            "cases_contact_email",
-            "ALTER TABLE cases ADD COLUMN IF NOT EXISTS contact_email TEXT;",
-        ),
+        ("cases_channel", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'direct';"),
+        ("cases_partner_id", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS partner_id UUID NULL REFERENCES partners(id);"),
+        ("cases_partner_name", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS partner_name TEXT;"),
+        ("idx_partners_email", "CREATE INDEX IF NOT EXISTS idx_partners_email ON partners(email);"),
+        ("idx_cases_partner", "CREATE INDEX IF NOT EXISTS idx_cases_partner ON cases(partner_id);"),
     ]
 
     try:
         applied = _run(engine, ddl)
-        return MigrateResponse(
-            ok=True,
-            message="Migración cases_contact aplicada.",
-            created=applied,
-        )
+        return MigrateResponse(ok=True, message="Migración partners_channel aplicada.", created=applied)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error migrando cases_contact: {e}")
+        raise HTTPException(status_code=500, detail=f"Error migrando partners_channel: {e}")

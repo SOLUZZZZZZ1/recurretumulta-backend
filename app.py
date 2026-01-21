@@ -11,7 +11,6 @@ from analyze_expediente import router as analyze_expediente_router
 from generate import router as generate_router
 from files import router as files_router
 from billing import router as billing_router
-from billing_dynamic import router as billing_dynamic_router
 from admin_migrate_payments import router as admin_payments_router
 from ai_router import router as ai_router
 
@@ -19,6 +18,7 @@ from ai_router import router as ai_router
 # ✅ AÑADIDO: OPS (operador)
 from ops import router as ops_router
 from cases import router as cases_router
+from partner import router as partner_router
 
 app = FastAPI(title="RecurreTuMulta Backend", version="0.1.0")
 
@@ -40,13 +40,13 @@ app.include_router(analyze_expediente_router)
 app.include_router(generate_router)
 app.include_router(files_router)
 app.include_router(billing_router)
-app.include_router(billing_dynamic_router)
 app.include_router(admin_payments_router)
 app.include_router(ai_router)
 
 # ✅ NUEVO: router de operador (/ops/*)
 app.include_router(ops_router)
 app.include_router(cases_router)
+app.include_router(partner_router)
 
 @app.get("/health", response_model=HealthResponse)
 def health():
