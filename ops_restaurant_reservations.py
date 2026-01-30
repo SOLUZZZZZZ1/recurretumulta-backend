@@ -158,8 +158,8 @@ def create_reservation(
                   updated_at
                 )
                 VALUES (
-                  :reservation_date::date,
-                  :reservation_time::time,
+                  CAST(:reservation_date AS date),
+                  CAST(:reservation_time AS time),
                   :shift,
                   NULLIF(:table_name,''),
                   :party_size,
@@ -191,7 +191,7 @@ def _set_status(res_id: str, new_status: str, by: str | None, conn):
                 status_changed_at = :now,
                 status_changed_by = NULLIF(:by,''),
                 updated_at = :now
-            WHERE id = :id::uuid
+            WHERE id = CAST(:id AS uuid)
             """
         ),
         {"st": new_status, "now": _now(), "by": (by or ""), "id": res_id},
