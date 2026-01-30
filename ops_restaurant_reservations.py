@@ -222,3 +222,16 @@ def mark_no_show(
     with engine.begin() as conn:
         _set_status(reservation_id, "no_show", x_actor, conn)
     return {"ok": True}
+
+
+@router.post("/restaurant-reservations/{reservation_id}/cancel")
+def cancel_reservation(
+    reservation_id: str,
+    x_reservas_pin: str | None = Header(default=None, alias="x-reservas-pin"),
+    x_actor: str | None = Header(default=None, alias="x-actor"),
+):
+    _require_reservas_pin(x_reservas_pin)
+    engine = get_engine()
+    with engine.begin() as conn:
+        _set_status(reservation_id, "cancelada", x_actor, conn)
+    return {"ok": True}
