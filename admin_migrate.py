@@ -199,3 +199,63 @@ def migrate_partners_channel(
         return MigrateResponse(ok=True, message="Migración partners_channel aplicada.", created=applied)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error migrando partners_channel: {e}")
+
+
+# =========================
+# NUEVA MIGRACIÓN: LIBRO DE RESERVAS (RESTAURANTE)
+# =========================
+
+@router.post("/restaurant_reservations", response_model=MigrateResponse)
+def migrate_restaurant_reservations(
+    x_admin_token: str | None = Header(default=None, alias="x-admin-token")
+):
+    """
+    Crea tabla restaurant_reservations (libro de reservas restaurante).
+    SAFE: IF NOT EXISTS
+    """
+    _require_admin_token(x_admin_token)
+
+    from database import get_engine
+    engine = get_engine()
+
+    ddl = [
+        ("extensions_pgcrypto", "CREATE EXTENSION IF NOT EXISTS pgcrypto;"),
+        (
+            "restaurant_reservations",
+            """
+            CREATE TABLE IF NOT EXISTS restaurant_reservations (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              reservation_date DATE NOT NULL,
+              reservation_time TIME NOT NULL,
+              shift TEXT NOT NULL,
+              table_name TEXT,
+              party_size INT NOT NULL,
+              customer_name TEXT NOT NULL,
+              phone TEXT,
+              extras_dog BOOLEAN NOT NULL DEFAULT FALSE,
+              extras_celiac BOOLEAN NOT NULL DEFAULT FALSE,
+              extras_notes TEXT,
+              status TEXT NOT NULL DEFAULT 'pendiente',
+              created_by TEXT,
+              status_changed_at TIMESTAMPTZ,
+              status_changed_by TEXT,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+        ),
+        (
+            "idx_rest_res_day_shift_time",
+            "CREATE INDEX IF NOT EXISTS idx_rest_res_day_shift_time ON restaurant_reservations(reservation_date, shift, reservation_time);",
+        ),
+        (
+            "idx_rest_res_phone",
+            "CREATE INDEX IF NOT EXISTS idx_rest_res_phone ON restaurant_reservations(phone);",
+        ),
+    ]
+
+    try:
+        applied = _run(engine, ddl)
+        return MigrateResponse(ok=True, message="Migración restaurant_reservations aplicada.", created=applied)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error migrando restaurant_reservations: {e}")

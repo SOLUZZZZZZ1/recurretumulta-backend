@@ -17,6 +17,7 @@ from ai_router import router as ai_router
 
 # ✅ AÑADIDO: OPS (operador)
 from ops import router as ops_router
+from ops_restaurant_reservations import router as ops_restaurant_router
 from cases import router as cases_router
 from partner import router as partner_router
 
@@ -45,6 +46,7 @@ app.include_router(ai_router)
 
 # ✅ NUEVO: router de operador (/ops/*)
 app.include_router(ops_router)
+app.include_router(ops_restaurant_router)
 app.include_router(cases_router)
 app.include_router(partner_router)
 

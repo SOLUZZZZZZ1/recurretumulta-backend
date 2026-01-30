@@ -1,19 +1,29 @@
-# RecurreTuMulta Backend (mínimo con Postgres)
+# RTM — Libro de reservas (restaurante)
 
-## Variables de entorno (Render)
-- DATABASE_URL = (Internal Database URL de Render Postgres)
-- ADMIN_TOKEN = token largo secreto (para /admin/migrate/init)
-- ALLOWED_ORIGINS = https://recurretumulta.eu,https://www.recurretumulta.eu (opcional)
+## Variables de entorno (backend)
+- RESERVAS_REST_PIN=7391   # Cambia a tu gusto (obligatorio)
+- ADMIN_TOKEN=...          # Ya lo usas para /admin/migrate/* (obligatorio para migrar)
 
-## Start Command (Render)
-uvicorn app:app --host 0.0.0.0 --port $PORT
-
-## Health
-GET /health
-
-## Migración inicial (crear tablas)
-POST /admin/migrate/init
+## Migración (una vez)
+POST /admin/migrate/restaurant_reservations
 Header: x-admin-token: <ADMIN_TOKEN>
 
-Ejemplo (curl):
-curl -X POST https://recurretumulta-backend.onrender.com/admin/migrate/init -H "x-admin-token: TU_TOKEN"
+## Endpoints (uso)
+Todos requieren header:
+- x-reservas-pin: <PIN>
+
+Listar:
+GET /ops/restaurant-reservations?date=YYYY-MM-DD&shift=comida
+
+Crear:
+POST /ops/restaurant-reservations
+JSON: { reservation_date, reservation_time, shift, table_name, party_size, customer_name, phone, extras_dog, extras_celiac, extras_notes, created_by }
+
+Acciones rápidas:
+POST /ops/restaurant-reservations/{id}/arrived
+POST /ops/restaurant-reservations/{id}/no-show
+
+## Frontend
+Ruta oculta:
+- /__reservas-restaurante
+Pide PIN y lo guarda en sessionStorage.
