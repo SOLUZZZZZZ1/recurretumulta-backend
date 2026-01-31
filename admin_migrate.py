@@ -253,30 +253,50 @@ def migrate_restaurants(
     from database import get_engine
     engine = get_engine()
 
-    ddl = [
-        (
-            "restaurants_table",
-            """
-            CREATE TABLE IF NOT EXISTS restaurants (
-              id TEXT PRIMARY KEY,
-              display_name TEXT NOT NULL,
-              pin_hash TEXT NOT NULL,
-              active BOOLEAN NOT NULL DEFAULT true,
-              created_at TIMESTAMP NOT NULL DEFAULT NOW()
-            );
-            """
-        ),
-        (
-            "restaurants_seed_rest_001",
-            """
-            INSERT INTO restaurants (id, display_name, pin_hash)
-            VALUES (
-              'rest_001',
-              'Restaurante principal',
-              crypt(:pin, gen_salt('bf'))
+    pin = (os.getenv("RESERVAS_REST_PIN") or "").strip()
+    if not pin:
+        raise HTTPException(status_code=500, detail="RESERVAS_REST_PIN no está configurado en el backend.")
+
+    applied: List[str] = []
+
+    try:
+        with engine.begin() as conn:
+            # Asegura pgcrypto (por si acaso)
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto;"))
+            applied.append("restaurants_pgcrypto")
+
+            # Tabla
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS restaurants (
+                  id TEXT PRIMARY KEY,
+                  display_name TEXT NOT NULL,
+                  pin_hash TEXT NOT NULL,
+                  active BOOLEAN NOT NULL DEFAULT true,
+                  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+            """))
+            applied.append("restaurants_table")
+
+            # Seed rest_001 (PIN hasheado)
+            conn.execute(
+                text("""
+                    INSERT INTO restaurants (id, display_name, pin_hash)
+                    VALUES (
+                      'rest_001',
+                      'Restaurante principal',
+                      crypt(:pin, gen_salt('bf'))
+                    )
+                    ON CONFLICT (id) DO NOTHING;
+                """),
+                {"pin": pin},
             )
-            ON CONFLICT (id) DO NOTHING;
-            """
+            applied.append("restaurants_seed_rest_001")
+
+        return MigrateResponse(ok=True, message="Migración restaurants aplicada.", created=applied)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error migrando restaurants: {e}")
+
         ),
     ]
 
