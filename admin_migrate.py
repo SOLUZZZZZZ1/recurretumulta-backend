@@ -202,16 +202,16 @@ def migrate_partners_channel(
 
 
 # =========================
-# NUEVA MIGRACIÓN: MULTI-RESTAURANTE (restaurant_id)
+# NUEVA MIGRACIÓN: LIBRO DE RESERVAS (RESTAURANTE)
 # =========================
 
-@router.post("/restaurant_id", response_model=MigrateResponse)
-def migrate_restaurant_id(
+@router.post("/restaurant_reservations", response_model=MigrateResponse)
+def migrate_restaurant_reservations(
     x_admin_token: str | None = Header(default=None, alias="x-admin-token")
 ):
-    """Añade la columna restaurant_id a restaurant_reservations para multi-restaurante.
-    SAFE: IF NOT EXISTS + backfill + índice compuesto.
-    No afecta a RecurreTuMulta (tabla aislada).
+    """
+    Crea tabla restaurant_reservations (libro de reservas restaurante).
+    SAFE: IF NOT EXISTS
     """
     _require_admin_token(x_admin_token)
 
@@ -219,15 +219,109 @@ def migrate_restaurant_id(
     engine = get_engine()
 
     ddl = [
-        ("restaurant_id_col", "ALTER TABLE IF EXISTS restaurant_reservations ADD COLUMN IF NOT EXISTS restaurant_id TEXT;"),
-        ("restaurant_id_backfill", "UPDATE restaurant_reservations SET restaurant_id = 'rest_001' WHERE restaurant_id IS NULL;"),
-        ("restaurant_id_default", "ALTER TABLE IF EXISTS restaurant_reservations ALTER COLUMN restaurant_id SET DEFAULT 'rest_001';"),
-        ("restaurant_id_not_null", "ALTER TABLE IF EXISTS restaurant_reservations ALTER COLUMN restaurant_id SET NOT NULL;"),
-        ("idx_rest_res_rest_day_shift_time", "CREATE INDEX IF NOT EXISTS idx_rest_res_rest_day_shift_time ON restaurant_reservations(restaurant_id, reservation_date, shift, reservation_time);"),
+        ("extensions_pgcrypto", "CREATE EXTENSION IF NOT EXISTS pgcrypto;"),
+        (
+            "restaurant_reservations",
+            """
+            CREATE TABLE IF NOT EXISTS restaurant_reservations (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              reservation_date DATE NOT NULL,
+              reservation_time TIME NOT NULL,
+              shift TEXT NOT NULL,
+              table_name TEXT,
+              party_size INT NOT NULL,
+              customer_name TEXT NOT NULL,
+              phone TEXT,
+              extras_dog BOOLEAN NOT NULL DEFAULT FALSE,
+              extras_celiac BOOLEAN NOT NULL DEFAULT FALSE,
+              extras_notes TEXT,
+              status TEXT NOT NULL DEFAULT 'pendiente',
+              created_by TEXT,
+              status_changed_at TIMESTAMPTZ,
+              status_changed_by TEXT,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+        ),
+        (
+            "idx_rest_res_day_shift_time",
+            "CREATE INDEX IF NOT EXISTS idx_rest_res_day_shift_time ON restaurant_reservations(reservation_date, shift, reservation_time);",
+        ),
+        (
+            "idx_rest_res_phone",
+            "CREATE INDEX IF NOT EXISTS idx_rest_res_phone ON restaurant_reservations(phone);",
+        ),
     ]
 
     try:
         applied = _run(engine, ddl)
-        return MigrateResponse(ok=True, message="Migración restaurant_id aplicada.", created=applied)
+        return MigrateResponse(ok=True, message="Migración restaurant_reservations aplicada.", created=applied)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error migrando restaurant_id: {e}")
+        raise HTTPException(status_code=500, detail=f"Error migrando restaurant_reservations: {e}")
+
+
+# =========================
+# MIGRACIÓN: TABLA restaurants (PIN por restaurante)
+# =========================
+
+@router.post("/restaurants", response_model=MigrateResponse)
+def migrate_restaurants(
+    x_admin_token: str | None = Header(default=None, alias="x-admin-token")
+):
+    """Crea la tabla restaurants para multi-restaurante con PIN por restaurante.
+    SAFE:
+    - CREATE EXTENSION IF NOT EXISTS pgcrypto
+    - CREATE TABLE IF NOT EXISTS restaurants
+    - Seed rest_001 si no existe usando RESERVAS_REST_PIN (hash, no en claro)
+    No afecta a RecurreTuMulta.
+    """
+    _require_admin_token(x_admin_token)
+
+    from database import get_engine
+    engine = get_engine()
+
+    pin = (os.getenv("RESERVAS_REST_PIN") or "").strip()
+    if not pin:
+        raise HTTPException(status_code=500, detail="RESERVAS_REST_PIN no está configurado en el backend.")
+
+    applied: List[str] = []
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto;"))
+            applied.append("restaurants_pgcrypto")
+
+            conn.execute(text(
+                """
+                CREATE TABLE IF NOT EXISTS restaurants (
+                  id TEXT PRIMARY KEY,
+                  display_name TEXT NOT NULL,
+                  pin_hash TEXT NOT NULL,
+                  active BOOLEAN NOT NULL DEFAULT true,
+                  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+                """
+            ))
+            applied.append("restaurants_table")
+
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO restaurants (id, display_name, pin_hash)
+                    VALUES (
+                      'rest_001',
+                      'Restaurante principal',
+                      crypt(:pin, gen_salt('bf'))
+                    )
+                    ON CONFLICT (id) DO NOTHING;
+                    """
+                ),
+                {"pin": pin},
+            )
+            applied.append("restaurants_seed_rest_001")
+
+        return MigrateResponse(ok=True, message="Migración restaurants aplicada.", created=applied)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error migrando restaurants: {e}")
