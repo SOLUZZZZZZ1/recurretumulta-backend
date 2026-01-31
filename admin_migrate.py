@@ -202,16 +202,16 @@ def migrate_partners_channel(
 
 
 # =========================
-# NUEVA MIGRACIÓN: LIBRO DE RESERVAS (RESTAURANTE)
+# NUEVA MIGRACIÓN: MULTI-RESTAURANTE (restaurant_id)
 # =========================
 
-@router.post("/restaurant_reservations", response_model=MigrateResponse)
-def migrate_restaurant_reservations(
+@router.post("/restaurant_id", response_model=MigrateResponse)
+def migrate_restaurant_id(
     x_admin_token: str | None = Header(default=None, alias="x-admin-token")
 ):
-    """
-    Crea tabla restaurant_reservations (libro de reservas restaurante).
-    SAFE: IF NOT EXISTS
+    """Añade la columna restaurant_id a restaurant_reservations para multi-restaurante.
+    SAFE: IF NOT EXISTS + backfill + índice compuesto.
+    No afecta a RecurreTuMulta (tabla aislada).
     """
     _require_admin_token(x_admin_token)
 
@@ -219,43 +219,15 @@ def migrate_restaurant_reservations(
     engine = get_engine()
 
     ddl = [
-        ("extensions_pgcrypto", "CREATE EXTENSION IF NOT EXISTS pgcrypto;"),
-        (
-            "restaurant_reservations",
-            """
-            CREATE TABLE IF NOT EXISTS restaurant_reservations (
-              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-              reservation_date DATE NOT NULL,
-              reservation_time TIME NOT NULL,
-              shift TEXT NOT NULL,
-              table_name TEXT,
-              party_size INT NOT NULL,
-              customer_name TEXT NOT NULL,
-              phone TEXT,
-              extras_dog BOOLEAN NOT NULL DEFAULT FALSE,
-              extras_celiac BOOLEAN NOT NULL DEFAULT FALSE,
-              extras_notes TEXT,
-              status TEXT NOT NULL DEFAULT 'pendiente',
-              created_by TEXT,
-              status_changed_at TIMESTAMPTZ,
-              status_changed_by TEXT,
-              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            """,
-        ),
-        (
-            "idx_rest_res_day_shift_time",
-            "CREATE INDEX IF NOT EXISTS idx_rest_res_day_shift_time ON restaurant_reservations(reservation_date, shift, reservation_time);",
-        ),
-        (
-            "idx_rest_res_phone",
-            "CREATE INDEX IF NOT EXISTS idx_rest_res_phone ON restaurant_reservations(phone);",
-        ),
+        ("restaurant_id_col", "ALTER TABLE IF EXISTS restaurant_reservations ADD COLUMN IF NOT EXISTS restaurant_id TEXT;"),
+        ("restaurant_id_backfill", "UPDATE restaurant_reservations SET restaurant_id = 'rest_001' WHERE restaurant_id IS NULL;"),
+        ("restaurant_id_default", "ALTER TABLE IF EXISTS restaurant_reservations ALTER COLUMN restaurant_id SET DEFAULT 'rest_001';"),
+        ("restaurant_id_not_null", "ALTER TABLE IF EXISTS restaurant_reservations ALTER COLUMN restaurant_id SET NOT NULL;"),
+        ("idx_rest_res_rest_day_shift_time", "CREATE INDEX IF NOT EXISTS idx_rest_res_rest_day_shift_time ON restaurant_reservations(restaurant_id, reservation_date, shift, reservation_time);"),
     ]
 
     try:
         applied = _run(engine, ddl)
-        return MigrateResponse(ok=True, message="Migración restaurant_reservations aplicada.", created=applied)
+        return MigrateResponse(ok=True, message="Migración restaurant_id aplicada.", created=applied)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error migrando restaurant_reservations: {e}")
+        raise HTTPException(status_code=500, detail=f"Error migrando restaurant_id: {e}")
