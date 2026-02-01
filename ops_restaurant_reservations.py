@@ -22,7 +22,6 @@ def _need_pin(restaurant_id: str, x_reservas_pin: Optional[str]) -> None:
 
     engine = get_engine()
 
-    # 1) Obtener hash del PIN del restaurante
     sql = text("""
         SELECT pin_hash
         FROM restaurants
@@ -37,7 +36,6 @@ def _need_pin(restaurant_id: str, x_reservas_pin: Optional[str]) -> None:
 
     pin_hash = row[0]
 
-    # 2) Comparar PIN con hash usando pgcrypto
     check_sql = text("SELECT crypt(:pin, :hash) = :hash AS ok")
     with engine.begin() as conn:
         ok = conn.execute(check_sql, {"pin": pin, "hash": pin_hash}).scalar()
@@ -75,8 +73,57 @@ class ReservationUpdate(BaseModel):
     extras_notes: Optional[str] = None
 
 
+class ChangePinBody(BaseModel):
+    restaurant_id: str = Field(..., description="rest_001, rest_002, ...")
+    current_pin: str = Field(..., min_length=1)
+    new_pin: str = Field(..., min_length=1)
+
+
 def _now() -> datetime:
     return datetime.utcnow()
+
+
+# ============================================================
+# Cambiar PIN del restaurante (desde la propia pantalla)
+# ============================================================
+@router.post("/restaurants/change-pin")
+def change_restaurant_pin(body: ChangePinBody):
+    rid = (body.restaurant_id or "").strip() or "rest_001"
+    current_pin = (body.current_pin or "").strip()
+    new_pin = (body.new_pin or "").strip()
+
+    if not current_pin or not new_pin:
+        raise HTTPException(status_code=400, detail="PIN actual y nuevo PIN son requeridos.")
+
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT pin_hash FROM restaurants WHERE id=:rid AND active=true"),
+            {"rid": rid},
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Restaurante no encontrado o inactivo.")
+
+    pin_hash = row[0]
+
+    with engine.begin() as conn:
+        ok = conn.execute(
+            text("SELECT crypt(:pin, :hash) = :hash AS ok"),
+            {"pin": current_pin, "hash": pin_hash},
+        ).scalar()
+
+    if not ok:
+        raise HTTPException(status_code=401, detail="PIN actual incorrecto.")
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE restaurants SET pin_hash = crypt(:pin, gen_salt('bf')) WHERE id = :rid"),
+            {"pin": new_pin, "rid": rid},
+        )
+
+    return {"ok": True, "restaurant_id": rid}
 
 
 # ============================================================
@@ -195,7 +242,7 @@ def create_reservation(
 
 
 # ============================================================
-# Cambios de estado (id identifica la reserva)
+# Cambios de estado
 # ============================================================
 def _set_status(res_id: str, status: str, by: str):
     engine = get_engine()
@@ -255,9 +302,6 @@ def mark_cancel(
     return _set_status(reservation_id, "cancelada", (x_actor or "SALA"))
 
 
-# ============================================================
-# PUT: editar reserva
-# ============================================================
 @router.put("/restaurant-reservations/{reservation_id}")
 def update_reservation(
     reservation_id: str,
@@ -293,19 +337,15 @@ def update_reservation(
         if k == "reservation_time":
             sets.append("reservation_time = CAST(:reservation_time AS time)")
             params["reservation_time"] = v
-
         elif k == "table_name":
             sets.append("table_name = NULLIF(:table_name,'')")
             params["table_name"] = v or ""
-
         elif k == "phone":
             sets.append("phone = NULLIF(:phone,'')")
             params["phone"] = v or ""
-
         elif k == "extras_notes":
             sets.append("extras_notes = NULLIF(:extras_notes,'')")
             params["extras_notes"] = v or ""
-
         else:
             sets.append(f"{k} = :{k}")
             params[k] = v
