@@ -91,8 +91,8 @@ def list_reservations(
     date: str,
     shift: str,
     restaurant_id: Optional[str] = None,
-    x_reservas_pin: Optional[str] = Header(default=None, alias=\"x-reservas-pin\"),
-    x_restaurant_id: Optional[str] = Header(default=None, alias=\"x-restaurant-id\"),
+    x_reservas_pin: Optional[str] = Header(default=None, alias="x-reservas-pin"),
+    x_restaurant_id: Optional[str] = Header(default=None, alias="x-restaurant-id"),
 ):
     _need_pin(x_reservas_pin, restaurant_id or x_restaurant_id)
     engine = get_engine()
@@ -130,8 +130,8 @@ def list_reservations(
 @router.post("/restaurant-reservations")
 def create_reservation(
     body: ReservationCreate,
-    x_reservas_pin: Optional[str] = Header(default=None, alias=\"x-reservas-pin\"),
-    x_restaurant_id: Optional[str] = Header(default=None, alias=\"x-restaurant-id\"),
+    x_reservas_pin: Optional[str] = Header(default=None, alias="x-reservas-pin"),
+    x_restaurant_id: Optional[str] = Header(default=None, alias="x-restaurant-id"),
 ):
     _need_pin(x_reservas_pin, x_restaurant_id)
     engine = get_engine()
@@ -204,9 +204,9 @@ def _set_status(res_id: str, status: str, by: str):
 @router.post("/restaurant-reservations/{reservation_id}/arrived")
 def mark_arrived(
     reservation_id: str,
-    x_reservas_pin: Optional[str] = Header(default=None, alias=\"x-reservas-pin\"),
-    x_restaurant_id: Optional[str] = Header(default=None, alias=\"x-restaurant-id\"),
-    x_actor: Optional[str] = Header(default=None, alias=\"x-actor\"),
+    x_reservas_pin: Optional[str] = Header(default=None, alias="x-reservas-pin"),
+    x_restaurant_id: Optional[str] = Header(default=None, alias="x-restaurant-id"),
+    x_actor: Optional[str] = Header(default=None, alias="x-actor"),
 ):
     _need_pin(x_reservas_pin, x_restaurant_id)
     return _set_status(reservation_id, "llego", (x_actor or "SALA"))
@@ -215,9 +215,9 @@ def mark_arrived(
 @router.post("/restaurant-reservations/{reservation_id}/no-show")
 def mark_no_show(
     reservation_id: str,
-    x_reservas_pin: Optional[str] = Header(default=None, alias=\"x-reservas-pin\"),
-    x_restaurant_id: Optional[str] = Header(default=None, alias=\"x-restaurant-id\"),
-    x_actor: Optional[str] = Header(default=None, alias=\"x-actor\"),
+    x_reservas_pin: Optional[str] = Header(default=None, alias="x-reservas-pin"),
+    x_restaurant_id: Optional[str] = Header(default=None, alias="x-restaurant-id"),
+    x_actor: Optional[str] = Header(default=None, alias="x-actor"),
 ):
     _need_pin(x_reservas_pin, x_restaurant_id)
     return _set_status(reservation_id, "no_show", (x_actor or "SALA"))
@@ -226,9 +226,9 @@ def mark_no_show(
 @router.post("/restaurant-reservations/{reservation_id}/cancel")
 def mark_cancel(
     reservation_id: str,
-    x_reservas_pin: Optional[str] = Header(default=None, alias=\"x-reservas-pin\"),
-    x_restaurant_id: Optional[str] = Header(default=None, alias=\"x-restaurant-id\"),
-    x_actor: Optional[str] = Header(default=None, alias=\"x-actor\"),
+    x_reservas_pin: Optional[str] = Header(default=None, alias="x-reservas-pin"),
+    x_restaurant_id: Optional[str] = Header(default=None, alias="x-restaurant-id"),
+    x_actor: Optional[str] = Header(default=None, alias="x-actor"),
 ):
     _need_pin(x_reservas_pin, x_restaurant_id)
     return _set_status(reservation_id, "cancelada", (x_actor or "SALA"))
@@ -238,8 +238,8 @@ def mark_cancel(
 def update_reservation(
     reservation_id: str,
     body: ReservationUpdate,
-    x_reservas_pin: Optional[str] = Header(default=None, alias=\"x-reservas-pin\"),
-    x_restaurant_id: Optional[str] = Header(default=None, alias=\"x-restaurant-id\"),
+    x_reservas_pin: Optional[str] = Header(default=None, alias="x-reservas-pin"),
+    x_restaurant_id: Optional[str] = Header(default=None, alias="x-restaurant-id"),
 ):
     _need_pin(x_reservas_pin, x_restaurant_id)
 
