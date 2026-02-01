@@ -11,12 +11,47 @@ from database import get_engine
 router = APIRouter(prefix="/ops", tags=["ops-restaurant-reservations"])
 
 
-def _need_pin(x_reservas_pin: Optional[str]) -> str:
-    expected = (os.getenv("RESERVAS_REST_PIN") or "").strip()
-    if not expected:
-        raise HTTPException(status_code=500, detail="RESERVAS_REST_PIN no está configurado en el backend.")
+def _verify_pin(pin: str, pin_hash: str) -> bool:
+    """Verifica PIN contra un hash (bcrypt/passlib)."""
+    if not pin_hash:
+        return False
+    pin_b = (pin or "").encode("utf-8")
+    # bcrypt (preferente)
+    try:
+        import bcrypt  # type: ignore
+        return bcrypt.checkpw(pin_b, pin_hash.encode("utf-8"))
+    except Exception:
+        pass
+    # passlib (fallback)
+    try:
+        from passlib.context import CryptContext  # type: ignore
+        ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        return ctx.verify(pin or "", pin_hash)
+    except Exception:
+        return False
+
+
+def _need_pin(
+    x_reservas_pin: Optional[str],
+    restaurant_id: Optional[str],
+) -> str:
+    """Valida el PIN contra la tabla restaurants (pin_hash) para el restaurant_id indicado."""
+    rid = (restaurant_id or "").strip()
+    if not rid:
+        raise HTTPException(status_code=400, detail="restaurant_id es obligatorio.")
     pin = (x_reservas_pin or "").strip()
-    if pin != expected:
+    if not pin:
+        raise HTTPException(status_code=401, detail="Falta PIN (x-reservas-pin).")
+
+    engine = get_engine()
+    sql = text("SELECT pin_hash FROM restaurants WHERE id = :id")
+    with engine.begin() as conn:
+        row = conn.execute(sql, {"id": rid}).mappings().first()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Restaurante no encontrado.")
+    pin_hash = (row.get("pin_hash") or "").strip()
+    if not _verify_pin(pin, pin_hash):
         raise HTTPException(status_code=401, detail="PIN incorrecto.")
     return pin
 
@@ -55,9 +90,11 @@ def _now() -> datetime:
 def list_reservations(
     date: str,
     shift: str,
-    x_reservas_pin: Optional[str] = Header(default=None, alias="x-reservas-pin"),
+    restaurant_id: Optional[str] = None,
+    x_reservas_pin: Optional[str] = Header(default=None, alias=\"x-reservas-pin\"),
+    x_restaurant_id: Optional[str] = Header(default=None, alias=\"x-restaurant-id\"),
 ):
-    _need_pin(x_reservas_pin)
+    _need_pin(x_reservas_pin, restaurant_id or x_restaurant_id)
     engine = get_engine()
     sql = text(
         """
@@ -93,9 +130,10 @@ def list_reservations(
 @router.post("/restaurant-reservations")
 def create_reservation(
     body: ReservationCreate,
-    x_reservas_pin: Optional[str] = Header(default=None, alias="x-reservas-pin"),
+    x_reservas_pin: Optional[str] = Header(default=None, alias=\"x-reservas-pin\"),
+    x_restaurant_id: Optional[str] = Header(default=None, alias=\"x-restaurant-id\"),
 ):
-    _need_pin(x_reservas_pin)
+    _need_pin(x_reservas_pin, x_restaurant_id)
     engine = get_engine()
     now = _now()
     sql = text(
@@ -166,30 +204,33 @@ def _set_status(res_id: str, status: str, by: str):
 @router.post("/restaurant-reservations/{reservation_id}/arrived")
 def mark_arrived(
     reservation_id: str,
-    x_reservas_pin: Optional[str] = Header(default=None, alias="x-reservas-pin"),
-    x_actor: Optional[str] = Header(default=None, alias="x-actor"),
+    x_reservas_pin: Optional[str] = Header(default=None, alias=\"x-reservas-pin\"),
+    x_restaurant_id: Optional[str] = Header(default=None, alias=\"x-restaurant-id\"),
+    x_actor: Optional[str] = Header(default=None, alias=\"x-actor\"),
 ):
-    _need_pin(x_reservas_pin)
+    _need_pin(x_reservas_pin, x_restaurant_id)
     return _set_status(reservation_id, "llego", (x_actor or "SALA"))
 
 
 @router.post("/restaurant-reservations/{reservation_id}/no-show")
 def mark_no_show(
     reservation_id: str,
-    x_reservas_pin: Optional[str] = Header(default=None, alias="x-reservas-pin"),
-    x_actor: Optional[str] = Header(default=None, alias="x-actor"),
+    x_reservas_pin: Optional[str] = Header(default=None, alias=\"x-reservas-pin\"),
+    x_restaurant_id: Optional[str] = Header(default=None, alias=\"x-restaurant-id\"),
+    x_actor: Optional[str] = Header(default=None, alias=\"x-actor\"),
 ):
-    _need_pin(x_reservas_pin)
+    _need_pin(x_reservas_pin, x_restaurant_id)
     return _set_status(reservation_id, "no_show", (x_actor or "SALA"))
 
 
 @router.post("/restaurant-reservations/{reservation_id}/cancel")
 def mark_cancel(
     reservation_id: str,
-    x_reservas_pin: Optional[str] = Header(default=None, alias="x-reservas-pin"),
-    x_actor: Optional[str] = Header(default=None, alias="x-actor"),
+    x_reservas_pin: Optional[str] = Header(default=None, alias=\"x-reservas-pin\"),
+    x_restaurant_id: Optional[str] = Header(default=None, alias=\"x-restaurant-id\"),
+    x_actor: Optional[str] = Header(default=None, alias=\"x-actor\"),
 ):
-    _need_pin(x_reservas_pin)
+    _need_pin(x_reservas_pin, x_restaurant_id)
     return _set_status(reservation_id, "cancelada", (x_actor or "SALA"))
 
 
@@ -197,9 +238,10 @@ def mark_cancel(
 def update_reservation(
     reservation_id: str,
     body: ReservationUpdate,
-    x_reservas_pin: Optional[str] = Header(default=None, alias="x-reservas-pin"),
+    x_reservas_pin: Optional[str] = Header(default=None, alias=\"x-reservas-pin\"),
+    x_restaurant_id: Optional[str] = Header(default=None, alias=\"x-restaurant-id\"),
 ):
-    _need_pin(x_reservas_pin)
+    _need_pin(x_reservas_pin, x_restaurant_id)
 
     patch = body.model_dump(exclude_unset=True)
     if not patch:
