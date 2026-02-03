@@ -262,7 +262,8 @@ def update_reservation(
 
     for k, v in patch.items():
         if k == "reservation_time":
-            sets.append("reservation_time = :t::time")
+            sets.append("reservation_time = CAST(:t AS time)
+")
             params["t"] = v
         elif k == "table_name":
             sets.append("table_name = NULLIF(:table_name,'')")
@@ -285,7 +286,7 @@ def update_reservation(
             text(f"""
                 UPDATE restaurant_reservations
                 SET {", ".join(sets)}
-                WHERE id=:id::uuid
+                WHERE id = CAST(:id AS uuid)
                 RETURNING id
             """),
             params,
