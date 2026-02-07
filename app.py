@@ -20,6 +20,8 @@ from ops import router as ops_router
 from ops_restaurant_reservations import router as ops_restaurant_router
 from cases import router as cases_router
 from partner import router as partner_router
+from ops_override import router as ops_override_router
+
 
 app = FastAPI(title="RecurreTuMulta Backend", version="0.1.0")
 
@@ -49,6 +51,8 @@ app.include_router(ops_router)
 app.include_router(ops_restaurant_router)
 app.include_router(cases_router)
 app.include_router(partner_router)
+app.include_router(ops_override_router)
+
 
 @app.get("/health", response_model=HealthResponse)
 def health():
