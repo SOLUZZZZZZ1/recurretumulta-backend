@@ -325,3 +325,43 @@ def migrate_restaurants(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error migrando restaurants: {e}")
+# =========================
+# MIGRACIÓN: MODO PRUEBA / OVERRIDE DE PLAZOS
+# =========================
+
+@router.post("/cases_test_override", response_model=MigrateResponse)
+def migrate_cases_test_override(
+    x_admin_token: str | None = Header(default=None, alias="x-admin-token")
+):
+    """
+    Añade columnas para forzar generación de recurso en modo prueba (sandbox).
+    SAFE: IF NOT EXISTS
+    """
+    _require_admin_token(x_admin_token)
+
+    from database import get_engine
+    engine = get_engine()
+
+    ddl = [
+        (
+            "cases_test_mode",
+            "ALTER TABLE cases ADD COLUMN IF NOT EXISTS test_mode BOOLEAN DEFAULT FALSE;",
+        ),
+        (
+            "cases_override_deadlines",
+            "ALTER TABLE cases ADD COLUMN IF NOT EXISTS override_deadlines BOOLEAN DEFAULT FALSE;",
+        ),
+    ]
+
+    try:
+        applied = _run(engine, ddl)
+        return MigrateResponse(
+            ok=True,
+            message="Migración cases_test_override aplicada.",
+            created=applied,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error migrando cases_test_override: {e}",
+        )
