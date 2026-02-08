@@ -1,0 +1,201 @@
+--- ops.py+++ ops.py@@ -4,10 +4,11 @@ from typing import Any, Dict, Optional, List
+ 
+ from fastapi import APIRouter, HTTPException, Header, UploadFile, File, Form, Query
++from fastapi.responses import StreamingResponse
+ from sqlalchemy import text
+ 
+ from database import get_engine
+-from b2_storage import upload_bytes
++from b2_storage import upload_bytes, download_bytes, presign_get_url
+ 
+ router = APIRouter(prefix="/ops", tags=["ops"])
+ 
+@@ -315,3 +316,161 @@         )
+ 
+     return {"ok": True, "case_id": case_id, "kind": kind, "bucket": b2_bucket, "key": b2_key}
++
++
++@router.get("/cases/{case_id}/documents/download")
++def download_document_by_kind(
++    case_id: str,
++    kind: str = Query(..., description="Kind exacto en documents (p.ej. generated_pdf_alegaciones, generated_docx_reposicion, justificante_presentacion)"),
++    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
++    as_presigned: bool = Query(False, description="Si true, devuelve una URL temporal en vez de streaming"),
++    expires_seconds: int = Query(300, ge=60, le=3600),
++):
++    """
++    Descarga (o URL temporal) del último documento de un case por kind.
++    Evita 'entrar a B2 a mano' desde OPS.
++    """
++    _require_operator(x_operator_token)
++
++    engine = get_engine()
++    with engine.begin() as conn:
++        row = conn.execute(
++            text(
++                """
++                SELECT b2_bucket, b2_key, mime
++                FROM documents
++                WHERE case_id = :case_id AND kind = :kind
++                ORDER BY created_at DESC
++                LIMIT 1
++                """
++            ),
++            {"case_id": case_id, "kind": kind},
++        ).fetchone()
++
++    if not row:
++        raise HTTPException(status_code=404, detail="Documento no encontrado para ese kind")
++
++    bucket, key, mime = row[0], row[1], (row[2] or "application/octet-stream")
++
++    filename_hint = None
++    if kind.startswith("generated_pdf"):
++        filename_hint = "recurso.pdf"
++    elif kind.startswith("generated_docx"):
++        filename_hint = "recurso.docx"
++    elif kind.startswith("justificante"):
++        filename_hint = "justificante.pdf"
++
++    if as_presigned:
++        url = presign_get_url(bucket=bucket, key=key, expires_seconds=expires_seconds, filename=filename_hint)
++        return {"ok": True, "url": url, "bucket": bucket, "key": key, "mime": mime}
++
++    data = download_bytes(bucket=bucket, key=key)
++    headers = {"Content-Disposition": f'attachment; filename="{(filename_hint or kind)}"'}
++    return StreamingResponse(iter([data]), media_type=mime, headers=headers)
++
++
++@router.post("/automation/tick")
++def automation_tick(
++    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
++    limit: int = Query(25, ge=1, le=200),
++    dry_run: bool = Query(False, description="Si true, no cambia estado: solo reporta qué haría"),
++) -> Dict[str, Any]:
++    """
++    Motor automático (sin humanos):
++    - Recorre casos listos para presentar (ready_to_submit + paid + authorized)
++    - Si no existe recurso generado: llama a /generate/dgt (ya guarda en documents)
++    - Si existe justificante_presentacion: no hace nada
++    - Si NO existe justificante_presentacion: aquí debería llamarse al conector real DGT (pendiente)
++
++    IMPORTANTE: este endpoint está diseñado para ser llamado por un CRON (cada 2-5 min).
++    """
++    _require_operator(x_operator_token)
++
++    engine = get_engine()
++    results: List[Dict[str, Any]] = []
++    with engine.begin() as conn:
++        rows = conn.execute(
++            text(
++                """
++                SELECT id
++                FROM cases
++                WHERE status='ready_to_submit'
++                  AND payment_status='paid'
++                  AND authorized=TRUE
++                ORDER BY created_at ASC
++                LIMIT :limit
++                """
++            ),
++            {"limit": limit},
++        ).fetchall()
++        case_ids = [str(r[0]) for r in rows]
++
++    # Import tardío para evitar ciclos
++    from generate import generate_dgt, GenerateRequest
++
++    for cid in case_ids:
++        item = {"case_id": cid, "actions": [], "ok": True}
++        try:
++            with engine.begin() as conn:
++                # ya presentado?
++                j = conn.execute(
++                    text(
++                        """
++                        SELECT 1 FROM documents
++                        WHERE case_id=:id AND kind='justificante_presentacion'
++                        LIMIT 1
++                        """
++                    ),
++                    {"id": cid},
++                ).fetchone()
++                if j:
++                    item["actions"].append("skip_already_submitted")
++                    results.append(item)
++                    continue
++
++                # existe recurso pdf generado?
++                g = conn.execute(
++                    text(
++                        """
++                        SELECT kind FROM documents
++                        WHERE case_id=:id AND kind LIKE 'generated_pdf%%'
++                        ORDER BY created_at DESC
++                        LIMIT 1
++                        """
++                    ),
++                    {"id": cid},
++                ).fetchone()
++
++            if not g:
++                item["actions"].append("generate_dgt_docs")
++                if not dry_run:
++                    # generate_dgt ya inserta documents y pone status='generated'
++                    generate_dgt(GenerateRequest(case_id=cid, interesado={}, tipo=None))
++
++            # aquí debería venir el submit real a DGT
++            item["actions"].append("submit_to_dgt_PENDING_CONNECTOR")
++            if not dry_run:
++                # Registramos evento para trazar que el sistema intentó automatizar.
++                with engine.begin() as conn:
++                    conn.execute(
++                        text(
++                            """
++                            INSERT INTO events(case_id, type, payload, created_at)
++                            VALUES (:case_id, 'automation_tick_pending_dgt_connector', CAST(:payload AS JSONB), NOW())
++                            """
++                        ),
++                        {"case_id": cid, "payload": json.dumps({"note": "Falta conector DGT real (certificado/homologación)"})},
++                    )
++
++            results.append(item)
++
++        except HTTPException as e:
++            item["ok"] = False
++            item["error"] = str(e.detail)
++            results.append(item)
++        except Exception as e:
++            item["ok"] = False
++            item["error"] = str(e)
++            results.append(item)
++
++    return {"ok": True, "count": len(results), "results": results}
+
+--- b2_storage.py+++ b2_storage.py@@ -75,3 +75,27 @@ def upload_original(case_id: str, content: bytes, filename: Optional[str], mime: str) -> Tuple[str, str]:
+     ext = guess_ext(filename, mime)
+     return upload_bytes(case_id, "original", content, ext or "", mime)
++
++
++def download_bytes(bucket: str, key: str) -> bytes:
++    """
++    Descarga el objeto completo como bytes desde B2 (S3 compatible).
++    """
++    s3 = get_s3_client()
++    obj = s3.get_object(Bucket=bucket, Key=key)
++    body = obj.get("Body")
++    return body.read() if body else b""
++
++def presign_get_url(bucket: str, key: str, expires_seconds: int = 300, filename: Optional[str] = None) -> str:
++    """
++    Genera una URL temporal (presigned) para descargar desde B2.
++    """
++    s3 = get_s3_client()
++    params = {"Bucket": bucket, "Key": key}
++    if filename:
++        params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
++    return s3.generate_presigned_url(
++        ClientMethod="get_object",
++        Params=params,
++        ExpiresIn=int(expires_seconds),
++    )
