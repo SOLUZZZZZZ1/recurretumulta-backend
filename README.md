@@ -1,29 +1,30 @@
-# RTM — Libro de reservas (restaurante)
+# RecurreTuMulta — Automatización “sin humanos” (pack OPS)
 
-## Variables de entorno (backend)
-- RESERVAS_REST_PIN=7391   # Cambia a tu gusto (obligatorio)
-- ADMIN_TOKEN=...          # Ya lo usas para /admin/migrate/* (obligatorio para migrar)
+Este pack añade automatización end-to-end **sin intervención humana** salvo que la integración DGT real aún no esté implementada.
 
-## Migración (una vez)
-POST /admin/migrate/restaurant_reservations
-Header: x-admin-token: <ADMIN_TOKEN>
+## Qué incluye
+- `ops_automation.py`: motor idempotente (generate si falta → submit DGT → guarda justificante → status=submitted).
+- `dgt_client.py`: interfaz única para integrar DGT homologado.
+- Parches para:
+  - `ops.py`: endpoints de automatización y descarga.
+  - `b2_storage.py`: `download_bytes()` + `presign_get_url()`.
 
-## Endpoints (uso)
-Todos requieren header:
-- x-reservas-pin: <PIN>
+## Endpoints nuevos
+- `POST /ops/automation/tick?limit=25`
+  - Recorre casos `ready_to_submit` + `paid` + `authorized` y los procesa automáticamente.
+- `POST /ops/cases/{case_id}/auto-submit`
+  - Procesa un único caso (equivalente a “1 clic”).
+- `GET /ops/cases/{case_id}/documents/download?kind=...`
+  - Devuelve URL temporal (si puede) o stream del fichero.
 
-Listar:
-GET /ops/restaurant-reservations?date=YYYY-MM-DD&shift=comida
+> Seguridad: todos protegidos por `X-Operator-Token` igual que el resto de OPS.
 
-Crear:
-POST /ops/restaurant-reservations
-JSON: { reservation_date, reservation_time, shift, table_name, party_size, customer_name, phone, extras_dog, extras_celiac, extras_notes, created_by }
+## Cron (Render)
+Llamar cada 2–5 minutos a:
+`POST https://<backend>/ops/automation/tick?limit=25`
+Header:
+`X-Operator-Token: <OPERATOR_TOKEN>`
 
-Acciones rápidas:
-POST /ops/restaurant-reservations/{id}/arrived
-POST /ops/restaurant-reservations/{id}/no-show
-
-## Frontend
-Ruta oculta:
-- /__reservas-restaurante
-Pide PIN y lo guarda en sessionStorage.
+## Integración DGT real
+Ahora mismo `dgt_client.submit_pdf()` lanza `NotImplementedError` si `DGT_ENABLED` no está configurado.
+Cuando tengáis el conector homologado, implementad `submit_pdf()` y ya quedará 100% “sin humanos”.
