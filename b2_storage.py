@@ -75,3 +75,27 @@ def upload_bytes(case_id: str, kind_folder: str, content: bytes, ext: str, mime:
 def upload_original(case_id: str, content: bytes, filename: Optional[str], mime: str) -> Tuple[str, str]:
     ext = guess_ext(filename, mime)
     return upload_bytes(case_id, "original", content, ext or "", mime)
+
+
+def download_bytes(bucket: str, key: str) -> bytes:
+    """
+    Descarga el objeto completo como bytes desde B2 (S3 compatible).
+    """
+    s3 = get_s3_client()
+    obj = s3.get_object(Bucket=bucket, Key=key)
+    body = obj.get("Body")
+    return body.read() if body else b""
+
+def presign_get_url(bucket: str, key: str, expires_seconds: int = 300, filename: Optional[str] = None) -> str:
+    """
+    Genera una URL temporal (presigned) para descargar desde B2.
+    """
+    s3 = get_s3_client()
+    params = {"Bucket": bucket, "Key": key}
+    if filename:
+        params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
+    return s3.generate_presigned_url(
+        ClientMethod="get_object",
+        Params=params,
+        ExpiresIn=int(expires_seconds),
+    )
