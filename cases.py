@@ -117,9 +117,14 @@ class CaseContactIn(BaseModel):
 # HELPERS
 # =========================
 def _case_exists(conn, case_id: str) -> Dict[str, Any]:
+    """
+    Devuelve meta del caso y comprueba que existe.
+    Incluye flags de prueba: test_mode y override_deadlines.
+    """
     row = conn.execute(
         text(
-            "SELECT id, status, payment_status, authorized, interested_data, contact_name, contact_email "
+            "SELECT id, status, payment_status, authorized, interested_data, contact_name, contact_email, "
+            "COALESCE(test_mode, FALSE) AS test_mode, COALESCE(override_deadlines, FALSE) AS override_deadlines "
             "FROM cases WHERE id=:id"
         ),
         {"id": case_id},
@@ -134,6 +139,8 @@ def _case_exists(conn, case_id: str) -> Dict[str, Any]:
         "interested_data": row[4] or {},
         "contact_name": row[5] or "",
         "contact_email": row[6] or "",
+        "test_mode": bool(row[7]),
+        "override_deadlines": bool(row[8]),
     }
 
 def _event(case_id: str, typ: str, payload: Dict[str, Any]) -> None:
@@ -236,8 +243,14 @@ def review_case(case_id: str, background_tasks: BackgroundTasks):
     admiss = (result.get("admissibility") or {}).get("admissibility")
 
     new_status = "pending_documents"
-    if (admiss or "").upper() == "ADMISSIBLE":
+
+    # 🔓 OVERRIDE DE PRUEBA (Opción B):
+    # Si el caso está marcado como test_mode+override_deadlines, forzamos ready_to_pay
+    if meta.get("test_mode") and meta.get("override_deadlines"):
         new_status = "ready_to_pay"
+    else:
+        if (admiss or "").upper() == "ADMISSIBLE":
+            new_status = "ready_to_pay"
 
     with engine.begin() as conn:
         conn.execute(
