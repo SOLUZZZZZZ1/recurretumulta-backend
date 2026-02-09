@@ -1,4 +1,4 @@
-# ops.py — Panel Operador (PIN + cola + docs + logs + presentado + justificante)
+# ops.py — Panel Operador (PIN + cola + docs + logs + presentado + justificante + descarga segura)
 import json
 import os
 from typing import Any, Dict, Optional, List
@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 
 from database import get_engine
-from b2_storage import upload_bytes, download_bytes, presign_get_url
+from b2_storage import upload_bytes
 
 router = APIRouter(prefix="/ops", tags=["ops"])
 
@@ -25,6 +25,20 @@ def _require_operator(x_operator_token: Optional[str]):
     expected = _env("OPERATOR_TOKEN")
     if not token or token != expected:
         raise HTTPException(status_code=401, detail="Unauthorized operator")
+
+
+# =========================================================
+# B2 download helper (NO rompe aunque b2_storage no tenga download_bytes)
+# =========================================================
+def _download_bytes(bucket: str, key: str) -> bytes:
+    import b2_storage
+
+    for fn_name in ("download_bytes", "get_bytes", "b2_download_bytes", "download_file_bytes"):
+        fn = getattr(b2_storage, fn_name, None)
+        if callable(fn):
+            return fn(bucket, key)
+    raise HTTPException(status_code=500, detail="No existe función de descarga en b2_storage (download_bytes/get_bytes/...)")
+
 
 
 @router.post("/login")
@@ -46,11 +60,8 @@ def queue(
     """
     Cola de casos para operador.
 
-    IMPORTANTE:
-    - Multi-documento recién creado por /analyze/expediente queda en status='uploaded'
-      y debe poder verse en OPS para ejecutar Modo Dios y decidir.
-    - 'ready_to_submit' se filtra a paid+authorized.
-    - 'all' devuelve todo excepto cerrados/archivados.
+    Mantiene el formato que el frontend espera:
+    {"ok": True, "status": "...", "count": N, "items": [...]}
     """
     _require_operator(x_operator_token)
 
@@ -87,7 +98,6 @@ def queue(
             ).fetchall()
 
         else:
-            # ✅ Aquí entran: uploaded / generated / submitted / etc.
             rows = conn.execute(
                 text(
                     """
@@ -130,7 +140,7 @@ def list_documents(
         rows = conn.execute(
             text(
                 """
-                SELECT kind, b2_bucket, b2_key, mime, size_bytes, created_at
+                SELECT id, kind, b2_bucket, b2_key, mime, size_bytes, created_at
                 FROM documents
                 WHERE case_id = :case_id
                 ORDER BY created_at DESC
@@ -143,16 +153,46 @@ def list_documents(
     for r in rows:
         items.append(
             {
-                "kind": r[0],
-                "bucket": r[1],
-                "key": r[2],
-                "mime": r[3],
-                "size_bytes": int(r[4] or 0),
-                "created_at": r[5],
+                "id": str(r[0]),             # 👈 nuevo: id para descargar
+                "kind": r[1],
+                "bucket": r[2],
+                "key": r[3],
+                "mime": r[4],
+                "size_bytes": int(r[5] or 0),
+                "created_at": r[6],
             }
         )
 
     return {"ok": True, "case_id": case_id, "documents": items}
+
+
+# ✅ NUEVO: descarga segura sin exponer B2
+@router.get("/documents/{doc_id}/download")
+def download_document(
+    doc_id: str,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+):
+    _require_operator(x_operator_token)
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT b2_bucket, b2_key, mime FROM documents WHERE id=:id"),
+            {"id": doc_id},
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Documento no encontrado")
+
+    bucket, key, mime = row
+    data = _download_bytes(bucket, key)
+    filename = (key or "documento").split("/")[-1] or "documento"
+
+    return StreamingResponse(
+        iter([data]),
+        media_type=(mime or "application/octet-stream"),
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/cases/{case_id}/events")
@@ -316,236 +356,3 @@ async def upload_justificante(
         )
 
     return {"ok": True, "case_id": case_id, "kind": kind, "bucket": b2_bucket, "key": b2_key}
-
-
-@router.get("/cases/{case_id}/documents/download")
-def download_document_by_kind(
-    case_id: str,
-    kind: str = Query(..., description="Kind exacto en documents (p.ej. generated_pdf_alegaciones, generated_docx_reposicion, justificante_presentacion)"),
-    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
-    as_presigned: bool = Query(False, description="Si true, devuelve una URL temporal en vez de streaming"),
-    expires_seconds: int = Query(300, ge=60, le=3600),
-):
-    """
-    Descarga (o URL temporal) del último documento de un case por kind.
-    Evita 'entrar a B2 a mano' desde OPS.
-    """
-    _require_operator(x_operator_token)
-
-    engine = get_engine()
-    with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                """
-                SELECT b2_bucket, b2_key, mime
-                FROM documents
-                WHERE case_id = :case_id AND kind = :kind
-                ORDER BY created_at DESC
-                LIMIT 1
-                """
-            ),
-            {"case_id": case_id, "kind": kind},
-        ).fetchone()
-
-    if not row:
-        raise HTTPException(status_code=404, detail="Documento no encontrado para ese kind")
-
-    bucket, key, mime = row[0], row[1], (row[2] or "application/octet-stream")
-
-    filename_hint = None
-    if kind.startswith("generated_pdf"):
-        filename_hint = "recurso.pdf"
-    elif kind.startswith("generated_docx"):
-        filename_hint = "recurso.docx"
-    elif kind.startswith("justificante"):
-        filename_hint = "justificante.pdf"
-
-    if as_presigned:
-        url = presign_get_url(bucket=bucket, key=key, expires_seconds=expires_seconds, filename=filename_hint)
-        return {"ok": True, "url": url, "bucket": bucket, "key": key, "mime": mime}
-
-    data = download_bytes(bucket=bucket, key=key)
-    headers = {"Content-Disposition": f'attachment; filename="{(filename_hint or kind)}"'}
-    return StreamingResponse(iter([data]), media_type=mime, headers=headers)
-
-
-@router.post("/automation/tick")
-def automation_tick(
-    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
-    limit: int = Query(25, ge=1, le=200),
-    dry_run: bool = Query(False, description="Si true, no cambia estado: solo reporta qué haría"),
-) -> Dict[str, Any]:
-    """
-    Motor automático (sin humanos):
-    - Recorre casos listos para presentar (ready_to_submit + paid + authorized)
-    - Si no existe recurso generado: llama a /generate/dgt (ya guarda en documents)
-    - Si existe justificante_presentacion: no hace nada
-    - Si NO existe justificante_presentacion: aquí debería llamarse al conector real de Registro/DGT (pendiente según submitter)
-
-    IMPORTANTE: este endpoint está diseñado para ser llamado por un CRON (cada 2-5 min).
-    """
-    _require_operator(x_operator_token)
-
-    engine = get_engine()
-    results: List[Dict[str, Any]] = []
-    with engine.begin() as conn:
-        rows = conn.execute(
-            text(
-                """
-                SELECT id
-                FROM cases
-                WHERE status='ready_to_submit'
-                  AND payment_status='paid'
-                  AND authorized=TRUE
-                ORDER BY created_at ASC
-                LIMIT :limit
-                """
-            ),
-            {"limit": limit},
-        ).fetchall()
-        case_ids = [str(r[0]) for r in rows]
-
-    # Import tardío para evitar ciclos
-    from generate import generate_dgt, GenerateRequest
-
-    for cid in case_ids:
-        item = {"case_id": cid, "actions": [], "ok": True}
-        try:
-            with engine.begin() as conn:
-                # ya presentado?
-                j = conn.execute(
-                    text(
-                        """
-                        SELECT 1 FROM documents
-                        WHERE case_id=:id AND kind='justificante_presentacion'
-                        LIMIT 1
-                        """
-                    ),
-                    {"id": cid},
-                ).fetchone()
-                if j:
-                    item["actions"].append("skip_already_submitted")
-                    results.append(item)
-                    continue
-
-                # existe recurso pdf generado?
-                g = conn.execute(
-                    text(
-                        """
-                        SELECT kind FROM documents
-                        WHERE case_id=:id AND kind LIKE 'generated_pdf%%'
-                        ORDER BY created_at DESC
-                        LIMIT 1
-                        """
-                    ),
-                    {"id": cid},
-                ).fetchone()
-
-            if not g:
-                item["actions"].append("generate_dgt_docs")
-                if not dry_run:
-                    # generate_dgt ya inserta documents y pone status='generated'
-                    generate_dgt(GenerateRequest(case_id=cid, interesado={}, tipo=None))
-
-            # aquí debería venir el submit real a DGT
-            # Elegir submitter (Registro general / DGT / etc.)
-            item["actions"].append("submit_auto")
-            if not dry_run:
-                from submitters import pick_submitter
-                from submitters.base import SubmitterNotReady
-
-                # Cargar el PDF generado más reciente (bytes) desde B2
-                with engine.begin() as conn:
-                    row = conn.execute(
-                        text(
-                            """
-                            SELECT b2_bucket, b2_key, mime
-                            FROM documents
-                            WHERE case_id=:id AND kind LIKE 'generated_pdf%%'
-                            ORDER BY created_at DESC
-                            LIMIT 1
-                            """
-                        ),
-                        {"id": cid},
-                    ).fetchone()
-                    if not row:
-                        raise HTTPException(status_code=409, detail="No hay PDF generado para presentar")
-
-                pdf_bucket, pdf_key, pdf_mime = row[0], row[1], row[2]
-                pdf_bytes = download_bytes(pdf_bucket, pdf_key)
-
-                submitter = pick_submitter(case_id=cid, engine=engine)
-                try:
-                    result = submitter.submit(case_id=cid, pdf_bytes=pdf_bytes)
-                except SubmitterNotReady as e:
-                    # Registramos evento trazable: aún no hay conector oficial listo
-                    with engine.begin() as conn:
-                        conn.execute(
-                            text(
-                                """
-                                INSERT INTO events(case_id, type, payload, created_at)
-                                VALUES (:case_id, 'automation_submit_pending', CAST(:payload AS JSONB), NOW())
-                                """
-                            ),
-                            {"case_id": cid, "payload": json.dumps({"submitter": submitter.name, "reason": str(e)})},
-                        )
-                    item["actions"].append(f"submitter_pending:{submitter.name}")
-                    results.append(item)
-                    continue
-
-                # Guardar justificante + status=submitted (regla dura)
-                just_pdf = result.get("justificante_pdf") or b""
-                if not just_pdf:
-                    raise HTTPException(status_code=502, detail="Submitter no devolvió justificante_pdf")
-
-                b2_bucket, b2_key = upload_bytes(
-                    cid,
-                    "justificantes",
-                    just_pdf,
-                    ext=".pdf",
-                    content_type="application/pdf",
-                )
-
-                with engine.begin() as conn:
-                    conn.execute(
-                        text(
-                            """
-                            INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
-                            VALUES (:case_id, 'justificante_presentacion', :b, :k, 'application/pdf', :s, NOW())
-                            """
-                        ),
-                        {"case_id": cid, "b": b2_bucket, "k": b2_key, "s": len(just_pdf)},
-                    )
-
-                    # Evento auditado con metadatos (registro, fechas, organismo…)
-                    conn.execute(
-                        text(
-                            """
-                            INSERT INTO events(case_id, type, payload, created_at)
-                            VALUES (:case_id, 'auto_submitted', CAST(:payload AS JSONB), NOW())
-                            """
-                        ),
-                        {"case_id": cid, "payload": json.dumps({"submitter": submitter.name, "meta": result.get("meta") or {}})},
-                    )
-
-                    conn.execute(
-                        text("UPDATE cases SET status='submitted', updated_at=NOW() WHERE id=:id"),
-                        {"id": cid},
-                    )
-
-                item["actions"].append("submitted_with_justificante")
-                results.append(item)
-                continue
-
-            results.append(item)
-
-        except HTTPException as e:
-            item["ok"] = False
-            item["error"] = str(e.detail)
-            results.append(item)
-        except Exception as e:
-            item["ok"] = False
-            item["error"] = str(e)
-            results.append(item)
-
-    return {"ok": True, "count": len(results), "results": results}
