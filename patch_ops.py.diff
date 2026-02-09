@@ -1,0 +1,72 @@
+--- ops.py
++++ ops.py
+@@ -7,7 +7,8 @@
+ from sqlalchemy import text
+ 
+ from database import get_engine
+-from b2_storage import upload_bytes
++from b2_storage import upload_bytes, download_bytes, presign_get_url
++from ops_automation import submit_case_fully_automatic, tick as automation_tick
+ 
+ router = APIRouter(prefix="/ops", tags=["ops"])
+ 
+@@ -194,6 +195,59 @@
+         raise HTTPException(status_code=409, detail="Falta autorización del cliente")
+ 
+ 
++
++
++@router.get("/cases/{case_id}/documents/download")
++def download_case_document_by_kind(
++    case_id: str,
++    kind: str = Query(..., description="kind exacto, ej: generated_pdf_alegaciones / justificante_presentacion"),
++    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
++):
++    """Descarga el último documento de un kind dado (streaming o URL temporal)."""
++    _require_operator(x_operator_token)
++    engine = get_engine()
++    with engine.begin() as conn:
++        row = conn.execute(
++            text(
++                "SELECT b2_bucket, b2_key, mime FROM documents "
++                "WHERE case_id=:id AND kind=:k "
++                "ORDER BY created_at DESC LIMIT 1"
++            ),
++            {"id": case_id, "k": kind},
++        ).fetchone()
++    if not row:
++        raise HTTPException(status_code=404, detail="Documento no encontrado para ese kind")
++    bucket, key, mime = row[0], row[1], row[2] or "application/octet-stream"
++    # Preferimos URL temporal si está disponible
++    try:
++        url = presign_get_url(bucket, key, expires_seconds=300)
++        return {"ok": True, "mode": "presigned", "url": url, "bucket": bucket, "key": key, "mime": mime}
++    except Exception:
++        data = download_bytes(bucket, key)
++        from fastapi.responses import Response
++        filename = (kind or "documento").replace("/", "_") + (".pdf" if mime == "application/pdf" else "")
++        return Response(content=data, media_type=mime, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
++
++
++@router.post("/cases/{case_id}/auto-submit")
++def auto_submit_case(
++    case_id: str,
++    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
++) -> Dict[str, Any]:
++    """1 clic (o 0): Genera (si falta) + Presenta DGT + Guarda justificante + Marca submitted."""
++    _require_operator(x_operator_token)
++    return submit_case_fully_automatic(case_id)
++
++
++@router.post("/automation/tick")
++def automation_tick_endpoint(
++    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
++    limit: int = Query(25, ge=1, le=200),
++) -> Dict[str, Any]:
++    """Endpoint para cron: procesa casos ready_to_submit automáticamente."""
++    _require_operator(x_operator_token)
++    return automation_tick(limit=limit)
++
+ @router.post("/cases/{case_id}/mark-submitted")
+ def mark_submitted(
+     case_id: str,

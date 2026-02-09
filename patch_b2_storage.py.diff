@@ -1,0 +1,22 @@
+--- b2_storage.py
++++ b2_storage.py
+@@ -75,3 +75,19 @@
+ def upload_original(case_id: str, content: bytes, filename: Optional[str], mime: str) -> Tuple[str, str]:
+     ext = guess_ext(filename, mime)
+     return upload_bytes(case_id, "original", content, ext or "", mime)
++
++
++def download_bytes(bucket: str, key: str) -> bytes:
++    s3 = get_s3_client()
++    obj = s3.get_object(Bucket=bucket, Key=key)
++    body = obj.get("Body")
++    return body.read() if body else b""
++
++
++def presign_get_url(bucket: str, key: str, expires_seconds: int = 300) -> str:
++    s3 = get_s3_client()
++    return s3.generate_presigned_url(
++        ClientMethod="get_object",
++        Params={"Bucket": bucket, "Key": key},
++        ExpiresIn=int(expires_seconds),
++    )
