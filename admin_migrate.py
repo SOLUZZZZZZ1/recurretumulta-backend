@@ -179,3 +179,36 @@ def migrate_partners_channel(x_admin_token: str | None = Header(default=None, al
 
     applied = _run(engine, ddl)
     return MigrateResponse(ok=True, message="Migración partners_channel aplicada.", created=applied)
+# =========================
+# MIGRACIÓN: partners must_change_password
+# =========================
+
+@router.post("/partners_must_change_password", response_model=MigrateResponse)
+def migrate_partners_must_change_password(
+    x_admin_token: str | None = Header(default=None, alias="x-admin-token")
+):
+    """
+    Añade columna partners.must_change_password para forzar cambio de contraseña en primer login.
+    SAFE: IF NOT EXISTS
+    """
+    _require_admin_token(x_admin_token)
+
+    from database import get_engine
+    engine = get_engine()
+
+    ddl = [
+        (
+            "partners_must_change_password",
+            "ALTER TABLE partners ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;",
+        ),
+    ]
+
+    try:
+        applied = _run(engine, ddl)
+        return MigrateResponse(
+            ok=True,
+            message="Migración partners_must_change_password aplicada.",
+            created=applied,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error migrando partners_must_change_password: {e}")
