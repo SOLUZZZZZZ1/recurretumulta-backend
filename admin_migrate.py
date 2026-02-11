@@ -135,10 +135,12 @@ def migrate_cases_details(x_admin_token: str | None = Header(default=None, alias
 @router.post("/partners_channel", response_model=MigrateResponse)
 def migrate_partners_channel(x_admin_token: str | None = Header(default=None, alias="x-admin-token")):
     _require_admin_token(x_admin_token)
+
     from database import get_engine
     engine = get_engine()
 
     ddl = [
+        # Crear tabla si no existe (sin billing todavía)
         (
             "partners_table",
             """CREATE TABLE IF NOT EXISTS partners (
@@ -149,18 +151,30 @@ def migrate_partners_channel(x_admin_token: str | None = Header(default=None, al
               password_hash TEXT NOT NULL,
               api_token TEXT UNIQUE,
               active BOOLEAN NOT NULL DEFAULT TRUE,
-              billing_mode TEXT NOT NULL DEFAULT 'monthly',
-              billing_status TEXT NOT NULL DEFAULT 'current',
               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
               updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );""",
         ),
-        ("cases_channel", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'direct';"),
-        ("cases_partner_id", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS partner_id UUID NULL REFERENCES partners(id);"),
-        ("cases_partner_name", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS partner_name TEXT;"),
+
+        # Añadir columnas billing si no existen
+        (
+            "partners_billing_mode",
+            "ALTER TABLE partners ADD COLUMN IF NOT EXISTS billing_mode TEXT NOT NULL DEFAULT 'monthly';",
+        ),
+        (
+            "partners_billing_status",
+            "ALTER TABLE partners ADD COLUMN IF NOT EXISTS billing_status TEXT NOT NULL DEFAULT 'current';",
+        ),
+
+        # Índices
         ("idx_partners_email", "CREATE INDEX IF NOT EXISTS idx_partners_email ON partners(email);"),
         ("idx_cases_partner", "CREATE INDEX IF NOT EXISTS idx_cases_partner ON cases(partner_id);"),
         ("idx_partners_billing_status", "CREATE INDEX IF NOT EXISTS idx_partners_billing_status ON partners(billing_status);"),
+
+        # Canal en cases
+        ("cases_channel", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'direct';"),
+        ("cases_partner_id", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS partner_id UUID NULL REFERENCES partners(id);"),
+        ("cases_partner_name", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS partner_name TEXT;"),
     ]
 
     applied = _run(engine, ddl)
