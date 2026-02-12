@@ -19,6 +19,7 @@ Salida JSON EXACTA:
   "admissibility": "ADMISSIBLE" | "NOT_ADMISSIBLE",
   "can_generate_draft": true | false,
   "reason": "string",
+  "deadline_status": "IN_TIME" | "OUT_OF_TIME" | "UNKNOWN",
   "required_constraints": [
     "string"
   ],
@@ -28,6 +29,11 @@ Salida JSON EXACTA:
 }
 
 Criterios mínimos:
+- deadline_status:
+  - OUT_OF_TIME si consta fecha de notificación/resolución y el plazo aplicable está claramente vencido.
+  - IN_TIME si consta y no está vencido.
+  - UNKNOWN si faltan datos clave (p.ej. fecha notificación/recepción) o el plazo no puede determinarse con fiabilidad.
+
 - ADMISSIBLE si: action != DO_NOT_SUBMIT y no faltan datos críticos para ese trámite.
 - NOT_ADMISSIBLE si: fuera de trámite / acción incorrecta / faltan datos críticos. En ese caso can_generate_draft puede ser true.
 """
