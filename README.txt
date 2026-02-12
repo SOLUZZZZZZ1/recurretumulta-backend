@@ -1,16 +1,20 @@
-RTM — Generate DGT AI-first (con fallback a plantillas)
+RTM FIX — IA end-to-end (draft aunque NOT_ADMISSIBLE) + generate AI_FIRST fallback
 
-Qué cambia:
-- /generate/dgt y cualquier flujo que llame a generate_dgt_for_case ahora intenta:
-  1) run_expediente_ai(case_id) -> draft.asunto + draft.cuerpo
-  2) Si NO hay draft usable o falla la IA -> usa plantillas dgt_templates como antes
+Incluye 2 cambios CLAVE:
 
-Rollback rápido:
-- Variable de entorno RTM_DGT_GENERATION_MODE:
-  - AI_FIRST (default): IA primero + fallback
-  - TEMPLATES_ONLY: fuerza plantillas (comportamiento previo)
+1) ai/expediente_engine.py
+- Antes: solo generaba draft si admissibility == ADMISSIBLE
+- Ahora: genera draft si can_generate_draft == true
+  (evita draft=None y permite que /generate/dgt use IA)
 
-Auditoría:
-- event 'resource_generated' incluye:
-  - ai_used: true/false
-  - ai_error: string|null
+2) generate.py
+- AI_FIRST por defecto: intenta run_expediente_ai(case_id) y usa draft.asunto + draft.cuerpo
+- Si falla o viene vacío: fallback a plantillas como siempre
+- Event 'resource_generated' guarda ai_used y ai_error
+
+Verificación rápida:
+- POST /ai/expediente/run -> events: ai_expediente_result con draft NO null
+- POST /generate/dgt -> events: resource_generated con ai_used=true (si usa IA)
+
+Rollback:
+- RTM_DGT_GENERATION_MODE=TEMPLATES_ONLY
