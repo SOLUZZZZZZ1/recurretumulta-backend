@@ -1,5 +1,4 @@
 import json
-import os
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -7,8 +6,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from database import get_engine
-from ai.expediente_engine import run_expediente_ai
-
 from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
@@ -19,11 +16,25 @@ from dgt_templates import (
 
 router = APIRouter(tags=["generate"])
 
-# RTM: Modo de generación DGT
-# - AI_FIRST (default): intenta usar el borrador IA (draft.asunto + draft.cuerpo)
-#   Si no hay draft usable o falla -> fallback a plantillas dgt_templates
-# - TEMPLATES_ONLY: fuerza el comportamiento anterior (plantillas)
-RTM_DGT_GENERATION_MODE = (os.getenv("RTM_DGT_GENERATION_MODE") or "AI_FIRST").strip().upper()
+# =========================================================
+# RTM: helper para cargar datos del interesado desde cases.interested_data
+# =========================================================
+def _load_interested_data_from_cases(conn, case_id: str) -> Dict[str, Any]:
+    row = conn.execute(
+        text("SELECT COALESCE(interested_data,'{}'::jsonb) FROM cases WHERE id=:id"),
+        {"id": case_id},
+    ).fetchone()
+    return (row[0] if row and row[0] else {}) or {}
+
+
+def _merge_interesado(primary: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
+    """Devuelve dict con claves de primary, rellenando faltantes con fallback."""
+    primary = primary or {}
+    fallback = fallback or {}
+    out = dict(fallback)
+    out.update({k: v for k, v in primary.items() if v not in (None, "")})
+    return out
+
 
 
 # =========================================================
@@ -55,49 +66,27 @@ def generate_dgt_for_case(
     wrapper = extracted_json if isinstance(extracted_json, dict) else json.loads(extracted_json)
     core = wrapper.get("extracted") or {}
 
-    # Determinar tipo si no viene forzado
+    # RTM: si no viene 'interesado' (o viene parcial), intentar completarlo desde cases.interested_data
+    try:
+        interesado_db = _load_interested_data_from_cases(conn, case_id)
+        interesado = _merge_interesado(interesado or {}, interesado_db)
+    except Exception:
+        interesado = interesado or {}
+
+
     if not tipo:
         tipo = "reposicion" if core.get("pone_fin_via_administrativa") is True else "alegaciones"
 
-    # ---------------------------------------------------------
-    # RTM: AI_FIRST con fallback a plantillas
-    # ---------------------------------------------------------
-    tpl: Optional[Dict[str, str]] = None
-    ai_used = False
-    ai_error: Optional[str] = None
-
-    if RTM_DGT_GENERATION_MODE != "TEMPLATES_ONLY":
-        try:
-            ai_result = run_expediente_ai(case_id)
-            draft = (ai_result or {}).get("draft") or {}
-            asunto = (draft.get("asunto") or "").strip()
-            cuerpo = (draft.get("cuerpo") or "").strip()
-            if asunto and cuerpo:
-                tpl = {"asunto": asunto, "cuerpo": cuerpo}
-                ai_used = True
-        except Exception as e:
-            ai_error = str(e)
-            tpl = None
-
-    # Fallback (comportamiento anterior)
-    if not tpl:
-        if tipo == "reposicion":
-            tpl = build_dgt_reposicion_text(core, interesado or {})
-            filename_base = "recurso_reposicion_dgt"
-        else:
-            tpl = build_dgt_alegaciones_text(core, interesado or {})
-            filename_base = "alegaciones_dgt"
-    else:
-        # Mantener naming por tipo aunque venga de IA
-        filename_base = "recurso_reposicion_dgt" if tipo == "reposicion" else "alegaciones_dgt"
-
-    # Kinds (se mantienen, para compatibilidad con OPS/automation)
     if tipo == "reposicion":
+        tpl = build_dgt_reposicion_text(core, interesado or {})
         kind_docx = "generated_docx_reposicion"
         kind_pdf = "generated_pdf_reposicion"
+        filename_base = "recurso_reposicion_dgt"
     else:
+        tpl = build_dgt_alegaciones_text(core, interesado or {})
         kind_docx = "generated_docx_alegaciones"
         kind_pdf = "generated_pdf_alegaciones"
+        filename_base = "alegaciones_dgt"
 
     # DOCX
     docx_bytes = build_docx(tpl["asunto"], tpl["cuerpo"])
@@ -163,7 +152,7 @@ def generate_dgt_for_case(
         ),
         {
             "case_id": case_id,
-            "payload": json.dumps({"tipo": tipo, "ai_used": ai_used, "ai_error": ai_error}),
+            "payload": json.dumps({"tipo": tipo}),
         },
     )
 
@@ -177,8 +166,6 @@ def generate_dgt_for_case(
         "case_id": case_id,
         "tipo": tipo,
         "filename_base": filename_base,
-        "ai_used": ai_used,
-        "ai_error": ai_error,
     }
 
 
@@ -195,10 +182,12 @@ class GenerateRequest(BaseModel):
 def generate_dgt(req: GenerateRequest) -> Dict[str, Any]:
     engine = get_engine()
     with engine.begin() as conn:
+        interesado_db = _load_interested_data_from_cases(conn, req.case_id)
+        interesado_merged = _merge_interesado(req.interesado, interesado_db)
         result = generate_dgt_for_case(
             conn,
             req.case_id,
-            interesado=req.interesado,
+            interesado=interesado_merged,
             tipo=req.tipo,
         )
 
