@@ -1,14 +1,10 @@
-RTM — Mejora V3 (calidad + datos interesado)
+RTM — generate.py (AI_FIRST + Override MODO PRUEBA B)
 
-Incluye:
-1) generate.py
-- Si req.interesado viene vacío o parcial, completa desde cases.interested_data automáticamente.
-- events.resource_generated.payload añade missing_interested_fields para ver qué falta.
+Qué hace:
+- Genera con IA primero (run_expediente_ai). Si falla, fallback a plantillas.
+- Si el case tiene test_mode=true y override_deadlines=true:
+  - El asunto se marca con '(MODO PRUEBA)'
+  - Se elimina el prefijo 'Borrador...' en asunto y, si apareciera como primera línea del cuerpo, se elimina.
 
-2) ai/prompts/draft_recurso.py (V3)
-- Texto más "abogado bueno": ataque principal, estructura fija, ortografía obligatoria.
-- Cambia "BORRADOR (no presentar)" por "Borrador para revisión..." cuando sea NOT_ADMISSIBLE pero can_generate_draft=true.
-- Incluye reglas para evitar títulos con erratas ("ALEGACIONES/FUNDAMENTOS").
-
-Cómo comprobar:
-- Genera y revisa events.resource_generated: ai_used=true y missing_interested_fields vacío en producción.
+Verificación:
+- events.resource_generated.payload incluirá override_mode=true cuando aplique.

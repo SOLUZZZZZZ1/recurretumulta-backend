@@ -19,9 +19,11 @@ from dgt_templates import (
 
 router = APIRouter(tags=["generate"])
 
-RTM_DGT_GENERATION_MODE = (
-    os.getenv("RTM_DGT_GENERATION_MODE") or "AI_FIRST"
-).strip().upper()
+# RTM: Modo de generación DGT
+# - AI_FIRST (default): intenta usar el borrador IA (draft.asunto + draft.cuerpo)
+#   Si no hay draft usable o falla -> fallback a plantillas dgt_templates
+# - TEMPLATES_ONLY: fuerza plantillas (rollback rápido)
+RTM_DGT_GENERATION_MODE = (os.getenv("RTM_DGT_GENERATION_MODE") or "AI_FIRST").strip().upper()
 
 
 # ==========================
@@ -55,6 +57,41 @@ def _missing_interested_fields(interesado: Dict[str, Any]) -> list:
     return missing
 
 
+def _load_case_flags(conn, case_id: str) -> Dict[str, bool]:
+    """Flags de prueba/override por case (para MODO PRUEBA)."""
+    row = conn.execute(
+        text(
+            "SELECT COALESCE(test_mode,false), COALESCE(override_deadlines,false) " 
+            "FROM cases WHERE id=:id"
+        ),
+        {"id": case_id},
+    ).fetchone()
+    return {
+        "test_mode": bool(row[0]) if row else False,
+        "override_deadlines": bool(row[1]) if row else False,
+    }
+
+
+def _apply_override_mode_b(asunto: str, cuerpo: str) -> tuple[str, str]:
+    """Modo B: generar recurso completo, pero marcado como (MODO PRUEBA) y sin prefijo 'Borrador...'"""
+    asunto = (asunto or "").strip()
+    cuerpo = (cuerpo or "").strip()
+
+    asunto = asunto.replace("Borrador para revisión (no presentar sin verificar plazos/datos)", "").strip()
+    asunto = asunto.replace("Borrador para revisión", "").strip()
+    if not asunto:
+        asunto = "RECURSO"
+    if "(MODO PRUEBA)" not in asunto:
+        asunto = f"{asunto} (MODO PRUEBA)"
+
+    if cuerpo.lower().startswith("borrador para revisión"):
+        parts = cuerpo.splitlines()
+        if len(parts) > 1:
+            cuerpo = "\n".join(parts[1:]).lstrip()
+
+    return asunto, cuerpo
+
+
 # ==========================
 # FUNCIÓN PRINCIPAL
 # ==========================
@@ -67,8 +104,8 @@ def generate_dgt_for_case(
 
     row = conn.execute(
         text(
-            "SELECT extracted_json FROM extractions "
-            "WHERE case_id = :case_id "
+            "SELECT extracted_json FROM extractions " 
+            "WHERE case_id = :case_id " 
             "ORDER BY created_at DESC LIMIT 1"
         ),
         {"case_id": case_id},
@@ -81,8 +118,13 @@ def generate_dgt_for_case(
     wrapper = extracted_json if isinstance(extracted_json, dict) else json.loads(extracted_json)
     core = wrapper.get("extracted") or {}
 
+    # Merge interesado desde DB
     interesado_db = _load_interested_data_from_cases(conn, case_id)
     interesado = _merge_interesado(interesado or {}, interesado_db)
+
+    # Flags override (modo pruebas)
+    flags = _load_case_flags(conn, case_id)
+    override_mode = bool(flags.get("test_mode")) and bool(flags.get("override_deadlines"))
 
     if not tipo:
         tipo = "reposicion" if core.get("pone_fin_via_administrativa") is True else "alegaciones"
@@ -91,6 +133,7 @@ def generate_dgt_for_case(
     ai_used = False
     ai_error = None
 
+    # IA PRIMERO
     if RTM_DGT_GENERATION_MODE != "TEMPLATES_ONLY":
         try:
             ai_result = run_expediente_ai(case_id)
@@ -99,12 +142,16 @@ def generate_dgt_for_case(
             cuerpo = (draft.get("cuerpo") or "").strip()
 
             if asunto and cuerpo:
+                if override_mode:
+                    asunto, cuerpo = _apply_override_mode_b(asunto, cuerpo)
                 tpl = {"asunto": asunto, "cuerpo": cuerpo}
                 ai_used = True
+
         except Exception as e:
             ai_error = str(e)
             tpl = None
 
+    # FALLBACK PLANTILLA
     if not tpl:
         if tipo == "reposicion":
             tpl = build_dgt_reposicion_text(core, interesado)
@@ -113,24 +160,12 @@ def generate_dgt_for_case(
             tpl = build_dgt_alegaciones_text(core, interesado)
             filename_base = "alegaciones_dgt"
     else:
-        filename_base = (
-            "recurso_reposicion_dgt"
-            if tipo == "reposicion"
-            else "alegaciones_dgt"
-        )
+        filename_base = "recurso_reposicion_dgt" if tipo == "reposicion" else "alegaciones_dgt"
 
-    kind_docx = (
-        "generated_docx_reposicion"
-        if tipo == "reposicion"
-        else "generated_docx_alegaciones"
-    )
+    kind_docx = "generated_docx_reposicion" if tipo == "reposicion" else "generated_docx_alegaciones"
+    kind_pdf = "generated_pdf_reposicion" if tipo == "reposicion" else "generated_pdf_alegaciones"
 
-    kind_pdf = (
-        "generated_pdf_reposicion"
-        if tipo == "reposicion"
-        else "generated_pdf_alegaciones"
-    )
-
+    # DOCX
     docx_bytes = build_docx(tpl["asunto"], tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
         case_id,
@@ -140,6 +175,7 @@ def generate_dgt_for_case(
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
+    # PDF
     pdf_bytes = build_pdf(tpl["asunto"], tpl["cuerpo"])
     _, b2_key_pdf = upload_bytes(
         case_id,
@@ -149,6 +185,7 @@ def generate_dgt_for_case(
         "application/pdf",
     )
 
+    # Persistir documents
     conn.execute(
         text(
             "INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at) "
@@ -179,6 +216,7 @@ def generate_dgt_for_case(
         },
     )
 
+    # Evento auditable
     conn.execute(
         text(
             "INSERT INTO events(case_id, type, payload, created_at) "
@@ -192,6 +230,7 @@ def generate_dgt_for_case(
                     "ai_used": ai_used,
                     "ai_error": ai_error,
                     "generation_mode": RTM_DGT_GENERATION_MODE,
+                    "override_mode": override_mode,
                     "missing_interested_fields": _missing_interested_fields(interesado),
                 }
             ),
@@ -210,6 +249,7 @@ def generate_dgt_for_case(
         "filename_base": filename_base,
         "ai_used": ai_used,
         "ai_error": ai_error,
+        "override_mode": override_mode,
     }
 
 
