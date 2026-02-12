@@ -79,6 +79,22 @@ def _load_interested_data(case_id: str) -> Dict[str, Any]:
         ).fetchone()
     return (row[0] if row else None) or {}
 
+def _load_case_flags(case_id: str) -> Dict[str, bool]:
+    """Carga flags test_mode/override_deadlines desde cases (modo pruebas)."""
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "SELECT COALESCE(test_mode,false), COALESCE(override_deadlines,false) "
+                "FROM cases WHERE id=:id"
+            ),
+            {"id": case_id},
+        ).fetchone()
+    return {
+        "test_mode": bool(row[0]) if row else False,
+        "override_deadlines": bool(row[1]) if row else False,
+    }
+
 
 def _load_case_documents(case_id: str) -> List[Dict[str, Any]]:
     engine = get_engine()
@@ -166,8 +182,17 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         },
     )
 
+    # ✅ OVERRIDE DE PRUEBAS: si test_mode + override_deadlines, forzamos ADMISSIBLE
+    flags = _load_case_flags(case_id)
+    if flags.get("test_mode") and flags.get("override_deadlines"):
+        admissibility["admissibility"] = "ADMISSIBLE"
+        admissibility["can_generate_draft"] = True
+        admissibility["deadline_status"] = admissibility.get("deadline_status") or "UNKNOWN"
+        admissibility["required_constraints"] = admissibility.get("required_constraints") or []
+        _save_event(case_id, "test_override_applied", {"flags": flags})
+
     draft = None
-    if bool(admissibility.get("can_generate_draft")):
+    if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
         interested_data = _load_interested_data(case_id)
         draft = _llm_json(
             PROMPT_DRAFT,
@@ -178,7 +203,6 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 "timeline": timeline,
                 "recommended_action": phase,
                 "admissibility": admissibility,
-                "required_constraints": admissibility.get("required_constraints") or [],
                 "latest_extraction": latest_extraction,
             },
         )
