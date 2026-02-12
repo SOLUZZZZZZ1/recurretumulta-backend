@@ -1,20 +1,16 @@
-RTM FIX — IA end-to-end (draft aunque NOT_ADMISSIBLE) + generate AI_FIRST fallback
+RTM PATCH — generate.py AI_FIRST estable (sin SyntaxError) + expediente_engine draft cuando can_generate_draft=true
 
-Incluye 2 cambios CLAVE:
+Qué arregla:
+1) generate.py
+- Se reescribe con indentación válida.
+- AI_FIRST: usa run_expediente_ai(case_id) -> draft.asunto + draft.cuerpo.
+- Si no hay draft usable o falla -> fallback a dgt_templates como antes.
+- events.resource_generated.payload incluye ai_used y ai_error.
+- Compatible con OPS/automation: conserva kinds generated_pdf_* / generated_docx_* y endpoint /generate/dgt.
 
-1) ai/expediente_engine.py
-- Antes: solo generaba draft si admissibility == ADMISSIBLE
-- Ahora: genera draft si can_generate_draft == true
-  (evita draft=None y permite que /generate/dgt use IA)
+2) ai/expediente_engine.py
+- Genera borrador si admissibility.can_generate_draft == true (aunque admissibility sea NOT_ADMISSIBLE).
+- Pasa required_constraints al prompt de draft.
 
-2) generate.py
-- AI_FIRST por defecto: intenta run_expediente_ai(case_id) y usa draft.asunto + draft.cuerpo
-- Si falla o viene vacío: fallback a plantillas como siempre
-- Event 'resource_generated' guarda ai_used y ai_error
-
-Verificación rápida:
-- POST /ai/expediente/run -> events: ai_expediente_result con draft NO null
-- POST /generate/dgt -> events: resource_generated con ai_used=true (si usa IA)
-
-Rollback:
-- RTM_DGT_GENERATION_MODE=TEMPLATES_ONLY
+Rollback rápido:
+- RTM_DGT_GENERATION_MODE=TEMPLATES_ONLY (vuelves a plantillas 100%)
