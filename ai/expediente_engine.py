@@ -12,7 +12,6 @@ from ai.prompts.timeline_builder import PROMPT as PROMPT_TIMELINE
 from ai.prompts.procedure_phase import PROMPT as PROMPT_PHASE
 from ai.prompts.admissibility_guard import PROMPT as PROMPT_GUARD
 from ai.prompts.draft_recurso import PROMPT as PROMPT_DRAFT
-from ai.prompts.rtm_attack_selector_v1 import RTM_ATTACK_SELECTOR_V1
 
 MAX_EXCERPT_CHARS = 12000
 
@@ -79,18 +78,6 @@ def _load_interested_data(case_id: str) -> Dict[str, Any]:
             {"id": case_id},
         ).fetchone()
     return (row[0] if row else None) or {}
-
-
-def _load_case_channel(case_id: str) -> str:
-    """Devuelve 'direct' o 'partner' (si no consta, 'direct')."""
-    engine = get_engine()
-    with engine.begin() as conn:
-        row = conn.execute(
-            text("SELECT channel FROM cases WHERE id=:id"),
-            {"id": case_id},
-        ).fetchone()
-    ch = (row[0] if row else None) or "direct"
-    return str(ch)
 
 
 def _load_case_documents(case_id: str) -> List[Dict[str, Any]]:
@@ -180,25 +167,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     )
 
     draft = None
-    if (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
-        channel = _load_case_channel(case_id)
-        channel_mode = "TECHNICAL_MAX" if (channel or "").lower() == "partner" else "PRUDENT_STRONG"
-
-        # Ataque principal y secundarios (especialización por tipo)
-        attack_plan = _llm_json(
-            RTM_ATTACK_SELECTOR_V1,
-            {
-                "case_id": case_id,
-                "classification": classify,
-                "timeline": timeline,
-                "recommended_action": phase,
-                "admissibility": admissibility,
-                "latest_extraction": latest_extraction,
-                "channel_mode": channel_mode,
-                "infraction_hint": (classify.get("global_refs") or {}).get("main_organism"),
-            },
-        )
-
+    if bool(admissibility.get("can_generate_draft")):
         interested_data = _load_interested_data(case_id)
         draft = _llm_json(
             PROMPT_DRAFT,
@@ -209,8 +178,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 "timeline": timeline,
                 "recommended_action": phase,
                 "admissibility": admissibility,
-                "channel_mode": channel_mode,
-                "attack_plan": attack_plan,
+                "required_constraints": admissibility.get("required_constraints") or [],
                 "latest_extraction": latest_extraction,
             },
         )
