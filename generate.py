@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -6,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from database import get_engine
+from ai.expediente_engine import run_expediente_ai
 from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
@@ -15,6 +17,12 @@ from dgt_templates import (
 )
 
 router = APIRouter(tags=["generate"])
+
+# RTM: Modo de generación DGT
+# - 'AI_FIRST' (por defecto): usa draft IA si existe, y si falla -> plantilla
+# - 'TEMPLATES_ONLY': fuerza plantilla (rollback rápido)
+RTM_DGT_GENERATION_MODE = (os.getenv("RTM_DGT_GENERATION_MODE") or "AI_FIRST").strip().upper()
+
 
 
 # =========================================================
@@ -49,18 +57,50 @@ def generate_dgt_for_case(
     if not tipo:
         tipo = "reposicion" if core.get("pone_fin_via_administrativa") is True else "alegaciones"
 
-    if tipo == "reposicion":
-        tpl = build_dgt_reposicion_text(core, interesado or {})
-        kind_docx = "generated_docx_reposicion"
-        kind_pdf = "generated_pdf_reposicion"
-        filename_base = "recurso_reposicion_dgt"
-    else:
-        tpl = build_dgt_alegaciones_text(core, interesado or {})
-        kind_docx = "generated_docx_alegaciones"
-        kind_pdf = "generated_pdf_alegaciones"
-        filename_base = "alegaciones_dgt"
+    # =========================================================
+    # RTM: Generación AI-first con fallback a plantillas
+    # =========================================================
+    tpl = None
+    ai_used = False
+    ai_error = None
 
-    # DOCX
+    if RTM_DGT_GENERATION_MODE != "TEMPLATES_ONLY":
+        try:
+            ai_result = run_expediente_ai(case_id)
+            draft = (ai_result or {}).get("draft") or {}
+            asunto = (draft.get("asunto") or "").strip()
+            cuerpo = (draft.get("cuerpo") or "").strip()
+
+            if asunto and cuerpo:
+                tpl = {"asunto": asunto, "cuerpo": cuerpo}
+                ai_used = True
+        except Exception as e:
+            ai_error = str(e)
+            tpl = None
+
+    # Fallback a plantilla si no hay draft usable
+    if not tpl:
+        if tipo == "reposicion":
+            tpl = build_dgt_reposicion_text(core, interesado or {})
+            kind_docx = "generated_docx_reposicion"
+            kind_pdf = "generated_pdf_reposicion"
+            filename_base = "recurso_reposicion_dgt"
+        else:
+            tpl = build_dgt_alegaciones_text(core, interesado or {})
+            kind_docx = "generated_docx_alegaciones"
+            kind_pdf = "generated_pdf_alegaciones"
+            filename_base = "alegaciones_dgt"
+    else:
+        # Si venimos de IA, mantenemos el mismo naming por tipo
+        if tipo == "reposicion":
+            kind_docx = "generated_docx_reposicion"
+            kind_pdf = "generated_pdf_reposicion"
+            filename_base = "recurso_reposicion_dgt"
+        else:
+            kind_docx = "generated_docx_alegaciones"
+            kind_pdf = "generated_pdf_alegaciones"
+            filename_base = "alegaciones_dgt"
+# DOCX
     docx_bytes = build_docx(tpl["asunto"], tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
         case_id,
@@ -124,7 +164,7 @@ def generate_dgt_for_case(
         ),
         {
             "case_id": case_id,
-            "payload": json.dumps({"tipo": tipo}),
+            "payload": json.dumps({"tipo": tipo, "ai_used": locals().get("ai_used", False), "ai_error": locals().get("ai_error")}),
         },
     )
 
