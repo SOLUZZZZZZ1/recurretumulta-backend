@@ -200,3 +200,4 @@ def generate_dgt_for_case(
         text(
             "INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at) "
             "VALUES (:case_id, :kind, :b2_bucket, :b2_key, :mime, :size_bytes,
+)
