@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List, Tuple
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -12,16 +12,11 @@ from ai.expediente_engine import run_expediente_ai
 from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
-from dgt_templates import (
-    build_dgt_alegaciones_text,
-    build_dgt_reposicion_text,
-)
+from dgt_templates import build_dgt_alegaciones_text, build_dgt_reposicion_text
 
 router = APIRouter(tags=["generate"])
 
-RTM_DGT_GENERATION_MODE = (
-    os.getenv("RTM_DGT_GENERATION_MODE") or "AI_FIRST"
-).strip().upper()
+RTM_DGT_GENERATION_MODE = (os.getenv("RTM_DGT_GENERATION_MODE") or "AI_FIRST").strip().upper()
 
 
 # ==========================
@@ -39,16 +34,16 @@ def _load_interested_data_from_cases(conn, case_id: str) -> Dict[str, Any]:
 def _merge_interesado(primary: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
     primary = primary or {}
     fallback = fallback or {}
-    result = dict(fallback)
+    out = dict(fallback)
     for k, v in primary.items():
         if v not in (None, ""):
-            result[k] = v
-    return result
+            out[k] = v
+    return out
 
 
-def _missing_interested_fields(interesado: Dict[str, Any]) -> list:
+def _missing_interested_fields(interesado: Dict[str, Any]) -> List[str]:
     interesado = interesado or {}
-    missing = []
+    missing: List[str] = []
     for k in ("nombre", "dni_nie", "domicilio_notif"):
         v = interesado.get(k)
         if not v or not str(v).strip():
@@ -58,17 +53,30 @@ def _missing_interested_fields(interesado: Dict[str, Any]) -> list:
 
 def _load_case_flags(conn, case_id: str) -> Dict[str, bool]:
     row = conn.execute(
-        text(
-            "SELECT COALESCE(test_mode,false), COALESCE(override_deadlines,false) "
-            "FROM cases WHERE id=:id"
-        ),
+        text("SELECT COALESCE(test_mode,false), COALESCE(override_deadlines,false) FROM cases WHERE id=:id"),
         {"id": case_id},
     ).fetchone()
-
     return {
         "test_mode": bool(row[0]) if row else False,
         "override_deadlines": bool(row[1]) if row else False,
     }
+
+
+def _strip_borrador_prefix_from_body(body: str) -> str:
+    body = (body or "").lstrip()
+    if not body:
+        return body
+
+    # Si la primera línea contiene "borrador", la eliminamos (case-insensitive)
+    lines = body.splitlines()
+    if lines and ("borrador" in (lines[0] or "").lower()):
+        lines = lines[1:]
+
+    # También eliminamos líneas vacías iniciales
+    while lines and not (lines[0] or "").strip():
+        lines = lines[1:]
+
+    return "\n".join(lines).strip()
 
 
 # ==========================
@@ -83,11 +91,7 @@ def generate_dgt_for_case(
 ) -> Dict[str, Any]:
 
     row = conn.execute(
-        text(
-            "SELECT extracted_json FROM extractions "
-            "WHERE case_id = :case_id "
-            "ORDER BY created_at DESC LIMIT 1"
-        ),
+        text("SELECT extracted_json FROM extractions WHERE case_id=:case_id ORDER BY created_at DESC LIMIT 1"),
         {"case_id": case_id},
     ).fetchone()
 
@@ -98,7 +102,7 @@ def generate_dgt_for_case(
     wrapper = extracted_json if isinstance(extracted_json, dict) else json.loads(extracted_json)
     core = wrapper.get("extracted") or {}
 
-    # Merge interesado desde DB
+    # Merge interesado desde DB si viene vacío/parcial
     interesado_db = _load_interested_data_from_cases(conn, case_id)
     interesado = _merge_interesado(interesado or {}, interesado_db)
 
@@ -106,12 +110,13 @@ def generate_dgt_for_case(
     flags = _load_case_flags(conn, case_id)
     override_mode = bool(flags.get("test_mode")) and bool(flags.get("override_deadlines"))
 
+    # Tipo por defecto
     if not tipo:
-        tipo = "reposicion" if core.get("pone_fin_via_administrativa") else "alegaciones"
+        tipo = "reposicion" if core.get("pone_fin_via_administrativa") is True else "alegaciones"
 
-    tpl = None
+    tpl: Optional[Dict[str, str]] = None
     ai_used = False
-    ai_error = None
+    ai_error: Optional[str] = None
 
     # ==========================
     # IA PRIMERO
@@ -124,29 +129,18 @@ def generate_dgt_for_case(
             cuerpo = (draft.get("cuerpo") or "").strip()
 
             if asunto and cuerpo:
-
                 if override_mode:
-                    # Forzar asunto claro
                     asunto = "RECURSO (MODO PRUEBA)"
-
-                    # Eliminar primera línea si contiene 'borrador'
-                    lines = cuerpo.splitlines()
-                    cleaned = []
-                    for i, line in enumerate(lines):
-                        if i == 0 and "borrador" in line.lower():
-                            continue
-                        cleaned.append(line)
-                    cuerpo = "\n".join(cleaned).strip()
+                    cuerpo = _strip_borrador_prefix_from_body(cuerpo)
 
                 tpl = {"asunto": asunto, "cuerpo": cuerpo}
                 ai_used = True
-
         except Exception as e:
             ai_error = str(e)
             tpl = None
 
     # ==========================
-    # FALLBACK PLANTILLA
+    # FALLBACK A PLANTILLAS
     # ==========================
     if not tpl:
         if tipo == "reposicion":
@@ -156,27 +150,17 @@ def generate_dgt_for_case(
             tpl = build_dgt_alegaciones_text(core, interesado)
             filename_base = "alegaciones_dgt"
     else:
-        filename_base = (
-            "recurso_reposicion_dgt"
-            if tipo == "reposicion"
-            else "alegaciones_dgt"
-        )
+        filename_base = "recurso_reposicion_dgt" if tipo == "reposicion" else "alegaciones_dgt"
 
-    kind_docx = (
-        "generated_docx_reposicion"
-        if tipo == "reposicion"
-        else "generated_docx_alegaciones"
-    )
+    # Kinds (compatibles con OPS/automation)
+    if tipo == "reposicion":
+        kind_docx = "generated_docx_reposicion"
+        kind_pdf = "generated_pdf_reposicion"
+    else:
+        kind_docx = "generated_docx_alegaciones"
+        kind_pdf = "generated_pdf_alegaciones"
 
-    kind_pdf = (
-        "generated_pdf_reposicion"
-        if tipo == "reposicion"
-        else "generated_pdf_alegaciones"
-    )
-
-    # ==========================
-    # GENERAR DOCX / PDF
-    # ==========================
+    # Generar DOCX/PDF
     docx_bytes = build_docx(tpl["asunto"], tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
         case_id,
@@ -195,9 +179,85 @@ def generate_dgt_for_case(
         "application/pdf",
     )
 
-    # Persistir documentos
+    # Persistir documents (DOCX)
     conn.execute(
-        text(
-            "INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at) "
-            "VALUES (:case_id, :kind, :b2_bucket, :b2_key, :mime, :size_bytes",
+        text("INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at) VALUES (:case_id,:kind,:b2_bucket,:b2_key,:mime,:size_bytes,NOW())"),
+        {
+            "case_id": case_id,
+            "kind": kind_docx,
+            "b2_bucket": b2_bucket,
+            "b2_key": b2_key_docx,
+            "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "size_bytes": len(docx_bytes),
+        },
+    )
 
+    # Persistir documents (PDF)
+    conn.execute(
+        text("INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at) VALUES (:case_id,:kind,:b2_bucket,:b2_key,:mime,:size_bytes,NOW())"),
+        {
+            "case_id": case_id,
+            "kind": kind_pdf,
+            "b2_bucket": b2_bucket,
+            "b2_key": b2_key_pdf,
+            "mime": "application/pdf",
+            "size_bytes": len(pdf_bytes),
+        },
+    )
+
+    # Evento
+    conn.execute(
+        text("INSERT INTO events(case_id, type, payload, created_at) VALUES (:case_id,'resource_generated',CAST(:payload AS JSONB),NOW())"),
+        {
+            "case_id": case_id,
+            "payload": json.dumps(
+                {
+                    "tipo": tipo,
+                    "ai_used": ai_used,
+                    "ai_error": ai_error,
+                    "generation_mode": RTM_DGT_GENERATION_MODE,
+                    "override_mode": override_mode,
+                    "missing_interested_fields": _missing_interested_fields(interesado),
+                }
+            ),
+        },
+    )
+
+    conn.execute(
+        text("UPDATE cases SET status='generated', updated_at=NOW() WHERE id=:case_id"),
+        {"case_id": case_id},
+    )
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "tipo": tipo,
+        "filename_base": filename_base,
+        "ai_used": ai_used,
+        "ai_error": ai_error,
+        "override_mode": override_mode,
+    }
+
+
+# ==========================
+# ENDPOINT
+# ==========================
+
+class GenerateRequest(BaseModel):
+    case_id: str
+    interesado: Dict[str, str] = Field(default_factory=dict)
+    tipo: Optional[str] = None
+
+
+@router.post("/generate/dgt")
+def generate_dgt(req: GenerateRequest) -> Dict[str, Any]:
+    engine = get_engine()
+    with engine.begin() as conn:
+        result = generate_dgt_for_case(
+            conn,
+            req.case_id,
+            interesado=req.interesado,
+            tipo=req.tipo,
+        )
+
+    return {"ok": True, "message": "Recurso generado en DOCX y PDF.", **result}
