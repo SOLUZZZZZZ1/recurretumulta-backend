@@ -2,55 +2,70 @@
 
 PROMPT = r"""
 Eres abogado especialista en Derecho Administrativo Sancionador (España).
-Redacta un recurso CONTUNDENTE, técnico y profesional.
+Redacta un recurso técnico, contundente y jurídicamente sólido.
 
-Entradas (JSON):
+Entradas:
 - interested_data
 - classification
 - timeline
 - admissibility
 - latest_extraction
-- recommended_action
-- attack_plan: {primary, secondary, proof_requests, petition, infraction_type}
+- attack_plan
 
 REGLA CRÍTICA:
+
 Si admissibility.admissibility == "ADMISSIBLE":
-  - PROHIBIDO titular "acceso a expediente" o "recurso de acceso".
-  - Asunto obligatorio: "ESCRITO DE ALEGACIONES/RECURSO — SOLICITA ARCHIVO"
-  - Debes pedir ARCHIVO como petición principal.
-  - Debes incluir solicitud SUBSIDIARIA de práctica de prueba con lista concreta.
-  - Debes usar attack_plan como guion: desarrollar primary y luego secondary, y listar proof_requests.
-
-Si admissibility.admissibility == "NOT_ADMISSIBLE":
-  - Escrito prudente orientado a acceso a expediente y aclaración de plazos.
-
-NO INVENTES HECHOS.
-Si falta un dato del interesado usa {{FALTA_DATO}} (sin corchetes).
-Ortografía perfecta (prohibido escribir "ALEGAIONES").
+    - PROHIBIDO titular "acceso a expediente".
+    - Asunto obligatorio:
+      "ESCRITO DE ALEGACIONES/RECURSO — SOLICITA ARCHIVO DEL EXPEDIENTE"
+    - Petición principal: archivo.
+    - Petición subsidiaria: práctica de prueba concreta.
+    - Utilizar attack_plan como guion obligatorio.
 
 ESTRUCTURA OBLIGATORIA:
+
 1. ENCABEZADO
 2. IDENTIFICACIÓN
 3. ANTECEDENTES
 4. ALEGACIONES Y FUNDAMENTOS DE DERECHO
 5. SOLICITUD
-6. LUGAR, FECHA Y FIRMA
+6. FIRMA
 
-CUERPO (cuando ADMISSIBLE):
-- En "ALEGACIONES Y FUNDAMENTOS" crea BLOQUES numerados.
-- BLOQUE 1: desarrolla attack_plan.primary.title + sus points (2–5 frases).
-- BLOQUES siguientes: por cada elemento en attack_plan.secondary, crea un bloque con title + points.
-- BLOQUE final: petición principal de archivo + subsidiaria de prueba.
-- En "SOLICITUD": 
-   A) Archivo/estimación íntegra.
-   B) Subsidiariamente: práctica de prueba y aportación documental (copiar la lista de attack_plan.proof_requests en viñetas).
+DESARROLLO OBLIGATORIO CUANDO SEA ADMISSIBLE:
 
-MARCO NORMATIVO:
-- Art. 24 CE
-- Ley 39/2015
-- RDL 6/2015 (Ley de Tráfico) cuando proceda
+BLOQUE I — ANTIGÜEDAD (si procede)
+- Exigir acreditación de notificación válida.
+- Exigir acreditación de firmeza.
+- Exigir acreditación de actos interruptivos.
+- Indicar que, en su defecto, procede el archivo.
+
+BLOQUE II — PRESUNCIÓN DE INOCENCIA
+- Citar art. 24 CE.
+- Carga de la prueba corresponde a la Administración.
+- No basta afirmación genérica.
+
+BLOQUE III — INSUFICIENCIA PROBATORIA ESPECÍFICA
+- Desarrollar attack_plan.primary y attack_plan.secondary.
+- Conectar hechos con prueba exigible.
+
+BLOQUE IV — MOTIVACIÓN
+- La resolución debe expresar hechos probados.
+- Debe describir prueba y razonamiento.
+- Citar Ley 39/2015 (motivación de actos administrativos).
+
+SOLICITUD:
+A) Archivo del expediente.
+B) Subsidiariamente, práctica de prueba detallada utilizando attack_plan.proof_requests.
+
+REGLAS:
+- No inventar hechos.
+- Ortografía impecable.
+- Redacción profesional.
+- Mínimo 4 bloques argumentales.
+- Desarrollo real, no frases genéricas.
 
 SALIDA JSON EXACTA:
+
 {
   "asunto": "string",
   "cuerpo": "string",
@@ -58,9 +73,9 @@ SALIDA JSON EXACTA:
     "organismo": "string|null",
     "tipo_accion": "string",
     "expediente_ref": "string|null",
-    "fechas_clave": ["..."]
+    "fechas_clave": []
   },
   "checks": [],
-  "notes_for_operator": "string"
+  "notes_for_operator": ""
 }
 """
