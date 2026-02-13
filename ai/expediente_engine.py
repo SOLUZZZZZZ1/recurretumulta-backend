@@ -1,163 +1,281 @@
 import json
-from typing import Any, Dict
+import os
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
 from database import get_engine
-from ai.prompts.draft_recurso import PROMPT
-from ai.llm_utils import llm_json
+from openai import OpenAI
+
+from ai.text_loader import load_text_from_b2
+from ai.prompts.classify_documents import PROMPT as PROMPT_CLASSIFY
+from ai.prompts.timeline_builder import PROMPT as PROMPT_TIMELINE
+from ai.prompts.procedure_phase import PROMPT as PROMPT_PHASE
+from ai.prompts.admissibility_guard import PROMPT as PROMPT_GUARD
+from ai.prompts.draft_recurso import PROMPT as PROMPT_DRAFT
+
+MAX_EXCERPT_CHARS = 12000
 
 
-# =====================================================
-# DETECTAR SI ES TRÁFICO
-# =====================================================
+# =========================================================
+# OpenAI JSON helper (igual que tu versión estable)
+# =========================================================
+def _llm_json(prompt: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def is_traffic_case(classification: Dict[str, Any]) -> bool:
-    global_refs = (classification or {}).get("global_refs") or {}
+    resp = client.chat.completions.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+        temperature=0.2,
+        response_format={"type": "json_object"},
+    )
+
+    return json.loads(resp.choices[0].message.content)
+
+
+# =========================================================
+# DB helpers
+# =========================================================
+def _save_event(case_id: str, event_type: str, payload: Dict[str, Any]) -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO events(case_id, type, payload, created_at) "
+                "VALUES (:case_id, :type, CAST(:payload AS JSONB), NOW())"
+            ),
+            {"case_id": case_id, "type": event_type, "payload": json.dumps(payload)},
+        )
+
+
+def _load_latest_extraction(case_id: str) -> Optional[Dict[str, Any]]:
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT extracted_json FROM extractions WHERE case_id=:case_id ORDER BY created_at DESC LIMIT 1"),
+            {"case_id": case_id},
+        ).fetchone()
+    return row[0] if row else None
+
+
+def _load_interested_data(case_id: str) -> Dict[str, Any]:
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT COALESCE(interested_data,'{}'::jsonb) FROM cases WHERE id=:id"),
+            {"id": case_id},
+        ).fetchone()
+    return (row[0] if row and row[0] else {}) or {}
+
+
+def _load_case_flags(case_id: str) -> Dict[str, bool]:
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT COALESCE(test_mode,false), COALESCE(override_deadlines,false) FROM cases WHERE id=:id"),
+            {"id": case_id},
+        ).fetchone()
+    return {"test_mode": bool(row[0]) if row else False, "override_deadlines": bool(row[1]) if row else False}
+
+
+def _load_case_documents(case_id: str) -> List[Dict[str, Any]]:
+    engine = get_engine()
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT kind, b2_bucket, b2_key, mime, size_bytes, created_at "
+                "FROM documents WHERE case_id=:case_id ORDER BY created_at ASC"
+            ),
+            {"case_id": case_id},
+        ).fetchall()
+
+    docs: List[Dict[str, Any]] = []
+    for i, r in enumerate(rows, start=1):
+        kind, bucket, key, mime, size_bytes, created_at = r
+        text_excerpt = load_text_from_b2(bucket, key, mime)
+        if text_excerpt:
+            text_excerpt = text_excerpt[:MAX_EXCERPT_CHARS]
+
+        docs.append(
+            {
+                "doc_index": i,
+                "kind": kind,
+                "bucket": bucket,
+                "key": key,
+                "mime": mime,
+                "size_bytes": int(size_bytes or 0),
+                "created_at": str(created_at),
+                "text_excerpt": text_excerpt or "",
+            }
+        )
+    return docs
+
+
+# =========================================================
+# Attack plan determinista (SIN imports nuevos)
+# =========================================================
+def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], latest_extraction: Dict[str, Any]) -> Dict[str, Any]:
+    global_refs = (classify or {}).get("global_refs") or {}
     organism = (global_refs.get("main_organism") or "").lower()
+    traffic = ("tráfico" in organism) or ("dgt" in organism)
 
-    if "tráfico" in organism or "dgt" in organism:
-        return True
+    blob = json.dumps(latest_extraction or {}, ensure_ascii=False).lower()
 
-    return False
+    infraction_type = "generic"
+    if "teléfono" in blob or "telefono" in blob or "móvil" in blob or "movil" in blob:
+        infraction_type = "movil"
+    elif "km/h" in blob or "radar" in blob or "cinemómetro" in blob or "cinemometro" in blob:
+        infraction_type = "velocidad"
 
-
-# =====================================================
-# DETECTAR TIPO INFRACCIÓN SIMPLE
-# =====================================================
-
-def detect_infraction_type(latest_extraction: Dict[str, Any]) -> str:
-    text_blob = json.dumps(latest_extraction or {}).lower()
-
-    if "móvil" in text_blob or "telefono" in text_blob:
-        return "movil"
-
-    if "km/h" in text_blob or "radar" in text_blob:
-        return "velocidad"
-
-    return "generic"
-
-
-# =====================================================
-# CONSTRUIR ATTACK PLAN SIMPLE
-# =====================================================
-
-def build_attack_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
-
-    attack_plan = {
+    plan = {
+        "infraction_type": infraction_type,
         "primary": {
-            "title": "Presunción de inocencia e insuficiencia probatoria",
+            "title": "Presunción de inocencia e insuficiencia probatoria (art. 24 CE)",
             "points": [
-                "La carga de la prueba corresponde a la Administración (art. 24 CE).",
-                "No cabe sancionar sin prueba suficiente y concreta del hecho infractor."
-            ]
+                "La carga de la prueba corresponde a la Administración.",
+                "No cabe sancionar sin prueba suficiente y concreta del hecho infractor.",
+            ],
         },
         "secondary": [],
         "proof_requests": [],
+        "petition": {
+            "main": "Archivo / estimación íntegra",
+            "subsidiary": "Subsidiariamente, práctica de prueba y aportación documental completa",
+        },
     }
 
-    classification = payload.get("classification")
-    latest_extraction = payload.get("latest_extraction")
-    timeline = payload.get("timeline")
-
-    if is_traffic_case(classification):
-
-        infraction_type = detect_infraction_type(latest_extraction)
-
+    if traffic:
         if infraction_type == "movil":
-            attack_plan["secondary"].append({
-                "title": "Insuficiencia probatoria en sanción por uso del móvil",
+            plan["secondary"].append({
+                "title": "Uso manual del móvil: prueba objetiva y motivación reforzada",
                 "points": [
-                    "Debe acreditarse de forma concreta el uso manual.",
-                    "Si no existe prueba objetiva, la sanción vulnera la presunción de inocencia."
-                ]
+                    "Debe acreditarse de forma concreta el uso manual (circunstancias y descripción suficiente).",
+                    "Si no consta prueba objetiva o descripción detallada, procede el archivo por insuficiencia probatoria.",
+                ],
             })
-            attack_plan["proof_requests"] += [
-                "Boletín/acta completa del agente.",
-                "Descripción detallada del hecho.",
-                "Material gráfico si existiera."
+            plan["proof_requests"] += [
+                "Boletín/denuncia/acta completa, con identificación del agente si consta.",
+                "Descripción detallada del hecho y circunstancias (lugar/hora/forma de observación).",
+                "Si existiera: fotografía/vídeo/capturas completas.",
             ]
 
         if infraction_type == "velocidad":
-            attack_plan["secondary"].append({
-                "title": "Prueba técnica insuficiente (radar)",
+            plan["secondary"].append({
+                "title": "Velocidad: prueba técnica completa (cinemómetro/radar)",
                 "points": [
-                    "Debe constar identificación del cinemómetro y certificación vigente.",
-                    "Debe acreditarse margen aplicado."
-                ]
+                    "Debe constar identificación del cinemómetro y certificado vigente de verificación/calibración.",
+                    "Debe constar margen aplicado y capturas completas.",
+                ],
             })
-            attack_plan["proof_requests"] += [
-                "Capturas completas.",
-                "Certificado de verificación/calibración.",
-                "Identificación del equipo."
+            plan["proof_requests"] += [
+                "Capturas/fotografías completas del hecho infractor.",
+                "Identificación del cinemómetro (marca/modelo/nº serie) y ubicación exacta.",
+                "Certificado de verificación/calibración vigente y constancia del margen aplicado.",
             ]
 
-        # Antigüedad simple
+        # Antigüedad: si hay fechas muy antiguas, exigir acreditación de notificación/firmeza/actos interruptivos
         tl = (timeline or {}).get("timeline") or []
-        if tl:
-            first_date = None
-            for ev in tl:
-                if ev.get("date"):
-                    first_date = ev["date"]
-                    break
-
-            if first_date and first_date.startswith("2010"):
-                attack_plan["secondary"].insert(0, {
-                    "title": "Antigüedad del expediente",
+        dates = []
+        for ev in tl:
+            d = ev.get("date")
+            if isinstance(d, str) and len(d) >= 10:
+                dates.append(d[:10])
+        if dates:
+            oldest = sorted(dates)[0]
+            if oldest.startswith("201") or oldest.startswith("200"):
+                plan["secondary"].insert(0, {
+                    "title": "Antigüedad del expediente: acreditación de notificación, firmeza y actos interruptivos",
                     "points": [
-                        "Corresponde acreditar notificación válida y actos interruptivos.",
-                        "En su defecto, procede el archivo."
-                    ]
+                        "Dada la antigüedad, corresponde acreditar notificación válida, firmeza y, en su caso, actos interruptivos.",
+                        "Si no consta acreditación suficiente, procede el archivo.",
+                    ],
                 })
+                plan["proof_requests"] += [
+                    "Acreditación de la notificación válida (fecha de recepción/acuse/medio).",
+                    "Acreditación de firmeza y actuaciones interruptivas, si existieran.",
+                    "Estado actual del expediente y fundamento de su vigencia.",
+                ]
 
-    return attack_plan
+    return plan
 
 
-# =====================================================
-# FUNCIÓN PRINCIPAL
-# =====================================================
-
+# =========================================================
+# MAIN ORCHESTRATOR (tu flujo intacto)
+# =========================================================
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
+    docs = _load_case_documents(case_id)
+    if not docs:
+        raise RuntimeError("No hay documentos asociados al expediente.")
 
-    engine = get_engine()
+    latest_extraction = _load_latest_extraction(case_id)
 
-    with engine.begin() as conn:
+    classify = _llm_json(
+        PROMPT_CLASSIFY,
+        {"case_id": case_id, "documents": docs, "latest_extraction": latest_extraction},
+    )
 
-        row = conn.execute(
-            text("SELECT extracted_json FROM extractions WHERE case_id=:id ORDER BY created_at DESC LIMIT 1"),
-            {"id": case_id},
-        ).fetchone()
+    timeline = _llm_json(
+        PROMPT_TIMELINE,
+        {"case_id": case_id, "classification": classify, "documents": docs, "latest_extraction": latest_extraction},
+    )
 
-        if not row:
-            return {"ok": False, "error": "No extraction available"}
+    phase = _llm_json(
+        PROMPT_PHASE,
+        {"case_id": case_id, "classification": classify, "timeline": timeline, "latest_extraction": latest_extraction},
+    )
 
-        extracted_json = row[0]
-        wrapper = extracted_json if isinstance(extracted_json, dict) else json.loads(extracted_json)
+    admissibility = _llm_json(
+        PROMPT_GUARD,
+        {
+            "case_id": case_id,
+            "recommended_action": phase,
+            "timeline": timeline,
+            "classification": classify,
+            "latest_extraction": latest_extraction,
+        },
+    )
 
-    classification = wrapper.get("classification")
-    timeline = wrapper.get("timeline")
-    admissibility = wrapper.get("admissibility")
-    latest_extraction = wrapper.get("extracted")
+    # Override pruebas (tu lógica)
+    flags = _load_case_flags(case_id)
+    if flags.get("test_mode") and flags.get("override_deadlines"):
+        admissibility["admissibility"] = "ADMISSIBLE"
+        admissibility["can_generate_draft"] = True
+        admissibility["deadline_status"] = admissibility.get("deadline_status") or "UNKNOWN"
+        admissibility["required_constraints"] = admissibility.get("required_constraints") or []
+        _save_event(case_id, "test_override_applied", {"flags": flags})
 
-    payload = {
-        "classification": classification,
-        "timeline": timeline,
-        "admissibility": admissibility,
-        "latest_extraction": latest_extraction,
-    }
+    # Attack plan modular (determinista)
+    attack_plan = _build_attack_plan(classify, timeline, latest_extraction or {})
 
-    attack_plan = build_attack_plan(payload)
+    draft = None
+    if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
+        interested_data = _load_interested_data(case_id)
+        draft = _llm_json(
+            PROMPT_DRAFT,
+            {
+                "case_id": case_id,
+                "interested_data": interested_data,
+                "classification": classify,
+                "timeline": timeline,
+                "recommended_action": phase,
+                "admissibility": admissibility,
+                "latest_extraction": latest_extraction,
+                "attack_plan": attack_plan,
+            },
+        )
 
-    llm_payload = {
-        **payload,
-        "attack_plan": attack_plan,
-    }
-
-    draft = llm_json(PROMPT, llm_payload)
-
-    return {
+    result = {
         "ok": True,
-        "draft": draft,
-        "classification": classification,
+        "case_id": case_id,
+        "classify": classify,
         "timeline": timeline,
+        "phase": phase,
         "admissibility": admissibility,
+        "attack_plan": attack_plan,
+        "draft": draft,
     }
+
+    _save_event(case_id, "ai_expediente_result", result)
+    return result
