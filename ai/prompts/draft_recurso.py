@@ -11,12 +11,19 @@ Entradas (JSON):
 - admissibility
 - latest_extraction
 - attack_plan
+- facts_summary (string; puede venir vacío)
 
 PROHIBIDO mencionar en el texto final:
-- "plan de ataque"
-- "plan de alegaciones"
-- "attack_plan"
-- "strategy"
+- plan de ataque
+- plan de alegaciones
+- attack_plan
+- strategy
+- detection_scores
+
+REGLA DE HECHOS IMPUTADOS (OBLIGATORIA):
+- En ANTECEDENTES debe aparecer el hecho imputado.
+- Si facts_summary viene informado, úsalo literalmente como "Hecho imputado: {facts_summary}".
+- Si facts_summary está vacío, escribe: "Hecho imputado: No consta de forma legible en la documentación aportada."
 
 REGLA CRÍTICA (ADMISSIBLE):
 - Asunto obligatorio: "ESCRITO DE ALEGACIONES/RECURSO — SOLICITA ARCHIVO DEL EXPEDIENTE"

@@ -1,3 +1,6 @@
+# ai/prompts/classify_documents.py
+# Clasificación documental + extracción de metadatos + frases del hecho ("facts_phrases")
+
 PROMPT = r"""
 Eres un/a funcionario/a administrativo/a experto/a en procedimiento y un/a analista documental.
 Tu tarea NO es redactar recursos. Tu tarea es CLASIFICAR documentos y extraer metadatos fiables.
@@ -9,12 +12,14 @@ Vas a recibir una lista de documentos de un mismo expediente. Para cada document
 - Extrae referencias del expediente (nº expediente, referencia, registro, etc.).
 - Extrae cualquier dato de plazo (plazo, unidad, desde cuándo computa).
 - Extrae artículos o normas citadas.
+- Extrae el HECHO IMPUTADO si aparece (frase literal breve). Ejemplos: "CIRCULAR CON LUZ ROJA", "EXCESO DE VELOCIDAD 123 km/h", "USO MANUAL DEL TELÉFONO MÓVIL".
 
 Reglas estrictas:
 1) No inventes nada. Si no está, escribe null.
 2) Si hay dudas, marca `confidence` y explica en `notes`.
 3) No hagas interpretaciones jurídicas aquí (solo metadatos).
 4) Mantén los textos extraídos en español, tal como aparecen.
+5) Si el OCR es malo, intenta capturar 1-3 frases literales del hecho imputado (aunque tengan mayúsculas/errores menores), pero NO infieras.
 
 Formato de salida: JSON válido, con esta estructura:
 
@@ -25,6 +30,8 @@ Formato de salida: JSON válido, con esta estructura:
       "filename": "...",
       "doc_type": "notificacion|resolucion|escrito_interesado|justificante|otro",
       "issuer_org": "...|null",
+      "facts_phrases": ["...","..."],
+
       "dates": {
         "document_date": "YYYY-MM-DD|null",
         "notification_date": "YYYY-MM-DD|null",
@@ -47,7 +54,8 @@ Formato de salida: JSON válido, con esta estructura:
   "global_refs": {
     "main_expediente": "...|null",
     "main_organism": "...|null"
-  }
+  },
+  "facts_phrases": ["...","..."]
 }
 
 Devuelve SOLO el JSON. Sin texto extra.
