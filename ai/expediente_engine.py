@@ -112,25 +112,43 @@ def _load_case_documents(case_id: str) -> List[Dict[str, Any]]:
 
 
 # =========================================================
-# Attack plan determinista (SIN imports nuevos)
+# Attack plan determinista (Render-safe, sin imports nuevos)
 # =========================================================
 def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], latest_extraction: Dict[str, Any]) -> Dict[str, Any]:
     global_refs = (classify or {}).get("global_refs") or {}
     organism = (global_refs.get("main_organism") or "").lower()
-
-    # Consideramos "tráfico" tanto DGT como ayuntamientos si aparece tráfico/vehículo o similares.
     traffic = ("tráfico" in organism) or ("dgt" in organism) or ("ayuntamiento" in organism)
 
     blob = json.dumps(latest_extraction or {}, ensure_ascii=False).lower()
 
+    # 🔥 Detector blindado: SEMÁFORO primero
     infraction_type = "generic"
-
-    # Semáforo / luz roja (antes que móvil/velocidad porque es muy específico)
-    if "luz roja" in blob or "semáforo" in blob or "semaforo" in blob:
+    if (
+        "luz roja" in blob
+        or "circular con luz roja" in blob
+        or "semaforo" in blob
+        or "semáforo" in blob
+        or "foto-rojo" in blob
+        or "foto rojo" in blob
+    ):
         infraction_type = "semaforo"
-    elif "teléfono" in blob or "telefono" in blob or "móvil" in blob or "movil" in blob:
+    elif (
+        "teléfono" in blob
+        or "telefono" in blob
+        or "móvil" in blob
+        or "movil" in blob
+        or "auriculares" in blob
+        or "manos libres" in blob
+    ):
         infraction_type = "movil"
-    elif "km/h" in blob or "radar" in blob or "cinemómetro" in blob or "cinemometro" in blob:
+    elif (
+        "km/h" in blob
+        or "kmh" in blob
+        or "radar" in blob
+        or "cinemómetro" in blob
+        or "cinemometro" in blob
+        or "velocidad" in blob
+    ):
         infraction_type = "velocidad"
 
     plan: Dict[str, Any] = {
@@ -151,63 +169,54 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], lates
     }
 
     if traffic:
-        # MÓVIL
         if infraction_type == "movil":
-            plan["secondary"].append(
-                {
-                    "title": "Uso manual del móvil: prueba objetiva y motivación reforzada",
-                    "points": [
-                        "Debe acreditarse de forma concreta el uso manual (circunstancias y descripción suficiente).",
-                        "Si no consta prueba objetiva o una descripción detallada, procede el archivo por insuficiencia probatoria.",
-                    ],
-                }
-            )
+            plan["secondary"].append({
+                "title": "Uso manual del móvil: prueba objetiva y motivación reforzada",
+                "points": [
+                    "Debe acreditarse de forma concreta el uso manual (circunstancias y descripción suficiente).",
+                    "Si no consta prueba objetiva o descripción detallada, procede el archivo por insuficiencia probatoria.",
+                ],
+            })
             plan["proof_requests"] += [
                 "Boletín/denuncia/acta completa, con identificación del agente si consta.",
                 "Descripción detallada del hecho y circunstancias (lugar/hora/forma de observación).",
                 "Si existiera: fotografía/vídeo/capturas completas.",
             ]
 
-        # VELOCIDAD
         if infraction_type == "velocidad":
-            plan["secondary"].append(
-                {
-                    "title": "Velocidad: prueba técnica completa (cinemómetro/radar)",
-                    "points": [
-                        "Debe constar identificación del cinemómetro y certificado vigente de verificación/calibración.",
-                        "Debe constar margen aplicado y capturas completas.",
-                    ],
-                }
-            )
+            plan["secondary"].append({
+                "title": "Velocidad: prueba técnica completa (cinemómetro/radar)",
+                "points": [
+                    "Debe constar identificación del cinemómetro y certificado vigente de verificación/calibración.",
+                    "Debe constar margen aplicado y capturas completas.",
+                ],
+            })
             plan["proof_requests"] += [
                 "Capturas/fotografías completas del hecho infractor.",
                 "Identificación del cinemómetro (marca/modelo/nº serie) y ubicación exacta.",
                 "Certificado de verificación/calibración vigente y constancia del margen aplicado.",
             ]
 
-        # SEMÁFORO / LUZ ROJA
         if infraction_type == "semaforo":
-            plan["secondary"].append(
-                {
-                    "title": "Semáforo en fase roja: insuficiencia probatoria y motivación reforzada",
-                    "points": [
-                        "Debe acreditarse la fase roja efectiva en el instante del cruce (no basta una fórmula genérica).",
-                        "Debe constar identificación clara del vehículo y su posición respecto de la línea de detención.",
-                        "Si la denuncia es presencial, debe describirse ubicación/visibilidad/distancia y circunstancias; si es automática, debe constar secuencia y acreditación de funcionamiento.",
-                    ],
-                }
-            )
+            plan["secondary"].append({
+                "title": "Semáforo en fase roja: prueba suficiente, fase roja efectiva y motivación reforzada",
+                "points": [
+                    "Debe acreditarse la fase roja efectiva en el instante del cruce (no basta una fórmula genérica).",
+                    "Debe constar identificación clara del vehículo y su posición respecto de la línea de detención.",
+                    "Si la denuncia es presencial, debe describirse ubicación/visibilidad/distancia; si es automática, debe constar secuencia y acreditación de funcionamiento.",
+                ],
+            })
             plan["proof_requests"] += [
                 "Copia íntegra y legible del boletín/acta de denuncia.",
                 "Si captación automática: secuencia completa de fotografías/fotogramas y metadatos/hora exacta.",
                 "Acreditación del correcto funcionamiento del sistema de captación (si existe).",
-                "Detalle de la fase semafórica en el momento de la infracción (si consta) y ubicación exacta.",
+                "Detalle de la fase semafórica en el momento de la infracción y ubicación exacta.",
                 "Si denuncia presencial: identificación del agente y circunstancias de observación (visibilidad/distancia/posición).",
             ]
 
-        # ANTIGÜEDAD: exigir acreditación de notificación/firmeza/actos interruptivos
+        # Antigüedad transversal
         tl = (timeline or {}).get("timeline") or []
-        dates: List[str] = []
+        dates = []
         for ev in tl:
             d = ev.get("date")
             if isinstance(d, str) and len(d) >= 10:
@@ -215,23 +224,20 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], lates
         if dates:
             oldest = sorted(dates)[0]
             if oldest.startswith("201") or oldest.startswith("200"):
-                plan["secondary"].insert(
-                    0,
-                    {
-                        "title": "Antigüedad del expediente: acreditación de notificación, firmeza y actos interruptivos",
-                        "points": [
-                            "Dada la antigüedad, corresponde acreditar notificación válida, firmeza y, en su caso, actos interruptivos.",
-                            "Si no consta acreditación suficiente, procede el archivo.",
-                        ],
-                    },
-                )
+                plan["secondary"].insert(0, {
+                    "title": "Antigüedad del expediente: acreditación de notificación, firmeza y actos interruptivos",
+                    "points": [
+                        "Dada la antigüedad, corresponde acreditar notificación válida, firmeza y, en su caso, actos interruptivos.",
+                        "Si no consta acreditación suficiente, procede el archivo.",
+                    ],
+                })
                 plan["proof_requests"] += [
                     "Acreditación de la notificación válida (fecha de recepción/acuse/medio).",
                     "Acreditación de firmeza y actuaciones interruptivas, si existieran.",
                     "Estado actual del expediente y fundamento de su vigencia.",
                 ]
 
-    # Blindaje: si quedó vacío, ponemos mínimos (para que el prompt siempre tenga munición)
+    # Blindajes para que siempre haya munición
     if not plan.get("proof_requests"):
         plan["proof_requests"] = [
             "Copia íntegra y foliada del expediente administrativo.",
@@ -240,24 +246,21 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], lates
             "Boletín/denuncia/acta completa y legible.",
         ]
 
-    # Blindaje motivación
-    has_motiv = any("motiv" in (b.get("title", "").lower()) for b in plan.get("secondary", []))
+    has_motiv = any("motiv" in (b.get("title","").lower()) for b in plan.get("secondary", []))
     if not has_motiv:
-        plan["secondary"].append(
-            {
-                "title": "Motivación suficiente y derecho de defensa (Ley 39/2015)",
-                "points": [
-                    "La motivación no puede ser estereotipada: debe conectar hechos, prueba y razonamiento.",
-                    "La falta de motivación adecuada genera indefensión y refuerza la procedencia del archivo.",
-                ],
-            }
-        )
+        plan["secondary"].append({
+            "title": "Motivación suficiente y derecho de defensa (Ley 39/2015)",
+            "points": [
+                "La motivación no puede ser estereotipada: debe conectar hechos, prueba y razonamiento.",
+                "La falta de motivación adecuada genera indefensión y refuerza la procedencia del archivo.",
+            ],
+        })
 
     return plan
 
 
 # =========================================================
-# MAIN ORCHESTRATOR (tu flujo intacto)
+# MAIN ORCHESTRATOR (flujo intacto)
 # =========================================================
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     docs = _load_case_documents(case_id)
@@ -266,30 +269,13 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
 
     latest_extraction = _load_latest_extraction(case_id)
 
-    classify = _llm_json(
-        PROMPT_CLASSIFY,
-        {"case_id": case_id, "documents": docs, "latest_extraction": latest_extraction},
-    )
-
-    timeline = _llm_json(
-        PROMPT_TIMELINE,
-        {"case_id": case_id, "classification": classify, "documents": docs, "latest_extraction": latest_extraction},
-    )
-
-    phase = _llm_json(
-        PROMPT_PHASE,
-        {"case_id": case_id, "classification": classify, "timeline": timeline, "latest_extraction": latest_extraction},
-    )
+    classify = _llm_json(PROMPT_CLASSIFY, {"case_id": case_id, "documents": docs, "latest_extraction": latest_extraction})
+    timeline = _llm_json(PROMPT_TIMELINE, {"case_id": case_id, "classification": classify, "documents": docs, "latest_extraction": latest_extraction})
+    phase = _llm_json(PROMPT_PHASE, {"case_id": case_id, "classification": classify, "timeline": timeline, "latest_extraction": latest_extraction})
 
     admissibility = _llm_json(
         PROMPT_GUARD,
-        {
-            "case_id": case_id,
-            "recommended_action": phase,
-            "timeline": timeline,
-            "classification": classify,
-            "latest_extraction": latest_extraction,
-        },
+        {"case_id": case_id, "recommended_action": phase, "timeline": timeline, "classification": classify, "latest_extraction": latest_extraction},
     )
 
     # Override pruebas (tu lógica)
@@ -301,7 +287,6 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         admissibility["required_constraints"] = admissibility.get("required_constraints") or []
         _save_event(case_id, "test_override_applied", {"flags": flags})
 
-    # Attack plan modular (determinista)
     attack_plan = _build_attack_plan(classify, timeline, latest_extraction or {})
 
     draft = None
