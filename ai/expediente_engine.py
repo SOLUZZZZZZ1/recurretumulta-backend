@@ -155,7 +155,7 @@ def _infer_infraction_from_facts_phrases(classify: Dict[str, Any]) -> Optional[s
     if not phrases:
         return None
     joined = "\n".join([str(p) for p in phrases if p]).lower()
-    if any(s in joined for s in ["semáforo", "semaforo", "luz roja", "fase roja", "circular con luz roja", "no respetar la luz roja"]):
+    if any(s in joined for s in ["semáforo", "semaforo",  "fase roja", "circular con luz roja", "no respetar la luz roja"]):
         return "semaforo"
     if any(s in joined for s in ["móvil", "movil", "teléfono", "telefono"]):
         return "movil"
@@ -168,7 +168,7 @@ def _has_semaforo_signals(docs: List[Dict[str, Any]], extraction_core: Optional[
     phrases = (classify or {}).get("facts_phrases") or []
     for p in phrases:
         pl = (p or "").lower()
-        if any(s in pl for s in ["semáforo", "semaforo", "luz roja", "fase roja", "circular con luz roja", "no respetar la luz roja"]):
+        if any(s in pl for s in ["semáforo", "semaforo",  "fase roja", "circular con luz roja", "no respetar la luz roja"]):
             return True
 
     blob_parts: List[str] = []
@@ -180,7 +180,7 @@ def _has_semaforo_signals(docs: List[Dict[str, Any]], extraction_core: Optional[
         blob_parts.append((d.get("text_excerpt") or "").lower())
     blob = "\n".join(blob_parts)
 
-    signals = ["semáforo", "semaforo", "luz roja", "fase roja", "no respetar la luz roja", "circular con luz roja"]
+    signals = ["semáforo", "semaforo",  "fase roja", "no respetar la luz roja", "circular con luz roja"]
     return any(s in blob for s in signals)
 
 
@@ -193,7 +193,7 @@ def _build_facts_summary(extraction_core: Optional[Dict[str, Any]], attack_plan:
 
             def consistent() -> bool:
                 if inf == "semaforo":
-                    return any(k in hl for k in ["semáforo", "semaforo", "luz roja", "fase roja", "rojo"])
+                    return any(k in hl for k in ["semáforo", "semaforo",  "fase roja", "rojo"])
                 if inf == "velocidad":
                     return any(k in hl for k in ["velocidad", "km/h", "radar", "cinemómetro", "cinemometro"])
                 if inf == "movil":
@@ -228,7 +228,7 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extra
         infraction_type = triage_tipo
 
     if infraction_type == "generic":
-        if any(s in blob for s in ["semáforo", "semaforo", "luz roja", "fase roja", "circular con luz roja", "no respetar la luz roja"]):
+        if any(s in blob for s in ["semáforo", "semaforo",  "fase roja", "circular con luz roja", "no respetar la luz roja"]):
             infraction_type = "semaforo"
         elif any(s in blob for s in ["teléfono", "telefono", "móvil", "movil"]):
             infraction_type = "movil"
@@ -334,6 +334,8 @@ def _map_precept_to_type(extraction_core: Dict[str, Any]) -> Optional[str]:
         # Nota: mapeo conservador (solo lo que sabemos que es señal fuerte)
         if art in (12, 15):
             return "condiciones_vehiculo"
+        if art == 18:
+            return "atencion"
 
     # RD 2822/98 también es técnico de vehículo
     if any("2822/98" in (p or "") for p in precepts) or "2822/98" in norma_hint:
