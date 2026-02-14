@@ -48,6 +48,86 @@ def _flatten_text(extracted_core: Dict[str, Any], text_content: str = "") -> str
     return "\n".join(parts)
 
 
+
+
+def _extract_precepts(text_blob: str) -> Dict[str, Any]:
+    """
+    Extrae referencias normativas/preceptos con heurística robusta.
+    Devuelve:
+      - preceptos_detectados: lista de strings (p.ej. "articulo 15 apartado 4", "RDL 8/2004")
+      - articulo_num: int|None
+      - apartado_num: int|None
+      - norma_hint: string|None (p.ej. "RDL 8/2004", "RD 2822/98")
+    """
+    t = (text_blob or "").lower()
+
+    precepts: List[str] = []
+
+    # Artículo / apartado
+    art_num = None
+    apt_num = None
+
+    m_art = re.search(r"\bart[ií]culo\s*(\d{1,3})\b", t) or re.search(r"\bart\.\s*(\d{1,3})\b", t)
+    if m_art:
+        try:
+            art_num = int(m_art.group(1))
+            precepts.append(f"articulo {art_num}")
+        except Exception:
+            art_num = None
+
+    m_apt = re.search(r"\bapartado\s*(\d{1,3})\b", t) or re.search(r"\baptdo\.?\s*(\d{1,3})\b", t)
+    if m_apt:
+        try:
+            apt_num = int(m_apt.group(1))
+            if art_num is not None:
+                precepts.append(f"articulo {art_num} apartado {apt_num}")
+            else:
+                precepts.append(f"apartado {apt_num}")
+        except Exception:
+            apt_num = None
+
+    # Normas típicas
+    norma_hint = None
+    # RDL 8/2004 (seguro obligatorio)
+    if ("r.d. legislativo" in t and "8/2004" in t) or ("rd legislativo" in t and "8/2004" in t) or ("8/2004" in t and "responsabilidad civil" in t):
+        norma_hint = "RDL 8/2004"
+        precepts.append("RDL 8/2004")
+
+    # RD 2822/98 (Reglamento General de Vehículos)
+    if "2822/98" in t or "r.d. 2822/98" in t or "rd 2822/98" in t:
+        norma_hint = norma_hint or "RD 2822/98"
+        precepts.append("RD 2822/98")
+
+    # RGC / Reglamento general de circulación
+    if "reglamento general de circul" in t or "rgc" in t:
+        precepts.append("Reglamento General de Circulación")
+
+    # TRLTSV / Ley de Tráfico (detectamos genérico)
+    if "ley sobre tráfico" in t or "ley de trafico" in t or "trltsv" in t:
+        precepts.append("Ley de Tráfico (genérico)")
+
+    # LSOA (seguro)
+    if "lsoa" in t:
+        norma_hint = norma_hint or "LSOA"
+        precepts.append("LSOA")
+
+    # Normalizar únicos
+    seen = set()
+    uniq = []
+    for p in precepts:
+        pp = (p or "").strip()
+        if pp and pp not in seen:
+            seen.add(pp)
+            uniq.append(pp)
+
+    return {
+        "preceptos_detectados": uniq,
+        "articulo_num": art_num,
+        "apartado_num": apt_num,
+        "norma_hint": norma_hint,
+    }
+
+
 def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
     t = (text_blob or "").lower()
     facts: List[str] = []
@@ -194,6 +274,11 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     out["tipo_infraccion"] = tipo
     out["hecho_imputado"] = hecho or None
     out["facts_phrases"] = facts
+    pre = _extract_precepts(text_blob)
+    out["preceptos_detectados"] = pre.get("preceptos_detectados") or []
+    out["articulo_infringido_num"] = pre.get("articulo_num")
+    out["apartado_infringido_num"] = pre.get("apartado_num")
+    out["norma_hint"] = pre.get("norma_hint")
     return out
 
 
