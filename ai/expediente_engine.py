@@ -411,6 +411,51 @@ def _apply_tipicity_guard(attack_plan: Dict[str, Any], extraction_core: Dict[str
     return plan
 
 
+
+
+# =========================================================
+# Intensidad contextual: normal | reforzado | critico
+# =========================================================
+def _compute_context_intensity(timeline: Dict[str, Any], extraction_core: Dict[str, Any], classify: Dict[str, Any]) -> str:
+    """
+    Heurística conservadora:
+    - critico: señales de incoherencia normativa fuerte (p.ej. LSOA/RDL 8/2004 junto con velocidad)
+    - reforzado: expediente antiguo (fechas 2010-2015)
+    - normal: resto
+    """
+    blob = ""
+    try:
+        blob = json.dumps(extraction_core or {}, ensure_ascii=False).lower()
+    except Exception:
+        blob = ""
+
+    precepts = (extraction_core or {}).get("preceptos_detectados") or []
+    pre_blob = " ".join([str(p) for p in precepts]).lower()
+
+    has_lsoa = ("lsoa" in pre_blob) or ("8/2004" in pre_blob) or ("8/2004" in blob)
+    has_speed = ("km/h" in blob) or ("cinemómetro" in blob) or ("cinemometro" in blob) or ("radar" in blob)
+    if has_lsoa and has_speed:
+        return "critico"
+
+    dates = []
+    tl = (timeline or {}).get("timeline") or []
+    for ev in tl:
+        d = ev.get("date")
+        if isinstance(d, str) and len(d) >= 10:
+            dates.append(d[:10])
+    for k in ("fecha_documento", "fecha_notificacion"):
+        v = (extraction_core or {}).get(k)
+        if isinstance(v, str) and len(v) >= 10:
+            dates.append(v[:10])
+
+    if dates:
+        oldest = sorted(dates)[0]
+        if oldest[:4].isdigit() and int(oldest[:4]) <= 2015:
+            return "reforzado"
+
+    return "normal"
+
+
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     docs = _load_case_documents(case_id)
     if not docs:
@@ -507,6 +552,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     attack_plan = _apply_tipicity_guard(attack_plan, extraction_core)
 
     facts_summary = _build_facts_summary(extraction_core, attack_plan)
+    context_intensity = _compute_context_intensity(timeline, extraction_core, classify)
 
     draft = None
     if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
@@ -523,6 +569,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 "latest_extraction": extraction_wrapper,
                 "attack_plan": attack_plan,
                 "facts_summary": facts_summary,
+                "context_intensity": context_intensity,
             },
         )
 
@@ -537,6 +584,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         "draft": draft,
         "capture_mode": capture_mode,
         "facts_summary": facts_summary,
+                "context_intensity": context_intensity,
         "extraction_debug": {
             "wrapper_keys": list(extraction_wrapper.keys()) if isinstance(extraction_wrapper, dict) else [],
             "core_keys": list(extraction_core.keys()) if isinstance(extraction_core, dict) else [],
