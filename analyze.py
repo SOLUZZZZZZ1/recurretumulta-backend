@@ -133,12 +133,42 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
     facts: List[str] = []
 
     # =========================================================
-    # 1) SEMÁFORO (prioridad alta)
+    # 0) PRECEPTO / ARTÍCULO (señales fuertes)
+    # =========================================================
+    # Seguro (LSOA / RDL 8/2004)
+    if ("lsoa" in t) or (("r.d. legislativo" in t or "rd legislativo" in t) and "8/2004" in t):
+        facts.append("CARENCIA DE SEGURO OBLIGATORIO")
+        return ("seguro", facts[0], facts)
+
+    # No identificar (art. 9.1 bis)
+    if re.search(r"\bart\.\s*9\.?\s*1\s*bis\b", t) or re.search(r"\bart[ií]culo\s*9\.?\s*1\s*bis\b", t):
+        facts.append("NO IDENTIFICAR AL CONDUCTOR (ART. 9.1 BIS)")
+        return ("no_identificar", facts[0], facts)
+
+    # Condiciones del vehículo (art. 12 / RD 2822/98)
+    if re.search(r"\bart[ií]culo\s*12\b", t) or re.search(r"\bart\.\s*12\b", t) or ("2822/98" in t):
+        facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
+        return ("condiciones_vehiculo", facts[0], facts)
+
+    # Alumbrado / señalización óptica (art. 15 muy frecuente en boletines)
+    if re.search(r"\bart[ií]culo\s*15\b", t) or re.search(r"\bart\.\s*15\b", t):
+        facts.append("DEFECTOS EN ALUMBRADO/SEÑALIZACIÓN ÓPTICA (ART. 15)")
+        return ("condiciones_vehiculo", facts[0], facts)
+
+    # Atención permanente (art. 18 típico en RGC)
+    if re.search(r"\bart[ií]culo\s*18\b", t) or re.search(r"\bart\.\s*18\b", t):
+        facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN (ART. 18)")
+        return ("atencion", facts[0], facts)
+
+    # =========================================================
+    # 1) SEMÁFORO (NO usar 'luz roja' sola para evitar falsos positivos)
     # =========================================================
     sema_patterns = [
         r"circular\s+con\s+luz\s+roja",
-        r"luz\s+roja",
-        r"sem[aá]foro\s+en\s+rojo",
+        r"sem[aá]foro",
+        r"fase\s+roja",
+        r"luz\s+roja\s+del\s+sem[aá]foro",
+        r"no\s+respetar\s+la\s+luz\s+roja",
         r"no\s+respetar\s+.*sem[aá]foro",
     ]
     for p in sema_patterns:
@@ -147,7 +177,7 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
             return ("semaforo", facts[0], facts)
 
     # =========================================================
-    # 2) VELOCIDAD (radar/cinemómetro)
+    # 2) VELOCIDAD
     # =========================================================
     m = re.search(r"\b(\d{2,3})\s*km\s*/?\s*h\b", t)
     if m:
@@ -169,39 +199,24 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         return ("movil", facts[0], facts)
 
     # =========================================================
-    # 4) NO IDENTIFICAR CONDUCTOR (muy común en DGT/CTDA)
+    # 4) NO IDENTIFICAR (texto)
     # =========================================================
     if ("identificar" in t and "conductor" in t) and ("plazo de veinte" in t or "20" in t or "veinte días" in t or "veinte dias" in t):
         facts.append("NO IDENTIFICAR AL CONDUCTOR")
         return ("no_identificar", facts[0], facts)
-    if re.search(r"\bart\.\s*9\.?\s*1\s*bis\b", t) or re.search(r"\bart[ií]culo\s*9\.?\s*1\s*bis\b", t):
-        facts.append("NO IDENTIFICAR AL CONDUCTOR (ART. 9.1 BIS)")
-        return ("no_identificar", facts[0], facts)
 
     # =========================================================
-    # 5) ITV / SEGURO
+    # 5) ITV / SEGURO (texto)
     # =========================================================
-    # ITV
     if ("itv" in t and ("caduc" in t or "sin itv" in t or "no vigente" in t)) or ("inspección técnica" in t and ("caduc" in t or "no vigente" in t)):
         facts.append("ITV NO VIGENTE / CADUCADA")
         return ("itv", facts[0], facts)
 
-    # SEGURO OBLIGATORIO (LSOA / RDL 8/2004) — patrones robustos
-    # Señales legales típicas en boletines de seguro:
-    # - "LSOA" / "Ley sobre Responsabilidad Civil y Seguro..."
-    # - "R.D. Legislativo 8/2004" (o variantes OCR)
-    # Señales fácticas típicas:
-    # - "contrato de seguro" + "mantenga en vigor" / "suscrito"
-    # - "sin que conste" + "seguro"
-    # - "responsabilidad civil derivada de su circulación"
     if (
         ("seguro" in t and ("obligatorio" in t or "carece" in t or "sin seguro" in t))
         or ("contrato de seguro" in t and ("mantenga en vigor" in t or "mantener en vigor" in t or "suscrito" in t or "suscrita" in t))
         or ("sin que conste" in t and "seguro" in t)
         or ("responsabilidad civil derivada de su circulación" in t or "responsabilidad civil derivada de su circulacion" in t)
-        or ("lsoa" in t)
-        or ("r.d. legislativo" in t and "8/2004" in t)
-        or ("rd legislativo" in t and "8/2004" in t)
         or ("8/2004" in t and ("responsabilidad civil" in t or "seguro" in t))
     ):
         facts.append("CARENCIA DE SEGURO OBLIGATORIO")
@@ -231,29 +246,25 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         return ("sri", facts[0], facts)
 
     # =========================================================
-    # 8) CONDICIONES DEL VEHÍCULO (Art. 12 RGC / RD 2822/98, deslumbramiento, reformas)
+    # 8) CONDICIONES VEHÍCULO (texto)
     # =========================================================
-    if ("condiciones reglamentarias" in t) or ("vehículo reseñado" in t) or ("vehiculo reseñado" in t) or ("deslumbr" in t):
+    if any(k in t for k in [
+        "condiciones reglamentarias", "vehículo reseñado", "vehiculo reseñado",
+        "deslumbr", "dispositivos de alumbrado", "señalización óptica", "senalizacion optica",
+        "anexo i", "emite luz", "destellos", "luz roja en la parte trasera"
+    ]):
         facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
         return ("condiciones_vehiculo", facts[0], facts)
 
-    if re.search(r"\bart[ií]culo\s*12\b", t) or re.search(r"\bart\.\s*12\b", t):
-        facts.append("INCUMPLIMIENTO DE CONDICIONES TÉCNICAS DEL VEHÍCULO (ART. 12 RGC)")
-        return ("condiciones_vehiculo", facts[0], facts)
-
-    if "r.d. 2822/98" in t or "rd 2822/98" in t or "2822/98" in t:
-        facts.append("INFRACCIÓN TÉCNICA DEL VEHÍCULO (RD 2822/98)")
-        return ("condiciones_vehiculo", facts[0], facts)
-
     # =========================================================
-    # 9) ATENCIÓN / DISTRACCIÓN
+    # 9) ATENCIÓN / DISTRACCIÓN (texto)
     # =========================================================
     if "atención permanente" in t or "atencion permanente" in t or "distracción" in t or "distraccion" in t:
         facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN")
         return ("atencion", facts[0], facts)
 
     # =========================================================
-    # 10) PARKING básico
+    # 10) PARKING
     # =========================================================
     if "doble fila" in t:
         facts.append("ESTACIONAR EN DOBLE FILA")
@@ -266,6 +277,7 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         return ("parking", facts[0], facts)
 
     return ("otro", "", [])
+
 
 
 def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
