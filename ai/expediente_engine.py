@@ -336,6 +336,8 @@ def _map_precept_to_type(extraction_core: Dict[str, Any]) -> Optional[str]:
             return "condiciones_vehiculo"
         if art == 18:
             return "atencion"
+        if art == 167:
+            return "marcas_viales"
 
     # RD 2822/98 también es técnico de vehículo
     if any("2822/98" in (p or "") for p in precepts) or "2822/98" in norma_hint:
