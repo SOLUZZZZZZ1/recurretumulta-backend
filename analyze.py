@@ -150,18 +150,23 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
         return ("condiciones_vehiculo", facts[0], facts)
 
-    # Alumbrado / señalización óptica (art. 15 muy frecuente en boletines)
+    # Alumbrado / señalización óptica (art. 15)
     if re.search(r"\bart[ií]culo\s*15\b", t) or re.search(r"\bart\.\s*15\b", t):
         facts.append("DEFECTOS EN ALUMBRADO/SEÑALIZACIÓN ÓPTICA (ART. 15)")
         return ("condiciones_vehiculo", facts[0], facts)
 
-    # Atención permanente (art. 18 típico en RGC)
+    # Atención permanente (art. 18)
     if re.search(r"\bart[ií]culo\s*18\b", t) or re.search(r"\bart\.\s*18\b", t):
         facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN (ART. 18)")
         return ("atencion", facts[0], facts)
 
+    # Marcas viales / señalización horizontal (art. 167 habitual en boletines)
+    if re.search(r"\bart[ií]culo\s*167\b", t) or re.search(r"\bart\.\s*167\b", t):
+        facts.append("NO RESPETAR MARCA LONGITUDINAL CONTINUA (ART. 167)")
+        return ("marcas_viales", facts[0], facts)
+
     # =========================================================
-    # 1) SEMÁFORO (NO usar 'luz roja' sola para evitar falsos positivos)
+    # 1) SEMÁFORO (NO usar 'luz roja' sola)
     # =========================================================
     sema_patterns = [
         r"circular\s+con\s+luz\s+roja",
@@ -187,6 +192,16 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
     if "exceso de velocidad" in t or "radar" in t or "cinemómetro" in t or "cinemometro" in t:
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
+
+    # =========================================================
+    # 2B) MARCAS VIALES / SEÑALIZACIÓN HORIZONTAL (texto)
+    # =========================================================
+    if ("marca longitudinal continua" in t) or ("marca longitudinal" in t and "continua" in t) or ("línea continua" in t) or ("linea continua" in t):
+        facts.append("NO RESPETAR MARCA LONGITUDINAL CONTINUA")
+        return ("marcas_viales", facts[0], facts)
+    if ("adelant" in t) and (("línea continua" in t) or ("linea continua" in t) or ("marca longitudinal" in t)):
+        facts.append("ADELANTAMIENTO INDEBIDO CON LÍNEA CONTINUA")
+        return ("marcas_viales", facts[0], facts)
 
     # =========================================================
     # 3) MÓVIL
@@ -277,6 +292,7 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         return ("parking", facts[0], facts)
 
     return ("otro", "", [])
+
 
 
 
