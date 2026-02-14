@@ -52,7 +52,9 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
     t = (text_blob or "").lower()
     facts: List[str] = []
 
-    # SEMÁFORO
+    # =========================================================
+    # 1) SEMÁFORO (prioridad alta)
+    # =========================================================
     sema_patterns = [
         r"circular\s+con\s+luz\s+roja",
         r"luz\s+roja",
@@ -64,7 +66,9 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
             facts.append("CIRCULAR CON LUZ ROJA")
             return ("semaforo", facts[0], facts)
 
-    # VELOCIDAD
+    # =========================================================
+    # 2) VELOCIDAD (radar/cinemómetro)
+    # =========================================================
     m = re.search(r"\b(\d{2,3})\s*km\s*/?\s*h\b", t)
     if m:
         vel = m.group(1)
@@ -74,7 +78,9 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
 
-    # MÓVIL
+    # =========================================================
+    # 3) MÓVIL
+    # =========================================================
     if "utilizando manualmente" in t and ("teléfono" in t or "telefono" in t or "móvil" in t or "movil" in t):
         facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
@@ -82,12 +88,74 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("USO DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
 
-    # ATENCIÓN / DISTRACCIÓN
+    # =========================================================
+    # 4) NO IDENTIFICAR CONDUCTOR (muy común en DGT/CTDA)
+    # =========================================================
+    if ("identificar" in t and "conductor" in t) and ("plazo de veinte" in t or "20" in t or "veinte días" in t or "veinte dias" in t):
+        facts.append("NO IDENTIFICAR AL CONDUCTOR")
+        return ("no_identificar", facts[0], facts)
+    if re.search(r"\bart\.\s*9\.?\s*1\s*bis\b", t) or re.search(r"\bart[ií]culo\s*9\.?\s*1\s*bis\b", t):
+        facts.append("NO IDENTIFICAR AL CONDUCTOR (ART. 9.1 BIS)")
+        return ("no_identificar", facts[0], facts)
+
+    # =========================================================
+    # 5) ITV / SEGURO
+    # =========================================================
+    if ("itv" in t and ("caduc" in t or "sin itv" in t or "no vigente" in t)) or ("inspección técnica" in t and ("caduc" in t or "no vigente" in t)):
+        facts.append("ITV NO VIGENTE / CADUCADA")
+        return ("itv", facts[0], facts)
+    if ("seguro" in t and ("obligatorio" in t or "carece" in t or "sin seguro" in t)) or ("fiva" in t and ("sin" in t or "no consta" in t)):
+        facts.append("CARENCIA DE SEGURO OBLIGATORIO")
+        return ("seguro", facts[0], facts)
+
+    # =========================================================
+    # 6) ALCOHOLEMIA / DROGAS
+    # =========================================================
+    if "alcoholemia" in t or "mg/l" in t or "aire espirado" in t:
+        facts.append("ALCOHOLEMIA")
+        return ("alcoholemia", facts[0], facts)
+    if "drogas" in t or "estupefac" in t or "cannabis" in t or "cocaína" in t or "cocaina" in t:
+        facts.append("CONDUCCIÓN BAJO EFECTOS DE DROGAS")
+        return ("drogas", facts[0], facts)
+
+    # =========================================================
+    # 7) CINTURÓN / CASCO / SRI
+    # =========================================================
+    if "cinturón" in t or "cinturon" in t:
+        facts.append("NO UTILIZAR CINTURÓN DE SEGURIDAD")
+        return ("cinturon", facts[0], facts)
+    if "casco" in t:
+        facts.append("NO UTILIZAR CASCO")
+        return ("casco", facts[0], facts)
+    if "sri" in t or "sistema de retención infantil" in t or "retención infantil" in t:
+        facts.append("SISTEMA DE RETENCIÓN INFANTIL (SRI)")
+        return ("sri", facts[0], facts)
+
+    # =========================================================
+    # 8) CONDICIONES DEL VEHÍCULO (Art. 12 RGC / RD 2822/98, deslumbramiento, reformas)
+    # =========================================================
+    if ("condiciones reglamentarias" in t) or ("vehículo reseñado" in t) or ("vehiculo reseñado" in t) or ("deslumbr" in t):
+        facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
+        return ("condiciones_vehiculo", facts[0], facts)
+
+    if re.search(r"\bart[ií]culo\s*12\b", t) or re.search(r"\bart\.\s*12\b", t):
+        facts.append("INCUMPLIMIENTO DE CONDICIONES TÉCNICAS DEL VEHÍCULO (ART. 12 RGC)")
+        return ("condiciones_vehiculo", facts[0], facts)
+
+    if "r.d. 2822/98" in t or "rd 2822/98" in t or "2822/98" in t:
+        facts.append("INFRACCIÓN TÉCNICA DEL VEHÍCULO (RD 2822/98)")
+        return ("condiciones_vehiculo", facts[0], facts)
+
+    # =========================================================
+    # 9) ATENCIÓN / DISTRACCIÓN
+    # =========================================================
     if "atención permanente" in t or "atencion permanente" in t or "distracción" in t or "distraccion" in t:
         facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN")
         return ("atencion", facts[0], facts)
 
-    # PARKING básico
+    # =========================================================
+    # 10) PARKING básico
+    # =========================================================
     if "doble fila" in t:
         facts.append("ESTACIONAR EN DOBLE FILA")
         return ("parking", facts[0], facts)
