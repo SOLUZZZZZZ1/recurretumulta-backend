@@ -72,19 +72,44 @@ def _build_facts_summary(
     timeline: Dict[str, Any],
     latest_extraction: Optional[Dict[str, Any]],
     docs: List[Dict[str, Any]],
+    attack_plan: Dict[str, Any],
 ) -> str:
     '''
     Construye un facts_summary breve y conservador para que el recurso "suene" al expediente real.
-    - Si latest_extraction.extracted.hecho_imputado existe, se usa literalmente.
-    - Si no, se arma un resumen con organismo/expediente/fechas cuando consten.
+
+    Reglas de seguridad (muy importante):
+    - Si latest_extraction.extracted.hecho_imputado existe, SOLO se usa si es consistente con el tipo de infracción.
+      (Ej: si es semáforo, debe mencionar semáforo/luz roja/fase roja; si no, se ignora.)
+    - Si no hay hecho imputado consistente, se deja vacío para que el prompt de redacción use su plantilla correcta
+      según attack_plan.infraction_type (semáforo/velocidad/móvil/...).
+    - Además, se añade un resumen mínimo con organismo/expediente/fecha y "vehículo en marcha" si consta.
     '''
+    inf = ((attack_plan or {}).get("infraction_type") or "").lower()
+
+    # 1) Intentar usar "hecho_imputado" SOLO si es consistente con la infracción detectada
     try:
         hecho = ((latest_extraction or {}).get("extracted") or {}).get("hecho_imputado")
         if isinstance(hecho, str) and hecho.strip():
-            return hecho.strip()
+            h = hecho.strip()
+            hl = h.lower()
+
+            def _consistent() -> bool:
+                if inf == "semaforo":
+                    return any(k in hl for k in ["semáforo", "semaforo", "luz roja", "fase roja", "rojo"])
+                if inf == "velocidad":
+                    return any(k in hl for k in ["velocidad", "km/h", "radar", "cinemómetro", "cinemometro"])
+                if inf == "movil":
+                    return any(k in hl for k in ["móvil", "movil", "teléfono", "telefono"])
+                # genérico: si no sabemos, aceptar
+                return True
+
+            if _consistent():
+                return h
     except Exception:
         pass
 
+    # 2) Si no es consistente, NO metemos un hecho erróneo. Devolvemos vacío y el prompt pondrá el hecho correcto.
+    #    Aun así, añadimos un mini-resumen neutral (organismo/expediente/fecha + motivo "vehículo en marcha").
     parts: List[str] = []
     global_refs = (classification or {}).get("global_refs") or {}
     organismo = global_refs.get("main_organism")
@@ -115,7 +140,9 @@ def _build_facts_summary(
     if "vehículo en marcha" in blob or "vehiculo en marcha" in blob:
         parts.append("Motivo de no notificación en acto: vehículo en marcha.")
 
-    return " ".join(parts).strip()
+    # Si solo hay meta neutral, devolvemos "" para que el prompt ponga el "Hecho imputado" correcto.
+    # El meta neutral lo mandamos en notes_for_operator vía evento, no en facts_summary.
+    return ""
 
 
 
@@ -424,7 +451,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-    facts_summary = _build_facts_summary(classify, timeline, latest_extraction, docs)
+    facts_summary = _build_facts_summary(classify, timeline, latest_extraction, docs, attack_plan)
 
     draft = None
     if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
