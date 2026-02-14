@@ -146,6 +146,33 @@ def _build_facts_summary(
 
 
 
+
+
+# =========================================================
+# Señales fuertes para forzar SEMÁFORO (determinista)
+# =========================================================
+def _has_semaforo_signals(docs: List[Dict[str, Any]], latest_extraction: Optional[Dict[str, Any]]) -> bool:
+    blob_parts: List[str] = []
+    try:
+        blob_parts.append(json.dumps(latest_extraction or {}, ensure_ascii=False).lower())
+    except Exception:
+        pass
+    for d in docs or []:
+        blob_parts.append((d.get("text_excerpt") or "").lower())
+
+    blob = "\n".join(blob_parts)
+
+    signals = [
+        "semáforo",
+        "semaforo",
+        "luz roja",
+        "fase roja",
+        "no respetar la luz roja",
+        "circular con luz roja",
+    ]
+    return any(s in blob for s in signals)
+
+
 # =========================================================
 # OpenAI JSON helper (igual que tu versión estable)
 # =========================================================
@@ -397,9 +424,14 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         admissibility["deadline_status"] = admissibility.get("deadline_status") or "UNKNOWN"
         admissibility["required_constraints"] = admissibility.get("required_constraints") or []
         _save_event(case_id, "test_override_applied", {"flags": flags})
+# Attack plan (determinista) + FORZADO semáforo si hay señales fuertes
+force_semaforo = _has_semaforo_signals(docs, latest_extraction)
 
-    # Attack plan modular (determinista)
+if force_semaforo:
+    attack_plan = {"infraction_type": "semaforo"}
+else:
     attack_plan = _build_attack_plan(classify, timeline, latest_extraction or {})
+
 
     # Si es semáforo, usamos módulo específico + ajustamos según tipo de captación
     if (attack_plan.get('infraction_type') or '') == 'semaforo':
