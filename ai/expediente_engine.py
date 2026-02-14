@@ -18,167 +18,8 @@ from ai.prompts.module_semaforo import module_semaforo
 MAX_EXCERPT_CHARS = 12000
 
 
-# =========================================================
-# Semáforo: detección de tipo de captación (heurística)
-# =========================================================
-def _detect_capture_mode(docs: List[Dict[str, Any]], latest_extraction: Optional[Dict[str, Any]]) -> str:
-    '''
-    Devuelve: 'AUTO' (captación automática/cámara), 'AGENT' (agente presencial),
-    o 'UNKNOWN' si no se puede determinar con fiabilidad.
-    Heurístico y conservador: ante duda -> UNKNOWN.
-    '''
-    blob_parts: List[str] = []
-    try:
-        blob_parts.append(json.dumps(latest_extraction or {}, ensure_ascii=False))
-    except Exception:
-        pass
-
-    for d in docs or []:
-        t = (d.get("text_excerpt") or "")
-        if t:
-            blob_parts.append(t)
-
-    blob = "\n".join(blob_parts).lower()
-
-    auto_signals = [
-        "cámara", "camara", "fotograma", "fotogramas", "secuencia", "foto", "fotografía", "fotografia",
-        "captación automática", "captacion automatica", "sistema automático", "sistema automatico",
-        "dispositivo", "sensor", "instalación", "instalacion", "vídeo", "video"
-    ]
-    agent_signals = [
-        "agente", "policía", "policia", "guardia civil", "denunciante", "observó", "observo",
-        "manifestó", "manifesto", "presencial", "in situ"
-    ]
-
-    auto_score = sum(1 for s in auto_signals if s in blob)
-    agent_score = sum(1 for s in agent_signals if s in blob)
-
-    # Señal frecuente en boletines: no notificación en acto por vehículo en marcha
-    # No prueba cámara, pero refuerza que NO fue notificación en mano.
-    if "motivo de no notificación" in blob or "motivo de no notificacion" in blob:
-        if "vehículo en marcha" in blob or "vehiculo en marcha" in blob:
-            auto_score += 0
-            agent_score += 0
-
-    if auto_score >= 2 and auto_score >= agent_score + 1:
-        return "AUTO"
-    if agent_score >= 2 and agent_score >= auto_score + 1:
-        return "AGENT"
-    return "UNKNOWN"
-
-
-def _build_facts_summary(
-    classification: Dict[str, Any],
-    timeline: Dict[str, Any],
-    latest_extraction: Optional[Dict[str, Any]],
-    docs: List[Dict[str, Any]],
-    attack_plan: Dict[str, Any],
-) -> str:
-    '''
-    Construye un facts_summary breve y conservador para que el recurso "suene" al expediente real.
-
-    Reglas de seguridad (muy importante):
-    - Si latest_extraction.extracted.hecho_imputado existe, SOLO se usa si es consistente con el tipo de infracción.
-      (Ej: si es semáforo, debe mencionar semáforo/luz roja/fase roja; si no, se ignora.)
-    - Si no hay hecho imputado consistente, se deja vacío para que el prompt de redacción use su plantilla correcta
-      según attack_plan.infraction_type (semáforo/velocidad/móvil/...).
-    - Además, se añade un resumen mínimo con organismo/expediente/fecha y "vehículo en marcha" si consta.
-    '''
-    inf = ((attack_plan or {}).get("infraction_type") or "").lower()
-
-    # 1) Intentar usar "hecho_imputado" SOLO si es consistente con la infracción detectada
-    try:
-        hecho = ((latest_extraction or {}).get("extracted") or {}).get("hecho_imputado")
-        if isinstance(hecho, str) and hecho.strip():
-            h = hecho.strip()
-            hl = h.lower()
-
-            def _consistent() -> bool:
-                if inf == "semaforo":
-                    return any(k in hl for k in ["semáforo", "semaforo", "luz roja", "fase roja", "rojo"])
-                if inf == "velocidad":
-                    return any(k in hl for k in ["velocidad", "km/h", "radar", "cinemómetro", "cinemometro"])
-                if inf == "movil":
-                    return any(k in hl for k in ["móvil", "movil", "teléfono", "telefono"])
-                # genérico: si no sabemos, aceptar
-                return True
-
-            if _consistent():
-                return h
-    except Exception:
-        pass
-
-    # 2) Si no es consistente, NO metemos un hecho erróneo. Devolvemos vacío y el prompt pondrá el hecho correcto.
-    #    Aun así, añadimos un mini-resumen neutral (organismo/expediente/fecha + motivo "vehículo en marcha").
-    parts: List[str] = []
-    global_refs = (classification or {}).get("global_refs") or {}
-    organismo = global_refs.get("main_organism")
-    expediente_ref = global_refs.get("expediente_ref")
-
-    if organismo:
-        parts.append(f"Organismo: {organismo}.")
-    if expediente_ref:
-        parts.append(f"Expediente: {expediente_ref}.")
-
-    tl = (timeline or {}).get("timeline") or []
-    notif_date = None
-    for ev in tl:
-        act = (ev.get("act_type") or "").lower()
-        if "notific" in act:
-            d = ev.get("date")
-            if isinstance(d, str) and len(d) >= 10:
-                notif_date = d[:10]
-                break
-    if notif_date:
-        parts.append(f"Notificación: {notif_date}.")
-
-    blob = ""
-    try:
-        blob = json.dumps(latest_extraction or {}, ensure_ascii=False).lower()
-    except Exception:
-        blob = ""
-    if "vehículo en marcha" in blob or "vehiculo en marcha" in blob:
-        parts.append("Motivo de no notificación en acto: vehículo en marcha.")
-
-    # Si solo hay meta neutral, devolvemos "" para que el prompt ponga el "Hecho imputado" correcto.
-    # El meta neutral lo mandamos en notes_for_operator vía evento, no en facts_summary.
-    return ""
-
-
-
-
-
-# =========================================================
-# Señales fuertes para forzar SEMÁFORO (determinista)
-# =========================================================
-def _has_semaforo_signals(docs: List[Dict[str, Any]], latest_extraction: Optional[Dict[str, Any]]) -> bool:
-    blob_parts: List[str] = []
-    try:
-        blob_parts.append(json.dumps(latest_extraction or {}, ensure_ascii=False).lower())
-    except Exception:
-        pass
-    for d in docs or []:
-        blob_parts.append((d.get("text_excerpt") or "").lower())
-
-    blob = "\n".join(blob_parts)
-
-    signals = [
-        "semáforo",
-        "semaforo",
-        "luz roja",
-        "fase roja",
-        "no respetar la luz roja",
-        "circular con luz roja",
-    ]
-    return any(s in blob for s in signals)
-
-
-# =========================================================
-# OpenAI JSON helper (igual que tu versión estable)
-# =========================================================
 def _llm_json(prompt: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
     resp = client.chat.completions.create(
         model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         messages=[
@@ -188,13 +29,9 @@ def _llm_json(prompt: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         temperature=0.2,
         response_format={"type": "json_object"},
     )
-
     return json.loads(resp.choices[0].message.content)
 
 
-# =========================================================
-# DB helpers
-# =========================================================
 def _save_event(case_id: str, event_type: str, payload: Dict[str, Any]) -> None:
     engine = get_engine()
     with engine.begin() as conn:
@@ -208,6 +45,10 @@ def _save_event(case_id: str, event_type: str, payload: Dict[str, Any]) -> None:
 
 
 def _load_latest_extraction(case_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Devuelve el JSONB tal y como está guardado en extractions.extracted_json.
+    En tu /analyze, esto es un 'wrapper' que contiene una clave 'extracted' con el core.
+    """
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(
@@ -270,34 +111,129 @@ def _load_case_documents(case_id: str) -> List[Dict[str, Any]]:
     return docs
 
 
-# =========================================================
-# Attack plan determinista (SIN imports nuevos)
-# =========================================================
-def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], latest_extraction: Dict[str, Any]) -> Dict[str, Any]:
+def _detect_capture_mode(docs: List[Dict[str, Any]], extraction_core: Optional[Dict[str, Any]]) -> str:
+    blob_parts: List[str] = []
+    try:
+        blob_parts.append(json.dumps(extraction_core or {}, ensure_ascii=False))
+    except Exception:
+        pass
+
+    for d in docs or []:
+        t = (d.get("text_excerpt") or "")
+        if t:
+            blob_parts.append(t)
+
+    blob = "\n".join(blob_parts).lower()
+
+    auto_signals = [
+        "cámara", "camara", "fotograma", "fotogramas", "secuencia", "foto", "fotografía", "fotografia",
+        "captación automática", "captacion automatica", "sistema automático", "sistema automatico",
+        "dispositivo", "sensor", "instalación", "instalacion", "vídeo", "video"
+    ]
+    agent_signals = [
+        "agente", "policía", "policia", "guardia civil", "denunciante", "observó", "observo",
+        "manifestó", "manifesto", "presencial", "in situ"
+    ]
+
+    auto_score = sum(1 for s in auto_signals if s in blob)
+    agent_score = sum(1 for s in agent_signals if s in blob)
+
+    if ("motivo de no notificación" in blob or "motivo de no notificacion" in blob) and (
+        "vehículo en marcha" in blob or "vehiculo en marcha" in blob
+    ):
+        pass
+
+    if auto_score >= 2 and auto_score >= agent_score + 1:
+        return "AUTO"
+    if agent_score >= 2 and agent_score >= auto_score + 1:
+        return "AGENT"
+    return "UNKNOWN"
+
+
+def _infer_infraction_from_facts_phrases(classify: Dict[str, Any]) -> Optional[str]:
+    phrases = (classify or {}).get("facts_phrases") or []
+    if not phrases:
+        return None
+    joined = "\n".join([str(p) for p in phrases if p]).lower()
+    if any(s in joined for s in ["semáforo", "semaforo", "luz roja", "fase roja", "circular con luz roja", "no respetar la luz roja"]):
+        return "semaforo"
+    if any(s in joined for s in ["móvil", "movil", "teléfono", "telefono"]):
+        return "movil"
+    if any(s in joined for s in ["velocidad", "km/h", "radar", "cinemómetro", "cinemometro"]):
+        return "velocidad"
+    return None
+
+
+def _has_semaforo_signals(docs: List[Dict[str, Any]], extraction_core: Optional[Dict[str, Any]], classify: Optional[Dict[str, Any]] = None) -> bool:
+    phrases = (classify or {}).get("facts_phrases") or []
+    for p in phrases:
+        pl = (p or "").lower()
+        if any(s in pl for s in ["semáforo", "semaforo", "luz roja", "fase roja", "circular con luz roja", "no respetar la luz roja"]):
+            return True
+
+    blob_parts: List[str] = []
+    try:
+        blob_parts.append(json.dumps(extraction_core or {}, ensure_ascii=False).lower())
+    except Exception:
+        pass
+    for d in docs or []:
+        blob_parts.append((d.get("text_excerpt") or "").lower())
+    blob = "\n".join(blob_parts)
+
+    signals = ["semáforo", "semaforo", "luz roja", "fase roja", "no respetar la luz roja", "circular con luz roja"]
+    return any(s in blob for s in signals)
+
+
+def _build_facts_summary(extraction_core: Optional[Dict[str, Any]], attack_plan: Dict[str, Any]) -> str:
+    inf = ((attack_plan or {}).get("infraction_type") or "").lower()
+    try:
+        hecho = (extraction_core or {}).get("hecho_imputado")
+        if isinstance(hecho, str) and hecho.strip():
+            hl = hecho.lower()
+
+            def consistent() -> bool:
+                if inf == "semaforo":
+                    return any(k in hl for k in ["semáforo", "semaforo", "luz roja", "fase roja", "rojo"])
+                if inf == "velocidad":
+                    return any(k in hl for k in ["velocidad", "km/h", "radar", "cinemómetro", "cinemometro"])
+                if inf == "movil":
+                    return any(k in hl for k in ["móvil", "movil", "teléfono", "telefono"])
+                return True
+
+            if consistent():
+                return hecho.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extraction_core: Dict[str, Any]) -> Dict[str, Any]:
     global_refs = (classify or {}).get("global_refs") or {}
     organism = (global_refs.get("main_organism") or "").lower()
     traffic = ("tráfico" in organism) or ("dgt" in organism)
 
-    blob = json.dumps(latest_extraction or {}, ensure_ascii=False).lower()
+    blob = json.dumps(extraction_core or {}, ensure_ascii=False).lower()
 
-    # Fuente de verdad si viene del primer triaje (/analyze)
+    inferred = _infer_infraction_from_facts_phrases(classify)
+
     triage_tipo = None
-    triage_hecho = None
     try:
-        triage_tipo = (latest_extraction or {}).get('extracted', {}).get('tipo_infraccion')
-        triage_hecho = (latest_extraction or {}).get('extracted', {}).get('hecho_imputado')
+        triage_tipo = (extraction_core or {}).get("tipo_infraccion")
     except Exception:
         triage_tipo = None
-        triage_hecho = None
 
+    infraction_type = inferred or "generic"
 
-    infraction_type = "generic"
-    if triage_tipo in ("semaforo","velocidad","movil","atencion","parking"):
+    if infraction_type == "generic" and triage_tipo in ("semaforo", "velocidad", "movil", "atencion", "parking"):
         infraction_type = triage_tipo
-    if "teléfono" in blob or "telefono" in blob or "móvil" in blob or "movil" in blob:
-        infraction_type = "movil"
-    elif "km/h" in blob or "radar" in blob or "cinemómetro" in blob or "cinemometro" in blob:
-        infraction_type = "velocidad"
+
+    if infraction_type == "generic":
+        if any(s in blob for s in ["semáforo", "semaforo", "luz roja", "fase roja", "circular con luz roja", "no respetar la luz roja"]):
+            infraction_type = "semaforo"
+        elif any(s in blob for s in ["teléfono", "telefono", "móvil", "movil"]):
+            infraction_type = "movil"
+        elif any(s in blob for s in ["km/h", "radar", "cinemómetro", "cinemometro", "velocidad"]):
+            infraction_type = "velocidad"
 
     plan = {
         "infraction_type": infraction_type,
@@ -345,9 +281,8 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], lates
                 "Certificado de verificación/calibración vigente y constancia del margen aplicado.",
             ]
 
-        # Antigüedad: si hay fechas muy antiguas, exigir acreditación de notificación/firmeza/actos interruptivos
         tl = (timeline or {}).get("timeline") or []
-        dates = []
+        dates: List[str] = []
         for ev in tl:
             d = ev.get("date")
             if isinstance(d, str) and len(d) >= 10:
@@ -371,38 +306,30 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], lates
     return plan
 
 
-# =========================================================
-# MAIN ORCHESTRATOR (tu flujo intacto)
-# =========================================================
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     docs = _load_case_documents(case_id)
     if not docs:
         raise RuntimeError("No hay documentos asociados al expediente.")
 
-    latest_extraction = _load_latest_extraction(case_id)
+    # FIX: extractions.extracted_json es wrapper; el core está en wrapper["extracted"]
+    extraction_wrapper = _load_latest_extraction(case_id) or {}
+    extraction_core = (extraction_wrapper.get("extracted") or {}) if isinstance(extraction_wrapper, dict) else {}
 
-    capture_mode = _detect_capture_mode(docs, latest_extraction)
-
-    triage_hecho_global = None
-    try:
-        triage_hecho_global = (latest_extraction or {}).get('extracted', {}).get('hecho_imputado')
-    except Exception:
-        triage_hecho_global = None
-
+    capture_mode = _detect_capture_mode(docs, extraction_core)
 
     classify = _llm_json(
         PROMPT_CLASSIFY,
-        {"case_id": case_id, "documents": docs, "latest_extraction": latest_extraction},
+        {"case_id": case_id, "documents": docs, "latest_extraction": extraction_wrapper},
     )
 
     timeline = _llm_json(
         PROMPT_TIMELINE,
-        {"case_id": case_id, "classification": classify, "documents": docs, "latest_extraction": latest_extraction},
+        {"case_id": case_id, "classification": classify, "documents": docs, "latest_extraction": extraction_wrapper},
     )
 
     phase = _llm_json(
         PROMPT_PHASE,
-        {"case_id": case_id, "classification": classify, "timeline": timeline, "latest_extraction": latest_extraction},
+        {"case_id": case_id, "classification": classify, "timeline": timeline, "latest_extraction": extraction_wrapper},
     )
 
     admissibility = _llm_json(
@@ -412,11 +339,10 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
             "recommended_action": phase,
             "timeline": timeline,
             "classification": classify,
-            "latest_extraction": latest_extraction,
+            "latest_extraction": extraction_wrapper,
         },
     )
 
-    # Override pruebas (tu lógica)
     flags = _load_case_flags(case_id)
     if flags.get("test_mode") and flags.get("override_deadlines"):
         admissibility["admissibility"] = "ADMISSIBLE"
@@ -424,97 +350,91 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         admissibility["deadline_status"] = admissibility.get("deadline_status") or "UNKNOWN"
         admissibility["required_constraints"] = admissibility.get("required_constraints") or []
         _save_event(case_id, "test_override_applied", {"flags": flags})
-    # Attack plan (determinista) + FORZADO semáforo si hay señales fuertes
-    force_semaforo = _has_semaforo_signals(docs, latest_extraction)
+
+    force_semaforo = _has_semaforo_signals(docs, extraction_core, classify)
 
     if force_semaforo:
-        attack_plan = {"infraction_type": "semaforo"}
-    else:
-        attack_plan = _build_attack_plan(classify, timeline, latest_extraction or {})
+        sem = module_semaforo()
+        secondary_attacks = list(sem.get("secondary_attacks") or [])
 
+        if capture_mode == "AUTO":
+            secondary_attacks.insert(0, {
+                "title": "Captación automática: exigencia de secuencia completa y verificación del sistema",
+                "points": [
+                    "Debe aportarse secuencia completa que permita verificar fase roja activa en el instante del cruce.",
+                    "Debe acreditarse el correcto funcionamiento/sincronización del sistema de captación."
+                ]
+            })
+        elif capture_mode == "AGENT":
+            secondary_attacks.insert(0, {
+                "title": "Denuncia presencial: motivación reforzada y descripción detallada de la observación",
+                "points": [
+                    "Debe describirse con precisión la observación (ubicación, visibilidad, distancia y circunstancias).",
+                    "La falta de detalle impide contradicción efectiva y genera indefensión."
+                ]
+            })
+        else:
+            secondary_attacks.insert(0, {
+                "title": "Tipo de captación no concluyente: aportar prueba completa para evitar indefensión",
+                "points": [
+                    "Debe aportarse la prueba completa del hecho: secuencia/fotogramas si captación automática, o descripción detallada si denuncia presencial.",
+                    "En caso de no constar, procede el archivo por insuficiencia probatoria."
+                ]
+            })
 
-        # Si es semáforo, usamos módulo específico + ajustamos según tipo de captación
-        if (attack_plan.get('infraction_type') or '') == 'semaforo':
-            try:
-                sem = module_semaforo()
-                secondary_attacks = list(sem.get('secondary_attacks') or [])
-                if capture_mode == 'AUTO':
-                    secondary_attacks.insert(0, {
-                        'title': 'Captación automática: exigencia de secuencia completa y verificación del sistema',
-                        'points': [
-                            'Debe aportarse secuencia completa que permita verificar fase roja activa en el instante del cruce.',
-                            'Debe acreditarse el correcto funcionamiento/sincronización del sistema de captación.'
-                        ]
-                    })
-                elif capture_mode == 'AGENT':
-                    secondary_attacks.insert(0, {
-                        'title': 'Denuncia presencial: motivación reforzada y descripción detallada de la observación',
-                        'points': [
-                            'Debe describirse con precisión la observación (ubicación, visibilidad, distancia y circunstancias).',
-                            'La falta de detalle impide contradicción efectiva y genera indefensión.'
-                        ]
-                    })
-                else:
-                    secondary_attacks.insert(0, {
-                        'title': 'Tipo de captación no concluyente: aportar prueba completa (sistema o denuncia) para evitar indefensión',
-                        'points': [
-                            'Debe aportarse la prueba completa del hecho: o bien secuencia/fotogramas si captación automática, o bien descripción detallada si denuncia presencial.',
-                            'En caso de no constar, procede el archivo por insuficiencia probatoria.'
-                        ]
-                    })
-
-                attack_plan = {
-                    'infraction_type': 'semaforo',
-                    'primary': {
-                        'title': (sem.get('primary_attack') or {}).get('title') or 'Insuficiencia probatoria',
-                        'points': (sem.get('primary_attack') or {}).get('points') or [],
-                    },
-                    'secondary': [
-                        {'title': sa.get('title'), 'points': sa.get('points') or []}
-                        for sa in secondary_attacks
-                    ],
-                    'proof_requests': sem.get('proof_requests') or [],
-                    'petition': {
-                        'main': 'Archivo / estimación íntegra',
-                        'subsidiary': 'Subsidiariamente, práctica de prueba y aportación documental completa',
-                    },
-                    'meta': {'capture_mode': capture_mode},
-                }
-            except Exception:
-                pass
-
-        facts_summary = _build_facts_summary(classify, timeline, latest_extraction, docs, attack_plan)
-
-        draft = None
-        if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
-            interested_data = _load_interested_data(case_id)
-            draft = _llm_json(
-                PROMPT_DRAFT,
-                {
-                    "case_id": case_id,
-                    "interested_data": interested_data,
-                    "classification": classify,
-                    "timeline": timeline,
-                    "recommended_action": phase,
-                    "admissibility": admissibility,
-                    "latest_extraction": latest_extraction,
-                    "attack_plan": attack_plan,
-                    "facts_summary": facts_summary,
-                },
-            )
-
-        result = {
-            "ok": True,
-            "case_id": case_id,
-            "classify": classify,
-            "timeline": timeline,
-            "phase": phase,
-            "admissibility": admissibility,
-            "attack_plan": attack_plan,
-            "draft": draft,
-            "capture_mode": capture_mode,
-            "facts_summary": facts_summary,
+        attack_plan = {
+            "infraction_type": "semaforo",
+            "primary": {
+                "title": (sem.get("primary_attack") or {}).get("title") or "Insuficiencia probatoria",
+                "points": (sem.get("primary_attack") or {}).get("points") or [],
+            },
+            "secondary": [{"title": sa.get("title"), "points": sa.get("points") or []} for sa in secondary_attacks],
+            "proof_requests": sem.get("proof_requests") or [],
+            "petition": {
+                "main": "Archivo / estimación íntegra",
+                "subsidiary": "Subsidiariamente, práctica de prueba y aportación documental completa",
+            },
+            "meta": {"capture_mode": capture_mode, "forced": True},
         }
+    else:
+        attack_plan = _build_attack_plan(classify, timeline, extraction_core or {})
 
-        _save_event(case_id, "ai_expediente_result", result)
-        return result
+    facts_summary = _build_facts_summary(extraction_core, attack_plan)
+
+    draft = None
+    if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
+        interested_data = _load_interested_data(case_id)
+        draft = _llm_json(
+            PROMPT_DRAFT,
+            {
+                "case_id": case_id,
+                "interested_data": interested_data,
+                "classification": classify,
+                "timeline": timeline,
+                "recommended_action": phase,
+                "admissibility": admissibility,
+                "latest_extraction": extraction_wrapper,
+                "attack_plan": attack_plan,
+                "facts_summary": facts_summary,
+            },
+        )
+
+    result = {
+        "ok": True,
+        "case_id": case_id,
+        "classify": classify,
+        "timeline": timeline,
+        "phase": phase,
+        "admissibility": admissibility,
+        "attack_plan": attack_plan,
+        "draft": draft,
+        "capture_mode": capture_mode,
+        "facts_summary": facts_summary,
+        "extraction_debug": {
+            "wrapper_keys": list(extraction_wrapper.keys()) if isinstance(extraction_wrapper, dict) else [],
+            "core_keys": list(extraction_core.keys()) if isinstance(extraction_core, dict) else [],
+        },
+    }
+
+    _save_event(case_id, "ai_expediente_result", result)
+    return result
