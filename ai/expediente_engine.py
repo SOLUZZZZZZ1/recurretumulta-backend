@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
@@ -12,8 +13,110 @@ from ai.prompts.timeline_builder import PROMPT as PROMPT_TIMELINE
 from ai.prompts.procedure_phase import PROMPT as PROMPT_PHASE
 from ai.prompts.admissibility_guard import PROMPT as PROMPT_GUARD
 from ai.prompts.draft_recurso import PROMPT as PROMPT_DRAFT
+from ai.prompts.module_semaforo import module_semaforo
 
 MAX_EXCERPT_CHARS = 12000
+
+
+# =========================================================
+# Semáforo: detección de tipo de captación (heurística)
+# =========================================================
+def _detect_capture_mode(docs: List[Dict[str, Any]], latest_extraction: Optional[Dict[str, Any]]) -> str:
+    '''
+    Devuelve: 'AUTO' (captación automática/cámara), 'AGENT' (agente presencial),
+    o 'UNKNOWN' si no se puede determinar con fiabilidad.
+    Heurístico y conservador: ante duda -> UNKNOWN.
+    '''
+    blob_parts: List[str] = []
+    try:
+        blob_parts.append(json.dumps(latest_extraction or {}, ensure_ascii=False))
+    except Exception:
+        pass
+
+    for d in docs or []:
+        t = (d.get("text_excerpt") or "")
+        if t:
+            blob_parts.append(t)
+
+    blob = "\n".join(blob_parts).lower()
+
+    auto_signals = [
+        "cámara", "camara", "fotograma", "fotogramas", "secuencia", "foto", "fotografía", "fotografia",
+        "captación automática", "captacion automatica", "sistema automático", "sistema automatico",
+        "dispositivo", "sensor", "instalación", "instalacion", "vídeo", "video"
+    ]
+    agent_signals = [
+        "agente", "policía", "policia", "guardia civil", "denunciante", "observó", "observo",
+        "manifestó", "manifesto", "presencial", "in situ"
+    ]
+
+    auto_score = sum(1 for s in auto_signals if s in blob)
+    agent_score = sum(1 for s in agent_signals if s in blob)
+
+    # Señal frecuente en boletines: no notificación en acto por vehículo en marcha
+    # No prueba cámara, pero refuerza que NO fue notificación en mano.
+    if "motivo de no notificación" in blob or "motivo de no notificacion" in blob:
+        if "vehículo en marcha" in blob or "vehiculo en marcha" in blob:
+            auto_score += 0
+            agent_score += 0
+
+    if auto_score >= 2 and auto_score >= agent_score + 1:
+        return "AUTO"
+    if agent_score >= 2 and agent_score >= auto_score + 1:
+        return "AGENT"
+    return "UNKNOWN"
+
+
+def _build_facts_summary(
+    classification: Dict[str, Any],
+    timeline: Dict[str, Any],
+    latest_extraction: Optional[Dict[str, Any]],
+    docs: List[Dict[str, Any]],
+) -> str:
+    '''
+    Construye un facts_summary breve y conservador para que el recurso "suene" al expediente real.
+    - Si latest_extraction.extracted.hecho_imputado existe, se usa literalmente.
+    - Si no, se arma un resumen con organismo/expediente/fechas cuando consten.
+    '''
+    try:
+        hecho = ((latest_extraction or {}).get("extracted") or {}).get("hecho_imputado")
+        if isinstance(hecho, str) and hecho.strip():
+            return hecho.strip()
+    except Exception:
+        pass
+
+    parts: List[str] = []
+    global_refs = (classification or {}).get("global_refs") or {}
+    organismo = global_refs.get("main_organism")
+    expediente_ref = global_refs.get("expediente_ref")
+
+    if organismo:
+        parts.append(f"Organismo: {organismo}.")
+    if expediente_ref:
+        parts.append(f"Expediente: {expediente_ref}.")
+
+    tl = (timeline or {}).get("timeline") or []
+    notif_date = None
+    for ev in tl:
+        act = (ev.get("act_type") or "").lower()
+        if "notific" in act:
+            d = ev.get("date")
+            if isinstance(d, str) and len(d) >= 10:
+                notif_date = d[:10]
+                break
+    if notif_date:
+        parts.append(f"Notificación: {notif_date}.")
+
+    blob = ""
+    try:
+        blob = json.dumps(latest_extraction or {}, ensure_ascii=False).lower()
+    except Exception:
+        blob = ""
+    if "vehículo en marcha" in blob or "vehiculo en marcha" in blob:
+        parts.append("Motivo de no notificación en acto: vehículo en marcha.")
+
+    return " ".join(parts).strip()
+
 
 
 # =========================================================
@@ -224,6 +327,8 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
 
     latest_extraction = _load_latest_extraction(case_id)
 
+    capture_mode = _detect_capture_mode(docs, latest_extraction)
+
     triage_hecho_global = None
     try:
         triage_hecho_global = (latest_extraction or {}).get('extracted', {}).get('hecho_imputado')
@@ -269,6 +374,58 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     # Attack plan modular (determinista)
     attack_plan = _build_attack_plan(classify, timeline, latest_extraction or {})
 
+    # Si es semáforo, usamos módulo específico + ajustamos según tipo de captación
+    if (attack_plan.get('infraction_type') or '') == 'semaforo':
+        try:
+            sem = module_semaforo()
+            secondary_attacks = list(sem.get('secondary_attacks') or [])
+            if capture_mode == 'AUTO':
+                secondary_attacks.insert(0, {
+                    'title': 'Captación automática: exigencia de secuencia completa y verificación del sistema',
+                    'points': [
+                        'Debe aportarse secuencia completa que permita verificar fase roja activa en el instante del cruce.',
+                        'Debe acreditarse el correcto funcionamiento/sincronización del sistema de captación.'
+                    ]
+                })
+            elif capture_mode == 'AGENT':
+                secondary_attacks.insert(0, {
+                    'title': 'Denuncia presencial: motivación reforzada y descripción detallada de la observación',
+                    'points': [
+                        'Debe describirse con precisión la observación (ubicación, visibilidad, distancia y circunstancias).',
+                        'La falta de detalle impide contradicción efectiva y genera indefensión.'
+                    ]
+                })
+            else:
+                secondary_attacks.insert(0, {
+                    'title': 'Tipo de captación no concluyente: aportar prueba completa (sistema o denuncia) para evitar indefensión',
+                    'points': [
+                        'Debe aportarse la prueba completa del hecho: o bien secuencia/fotogramas si captación automática, o bien descripción detallada si denuncia presencial.',
+                        'En caso de no constar, procede el archivo por insuficiencia probatoria.'
+                    ]
+                })
+
+            attack_plan = {
+                'infraction_type': 'semaforo',
+                'primary': {
+                    'title': (sem.get('primary_attack') or {}).get('title') or 'Insuficiencia probatoria',
+                    'points': (sem.get('primary_attack') or {}).get('points') or [],
+                },
+                'secondary': [
+                    {'title': sa.get('title'), 'points': sa.get('points') or []}
+                    for sa in secondary_attacks
+                ],
+                'proof_requests': sem.get('proof_requests') or [],
+                'petition': {
+                    'main': 'Archivo / estimación íntegra',
+                    'subsidiary': 'Subsidiariamente, práctica de prueba y aportación documental completa',
+                },
+                'meta': {'capture_mode': capture_mode},
+            }
+        except Exception:
+            pass
+
+    facts_summary = _build_facts_summary(classify, timeline, latest_extraction, docs)
+
     draft = None
     if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
         interested_data = _load_interested_data(case_id)
@@ -283,6 +440,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 "admissibility": admissibility,
                 "latest_extraction": latest_extraction,
                 "attack_plan": attack_plan,
+                "facts_summary": facts_summary,
             },
         )
 
@@ -295,6 +453,8 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         "admissibility": admissibility,
         "attack_plan": attack_plan,
         "draft": draft,
+        "capture_mode": capture_mode,
+        "facts_summary": facts_summary,
     }
 
     _save_event(case_id, "ai_expediente_result", result)
