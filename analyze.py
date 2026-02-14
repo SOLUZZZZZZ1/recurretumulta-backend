@@ -101,10 +101,29 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
     # =========================================================
     # 5) ITV / SEGURO
     # =========================================================
+    # ITV
     if ("itv" in t and ("caduc" in t or "sin itv" in t or "no vigente" in t)) or ("inspección técnica" in t and ("caduc" in t or "no vigente" in t)):
         facts.append("ITV NO VIGENTE / CADUCADA")
         return ("itv", facts[0], facts)
-    if ("seguro" in t and ("obligatorio" in t or "carece" in t or "sin seguro" in t)) or ("fiva" in t and ("sin" in t or "no consta" in t)):
+
+    # SEGURO OBLIGATORIO (LSOA / RDL 8/2004) — patrones robustos
+    # Señales legales típicas en boletines de seguro:
+    # - "LSOA" / "Ley sobre Responsabilidad Civil y Seguro..."
+    # - "R.D. Legislativo 8/2004" (o variantes OCR)
+    # Señales fácticas típicas:
+    # - "contrato de seguro" + "mantenga en vigor" / "suscrito"
+    # - "sin que conste" + "seguro"
+    # - "responsabilidad civil derivada de su circulación"
+    if (
+        ("seguro" in t and ("obligatorio" in t or "carece" in t or "sin seguro" in t))
+        or ("contrato de seguro" in t and ("mantenga en vigor" in t or "mantener en vigor" in t or "suscrito" in t or "suscrita" in t))
+        or ("sin que conste" in t and "seguro" in t)
+        or ("responsabilidad civil derivada de su circulación" in t or "responsabilidad civil derivada de su circulacion" in t)
+        or ("lsoa" in t)
+        or ("r.d. legislativo" in t and "8/2004" in t)
+        or ("rd legislativo" in t and "8/2004" in t)
+        or ("8/2004" in t and ("responsabilidad civil" in t or "seguro" in t))
+    ):
         facts.append("CARENCIA DE SEGURO OBLIGATORIO")
         return ("seguro", facts[0], facts)
 
