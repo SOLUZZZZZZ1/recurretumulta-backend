@@ -1,6 +1,7 @@
 import hashlib
 import mimetypes
-from typing import Any, Dict
+import re
+from typing import Any, Dict, List, Tuple
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from sqlalchemy import text
@@ -26,6 +27,99 @@ def _sha256_bytes(data: bytes) -> str:
     h = hashlib.sha256()
     h.update(data)
     return h.hexdigest()
+
+
+# =========================================================
+# TRIAJE 1 — Hecho imputado + Tipo de infracción (determinista)
+# =========================================================
+
+def _flatten_text(extracted_core: Dict[str, Any], text_content: str = "") -> str:
+    # Convertimos campos a texto para facilitar reglas
+    parts: List[str] = []
+    if isinstance(extracted_core, dict):
+        for k, v in extracted_core.items():
+            if v is None:
+                continue
+            if isinstance(v, (str, int, float, bool)):
+                parts.append(f"{k}: {v}")
+            else:
+                try:
+                    parts.append(f"{k}: {str(v)}")
+                except Exception:
+                    pass
+    if text_content:
+        parts.append(text_content)
+    return "\n".join(parts)
+
+
+def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
+    """
+    Devuelve: (tipo_infraccion, hecho_imputado, facts_phrases)
+    - No inventa: solo devuelve frases si aparecen.
+    - Prioridad fuerte para semáforo/luz roja.
+    """
+    t = (text_blob or "").lower()
+
+    facts: List[str] = []
+
+    # --- SEMÁFORO ---
+    sema_patterns = [
+        r"circular\s+con\s+luz\s+roja",
+        r"luz\s+roja",
+        r"sem[aá]foro\s+en\s+rojo",
+        r"no\s+respetar\s+.*sem[aá]foro",
+    ]
+    for p in sema_patterns:
+        if re.search(p, t):
+            facts.append("CIRCULAR CON LUZ ROJA")
+            return ("semaforo", facts[0], facts)
+
+    # --- VELOCIDAD ---
+    # patrón 123 km/h
+    m = re.search(r"\b(\d{2,3})\s*km\s*/?\s*h\b", t)
+    if m:
+        vel = m.group(1)
+        facts.append(f"EXCESO DE VELOCIDAD ({vel} km/h)")
+        return ("velocidad", facts[0], facts)
+    if "exceso de velocidad" in t or "radar" in t or "cinemómetro" in t or "cinemometro" in t:
+        facts.append("EXCESO DE VELOCIDAD")
+        return ("velocidad", facts[0], facts)
+
+    # --- MÓVIL ---
+    if "utilizando manualmente" in t and ("teléfono" in t or "telefono" in t or "móvil" in t or "movil" in t):
+        facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
+        return ("movil", facts[0], facts)
+    if "teléfono móvil" in t or "telefono movil" in t or "uso del teléfono" in t or "uso del telefono" in t:
+        facts.append("USO DEL TELÉFONO MÓVIL")
+        return ("movil", facts[0], facts)
+
+    # --- ATENCIÓN / DISTRACCIÓN ---
+    if "atención permanente" in t or "atencion permanente" in t or "distracción" in t or "distraccion" in t:
+        facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN")
+        return ("atencion", facts[0], facts)
+
+    # --- ESTACIONAMIENTO / PARKING (básico) ---
+    if "doble fila" in t:
+        facts.append("ESTACIONAR EN DOBLE FILA")
+        return ("parking", facts[0], facts)
+    if "minusválid" in t or "minusvalid" in t or "pmr" in t:
+        facts.append("ESTACIONAR EN PLAZA RESERVADA (PMR)")
+        return ("parking", facts[0], facts)
+    if "zona azul" in t or "ora" in t or "ticket" in t:
+        facts.append("ESTACIONAMIENTO REGULADO (ZONA ORA)")
+        return ("parking", facts[0], facts)
+
+    # Si no detecta, genérico
+    return ("otro", "", [])
+
+
+def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
+    tipo, hecho, facts = _detect_facts_and_type(text_blob)
+    out = dict(extracted_core or {})
+    out["tipo_infraccion"] = tipo
+    out["hecho_imputado"] = hecho or None
+    out["facts_phrases"] = facts
+    return out
 
 
 @router.post("/analyze")
@@ -63,10 +157,9 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             # 3) Registrar documento
             conn.execute(
                 text(
-                    """INSERT INTO documents
-                       (case_id, kind, b2_bucket, b2_key, sha256, mime, size_bytes, created_at)
-                       VALUES
-                       (:case_id, 'original', :b2_bucket, :b2_key, :sha256, :mime, :size_bytes, NOW())"""
+                    "INSERT INTO documents "
+                    "(case_id, kind, b2_bucket, b2_key, sha256, mime, size_bytes, created_at) "
+                    "VALUES (:case_id, 'original', :b2_bucket, :b2_key, :sha256, :mime, :size_bytes, NOW())"
                 ),
                 {
                     "case_id": case_id,
@@ -81,15 +174,14 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             # 4) Extracción inteligente
             model_used = "mock"
             confidence = 0.1
-
-            extracted_core: Dict[str, Any]
+            extracted_core: Dict[str, Any] = {}
+            text_content = ""
 
             if mime.startswith("image/"):
-                extracted_core = extract_from_image_bytes(
-                    content, mime, file.filename
-                )
+                extracted_core = extract_from_image_bytes(content, mime, file.filename)
                 model_used = "openai_vision"
                 confidence = 0.7
+                # no tenemos text_content fiable aquí
 
             elif mime == "application/pdf":
                 text_content = extract_text_from_pdf_bytes(content)
@@ -98,9 +190,7 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                     model_used = "openai_text"
                     confidence = 0.8
                 else:
-                    extracted_core = extract_from_image_bytes(
-                        content, mime, file.filename
-                    )
+                    extracted_core = extract_from_image_bytes(content, mime, file.filename)
                     model_used = "openai_vision"
                     confidence = 0.6
 
@@ -136,6 +226,10 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                     "observaciones": "Tipo de archivo no soportado.",
                 }
 
+            # 4b) TRIAJE DETERMINISTA (hecho + tipo) usando texto completo disponible
+            blob = _flatten_text(extracted_core, text_content=text_content)
+            extracted_core = _enrich_with_triage(extracted_core, blob)
+
             wrapper = {
                 "filename": file.filename,
                 "mime": mime,
@@ -148,14 +242,13 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             # 5) Guardar extracción
             conn.execute(
                 text(
-                    """INSERT INTO extractions
-                       (case_id, extracted_json, confidence, model, created_at)
-                       VALUES
-                       (:case_id, CAST(:json AS JSONB), :confidence, :model, NOW())"""
+                    "INSERT INTO extractions "
+                    "(case_id, extracted_json, confidence, model, created_at) "
+                    "VALUES (:case_id, CAST(:json AS JSONB), :confidence, :model, NOW())"
                 ),
                 {
                     "case_id": case_id,
-                    "json": __import__("json").dumps(wrapper),
+                    "json": json.dumps(wrapper, ensure_ascii=False),
                     "confidence": confidence,
                     "model": model_used,
                 },
@@ -164,21 +257,17 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             # 6) Eventos + estado
             conn.execute(
                 text(
-                    """INSERT INTO events(case_id, type, payload, created_at)
-                       VALUES (:case_id, 'analyze_ok', CAST(:payload AS JSONB), NOW())"""
+                    "INSERT INTO events(case_id, type, payload, created_at) "
+                    "VALUES (:case_id, 'analyze_ok', CAST(:payload AS JSONB), NOW())"
                 ),
                 {
                     "case_id": case_id,
-                    "payload": __import__("json").dumps(
-                        {"model": model_used, "confidence": confidence}
-                    ),
+                    "payload": json.dumps({"model": model_used, "confidence": confidence}, ensure_ascii=False),
                 },
             )
 
             conn.execute(
-                text(
-                    "UPDATE cases SET status='analyzed', updated_at=NOW() WHERE id=:case_id"
-                ),
+                text("UPDATE cases SET status='analyzed', updated_at=NOW() WHERE id=:case_id"),
                 {"case_id": case_id},
             )
 
