@@ -306,6 +306,107 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extra
     return plan
 
 
+
+
+# =========================================================
+# Tipicidad: coherencia entre artículo/precepto y tipo inferido
+# =========================================================
+def _map_precept_to_type(extraction_core: Dict[str, Any]) -> Optional[str]:
+    """
+    Mapea preceptos detectados a un tipo de infracción (solo cuando es señal fuerte).
+    Devuelve uno de: 'seguro', 'no_identificar', 'condiciones_vehiculo', 'velocidad' o None.
+    """
+    if not isinstance(extraction_core, dict):
+        return None
+
+    # Señales normativas fuertes (del /analyze)
+    norma_hint = (extraction_core.get("norma_hint") or "").upper()
+    precepts = extraction_core.get("preceptos_detectados") or []
+
+    if "8/2004" in norma_hint or any("8/2004" in (p or "") for p in precepts) or any("LSOA" in (p or "").upper() for p in precepts):
+        return "seguro"
+
+    # Artículo y apartado
+    art = extraction_core.get("articulo_infringido_num")
+    if isinstance(art, str) and art.isdigit():
+        art = int(art)
+    if isinstance(art, int):
+        # Nota: mapeo conservador (solo lo que sabemos que es señal fuerte)
+        if art in (12, 15):
+            return "condiciones_vehiculo"
+
+    # RD 2822/98 también es técnico de vehículo
+    if any("2822/98" in (p or "") for p in precepts) or "2822/98" in norma_hint:
+        return "condiciones_vehiculo"
+
+    # Art. 9.1 bis (no identificar)
+    blob = json.dumps(extraction_core, ensure_ascii=False).lower()
+    if "9.1 bis" in blob or "9,1 bis" in blob:
+        return "no_identificar"
+
+    return None
+
+
+def _apply_tipicity_guard(attack_plan: Dict[str, Any], extraction_core: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    - Si attack_plan es genérico pero el precepto es fuerte -> fija el tipo.
+    - Si hay incoherencia fuerte -> añade argumento de TIPICIDAD (sin inventar hechos).
+    """
+    plan = dict(attack_plan or {})
+    inferred = (plan.get("infraction_type") or "").lower().strip()
+    mapped = (_map_precept_to_type(extraction_core) or "").lower().strip()
+
+    if mapped and inferred in ("", "generic", "otro"):
+        plan["infraction_type"] = mapped
+        plan.setdefault("meta", {})
+        try:
+            plan["meta"]["precept_forced_type"] = mapped
+        except Exception:
+            pass
+        return plan
+
+    if mapped and inferred and mapped != inferred:
+        # Añadimos argumento de tipicidad (como secundario, para no romper tu flujo)
+        sec = plan.get("secondary") or []
+        sec = list(sec) if isinstance(sec, list) else []
+        sec.insert(
+            0,
+            {
+                "title": "Principio de tipicidad: posible incongruencia entre el precepto citado y el hecho denunciado",
+                "points": [
+                    "La Administración debe subsumir el hecho descrito en el precepto concreto citado, con motivación suficiente.",
+                    "Si el hecho denunciado no encaja en el artículo indicado, se vulnera el principio de tipicidad (Derecho sancionador) y procede el archivo.",
+                    "Se solicita aclaración y acreditación completa del encaje típico, aportando el expediente íntegro y la base normativa aplicada.",
+                ],
+            },
+        )
+        plan["secondary"] = sec
+
+        pr = plan.get("proof_requests") or []
+        pr = list(pr) if isinstance(pr, list) else []
+        pr += [
+            "Copia íntegra del expediente administrativo (incluyendo propuesta/resolución y fundamentos).",
+            "Identificación expresa del precepto aplicado (artículo/apartado) y su encaje con el hecho denunciado.",
+            "Aportación de la norma/ordenanza aplicable y motivación completa.",
+        ]
+        # de-dup simple
+        seen = set()
+        pr2 = []
+        for x in pr:
+            if x not in seen:
+                seen.add(x)
+                pr2.append(x)
+        plan["proof_requests"] = pr2
+
+        plan.setdefault("meta", {})
+        try:
+            plan["meta"]["tipicity_mismatch"] = {"mapped": mapped, "inferred": inferred}
+        except Exception:
+            pass
+
+    return plan
+
+
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     docs = _load_case_documents(case_id)
     if not docs:
@@ -398,6 +499,8 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         }
     else:
         attack_plan = _build_attack_plan(classify, timeline, extraction_core or {})
+
+    attack_plan = _apply_tipicity_guard(attack_plan, extraction_core)
 
     facts_summary = _build_facts_summary(extraction_core, attack_plan)
 
