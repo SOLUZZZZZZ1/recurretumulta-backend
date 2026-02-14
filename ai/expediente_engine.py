@@ -424,97 +424,97 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         admissibility["deadline_status"] = admissibility.get("deadline_status") or "UNKNOWN"
         admissibility["required_constraints"] = admissibility.get("required_constraints") or []
         _save_event(case_id, "test_override_applied", {"flags": flags})
-# Attack plan (determinista) + FORZADO semáforo si hay señales fuertes
-force_semaforo = _has_semaforo_signals(docs, latest_extraction)
+    # Attack plan (determinista) + FORZADO semáforo si hay señales fuertes
+    force_semaforo = _has_semaforo_signals(docs, latest_extraction)
 
-if force_semaforo:
-    attack_plan = {"infraction_type": "semaforo"}
-else:
-    attack_plan = _build_attack_plan(classify, timeline, latest_extraction or {})
+    if force_semaforo:
+        attack_plan = {"infraction_type": "semaforo"}
+    else:
+        attack_plan = _build_attack_plan(classify, timeline, latest_extraction or {})
 
 
-    # Si es semáforo, usamos módulo específico + ajustamos según tipo de captación
-    if (attack_plan.get('infraction_type') or '') == 'semaforo':
-        try:
-            sem = module_semaforo()
-            secondary_attacks = list(sem.get('secondary_attacks') or [])
-            if capture_mode == 'AUTO':
-                secondary_attacks.insert(0, {
-                    'title': 'Captación automática: exigencia de secuencia completa y verificación del sistema',
-                    'points': [
-                        'Debe aportarse secuencia completa que permita verificar fase roja activa en el instante del cruce.',
-                        'Debe acreditarse el correcto funcionamiento/sincronización del sistema de captación.'
-                    ]
-                })
-            elif capture_mode == 'AGENT':
-                secondary_attacks.insert(0, {
-                    'title': 'Denuncia presencial: motivación reforzada y descripción detallada de la observación',
-                    'points': [
-                        'Debe describirse con precisión la observación (ubicación, visibilidad, distancia y circunstancias).',
-                        'La falta de detalle impide contradicción efectiva y genera indefensión.'
-                    ]
-                })
-            else:
-                secondary_attacks.insert(0, {
-                    'title': 'Tipo de captación no concluyente: aportar prueba completa (sistema o denuncia) para evitar indefensión',
-                    'points': [
-                        'Debe aportarse la prueba completa del hecho: o bien secuencia/fotogramas si captación automática, o bien descripción detallada si denuncia presencial.',
-                        'En caso de no constar, procede el archivo por insuficiencia probatoria.'
-                    ]
-                })
+        # Si es semáforo, usamos módulo específico + ajustamos según tipo de captación
+        if (attack_plan.get('infraction_type') or '') == 'semaforo':
+            try:
+                sem = module_semaforo()
+                secondary_attacks = list(sem.get('secondary_attacks') or [])
+                if capture_mode == 'AUTO':
+                    secondary_attacks.insert(0, {
+                        'title': 'Captación automática: exigencia de secuencia completa y verificación del sistema',
+                        'points': [
+                            'Debe aportarse secuencia completa que permita verificar fase roja activa en el instante del cruce.',
+                            'Debe acreditarse el correcto funcionamiento/sincronización del sistema de captación.'
+                        ]
+                    })
+                elif capture_mode == 'AGENT':
+                    secondary_attacks.insert(0, {
+                        'title': 'Denuncia presencial: motivación reforzada y descripción detallada de la observación',
+                        'points': [
+                            'Debe describirse con precisión la observación (ubicación, visibilidad, distancia y circunstancias).',
+                            'La falta de detalle impide contradicción efectiva y genera indefensión.'
+                        ]
+                    })
+                else:
+                    secondary_attacks.insert(0, {
+                        'title': 'Tipo de captación no concluyente: aportar prueba completa (sistema o denuncia) para evitar indefensión',
+                        'points': [
+                            'Debe aportarse la prueba completa del hecho: o bien secuencia/fotogramas si captación automática, o bien descripción detallada si denuncia presencial.',
+                            'En caso de no constar, procede el archivo por insuficiencia probatoria.'
+                        ]
+                    })
 
-            attack_plan = {
-                'infraction_type': 'semaforo',
-                'primary': {
-                    'title': (sem.get('primary_attack') or {}).get('title') or 'Insuficiencia probatoria',
-                    'points': (sem.get('primary_attack') or {}).get('points') or [],
+                attack_plan = {
+                    'infraction_type': 'semaforo',
+                    'primary': {
+                        'title': (sem.get('primary_attack') or {}).get('title') or 'Insuficiencia probatoria',
+                        'points': (sem.get('primary_attack') or {}).get('points') or [],
+                    },
+                    'secondary': [
+                        {'title': sa.get('title'), 'points': sa.get('points') or []}
+                        for sa in secondary_attacks
+                    ],
+                    'proof_requests': sem.get('proof_requests') or [],
+                    'petition': {
+                        'main': 'Archivo / estimación íntegra',
+                        'subsidiary': 'Subsidiariamente, práctica de prueba y aportación documental completa',
+                    },
+                    'meta': {'capture_mode': capture_mode},
+                }
+            except Exception:
+                pass
+
+        facts_summary = _build_facts_summary(classify, timeline, latest_extraction, docs, attack_plan)
+
+        draft = None
+        if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
+            interested_data = _load_interested_data(case_id)
+            draft = _llm_json(
+                PROMPT_DRAFT,
+                {
+                    "case_id": case_id,
+                    "interested_data": interested_data,
+                    "classification": classify,
+                    "timeline": timeline,
+                    "recommended_action": phase,
+                    "admissibility": admissibility,
+                    "latest_extraction": latest_extraction,
+                    "attack_plan": attack_plan,
+                    "facts_summary": facts_summary,
                 },
-                'secondary': [
-                    {'title': sa.get('title'), 'points': sa.get('points') or []}
-                    for sa in secondary_attacks
-                ],
-                'proof_requests': sem.get('proof_requests') or [],
-                'petition': {
-                    'main': 'Archivo / estimación íntegra',
-                    'subsidiary': 'Subsidiariamente, práctica de prueba y aportación documental completa',
-                },
-                'meta': {'capture_mode': capture_mode},
-            }
-        except Exception:
-            pass
+            )
 
-    facts_summary = _build_facts_summary(classify, timeline, latest_extraction, docs, attack_plan)
+        result = {
+            "ok": True,
+            "case_id": case_id,
+            "classify": classify,
+            "timeline": timeline,
+            "phase": phase,
+            "admissibility": admissibility,
+            "attack_plan": attack_plan,
+            "draft": draft,
+            "capture_mode": capture_mode,
+            "facts_summary": facts_summary,
+        }
 
-    draft = None
-    if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
-        interested_data = _load_interested_data(case_id)
-        draft = _llm_json(
-            PROMPT_DRAFT,
-            {
-                "case_id": case_id,
-                "interested_data": interested_data,
-                "classification": classify,
-                "timeline": timeline,
-                "recommended_action": phase,
-                "admissibility": admissibility,
-                "latest_extraction": latest_extraction,
-                "attack_plan": attack_plan,
-                "facts_summary": facts_summary,
-            },
-        )
-
-    result = {
-        "ok": True,
-        "case_id": case_id,
-        "classify": classify,
-        "timeline": timeline,
-        "phase": phase,
-        "admissibility": admissibility,
-        "attack_plan": attack_plan,
-        "draft": draft,
-        "capture_mode": capture_mode,
-        "facts_summary": facts_summary,
-    }
-
-    _save_event(case_id, "ai_expediente_result", result)
-    return result
+        _save_event(case_id, "ai_expediente_result", result)
+        return result
