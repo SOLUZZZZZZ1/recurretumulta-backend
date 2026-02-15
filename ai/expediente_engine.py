@@ -12,7 +12,7 @@ from ai.prompts.classify_documents import PROMPT as PROMPT_CLASSIFY
 from ai.prompts.timeline_builder import PROMPT as PROMPT_TIMELINE
 from ai.prompts.procedure_phase import PROMPT as PROMPT_PHASE
 from ai.prompts.admissibility_guard import PROMPT as PROMPT_GUARD
-from ai.prompts.draft_recurso import PROMPT as PROMPT_DRAFT
+from ai.prompts.draft_recurso_v2 import PROMPT as PROMPT_DRAFT
 from ai.prompts.module_semaforo import module_semaforo
 
 MAX_EXCERPT_CHARS = 12000
