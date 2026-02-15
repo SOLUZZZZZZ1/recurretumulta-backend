@@ -1,6 +1,5 @@
 import json
 import os
-import re
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
@@ -45,10 +44,7 @@ def _save_event(case_id: str, event_type: str, payload: Dict[str, Any]) -> None:
 
 
 def _load_latest_extraction(case_id: str) -> Optional[Dict[str, Any]]:
-    """
-    Devuelve el JSONB tal y como está guardado en extractions.extracted_json.
-    En tu /analyze, esto es un 'wrapper' que contiene una clave 'extracted' con el core.
-    """
+    """Devuelve el JSONB tal y como está guardado en extractions.extracted_json."""
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(
@@ -155,7 +151,7 @@ def _infer_infraction_from_facts_phrases(classify: Dict[str, Any]) -> Optional[s
     if not phrases:
         return None
     joined = "\n".join([str(p) for p in phrases if p]).lower()
-    if any(s in joined for s in ["semáforo", "semaforo",  "fase roja", "circular con luz roja", "no respetar la luz roja"]):
+    if any(s in joined for s in ["semáforo", "semaforo", "fase roja", "circular con luz roja", "no respetar la luz roja"]):
         return "semaforo"
     if any(s in joined for s in ["móvil", "movil", "teléfono", "telefono"]):
         return "movil"
@@ -168,7 +164,7 @@ def _has_semaforo_signals(docs: List[Dict[str, Any]], extraction_core: Optional[
     phrases = (classify or {}).get("facts_phrases") or []
     for p in phrases:
         pl = (p or "").lower()
-        if any(s in pl for s in ["semáforo", "semaforo",  "fase roja", "circular con luz roja", "no respetar la luz roja"]):
+        if any(s in pl for s in ["semáforo", "semaforo", "fase roja", "circular con luz roja", "no respetar la luz roja"]):
             return True
 
     blob_parts: List[str] = []
@@ -180,7 +176,7 @@ def _has_semaforo_signals(docs: List[Dict[str, Any]], extraction_core: Optional[
         blob_parts.append((d.get("text_excerpt") or "").lower())
     blob = "\n".join(blob_parts)
 
-    signals = ["semáforo", "semaforo",  "fase roja", "no respetar la luz roja", "circular con luz roja"]
+    signals = ["semáforo", "semaforo", "fase roja", "no respetar la luz roja", "circular con luz roja"]
     return any(s in blob for s in signals)
 
 
@@ -193,7 +189,7 @@ def _build_facts_summary(extraction_core: Optional[Dict[str, Any]], attack_plan:
 
             def consistent() -> bool:
                 if inf == "semaforo":
-                    return any(k in hl for k in ["semáforo", "semaforo",  "fase roja", "rojo"])
+                    return any(k in hl for k in ["semáforo", "semaforo", "fase roja", "rojo"])
                 if inf == "velocidad":
                     return any(k in hl for k in ["velocidad", "km/h", "radar", "cinemómetro", "cinemometro"])
                 if inf == "movil":
@@ -213,7 +209,6 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extra
     traffic = ("tráfico" in organism) or ("dgt" in organism)
 
     blob = json.dumps(extraction_core or {}, ensure_ascii=False).lower()
-
     inferred = _infer_infraction_from_facts_phrases(classify)
 
     triage_tipo = None
@@ -228,7 +223,7 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extra
         infraction_type = triage_tipo
 
     if infraction_type == "generic":
-        if any(s in blob for s in ["semáforo", "semaforo",  "fase roja", "circular con luz roja", "no respetar la luz roja"]):
+        if any(s in blob for s in ["semáforo", "semaforo", "fase roja", "circular con luz roja", "no respetar la luz roja"]):
             infraction_type = "semaforo"
         elif any(s in blob for s in ["teléfono", "telefono", "móvil", "movil"]):
             infraction_type = "movil"
@@ -254,13 +249,15 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extra
 
     if traffic:
         if infraction_type == "movil":
-            plan["secondary"].append({
-                "title": "Uso manual del móvil: prueba objetiva y motivación reforzada",
-                "points": [
-                    "Debe acreditarse de forma concreta el uso manual (circunstancias y descripción suficiente).",
-                    "Si no consta prueba objetiva o descripción detallada, procede el archivo por insuficiencia probatoria.",
-                ],
-            })
+            plan["secondary"].append(
+                {
+                    "title": "Uso manual del móvil: prueba objetiva y motivación reforzada",
+                    "points": [
+                        "Debe acreditarse de forma concreta el uso manual (circunstancias y descripción suficiente).",
+                        "Si no consta prueba objetiva o descripción detallada, procede el archivo por insuficiencia probatoria.",
+                    ],
+                }
+            )
             plan["proof_requests"] += [
                 "Boletín/denuncia/acta completa, con identificación del agente si consta.",
                 "Descripción detallada del hecho y circunstancias (lugar/hora/forma de observación).",
@@ -268,13 +265,15 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extra
             ]
 
         if infraction_type == "velocidad":
-            plan["secondary"].append({
-                "title": "Velocidad: prueba técnica completa (cinemómetro/radar)",
-                "points": [
-                    "Debe constar identificación del cinemómetro y certificado vigente de verificación/calibración.",
-                    "Debe constar margen aplicado y capturas completas.",
-                ],
-            })
+            plan["secondary"].append(
+                {
+                    "title": "Velocidad: prueba técnica completa (cinemómetro/radar)",
+                    "points": [
+                        "Debe constar identificación del cinemómetro y certificado vigente de verificación/calibración.",
+                        "Debe constar margen aplicado y capturas completas.",
+                    ],
+                }
+            )
             plan["proof_requests"] += [
                 "Capturas/fotografías completas del hecho infractor.",
                 "Identificación del cinemómetro (marca/modelo/nº serie) y ubicación exacta.",
@@ -290,13 +289,16 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extra
         if dates:
             oldest = sorted(dates)[0]
             if oldest.startswith("201") or oldest.startswith("200"):
-                plan["secondary"].insert(0, {
-                    "title": "Antigüedad del expediente: acreditación de notificación, firmeza y actos interruptivos",
-                    "points": [
-                        "Dada la antigüedad, corresponde acreditar notificación válida, firmeza y, en su caso, actos interruptivos.",
-                        "Si no consta acreditación suficiente, procede el archivo.",
-                    ],
-                })
+                plan["secondary"].insert(
+                    0,
+                    {
+                        "title": "Antigüedad del expediente: acreditación de notificación, firmeza y actos interruptivos",
+                        "points": [
+                            "Dada la antigüedad, corresponde acreditar notificación válida, firmeza y, en su caso, actos interruptivos.",
+                            "Si no consta acreditación suficiente, procede el archivo.",
+                        ],
+                    },
+                )
                 plan["proof_requests"] += [
                     "Acreditación de la notificación válida (fecha de recepción/acuse/medio).",
                     "Acreditación de firmeza y actuaciones interruptivas, si existieran.",
@@ -306,32 +308,19 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extra
     return plan
 
 
-
-
-# =========================================================
-# Tipicidad: coherencia entre artículo/precepto y tipo inferido
-# =========================================================
 def _map_precept_to_type(extraction_core: Dict[str, Any]) -> Optional[str]:
-    """
-    Mapea preceptos detectados a un tipo de infracción (solo cuando es señal fuerte).
-    Devuelve uno de: 'seguro', 'no_identificar', 'condiciones_vehiculo', 'velocidad' o None.
-    """
     if not isinstance(extraction_core, dict):
         return None
-
-    # Señales normativas fuertes (del /analyze)
     norma_hint = (extraction_core.get("norma_hint") or "").upper()
     precepts = extraction_core.get("preceptos_detectados") or []
 
     if "8/2004" in norma_hint or any("8/2004" in (p or "") for p in precepts) or any("LSOA" in (p or "").upper() for p in precepts):
         return "seguro"
 
-    # Artículo y apartado
     art = extraction_core.get("articulo_infringido_num")
     if isinstance(art, str) and art.isdigit():
         art = int(art)
     if isinstance(art, int):
-        # Nota: mapeo conservador (solo lo que sabemos que es señal fuerte)
         if art in (12, 15):
             return "condiciones_vehiculo"
         if art == 18:
@@ -339,11 +328,9 @@ def _map_precept_to_type(extraction_core: Dict[str, Any]) -> Optional[str]:
         if art == 167:
             return "marcas_viales"
 
-    # RD 2822/98 también es técnico de vehículo
     if any("2822/98" in (p or "") for p in precepts) or "2822/98" in norma_hint:
         return "condiciones_vehiculo"
 
-    # Art. 9.1 bis (no identificar)
     blob = json.dumps(extraction_core, ensure_ascii=False).lower()
     if "9.1 bis" in blob or "9,1 bis" in blob:
         return "no_identificar"
@@ -352,10 +339,6 @@ def _map_precept_to_type(extraction_core: Dict[str, Any]) -> Optional[str]:
 
 
 def _apply_tipicity_guard(attack_plan: Dict[str, Any], extraction_core: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    - Si attack_plan es genérico pero el precepto es fuerte -> fija el tipo.
-    - Si hay incoherencia fuerte -> añade argumento de TIPICIDAD (sin inventar hechos).
-    """
     plan = dict(attack_plan or {})
     inferred = (plan.get("infraction_type") or "").lower().strip()
     mapped = (_map_precept_to_type(extraction_core) or "").lower().strip()
@@ -363,14 +346,10 @@ def _apply_tipicity_guard(attack_plan: Dict[str, Any], extraction_core: Dict[str
     if mapped and inferred in ("", "generic", "otro"):
         plan["infraction_type"] = mapped
         plan.setdefault("meta", {})
-        try:
-            plan["meta"]["precept_forced_type"] = mapped
-        except Exception:
-            pass
+        plan["meta"]["precept_forced_type"] = mapped
         return plan
 
     if mapped and inferred and mapped != inferred:
-        # Añadimos argumento de tipicidad (como secundario, para no romper tu flujo)
         sec = plan.get("secondary") or []
         sec = list(sec) if isinstance(sec, list) else []
         sec.insert(
@@ -393,7 +372,6 @@ def _apply_tipicity_guard(attack_plan: Dict[str, Any], extraction_core: Dict[str
             "Identificación expresa del precepto aplicado (artículo/apartado) y su encaje con el hecho denunciado.",
             "Aportación de la norma/ordenanza aplicable y motivación completa.",
         ]
-        # de-dup simple
         seen = set()
         pr2 = []
         for x in pr:
@@ -403,26 +381,12 @@ def _apply_tipicity_guard(attack_plan: Dict[str, Any], extraction_core: Dict[str
         plan["proof_requests"] = pr2
 
         plan.setdefault("meta", {})
-        try:
-            plan["meta"]["tipicity_mismatch"] = {"mapped": mapped, "inferred": inferred}
-        except Exception:
-            pass
+        plan["meta"]["tipicity_mismatch"] = {"mapped": mapped, "inferred": inferred}
 
     return plan
 
 
-
-
-# =========================================================
-# Intensidad contextual: normal | reforzado | critico
-# =========================================================
 def _compute_context_intensity(timeline: Dict[str, Any], extraction_core: Dict[str, Any], classify: Dict[str, Any]) -> str:
-    """
-    Heurística conservadora:
-    - critico: señales de incoherencia normativa fuerte (p.ej. LSOA/RDL 8/2004 junto con velocidad)
-    - reforzado: expediente antiguo (fechas 2010-2015)
-    - normal: resto
-    """
     blob = ""
     try:
         blob = json.dumps(extraction_core or {}, ensure_ascii=False).lower()
@@ -437,7 +401,7 @@ def _compute_context_intensity(timeline: Dict[str, Any], extraction_core: Dict[s
     if has_lsoa and has_speed:
         return "critico"
 
-    dates = []
+    dates: List[str] = []
     tl = (timeline or {}).get("timeline") or []
     for ev in tl:
         d = ev.get("date")
@@ -461,10 +425,8 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     if not docs:
         raise RuntimeError("No hay documentos asociados al expediente.")
 
-    # FIX: extractions.extracted_json es wrapper; el core está en wrapper["extracted"]
     extraction_wrapper = _load_latest_extraction(case_id) or {}
-    "extraction_core": extraction_core,
- {}
+    extraction_core = (extraction_wrapper.get("extracted") or {}) if isinstance(extraction_wrapper, dict) else {}
 
     capture_mode = _detect_capture_mode(docs, extraction_core)
 
@@ -509,29 +471,38 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         secondary_attacks = list(sem.get("secondary_attacks") or [])
 
         if capture_mode == "AUTO":
-            secondary_attacks.insert(0, {
-                "title": "Captación automática: exigencia de secuencia completa y verificación del sistema",
-                "points": [
-                    "Debe aportarse secuencia completa que permita verificar fase roja activa en el instante del cruce.",
-                    "Debe acreditarse el correcto funcionamiento/sincronización del sistema de captación."
-                ]
-            })
+            secondary_attacks.insert(
+                0,
+                {
+                    "title": "Captación automática: exigencia de secuencia completa y verificación del sistema",
+                    "points": [
+                        "Debe aportarse secuencia completa que permita verificar fase roja activa en el instante del cruce.",
+                        "Debe acreditarse el correcto funcionamiento/sincronización del sistema de captación.",
+                    ],
+                },
+            )
         elif capture_mode == "AGENT":
-            secondary_attacks.insert(0, {
-                "title": "Denuncia presencial: motivación reforzada y descripción detallada de la observación",
-                "points": [
-                    "Debe describirse con precisión la observación (ubicación, visibilidad, distancia y circunstancias).",
-                    "La falta de detalle impide contradicción efectiva y genera indefensión."
-                ]
-            })
+            secondary_attacks.insert(
+                0,
+                {
+                    "title": "Denuncia presencial: motivación reforzada y descripción detallada de la observación",
+                    "points": [
+                        "Debe describirse con precisión la observación (ubicación, visibilidad, distancia y circunstancias).",
+                        "La falta de detalle impide contradicción efectiva y genera indefensión.",
+                    ],
+                },
+            )
         else:
-            secondary_attacks.insert(0, {
-                "title": "Tipo de captación no concluyente: aportar prueba completa para evitar indefensión",
-                "points": [
-                    "Debe aportarse la prueba completa del hecho: secuencia/fotogramas si captación automática, o descripción detallada si denuncia presencial.",
-                    "En caso de no constar, procede el archivo por insuficiencia probatoria."
-                ]
-            })
+            secondary_attacks.insert(
+                0,
+                {
+                    "title": "Tipo de captación no concluyente: aportar prueba completa para evitar indefensión",
+                    "points": [
+                        "Debe aportarse la prueba completa del hecho: secuencia/fotogramas si captación automática, o descripción detallada si denuncia presencial.",
+                        "En caso de no constar, procede el archivo por insuficiencia probatoria.",
+                    ],
+                },
+            )
 
         attack_plan = {
             "infraction_type": "semaforo",
@@ -551,7 +522,6 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         attack_plan = _build_attack_plan(classify, timeline, extraction_core or {})
 
     attack_plan = _apply_tipicity_guard(attack_plan, extraction_core)
-
     facts_summary = _build_facts_summary(extraction_core, attack_plan)
     context_intensity = _compute_context_intensity(timeline, extraction_core, classify)
 
@@ -568,6 +538,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 "recommended_action": phase,
                 "admissibility": admissibility,
                 "latest_extraction": extraction_wrapper,
+                "extraction_core": extraction_core,
                 "attack_plan": attack_plan,
                 "facts_summary": facts_summary,
                 "context_intensity": context_intensity,
@@ -585,7 +556,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         "draft": draft,
         "capture_mode": capture_mode,
         "facts_summary": facts_summary,
-                "context_intensity": context_intensity,
+        "context_intensity": context_intensity,
         "extraction_debug": {
             "wrapper_keys": list(extraction_wrapper.keys()) if isinstance(extraction_wrapper, dict) else [],
             "core_keys": list(extraction_core.keys()) if isinstance(extraction_core, dict) else [],
