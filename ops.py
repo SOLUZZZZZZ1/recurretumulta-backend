@@ -545,3 +545,47 @@ def lab_force_authorize(
         )
 
     return {"ok": True, "case_id": case_id, "authorized": True}
+
+@router.post("/cases/{case_id}/lab-force-paid")
+def lab_force_paid(
+    case_id: str,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+    x_lab_key: Optional[str] = Header(default=None, alias="X-Lab-Key"),
+    note: Optional[str] = Form(default=None),
+) -> Dict[str, Any]:
+    _require_operator(x_operator_token)
+
+    expected_lab = (os.getenv("LAB_FORCE_KEY") or "").strip()
+    if not expected_lab:
+        raise HTTPException(status_code=500, detail="LAB_FORCE_KEY no configurado")
+    if (x_lab_key or "").strip() != expected_lab:
+        raise HTTPException(status_code=401, detail="Unauthorized lab key")
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT COALESCE(test_mode,FALSE), payment_status FROM cases WHERE id=:id"),
+            {"id": case_id},
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Case not found")
+
+        if bool(row[0]):
+            raise HTTPException(status_code=409, detail="No permitido en test_mode")
+
+        conn.execute(
+            text("UPDATE cases SET payment_status='paid', updated_at=NOW() WHERE id=:id"),
+            {"id": case_id},
+        )
+
+        conn.execute(
+            text(
+                """
+                INSERT INTO events(case_id, type, payload, created_at)
+                VALUES (:case_id, 'ops_lab_force_paid', CAST(:payload AS JSONB), NOW())
+                """
+            ),
+            {"case_id": case_id, "payload": json.dumps({"note": note or ""})},
+        )
+
+    return {"ok": True, "case_id": case_id, "payment_status": "paid"}
