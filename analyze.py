@@ -48,8 +48,6 @@ def _flatten_text(extracted_core: Dict[str, Any], text_content: str = "") -> str
     return "\n".join(parts)
 
 
-
-
 def _extract_precepts(text_blob: str) -> Dict[str, Any]:
     """
     Extrae referencias normativas/preceptos con heurística robusta.
@@ -85,6 +83,22 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
                 precepts.append(f"apartado {apt_num}")
         except Exception:
             apt_num = None
+
+    # ✅ Patrón frecuente en boletines DGT: "052.1" / "52.1" (artículo.apartado) sin la palabra "apartado"
+    m_code = re.search(r"\b0?(\d{1,3})\.(\d{1,3})\b", t)
+    if m_code:
+        try:
+            art_from_code = int(m_code.group(1))
+            apt_from_code = int(m_code.group(2))
+            if art_num is None:
+                art_num = art_from_code
+                precepts.append(f"articulo {art_num}")
+            if apt_num is None:
+                apt_num = apt_from_code
+            if art_num is not None and apt_num is not None:
+                precepts.append(f"articulo {art_num} apartado {apt_num}")
+        except Exception:
+            pass
 
     # Normas típicas
     norma_hint = None
@@ -176,8 +190,8 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         r"no\s+respetar\s+la\s+luz\s+roja",
         r"no\s+respetar\s+.*sem[aá]foro",
     ]
-    for p in sema_patterns:
-        if re.search(p, t):
+    for ptn in sema_patterns:
+        if re.search(ptn, t):
             facts.append("CIRCULAR CON LUZ ROJA")
             return ("semaforo", facts[0], facts)
 
@@ -292,8 +306,6 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         return ("parking", facts[0], facts)
 
     return ("otro", "", [])
-
-
 
 
 def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
