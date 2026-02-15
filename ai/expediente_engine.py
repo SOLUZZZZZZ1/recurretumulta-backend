@@ -463,7 +463,8 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
 
     # FIX: extractions.extracted_json es wrapper; el core está en wrapper["extracted"]
     extraction_wrapper = _load_latest_extraction(case_id) or {}
-    extraction_core = (extraction_wrapper.get("extracted") or {}) if isinstance(extraction_wrapper, dict) else {}
+    "extraction_core": extraction_core,
+ {}
 
     capture_mode = _detect_capture_mode(docs, extraction_core)
 
