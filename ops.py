@@ -428,3 +428,73 @@ def force_ready_to_submit(
         )
 
     return {"ok": True, "case_id": case_id, "status": "ready_to_submit"}
+
+@router.post("/cases/{case_id}/lab-force-ready-to-submit")
+def lab_force_ready_to_submit(
+    case_id: str,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+    x_lab_key: Optional[str] = Header(default=None, alias="X-Lab-Key"),
+    note: Optional[str] = Form(default=None),
+) -> Dict[str, Any]:
+    """
+    LAB (llave de oro): fuerza ready_to_submit SIN pago, solo para pruebas de pipeline.
+    Reglas:
+    - OPERATOR_TOKEN válido
+    - X-Lab-Key == LAB_FORCE_KEY
+    - authorized = TRUE
+    - NO test_mode
+    """
+    _require_operator(x_operator_token)
+
+    expected_lab = (os.getenv("LAB_FORCE_KEY") or "").strip()
+    if not expected_lab:
+        raise HTTPException(status_code=500, detail="LAB_FORCE_KEY no configurado")
+    if (x_lab_key or "").strip() != expected_lab:
+        raise HTTPException(status_code=401, detail="Unauthorized lab key")
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "SELECT status, authorized, COALESCE(test_mode,FALSE) "
+                "FROM cases WHERE id=:id"
+            ),
+            {"id": case_id},
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Case not found")
+
+        current_status = (row[0] or "").strip()
+        authorized = bool(row[1])
+        test_mode = bool(row[2])
+
+        if test_mode:
+            raise HTTPException(status_code=409, detail="No permitido en test_mode")
+        if not authorized:
+            raise HTTPException(status_code=409, detail="Falta autorización del cliente")
+
+        if current_status in ("submitted", "closed", "archived"):
+            raise HTTPException(status_code=409, detail=f"No se puede forzar desde status={current_status}")
+
+        conn.execute(
+            text("UPDATE cases SET status='ready_to_submit', updated_at=NOW() WHERE id=:id"),
+            {"id": case_id},
+        )
+
+        conn.execute(
+            text(
+                """
+                INSERT INTO events(case_id, type, payload, created_at)
+                VALUES (:case_id, 'ops_lab_force_ready_to_submit', CAST(:payload AS JSONB), NOW())
+                """
+            ),
+            {
+                "case_id": case_id,
+                "payload": json.dumps(
+                    {"from": current_status, "to": "ready_to_submit", "note": note or ""}
+                ),
+            },
+        )
+
+    return {"ok": True, "case_id": case_id, "status": "ready_to_submit"}
