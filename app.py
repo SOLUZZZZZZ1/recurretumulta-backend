@@ -14,6 +14,7 @@ from billing import router as billing_router
 from admin_migrate_payments import router as admin_payments_router
 from ai_router import router as ai_router
 from partner_cases import router as partner_cases_router
+from ops_automation_router import router as ops_automation_router
 
 
 
@@ -48,6 +49,7 @@ app.include_router(billing_router)
 app.include_router(admin_payments_router)
 app.include_router(ai_router)
 app.include_router(partner_cases_router)
+app.include_router(ops_automation_router)
 
 # ✅ NUEVO: router de operador (/ops/*)
 app.include_router(ops_router)
