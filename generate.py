@@ -79,6 +79,72 @@ def _strip_borrador_prefix_from_body(body: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _first_alegacion_title(body: str) -> str:
+    """Devuelve el título de la primera alegación detectada (si existe)."""
+    if not body:
+        return ""
+    # Busca líneas tipo: "ALEGACIÓN 1 — ..." / "ALEGACIÓN PRIMERA — ..."
+    for line in (body.splitlines() or []):
+        l = (line or "").strip()
+        if not l:
+            continue
+        if l.lower().startswith("alegación") or l.lower().startswith("alegacion"):
+            return l
+    return ""
+
+
+def _velocity_strict_validate(body: str) -> List[str]:
+    """Valida que un borrador de velocidad cumple mínimos VSE-1 (anti-plantilla)."""
+    b = (body or "").lower()
+
+    required_any = [
+        ("margen", ["margen"]),
+        ("velocidad_corregida", ["velocidad corregida", "corregida"]),
+        ("metrologia", ["certificado", "verificación", "verificacion", "metrológ", "metrolog"]),
+        ("cinemometro", ["cinemómetro", "cinemometro", "radar"]),
+        ("captura", ["captura", "fotograma", "imagen"]),
+        ("cadena_custodia", ["cadena de custodia", "integridad del registro", "integridad", "correspondencia inequívoca", "correspondencia inequivoca"]),
+    ]
+
+    missing = []
+    for name, needles in required_any:
+        if not any(n in b for n in needles):
+            missing.append(name)
+
+    # Estructura: la primera alegación NO puede ser presunción de inocencia genérica en velocidad
+    first = _first_alegacion_title(body).lower()
+    if first:
+        if any(k in first for k in ["presunción", "presuncion", "inocencia"]):
+            missing.append("orden_alegaciones (alegación 1 no puede ser presunción de inocencia en velocidad)")
+    else:
+        missing.append("estructura_alegaciones (no se detecta encabezado de alegaciones)")
+
+    return missing
+
+
+def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dict[str, str], ai_used: bool) -> None:
+    """Capa SVL-1: bloquea generación si el recurso no cumple mínimos por tipo."""
+    tipo = (core or {}).get("tipo_infraccion") or ""
+    body = (tpl or {}).get("cuerpo") or ""
+
+    if (tipo or "").lower() == "velocidad":
+        missing = _velocity_strict_validate(body)
+        if missing:
+            # Log de evento para OPS/auditoría
+            try:
+                conn.execute(
+                    text("INSERT INTO events(case_id, type, payload, created_at) VALUES (:case_id,'strict_validation_failed',CAST(:payload AS JSONB),NOW())"),
+                    {"case_id": case_id, "payload": json.dumps({"type": "velocidad", "missing": missing, "ai_used": ai_used})},
+                )
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=422,
+                detail=f"Velocity Strict no cumplido. Faltan/errores: {missing}. Regenerar borrador (VSE-1) antes de emitir DOCX/PDF.",
+            )
+
+
+
 # ==========================
 # FUNCIÓN PRINCIPAL
 # ==========================
@@ -159,6 +225,13 @@ def generate_dgt_for_case(
     else:
         kind_docx = "generated_docx_alegaciones"
         kind_pdf = "generated_pdf_alegaciones"
+
+    # ==========================
+    # STRICT VALIDATION LAYER (SVL-1)
+    # ==========================
+    # Bloquea la emisión si el borrador no cumple mínimos por tipo (especialmente VELOCIDAD).
+    _strict_validate_or_raise(conn, case_id, core, tpl, ai_used)
+
 
     # Generar DOCX/PDF
     docx_bytes = build_docx(tpl["asunto"], tpl["cuerpo"])
