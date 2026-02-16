@@ -14,6 +14,7 @@ Entradas (JSON):
 - timeline
 - admissibility
 - latest_extraction
+- extraction_core
 - attack_plan
 - facts_summary (string; puede venir vacío)
 - context_intensity (string: normal|reforzado|critico)
@@ -45,7 +46,7 @@ ESTRUCTURA OBLIGATORIA (NO ALTERAR)
 Debe incluir SIEMPRE una línea:
 "Hecho imputado: ..."
 
-Además, si consta el artículo/apartado en latest_extraction.extracted o en classification, incluir una línea:
+Además, si consta el artículo/apartado en extraction_core (preferente) o en latest_extraction.extracted, incluir una línea:
 "Precepto indicado en la denuncia: art. [X] [apdo. Y], [norma/abreviatura si consta]."
 
 Reglas de "Hecho imputado":
