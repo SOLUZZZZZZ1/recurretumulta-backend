@@ -14,6 +14,7 @@ Entradas (JSON):
 - attack_plan
 - facts_summary (string; puede venir vacío)
 - context_intensity (string: normal|reforzado|critico)
+- sandbox (obj opcional: {"override_applied":bool,"override_mode":"TEST_REALISTA|SANDBOX_DEMO"})
 
 PROHIBIDO mencionar:
 - attack_plan
@@ -49,6 +50,10 @@ ALEGACIÓN PRIMERA – TIPICIDAD Y SUBSUNCIÓN (si procede)
 - Si hay posible incongruencia entre precepto citado y hecho descrito, desarrollarlo con prudencia.
 - Cierra con: "Procede el archivo por falta de adecuada subsunción típica."
 
+Regla especial SANDBOX_DEMO:
+- Si sandbox.override_applied == true y sandbox.override_mode == "SANDBOX_DEMO": NO introducir argumentos de antigüedad, prescripción, actos interruptivos o firmeza.
+  Mantén el escrito centrado en motivación, tipicidad (si procede) y prueba.
+
 ALEGACIÓN SEGUNDA – DEFECTOS PROCESALES (según context_intensity)
 - normal: solo mencionar defectos si constan.
 - reforzado: enfatizar antigüedad, necesidad de acreditar notificación válida, firmeza y actos interruptivos.
@@ -76,8 +81,9 @@ SALIDA JSON EXACTA:
   "cuerpo": "string",
   "variables_usadas": {"organismo":"string|null","tipo_accion":"string","expediente_ref":"string|null","fechas_clave":[]},
   "checks": [],
-  "notes_for_operator": ""
+  "notes_for_operator": "Incluye aquí: carencias documentales detectadas, siguiente acción recomendada y si se aplicó SANDBOX_DEMO/TEST_REALISTA (sin mencionarlo en el cuerpo)."
 }
+
 
 Devuelve SOLO JSON.
 """
