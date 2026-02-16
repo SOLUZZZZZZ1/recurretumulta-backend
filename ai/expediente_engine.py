@@ -16,6 +16,49 @@ from ai.prompts.module_semaforo import module_semaforo
 
 MAX_EXCERPT_CHARS = 12000
 
+def _override_mode() -> str:
+    """Controla el modo de override para pruebas.
+    Valores:
+      - TEST_REALISTA: fuerza admisibilidad para poder generar, pero mantiene contexto (antigüedad, etc.)
+      - SANDBOX_DEMO: fuerza admisibilidad y normaliza el contexto para simular un caso 'actual' en demos internas.
+    Se configura por variable de entorno RTM_OVERRIDE_MODE.
+    """
+    m = (os.getenv("RTM_OVERRIDE_MODE") or "TEST_REALISTA").strip().upper()
+    if m not in ("TEST_REALISTA", "SANDBOX_DEMO"):
+        m = "TEST_REALISTA"
+    return m
+
+def _sanitize_for_sandbox_demo(attack_plan: Dict[str, Any]) -> Dict[str, Any]:
+    """Elimina módulos claramente ligados a antigüedad/prescripción para pruebas tipo demo.
+    No inventa hechos; simplemente evita argumentar sobre fechas pasadas cuando el objetivo es probar el generador.
+    """
+    plan = dict(attack_plan or {})
+    sec = plan.get("secondary") or []
+    if isinstance(sec, list):
+        sec2 = []
+        for item in sec:
+            title = (item or {}).get("title") if isinstance(item, dict) else ""
+            tl = (title or "").lower()
+            # Quitar módulos de 'antigüedad', 'actos interruptivos', 'firmeza' típicos de expedientes antiguos
+            if any(k in tl for k in ["antigüedad", "actos interrupt", "firmeza", "notificación válida", "notificacion valida"]):
+                continue
+            sec2.append(item)
+        plan["secondary"] = sec2
+
+    pr = plan.get("proof_requests") or []
+    if isinstance(pr, list):
+        pr2 = []
+        for x in pr:
+            xl = (x or "").lower()
+            if any(k in xl for k in ["actuaciones interrupt", "firmeza", "estado actual del expediente", "acreditación de la notificación", "acreditacion de la notificacion"]):
+                continue
+            pr2.append(x)
+        plan["proof_requests"] = pr2
+
+    plan.setdefault("meta", {})
+    plan["meta"]["sandbox_demo_sanitized"] = True
+    return plan
+
 
 def _llm_json(prompt: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -457,12 +500,20 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     )
 
     flags = _load_case_flags(case_id)
+    override_mode = _override_mode()
     if flags.get("test_mode") and flags.get("override_deadlines"):
+        original_adm = admissibility.get("admissibility")
+        admissibility["original_admissibility"] = original_adm
         admissibility["admissibility"] = "ADMISSIBLE"
         admissibility["can_generate_draft"] = True
         admissibility["deadline_status"] = admissibility.get("deadline_status") or "UNKNOWN"
+        # En pruebas, forzamos un estado de plazo no bloqueante para que el generador no se autolimite.
+        if override_mode == "SANDBOX_DEMO":
+            admissibility["deadline_status"] = "OK"
         admissibility["required_constraints"] = admissibility.get("required_constraints") or []
-        _save_event(case_id, "test_override_applied", {"flags": flags})
+        admissibility["override_applied"] = True
+        admissibility["override_mode"] = override_mode
+        _save_event(case_id, "test_override_applied", {"flags": flags, "override_mode": override_mode, "original_admissibility": original_adm})
 
     force_semaforo = _has_semaforo_signals(docs, extraction_core, classify)
 
@@ -524,6 +575,14 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     attack_plan = _apply_tipicity_guard(attack_plan, extraction_core)
     facts_summary = _build_facts_summary(extraction_core, attack_plan)
     context_intensity = _compute_context_intensity(timeline, extraction_core, classify)
+
+    # Normalización opcional para demos internas en modo SANDBOX_DEMO
+    try:
+        if (admissibility or {}).get("override_applied") and (admissibility or {}).get("override_mode") == "SANDBOX_DEMO":
+            attack_plan = _sanitize_for_sandbox_demo(attack_plan)
+            context_intensity = "normal"
+    except Exception:
+        pass
 
     draft = None
     if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
