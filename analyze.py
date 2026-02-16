@@ -2,7 +2,7 @@ import json
 import hashlib
 import mimetypes
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from sqlalchemy import text
@@ -51,21 +51,21 @@ def _flatten_text(extracted_core: Dict[str, Any], text_content: str = "") -> str
 def _extract_precepts(text_blob: str) -> Dict[str, Any]:
     """
     Extrae referencias normativas/preceptos con heurística robusta.
+
     Devuelve:
-      - preceptos_detectados: lista de strings (p.ej. "articulo 15 apartado 4", "RDL 8/2004")
+      - preceptos_detectados: lista de strings
       - articulo_num: int|None
       - apartado_num: int|None
-      - norma_hint: string|None (p.ej. "RDL 8/2004", "RD 2822/98")
+      - norma_hint: string|None
     """
     t = (text_blob or "").lower()
 
     precepts: List[str] = []
+    art_num: Optional[int] = None
+    apt_num: Optional[int] = None
 
-    # Artículo / apartado
-    art_num = None
-    apt_num = None
-
-    m_art = re.search(r"\bart[ií]culo\s*(\d{1,3})\b", t) or re.search(r"\bart\.\s*(\d{1,3})\b", t)
+    # 1) Patrones explícitos "artículo 18" / "art. 18" (admite ceros a la izquierda)
+    m_art = re.search(r"\bart[ií]culo\s*0?(\d{1,3})\b", t) or re.search(r"\bart\.\s*0?(\d{1,3})\b", t)
     if m_art:
         try:
             art_num = int(m_art.group(1))
@@ -73,6 +73,7 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
         except Exception:
             art_num = None
 
+    # 2) Patrones explícitos "apartado 1" / "aptdo. 1"
     m_apt = re.search(r"\bapartado\s*(\d{1,3})\b", t) or re.search(r"\baptdo\.?\s*(\d{1,3})\b", t)
     if m_apt:
         try:
@@ -84,7 +85,7 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
         except Exception:
             apt_num = None
 
-    # ✅ Patrón frecuente en boletines DGT: "052.1" / "52.1" (artículo.apartado) sin la palabra "apartado"
+    # 3) Patrón muy frecuente en boletines DGT: "052.1" / "52.1" (artículo.apartado)
     m_code = re.search(r"\b0?(\d{1,3})\.(\d{1,3})\b", t)
     if m_code:
         try:
@@ -100,34 +101,56 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
         except Exception:
             pass
 
+    # 4) Patrón contextual: "precepto infringido ... artículo X ... apartado Y"
+    m_ctx = re.search(
+        r"precepto\s+infringido[\s\S]{0,160}?art[ií]culo\s*0?(\d{1,3})[\s\S]{0,120}?(?:apartado|aptdo\.?)\s*(\d{1,3})",
+        t
+    )
+    if m_ctx:
+        try:
+            art_ctx = int(m_ctx.group(1))
+            apt_ctx = int(m_ctx.group(2))
+            if art_num is None:
+                art_num = art_ctx
+                precepts.append(f"articulo {art_num}")
+            if apt_num is None:
+                apt_num = apt_ctx
+            if art_num is not None and apt_num is not None:
+                precepts.append(f"articulo {art_num} apartado {apt_num}")
+        except Exception:
+            pass
+
+    # 5) Corrección conservadora de OCR (caso típico: 80 leído en vez de 18)
+    if art_num == 80 and ("atención permanente" in t or "atencion permanente" in t) and ("precepto infringido" in t) and ("cir" in t or "reglamento general de circul" in t):
+        art_num = 18
+        precepts.append("articulo 18")
+        if apt_num is not None:
+            precepts.append(f"articulo 18 apartado {apt_num}")
+
     # Normas típicas
-    norma_hint = None
-    # RDL 8/2004 (seguro obligatorio)
+    norma_hint: Optional[str] = None
+
     if ("r.d. legislativo" in t and "8/2004" in t) or ("rd legislativo" in t and "8/2004" in t) or ("8/2004" in t and "responsabilidad civil" in t):
         norma_hint = "RDL 8/2004"
         precepts.append("RDL 8/2004")
 
-    # RD 2822/98 (Reglamento General de Vehículos)
     if "2822/98" in t or "r.d. 2822/98" in t or "rd 2822/98" in t:
         norma_hint = norma_hint or "RD 2822/98"
         precepts.append("RD 2822/98")
 
-    # RGC / Reglamento general de circulación
     if "reglamento general de circul" in t or "rgc" in t:
         precepts.append("Reglamento General de Circulación")
 
-    # TRLTSV / Ley de Tráfico (detectamos genérico)
     if "ley sobre tráfico" in t or "ley de trafico" in t or "trltsv" in t:
         precepts.append("Ley de Tráfico (genérico)")
 
-    # LSOA (seguro)
     if "lsoa" in t:
         norma_hint = norma_hint or "LSOA"
         precepts.append("LSOA")
 
     # Normalizar únicos
     seen = set()
-    uniq = []
+    uniq: List[str] = []
     for p in precepts:
         pp = (p or "").strip()
         if pp and pp not in seen:
@@ -146,9 +169,6 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
     t = (text_blob or "").lower()
     facts: List[str] = []
 
-    # =========================================================
-    # 0) PRECEPTO / ARTÍCULO (señales fuertes)
-    # =========================================================
     # Seguro (LSOA / RDL 8/2004)
     if ("lsoa" in t) or (("r.d. legislativo" in t or "rd legislativo" in t) and "8/2004" in t):
         facts.append("CARENCIA DE SEGURO OBLIGATORIO")
@@ -174,14 +194,12 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN (ART. 18)")
         return ("atencion", facts[0], facts)
 
-    # Marcas viales / señalización horizontal (art. 167 habitual en boletines)
+    # Marcas viales (art. 167)
     if re.search(r"\bart[ií]culo\s*167\b", t) or re.search(r"\bart\.\s*167\b", t):
         facts.append("NO RESPETAR MARCA LONGITUDINAL CONTINUA (ART. 167)")
         return ("marcas_viales", facts[0], facts)
 
-    # =========================================================
-    # 1) SEMÁFORO (NO usar 'luz roja' sola)
-    # =========================================================
+    # Semáforo (evitar 'luz roja' suelta)
     sema_patterns = [
         r"circular\s+con\s+luz\s+roja",
         r"sem[aá]foro",
@@ -195,9 +213,7 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
             facts.append("CIRCULAR CON LUZ ROJA")
             return ("semaforo", facts[0], facts)
 
-    # =========================================================
-    # 2) VELOCIDAD
-    # =========================================================
+    # Velocidad
     m = re.search(r"\b(\d{2,3})\s*km\s*/?\s*h\b", t)
     if m:
         vel = m.group(1)
@@ -207,9 +223,7 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
 
-    # =========================================================
-    # 2B) MARCAS VIALES / SEÑALIZACIÓN HORIZONTAL (texto)
-    # =========================================================
+    # Marcas viales (texto)
     if ("marca longitudinal continua" in t) or ("marca longitudinal" in t and "continua" in t) or ("línea continua" in t) or ("linea continua" in t):
         facts.append("NO RESPETAR MARCA LONGITUDINAL CONTINUA")
         return ("marcas_viales", facts[0], facts)
@@ -217,9 +231,7 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("ADELANTAMIENTO INDEBIDO CON LÍNEA CONTINUA")
         return ("marcas_viales", facts[0], facts)
 
-    # =========================================================
-    # 3) MÓVIL
-    # =========================================================
+    # Móvil
     if "utilizando manualmente" in t and ("teléfono" in t or "telefono" in t or "móvil" in t or "movil" in t):
         facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
@@ -227,16 +239,12 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("USO DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
 
-    # =========================================================
-    # 4) NO IDENTIFICAR (texto)
-    # =========================================================
+    # No identificar (texto)
     if ("identificar" in t and "conductor" in t) and ("plazo de veinte" in t or "20" in t or "veinte días" in t or "veinte dias" in t):
         facts.append("NO IDENTIFICAR AL CONDUCTOR")
         return ("no_identificar", facts[0], facts)
 
-    # =========================================================
-    # 5) ITV / SEGURO (texto)
-    # =========================================================
+    # ITV / Seguro (texto)
     if ("itv" in t and ("caduc" in t or "sin itv" in t or "no vigente" in t)) or ("inspección técnica" in t and ("caduc" in t or "no vigente" in t)):
         facts.append("ITV NO VIGENTE / CADUCADA")
         return ("itv", facts[0], facts)
@@ -251,9 +259,7 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("CARENCIA DE SEGURO OBLIGATORIO")
         return ("seguro", facts[0], facts)
 
-    # =========================================================
-    # 6) ALCOHOLEMIA / DROGAS
-    # =========================================================
+    # Alcoholemia / drogas
     if "alcoholemia" in t or "mg/l" in t or "aire espirado" in t:
         facts.append("ALCOHOLEMIA")
         return ("alcoholemia", facts[0], facts)
@@ -261,9 +267,7 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("CONDUCCIÓN BAJO EFECTOS DE DROGAS")
         return ("drogas", facts[0], facts)
 
-    # =========================================================
-    # 7) CINTURÓN / CASCO / SRI
-    # =========================================================
+    # Cinturón / casco / SRI
     if "cinturón" in t or "cinturon" in t:
         facts.append("NO UTILIZAR CINTURÓN DE SEGURIDAD")
         return ("cinturon", facts[0], facts)
@@ -274,9 +278,7 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("SISTEMA DE RETENCIÓN INFANTIL (SRI)")
         return ("sri", facts[0], facts)
 
-    # =========================================================
-    # 8) CONDICIONES VEHÍCULO (texto)
-    # =========================================================
+    # Condiciones vehículo (texto)
     if any(k in t for k in [
         "condiciones reglamentarias", "vehículo reseñado", "vehiculo reseñado",
         "deslumbr", "dispositivos de alumbrado", "señalización óptica", "senalizacion optica",
@@ -285,16 +287,12 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
         return ("condiciones_vehiculo", facts[0], facts)
 
-    # =========================================================
-    # 9) ATENCIÓN / DISTRACCIÓN (texto)
-    # =========================================================
+    # Atención (texto)
     if "atención permanente" in t or "atencion permanente" in t or "distracción" in t or "distraccion" in t:
         facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN")
         return ("atencion", facts[0], facts)
 
-    # =========================================================
-    # 10) PARKING
-    # =========================================================
+    # Parking
     if "doble fila" in t:
         facts.append("ESTACIONAR EN DOBLE FILA")
         return ("parking", facts[0], facts)
