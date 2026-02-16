@@ -60,6 +60,130 @@ def _sanitize_for_sandbox_demo(attack_plan: Dict[str, Any]) -> Dict[str, Any]:
     return plan
 
 
+def _extract_speed_pair_from_blob(blob: str) -> Dict[str, Any]:
+    """Intenta extraer (measured_speed, limit_speed) de texto libre (OCR/extracts).
+    Busca patrones típicos: 'CIRCULAR A 123 KM/H ... LIMITADA ... A 90 KM/H' o 'a 76 km/h ... a 50 km/h'.
+    """
+    t = (blob or "").replace("\n", " ").lower()
+    # measured
+    m_meas = re.search(r"circular\s+a\s+(\d{2,3})\s*km\s*/?h", t) or re.search(r"\b(\d{2,3})\s*km\s*/?h\b", t)
+    # limit (prioriza 'limitada a X' / 'límite' / 'estando limitada')
+    m_lim = re.search(r"(?:limitad[ao]a?|l[ií]mit[eé])\s*(?:la\s*velocidad\s*)?(?:a\s*)?(\d{2,3})\s*km\s*/?h", t)             or re.search(r"estando\s+limitad[ao]a?\s+la\s+velocidad\s+a\s+(\d{2,3})\s*km\s*/?h", t)
+
+    out: Dict[str, Any] = {"measured": None, "limit": None, "confidence": 0.0}
+    try:
+        if m_meas:
+            out["measured"] = int(m_meas.group(1))
+        if m_lim:
+            out["limit"] = int(m_lim.group(1))
+    except Exception:
+        pass
+
+    conf = 0.0
+    if out["measured"] is not None:
+        conf += 0.4
+    if out["limit"] is not None:
+        conf += 0.4
+    if out["measured"] and out["limit"] and (20 <= out["limit"] <= 130) and (out["measured"] >= out["limit"]):
+        conf += 0.2
+    out["confidence"] = round(conf, 2)
+    return out
+
+def _speed_margin_value(measured: int, capture_mode: str) -> float:
+    """Margen conservador según Orden ICT/155/2020 (verificación periódica) para cinemómetros en servicio.
+    - Instalación fija/estática: ±5 km/h (v<=100), ±5% (v>100)
+    - Instalación móvil sobre vehículo: ±7 km/h (v<=100), ±7% (v>100)
+    Si no se conoce modo, usa fijo/estático (más favorable al denunciado) como default.
+    """
+    cm = (capture_mode or "").upper()
+    mobile = (cm == "MOBILE") or (cm == "MOVING") or (cm == "VEHICLE") or (cm == "AGENT")
+    # Nota: AGENT no siempre implica radar en movimiento, pero para el cálculo interno
+    # usamos MOBILE como escenario habitual de patrulla. Si se prefiere, cambiar a False.
+    if measured <= 100:
+        return 7.0 if mobile else 5.0
+    # porcentaje
+    pct = 0.07 if mobile else 0.05
+    return round(measured * pct, 2)
+
+def _dgt_speed_sanction_table() -> Dict[int, list]:
+    """Tabla DGT (Sede electrónica) de sanciones por exceso de velocidad captado por cinemómetro.
+
+    Devuelve por límite (20..120) una lista de bandas: (from,to,fine,points,label)
+
+    Fuente visual: PDF DGT 'Sanciones por exceso de velocidad'.
+    """
+    # Bandas leídas de la tabla DGT (rangos inclusivos).
+    return {
+
+        20: [(21,40,100,0,'100€ sin puntos'), (41,50,300,2,'300€ 2 puntos'), (51,60,400,4,'400€ 4 puntos'), (61,70,500,6,'500€ 6 puntos'), (71,999,600,6,'600€ 6 puntos')],
+
+        30: [(31,50,100,0,'100€ sin puntos'), (51,60,300,2,'300€ 2 puntos'), (61,70,400,4,'400€ 4 puntos'), (71,80,500,6,'500€ 6 puntos'), (81,999,600,6,'600€ 6 puntos')],
+
+        40: [(41,60,100,0,'100€ sin puntos'), (61,70,300,2,'300€ 2 puntos'), (71,80,400,4,'400€ 4 puntos'), (81,90,500,6,'500€ 6 puntos'), (91,999,600,6,'600€ 6 puntos')],
+
+        50: [(51,70,100,0,'100€ sin puntos'), (71,80,300,2,'300€ 2 puntos'), (81,90,400,4,'400€ 4 puntos'), (91,100,500,6,'500€ 6 puntos'), (121,999,600,6,'600€ 6 puntos')],
+
+        60: [(61,90,100,0,'100€ sin puntos'), (91,110,300,2,'300€ 2 puntos'), (111,120,400,4,'400€ 4 puntos'), (121,130,500,6,'500€ 6 puntos'), (131,999,600,6,'600€ 6 puntos')],
+
+        70: [(71,100,100,0,'100€ sin puntos'), (101,120,300,2,'300€ 2 puntos'), (121,130,400,4,'400€ 4 puntos'), (131,140,500,6,'500€ 6 puntos'), (141,999,600,6,'600€ 6 puntos')],
+
+        80: [(81,110,100,0,'100€ sin puntos'), (111,130,300,2,'300€ 2 puntos'), (131,140,400,4,'400€ 4 puntos'), (141,150,500,6,'500€ 6 puntos'), (151,999,600,6,'600€ 6 puntos')],
+
+        90: [(91,120,100,0,'100€ sin puntos'), (121,140,300,2,'300€ 2 puntos'), (141,150,400,4,'400€ 4 puntos'), (151,160,500,6,'500€ 6 puntos'), (161,999,600,6,'600€ 6 puntos')],
+
+        100:[(101,130,100,0,'100€ sin puntos'), (131,150,300,2,'300€ 2 puntos'), (151,160,400,4,'400€ 4 puntos'), (161,170,500,6,'500€ 6 puntos'), (171,999,600,6,'600€ 6 puntos')],
+
+        110:[(111,140,100,0,'100€ sin puntos'), (141,160,300,2,'300€ 2 puntos'), (161,170,400,4,'400€ 4 puntos'), (171,180,500,6,'500€ 6 puntos'), (181,999,600,6,'600€ 6 puntos')],
+
+        120:[(121,150,100,0,'100€ sin puntos'), (151,170,300,2,'300€ 2 puntos'), (171,180,400,4,'400€ 4 puntos'), (181,190,500,6,'500€ 6 puntos'), (191,999,600,6,'600€ 6 puntos')],
+
+    }
+
+
+def _expected_speed_sanction(limit: int, corrected: float) -> Dict[str, Any]:
+    tbl = _dgt_speed_sanction_table()
+    lim = int(limit) if limit in tbl else None
+    if lim is None:
+        return {"fine": None, "points": None, "band": None, "table_limit": None}
+    v = int(round(corrected))
+    for lo, hi, fine, pts, label in tbl[lim]:
+        if v >= lo and v <= hi:
+            return {"fine": fine, "points": pts, "band": label, "table_limit": lim, "corrected_int": v}
+    return {"fine": None, "points": None, "band": None, "table_limit": lim, "corrected_int": v}
+
+def _compute_velocity_calc(docs: List[Dict[str, Any]], extraction_core: Optional[Dict[str, Any]], capture_mode: str) -> Dict[str, Any]:
+    blob_parts = []
+    try:
+        blob_parts.append(json.dumps(extraction_core or {}, ensure_ascii=False))
+    except Exception:
+        pass
+    for d in docs or []:
+        if d.get("text_excerpt"):
+            blob_parts.append(d["text_excerpt"])
+    blob = "\n".join(blob_parts)
+    pair = _extract_speed_pair_from_blob(blob)
+    measured = pair.get("measured")
+    limit = pair.get("limit")
+    if not measured or not limit:
+        return {"ok": False, "reason": "No se pudieron extraer velocidades de forma fiable.", "raw": pair}
+
+    margin = _speed_margin_value(int(measured), capture_mode)
+    corrected = max(0.0, float(measured) - float(margin))
+    expected = _expected_speed_sanction(int(limit), corrected)
+
+    return {
+        "ok": True,
+        "limit": int(limit),
+        "measured": int(measured),
+        "capture_mode_for_margin": ("MOBILE" if (capture_mode or "").upper()=="AGENT" else (capture_mode or "UNKNOWN")),
+        "margin_value": margin,
+        "corrected": round(corrected, 2),
+        "expected": expected,
+        "extraction_confidence": pair.get("confidence", 0.0),
+    }
+
+
+
 def _llm_json(prompt: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     resp = client.chat.completions.create(
@@ -584,6 +708,20 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     except Exception:
         pass
 
+    # VELOCITY STRICT ENGINE (VSE-1): cálculo automático de margen, velocidad corregida y tramo sancionador
+    velocity_calc = {}
+    try:
+        if (attack_plan or {}).get("infraction_type") == "velocidad":
+            velocity_calc = _compute_velocity_calc(docs, extraction_core, capture_mode)
+            if velocity_calc.get("ok"):
+                attack_plan.setdefault("meta", {})
+                attack_plan["meta"]["velocity_calc"] = velocity_calc
+                # Si no consta acreditado margen/tabla o hay inconsistencia evidente, subimos intensidad
+                context_intensity = "critico"
+    except Exception:
+        velocity_calc = {"ok": False, "reason": "error_interno_velocity_calc"}
+
+
     draft = None
     if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
         interested_data = _load_interested_data(case_id)
@@ -601,6 +739,9 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 "attack_plan": attack_plan,
                 "facts_summary": facts_summary,
                 "context_intensity": context_intensity,
+        "velocity_calc": velocity_calc,
+                "velocity_calc": velocity_calc,
+                "sandbox": {"override_applied": bool((admissibility or {}).get("override_applied")), "override_mode": (admissibility or {}).get("override_mode")},
             },
         )
 
@@ -616,6 +757,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         "capture_mode": capture_mode,
         "facts_summary": facts_summary,
         "context_intensity": context_intensity,
+        "velocity_calc": velocity_calc,
         "extraction_debug": {
             "wrapper_keys": list(extraction_wrapper.keys()) if isinstance(extraction_wrapper, dict) else [],
             "core_keys": list(extraction_core.keys()) if isinstance(extraction_core, dict) else [],
