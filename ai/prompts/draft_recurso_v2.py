@@ -72,7 +72,25 @@ A) Si hay incoherencia hecho–precepto (tipicidad/subsunción):
   * Si sostiene que es seguro → checklist FIVA/trazabilidad.
   * No inventes hechos; formula como "para el caso de que".
 
+
 B) Si el tipo es VELOCIDAD (y no hay incoherencia):
+- ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA (CINEMÓMETRO)
+  Obligatorio incluir literalmente: "cadena de custodia".
+  Obligatorio incluir: "margen" y "velocidad corregida".
+  Obligatorio mencionar control metrológico y referencia normativa de forma genérica: "control metrológico" y "Orden ICT/155/2020" (sin citas largas).
+  Checklist obligatorio (redacción exigente, verificable, numerada):
+    1) Identificación del cinemómetro (marca/modelo/nº serie) y emplazamiento (vía/PK/sentido).
+    2) Certificado de verificación metrológica vigente y fecha de última verificación (y, en su caso, tras reparación).
+    3) Captura/fotograma COMPLETO y sin recortes, con datos legibles y asociación inequívoca al vehículo.
+    4) Margen aplicado y su justificación (control metrológico): velocidad medida vs velocidad corregida (debe constar).
+    5) Cadena de custodia: integridad del registro, sistema de almacenamiento y correspondencia inequívoca con el vehículo denunciado.
+    6) Acreditación del límite aplicable y su señalización (genérica vs específica) en el punto exacto.
+  Si velocity_calc viene informado y velocity_calc.ok == true:
+    - Integra un párrafo breve "a efectos ilustrativos" con: límite, medida, margen, velocidad corregida, y la banda/tramo esperado (fine/points) si viene en expected.
+    - Si el expediente no acredita el margen aplicado o el tramo sancionador/puntos, formula "posible error de tramo sancionador" y solicita subsidiariamente recalificación/rectificación.
+- ALEGACIÓN SEGUNDA — MOTIVACIÓN (arts. 35 y 88 Ley 39/2015) (solo si procede por falta de detalles/documentos)
+- ALEGACIÓN TERCERA — PRESUNCIÓN DE INOCENCIA / INSUFICIENCIA PROBATORIA (art. 24 CE) (como refuerzo, no como eje)
+
 - ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA (CINEMÓMETRO)
   Obligatorio incluir literalmente: "cadena de custodia".
   Obligatorio incluir: "margen" y "velocidad corregida".
@@ -100,7 +118,7 @@ C) Otros tipos (semáforo, móvil, seguro, atención, marcas viales, etc.):
 
 III. SOLICITO
 1) Que se tengan por formuladas las presentes alegaciones.
-2) Que se acuerde el archivo del expediente.
+2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de acreditación técnica suficiente.
 3) Subsidiariamente, que se practique prueba y se aporte expediente íntegro (boletín/acta, informe agente, anexos, fotos/vídeos, certificados).
 
 SALIDA JSON EXACTA:
