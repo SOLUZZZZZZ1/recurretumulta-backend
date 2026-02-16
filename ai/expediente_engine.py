@@ -235,6 +235,97 @@ def _compute_velocity_calc(docs: List[Dict[str, Any]], extraction_core: Optional
     }
 
 
+def _extract_imposed_fine_points(extraction_core: Dict[str, Any]) -> Dict[str, Any]:
+    """Extrae (si constan) importe y puntos impuestos desde campos estructurados u OCR."""
+    fine = None
+    pts = None
+    try:
+        if isinstance(extraction_core, dict):
+            fine = extraction_core.get("sancion_importe_eur")
+            pts = extraction_core.get("puntos_detraccion")
+    except Exception:
+        pass
+    try:
+        if isinstance(fine, str) and fine.strip().isdigit():
+            fine = int(fine.strip())
+        if isinstance(pts, str) and pts.strip().isdigit():
+            pts = int(pts.strip())
+    except Exception:
+        pass
+    if not isinstance(fine, int):
+        fine = None
+    if not isinstance(pts, int):
+        pts = None
+    return {"fine": fine, "points": pts}
+
+def _compare_imposed_to_expected(extraction_core: Dict[str, Any], velocity_calc: Dict[str, Any]) -> Dict[str, Any]:
+    """Compara sanción/puntos impuestos con los esperados según tabla DGT y velocidad corregida.
+    Devuelve un dict con flags y diferencias para activar VSE-2 (error de tramo sancionador).
+    """
+    imposed = _extract_imposed_fine_points(extraction_core or {})
+    fine_i = imposed.get("fine")
+    pts_i = imposed.get("points")
+
+    expected = (velocity_calc or {}).get("expected") or {}
+    fine_e = expected.get("fine")
+    pts_e = expected.get("points")
+
+    out = {"ok": False, "has_imposed": False, "has_expected": False, "mismatch": False, "details": {}}
+
+    if fine_i is not None or pts_i is not None:
+        out["has_imposed"] = True
+    if fine_e is not None or pts_e is not None:
+        out["has_expected"] = True
+
+    if out["has_imposed"] and out["has_expected"]:
+        out["ok"] = True
+        mismatch = False
+        if fine_i is not None and fine_e is not None and int(fine_i) != int(fine_e):
+            mismatch = True
+        if pts_i is not None and pts_e is not None and int(pts_i) != int(pts_e):
+            mismatch = True
+        out["mismatch"] = mismatch
+        out["details"] = {
+            "imposed": {"fine": fine_i, "points": pts_i},
+            "expected": {"fine": fine_e, "points": pts_e, "band": expected.get("band"), "corrected_int": expected.get("corrected_int")},
+        }
+    return out
+
+def _force_velocity_primary_error_tramo(attack_plan: Dict[str, Any], cmp: Dict[str, Any]) -> Dict[str, Any]:
+    """Fuerza el eje principal a 'error de tramo sancionador' (VSE-2)."""
+    plan = dict(attack_plan or {})
+    details = (cmp or {}).get("details") or {}
+    imposed = (details.get("imposed") or {})
+    expected = (details.get("expected") or {})
+
+    fine_i = imposed.get("fine")
+    pts_i = imposed.get("points")
+    fine_e = expected.get("fine")
+    pts_e = expected.get("points")
+    band = expected.get("band")
+    corr_int = expected.get("corrected_int")
+
+    title = "Error en la determinación del tramo sancionador y/o puntos (infracción de velocidad)"
+    points = [
+        "La Administración debe motivar y acreditar el cálculo completo: velocidad medida, margen aplicado, velocidad corregida y banda/tramo sancionador resultante.",
+        "No basta consignar un importe/puntos: debe acreditarse documentalmente el fundamento técnico-jurídico del tramo aplicado.",
+    ]
+    if corr_int is not None and band:
+        points.append(f"A efectos ilustrativos, la velocidad corregida se situaría en torno a {corr_int} km/h, lo que correspondería a la banda/tramo: {band}.")
+    if fine_i is not None and fine_e is not None and fine_i != fine_e:
+        points.append(f"Incongruencia: importe impuesto {fine_i}€ frente a importe esperado {fine_e}€ (según banda aplicable).")
+    if pts_i is not None and pts_e is not None and pts_i != pts_e:
+        points.append(f"Incongruencia: puntos impuestos {pts_i} frente a puntos esperados {pts_e} (según banda aplicable).")
+    points.append("Procede el archivo o, subsidiariamente, la recalificación/rectificación al tramo correcto, con devolución/reintegro de lo indebidamente exigido en su caso.")
+
+    plan["primary"] = {"title": title, "points": points}
+    plan.setdefault("meta", {})
+    plan["meta"]["velocity_tramo_check"] = cmp
+    plan["meta"]["velocity_primary_forced"] = "ERROR_TRAMO"
+    return plan
+
+
+
 
 def _llm_json(prompt: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -770,6 +861,20 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 attack_plan["meta"]["velocity_calc"] = velocity_calc
                 # Si no consta acreditado margen/tabla o hay inconsistencia evidente, subimos intensidad
                 context_intensity = "critico"
+
+                # VSE-2: si constan importe/puntos impuestos y no encajan con lo esperado, forzamos eje principal a ERROR DE TRAMO
+                try:
+                    tramo_cmp = _compare_imposed_to_expected(extraction_core, velocity_calc)
+                    if tramo_cmp.get("ok") and tramo_cmp.get("mismatch"):
+                        attack_plan = _force_velocity_primary_error_tramo(attack_plan, tramo_cmp)
+                        context_intensity = "critico"
+                        _save_event(case_id, "velocity_tramo_mismatch_detected", tramo_cmp)
+                    else:
+                        attack_plan.setdefault("meta", {})
+                        attack_plan["meta"]["velocity_tramo_check"] = tramo_cmp
+                except Exception as _e:
+                    attack_plan.setdefault("meta", {})
+                    attack_plan["meta"]["velocity_tramo_check"] = {"ok": False, "reason": str(_e)}
     except Exception:
         velocity_calc = {"ok": False, "reason": "error_interno_velocity_calc"}
 
