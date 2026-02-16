@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
@@ -15,6 +16,57 @@ from ai.prompts.draft_recurso_v2 import PROMPT as PROMPT_DRAFT
 from ai.prompts.module_semaforo import module_semaforo
 
 MAX_EXCERPT_CHARS = 12000
+
+PROMPT_DRAFT_REPAIR_VELOCIDAD = """
+Eres abogado especialista en sancionador (España). Debes REPARAR un borrador de recurso por EXCESO DE VELOCIDAD.
+
+OBJETIVO: reescribir el borrador COMPLETO para que pase una validación estricta.
+
+REGLAS OBLIGATORIAS:
+1) La PRIMERA ALEGACIÓN NO puede ser 'Presunción de inocencia'.
+2) La PRIMERA ALEGACIÓN debe titularse exactamente:
+   'ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA (CINEMÓMETRO)'
+3) El cuerpo debe contener literalmente la expresión: 'cadena de custodia'.
+4) Debe incluir 'margen' y 'velocidad corregida'.
+5) Debe exigir 'certificado' y 'verificación' (metrológica) del cinemómetro.
+6) Debe exigir 'captura' o 'fotograma' completo.
+7) No inventes hechos. Mantén prudencia: 'no consta acreditado', 'no se aporta'.
+
+ENTRADA: JSON con borrador anterior y contexto.
+SALIDA: SOLO JSON con la misma forma {asunto,cuerpo,variables_usadas,checks,notes_for_operator}.
+"""
+
+def _velocity_strict_missing(body: str) -> List[str]:
+    b = (body or "").lower()
+    missing = []
+    if "cadena de custodia" not in b:
+        missing.append("cadena_custodia")
+    # primera alegación
+    first = ""
+    for line in (body or "").splitlines():
+        l = (line or "").strip()
+        if l.lower().startswith("alegación") or l.lower().startswith("alegacion"):
+            first = l.lower()
+            break
+    if first and ("presunción" in first or "presuncion" in first or "inocencia" in first):
+        missing.append("orden_alegaciones")
+    # mínimos VSE
+    for key, needles in {
+        "margen": ["margen"],
+        "velocidad_corregida": ["velocidad corregida", "corregida"],
+        "metrologia": ["certificado", "verificación", "verificacion"],
+        "cinemometro": ["cinemómetro", "cinemometro", "radar"],
+        "captura": ["captura", "fotograma", "imagen"],
+    }.items():
+        if not any(n in b for n in needles):
+            missing.append(key)
+    # unique
+    seen=set(); out=[]
+    for x in missing:
+        if x not in seen:
+            seen.add(x); out.append(x)
+    return out
+
 
 def _override_mode() -> str:
     """Controla el modo de override para pruebas.
@@ -739,11 +791,37 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 "attack_plan": attack_plan,
                 "facts_summary": facts_summary,
                 "context_intensity": context_intensity,
-        "velocity_calc": velocity_calc,
                 "velocity_calc": velocity_calc,
                 "sandbox": {"override_applied": bool((admissibility or {}).get("override_applied")), "override_mode": (admissibility or {}).get("override_mode")},
             },
         )
+
+        # Auto-repair (1 intento) para VELOCIDAD si el borrador no cumple mínimos VSE-1
+        try:
+            if isinstance(draft, dict):
+                cuerpo0 = (draft.get("cuerpo") or "")
+                missing = _velocity_strict_missing(cuerpo0) if cuerpo0 else []
+                if missing and ((attack_plan or {}).get("infraction_type") == "velocidad"):
+                    _save_event(case_id, "draft_repair_triggered", {"missing": missing})
+                    draft = _llm_json(
+                        PROMPT_DRAFT_REPAIR_VELOCIDAD,
+                        {
+                            "case_id": case_id,
+                            "missing": missing,
+                            "previous_draft": draft,
+                            "attack_plan": attack_plan,
+                            "facts_summary": facts_summary,
+                            "context_intensity": context_intensity,
+                            "velocity_calc": velocity_calc,
+                            "latest_extraction": extraction_wrapper,
+                            "classification": classify,
+                            "timeline": timeline,
+                            "admissibility": admissibility,
+                        },
+                    )
+        except Exception as _e:
+            _save_event(case_id, "draft_repair_failed", {"error": str(_e)})
+
 
     result = {
         "ok": True,
