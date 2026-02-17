@@ -1,11 +1,12 @@
 # ai/expediente_engine.py
-# RTM — VELOCIDAD PRO (Referencia Nacional)
+# RTM — VELOCIDAD PRO + NORMALIZACIÓN (Referencia Nacional)
 # - Determinismo (temperature=0.0)
-# - Primary determinista (velocidad no nace con presunción de inocencia)
-# - Auto-repair (1 intento) si el borrador no cumple mínimos VSE-1
-# - VELOCIDAD_PRO_ENRICH: inyección determinista de módulos técnicos si el borrador es corto/flojo
+# - Auto-repair (1 intento) si falla VSE-1
+# - VELOCIDAD_PRO_ENRICH: inyecta músculo técnico si el borrador es corto
+# - NORMALIZACIÓN VELOCIDAD: si NO hay tipicity_mismatch, fuerza título técnico y elimina párrafos intrusos de tipicidad
 # - Petitum forzado: en VELOCIDAD siempre ARCHIVO
 # - Párrafo de cálculo (margen/velocidad corregida/banda) obligatorio si velocity_calc.ok
+# - Fix: "III. SOLICITO1)" => "III. SOLICITO\n1)"
 
 import json
 import os
@@ -25,7 +26,6 @@ from ai.prompts.draft_recurso_v2 import PROMPT as PROMPT_DRAFT
 from ai.prompts.module_semaforo import module_semaforo
 
 MAX_EXCERPT_CHARS = 12000
-
 
 # ==========================
 # REPAIR PROMPT (VELOCIDAD)
@@ -92,11 +92,17 @@ def _velocity_strict_missing(body: str) -> List[str]:
     return out
 
 
-def _force_archivo_in_speed_body(body: str) -> str:
-    """Sustituye 'revisión' por 'ARCHIVO' en velocidad."""
+def _fix_solicito_newline(body: str) -> str:
     if not body:
         return body
+    # arregla "III. SOLICITO1)" y variantes
+    body = re.sub(r"(III\.\s*SOLICITO)\s*(?=1\))", r"\1\n", body, flags=re.IGNORECASE)
+    return body
 
+
+def _force_archivo_in_speed_body(body: str) -> str:
+    if not body:
+        return body
     reps = [
         ("Que se acuerde la revisión del expediente", "Que se acuerde el ARCHIVO del expediente"),
         ("Que se acuerde la REVISIÓN del expediente", "Que se acuerde el ARCHIVO del expediente"),
@@ -106,17 +112,13 @@ def _force_archivo_in_speed_body(body: str) -> str:
         ("2) Que se acuerde la REVISIÓN del expediente", "2) Que se acuerde el ARCHIVO del expediente"),
         ("2) Que se acuerde la revisión del Expediente", "2) Que se acuerde el ARCHIVO del expediente"),
         ("2) Que se acuerde la REVISIÓN del Expediente", "2) Que se acuerde el ARCHIVO del expediente"),
-        ("Que se acuerde la revisión del expediente por insuficiencia probatoria", "Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria"),
     ]
     for a, b in reps:
         body = body.replace(a, b)
-
-    # Si aparece "revisión exhaustiva", no tocar
     return body
 
 
 def _ensure_speed_antecedentes(body: str, velocity_calc: Dict[str, Any]) -> str:
-    """Fuerza 'Hecho imputado' con (XXX km/h) si disponemos de la medida."""
     try:
         if not body:
             return body
@@ -137,7 +139,6 @@ def _ensure_speed_antecedentes(body: str, velocity_calc: Dict[str, Any]) -> str:
 
 
 def _ensure_velocity_calc_paragraph(body: str, velocity_calc: Dict[str, Any]) -> str:
-    """Inserta SIEMPRE un párrafo de cálculo si velocity_calc.ok y no existe ya."""
     try:
         if not body:
             return body
@@ -145,7 +146,7 @@ def _ensure_velocity_calc_paragraph(body: str, velocity_calc: Dict[str, Any]) ->
         if not vc.get("ok"):
             return body
 
-        # ya existe
+        # si ya existe, no duplicar
         if "a efectos ilustrativos" in body.lower() and "velocidad corregida" in body.lower():
             return body
 
@@ -174,37 +175,37 @@ def _ensure_velocity_calc_paragraph(body: str, velocity_calc: Dict[str, Any]) ->
 
         paragraph = " ".join(parts)
 
-        # Insertar tras el título de la Alegación Primera si existe, si no antes del Solicito
         m = re.search(r"(ALEGACIÓN\s+PRIMERA[^\n]*\n)", body, flags=re.IGNORECASE)
         if m:
             i = m.end(1)
             return body[:i] + paragraph + "\n" + body[i:]
         return re.sub(r"(\nIII\.\s*SOLICITO)", "\n" + paragraph + r"\n\1", body, flags=re.IGNORECASE)
-
     except Exception:
         return body
 
 
 def _velocity_pro_enrich(body: str, velocity_calc: Dict[str, Any]) -> str:
-    """
-    ENRIQUECIMIENTO DETERMINISTA (VELOCIDAD):
-    - Si el borrador es corto o no contiene checklist completo, inyecta módulos técnicos.
-    - Garantiza: Orden ICT/155/2020, control metrológico, checklist 1–7, cadena de custodia, captura, margen/velocidad corregida,
-      bloque de limitación/señalización, y SOLICITO de ARCHIVO.
-    """
     if not body:
         return body
 
     b = body.lower()
-    too_short = len(body.strip()) < 1400  # umbral práctico para evitar "minirrecurso"
-    must_have = ["orden ict/155/2020", "control metrol", "cadena de custodia", "velocidad corregida", "margen", "cinemómetro", "certificado", "verificación", "captura"]
+    too_short = len(body.strip()) < 1400
+    must_have = [
+        "orden ict/155/2020",
+        "control metrol",
+        "cadena de custodia",
+        "velocidad corregida",
+        "margen",
+        "cinemómetro",
+        "certificado",
+        "verificación",
+        "captura",
+    ]
     missing_key = any(k not in b for k in must_have)
 
-    # Si ya es largo y completo, no meter “ruido”
     if not (too_short or missing_key):
         return body
 
-    # Construimos un bloque PRO (se inserta dentro de alegaciones, no como texto suelto)
     calc_sentence = ""
     if (velocity_calc or {}).get("ok"):
         corrected = velocity_calc.get("corrected")
@@ -214,20 +215,18 @@ def _velocity_pro_enrich(body: str, velocity_calc: Dict[str, Any]) -> str:
         band = expected.get("band")
         fine = expected.get("fine")
         pts = expected.get("points")
-        if isinstance(corrected, (int, float)):
-            calc_sentence = f"A efectos ilustrativos, la aplicación del margen legal podría situar la velocidad corregida en torno a {float(corrected):.2f} km/h."
-        if isinstance(limit, int) and isinstance(measured, int):
+        if isinstance(limit, int) and isinstance(measured, int) and isinstance(corrected, (int, float)):
             calc_sentence = f"A efectos ilustrativos, con un límite de {limit} km/h y una medición de {measured} km/h, la aplicación del margen legal podría situar la velocidad corregida en torno a {float(corrected):.2f} km/h."
-        if band:
-            calc_sentence += f" Ello podría encajar en la banda: {band}"
-            if isinstance(fine, int) or isinstance(pts, int):
-                calc_sentence += f" (multa {fine}€ / puntos {pts})."
-            else:
-                calc_sentence += "."
+            if band:
+                calc_sentence += f" Ello podría encajar en la banda: {band}"
+                if isinstance(fine, int) or isinstance(pts, int):
+                    calc_sentence += f" (multa {fine}€ / puntos {pts})."
+                else:
+                    calc_sentence += "."
+        else:
+            calc_sentence = "A efectos ilustrativos, la aplicación del margen legal puede alterar la velocidad corregida y, por tanto, el tramo sancionador; corresponde a la Administración acreditar margen aplicado, velocidad corregida y banda/tramo resultante."
 
-    pro_block = f"""
-ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA (CINEMÓMETRO)
-
+    pro_body = f"""
 La validez de una sanción por exceso de velocidad basada en cinemómetro exige la acreditación documental del control metrológico conforme a la normativa aplicable (Orden ICT/155/2020). No basta una afirmación genérica de verificación: debe aportarse soporte documental verificable.
 
 No consta acreditado en el expediente:
@@ -240,39 +239,61 @@ No consta acreditado en el expediente:
 6) Acreditación del límite aplicable y su señalización en el punto exacto (genérica vs específica) y su coherencia con la ubicación consignada.
 7) Motivación técnica individualizada que vincule medición, margen aplicado, velocidad corregida y tramo sancionador resultante.
 
-{calc_sentence if calc_sentence else "A efectos ilustrativos, la aplicación del margen legal puede alterar la velocidad corregida y, por tanto, el tramo sancionador; corresponde a la Administración acreditar margen aplicado, velocidad corregida y banda/tramo resultante."}
-
-ALEGACIÓN SEGUNDA — INSUFICIENCIA PROBATORIA Y MOTIVACIÓN TÉCNICA
-
-La falta de documentación técnica impide verificar la fiabilidad del instrumento, la integridad del dato y la correcta determinación del tramo sancionador. La motivación no puede ser estereotipada: debe permitir comprobar la coherencia entre medición, margen aplicado, velocidad corregida y sanción/puntos, evitando indefensión.
-
-ALEGACIÓN TERCERA — PRESUNCIÓN DE INOCENCIA (REFUERZO)
-
-En virtud del artículo 24 CE, la carga de la prueba corresponde a la Administración. Ante la insuficiencia probatoria descrita, no puede considerarse acreditada la infracción en términos exigibles.
-
+{calc_sentence}
 """
 
-    # Insertar/normalizar:
-    # Si ya existe ALEGACIÓN PRIMERA, no duplicar título; en ese caso, añadimos solo el “cuerpo pro” después del primer título.
+    # si ya hay alegación primera, inyecta SOLO si no está completo
     if re.search(r"ALEGACIÓN\s+PRIMERA", body, flags=re.IGNORECASE):
-        # Si ya hay 'Orden ICT/155/2020' y checklist, no meter todo. Si falta, inserta el bloque PRO justo después del título.
-        if "orden ict/155/2020" in b and "1)" in b and "2)" in b and "cadena de custodia" in b:
+        if "orden ict/155/2020" in b and "1)" in b and "7)" in b and "cadena de custodia" in b:
             return body
         m = re.search(r"(ALEGACIÓN\s+PRIMERA[^\n]*\n)", body, flags=re.IGNORECASE)
         if m:
             i = m.end(1)
-            # Insertar el cuerpo pro (sin repetir el título)
-            pro_body_only = "\n".join(pro_block.strip().splitlines()[2:]).strip()  # quita título y línea en blanco
-            return body[:i] + pro_body_only + "\n" + body[i:]
+            return body[:i] + pro_body.strip() + "\n" + body[i:]
         return body
 
-    # Si no hay alegaciones estructuradas, insertamos bloque completo antes de SOLICITO
-    body = re.sub(r"(\nIII\.\s*SOLICITO)", "\n" + pro_block.strip() + r"\n\1", body, flags=re.IGNORECASE)
-    return body
+    return re.sub(r"(\nIII\.\s*SOLICITO)", "\nALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA (CINEMÓMETRO)\n" + pro_body.strip() + r"\n\1", body, flags=re.IGNORECASE)
+
+
+def _normalize_velocity_titles_and_remove_tipicity(body: str, attack_plan: Dict[str, Any]) -> str:
+    """
+    Si es VELOCIDAD y NO hay tipicity_mismatch, fuerza el título correcto de la ALEGACIÓN PRIMERA
+    y elimina párrafos intrusos de 'tipicidad/subsunción típica/artículo 300'.
+    """
+    if not body:
+        return body
+
+    inf = ((attack_plan or {}).get("infraction_type") or "").lower().strip()
+    meta = (attack_plan or {}).get("meta") or {}
+    has_mismatch = isinstance(meta, dict) and ("tipicity_mismatch" in meta)
+
+    if inf != "velocidad" or has_mismatch:
+        return body
+
+    # 1) Forzar título de alegación primera si viene de tipicidad
+    body = re.sub(
+        r"ALEGACIÓN\s+PRIMERA\s+—\s+VULNERACIÓN\s+DEL\s+PRINCIPIO\s+DE\s+TIPICIDAD\s+Y\s+SUBSUNCIÓN",
+        "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA (CINEMÓMETRO)",
+        body,
+        flags=re.IGNORECASE,
+    )
+
+    # 2) Eliminar párrafos intrusos de tipicidad/artículo 300 al final (sin tocar el bloque técnico)
+    #    Cortamos cualquier cola que empiece con frases típicas de tipicidad y no sea parte de las alegaciones numeradas.
+    intruder_patterns = [
+        r"Se pone de manifiesto que no consta acreditado el hecho imputado[\s\S]*$",
+        r"[^\\n]*subsunción típica[\s\S]*$",
+        r"[^\\n]*artículo\s+300[\s\S]*$",
+        r"[^\\n]*tipicidad y subsunción[\s\S]*$",
+    ]
+    for ptn in intruder_patterns:
+        body = re.sub(ptn, "", body, flags=re.IGNORECASE)
+
+    return body.strip() + "\n"
 
 
 # ==========================
-# OVERRIDE MODE
+# OVERRIDE + SANDBOX
 # ==========================
 
 def _override_mode() -> str:
@@ -492,100 +513,19 @@ def _load_case_documents(case_id: str) -> List[Dict[str, Any]]:
 
 
 # ==========================
-# SIGNALS
-# ==========================
-
-def _detect_capture_mode(docs: List[Dict[str, Any]], extraction_core: Optional[Dict[str, Any]]) -> str:
-    blob_parts: List[str] = []
-    try:
-        blob_parts.append(json.dumps(extraction_core or {}, ensure_ascii=False))
-    except Exception:
-        pass
-    for d in docs or []:
-        t = (d.get("text_excerpt") or "")
-        if t:
-            blob_parts.append(t)
-    blob = "\n".join(blob_parts).lower()
-
-    auto_signals = [
-        "cámara", "camara", "fotograma", "fotogramas", "secuencia", "foto", "fotografía", "fotografia",
-        "captación automática", "captacion automatica", "sistema automático", "sistema automatico",
-        "dispositivo", "sensor", "instalación", "instalacion", "vídeo", "video"
-    ]
-    agent_signals = [
-        "agente", "policía", "policia", "guardia civil", "denunciante", "observó", "observo",
-        "manifestó", "manifesto", "presencial", "in situ"
-    ]
-
-    auto_score = sum(1 for s in auto_signals if s in blob)
-    agent_score = sum(1 for s in agent_signals if s in blob)
-
-    if auto_score >= 2 and auto_score >= agent_score + 1:
-        return "AUTO"
-    if agent_score >= 2 and agent_score >= auto_score + 1:
-        return "AGENT"
-    return "UNKNOWN"
-
-
-def _infer_infraction_from_facts_phrases(classify: Dict[str, Any]) -> Optional[str]:
-    phrases = (classify or {}).get("facts_phrases") or []
-    if not phrases:
-        return None
-    joined = "\n".join([str(p) for p in phrases if p]).lower()
-    if any(s in joined for s in ["semáforo", "semaforo", "fase roja", "circular con luz roja", "no respetar la luz roja"]):
-        return "semaforo"
-    if any(s in joined for s in ["móvil", "movil", "teléfono", "telefono"]):
-        return "movil"
-    if any(s in joined for s in ["velocidad", "km/h", "radar", "cinemómetro", "cinemometro"]):
-        return "velocidad"
-    return None
-
-
-def _has_semaforo_signals(docs: List[Dict[str, Any]], extraction_core: Optional[Dict[str, Any]], classify: Optional[Dict[str, Any]] = None) -> bool:
-    phrases = (classify or {}).get("facts_phrases") or []
-    for p in phrases:
-        pl = (p or "").lower()
-        if any(s in pl for s in ["semáforo", "semaforo", "fase roja", "circular con luz roja", "no respetar la luz roja"]):
-            return True
-    blob_parts: List[str] = []
-    try:
-        blob_parts.append(json.dumps(extraction_core or {}, ensure_ascii=False).lower())
-    except Exception:
-        pass
-    for d in docs or []:
-        blob_parts.append((d.get("text_excerpt") or "").lower())
-    blob = "\n".join(blob_parts)
-    return any(s in blob for s in ["semáforo", "semaforo", "fase roja", "no respetar la luz roja", "circular con luz roja"])
-
-
-def _build_facts_summary(extraction_core: Optional[Dict[str, Any]], infraction_type: str) -> str:
-    try:
-        hecho = (extraction_core or {}).get("hecho_imputado")
-        if isinstance(hecho, str) and hecho.strip():
-            return hecho.strip()
-    except Exception:
-        pass
-    # fallback
-    if infraction_type == "velocidad":
-        return "Exceso de velocidad."
-    return ""
-
-
-# ==========================
-# ATTACK PLAN (PRIMARY DETERMINISTA)
+# ATTACK PLAN (simple + estable)
 # ==========================
 
 def _build_attack_plan(classify: Dict[str, Any], extraction_core: Dict[str, Any]) -> Dict[str, Any]:
     blob = json.dumps(extraction_core or {}, ensure_ascii=False).lower()
     inferred = _infer_infraction_from_facts_phrases(classify) or "generic"
-
     if inferred == "generic":
         if any(s in blob for s in ["km/h", "radar", "cinemómetro", "cinemometro", "velocidad"]):
             inferred = "velocidad"
-        elif any(s in blob for s in ["teléfono", "telefono", "móvil", "movil"]):
-            inferred = "movil"
         elif any(s in blob for s in ["semáforo", "semaforo", "fase roja"]):
             inferred = "semaforo"
+        elif any(s in blob for s in ["teléfono", "telefono", "móvil", "movil"]):
+            inferred = "movil"
 
     primary = {"title": "Insuficiencia probatoria específica", "points": []}
     if inferred == "velocidad":
@@ -596,17 +536,13 @@ def _build_attack_plan(classify: Dict[str, Any], extraction_core: Dict[str, Any]
         "primary": primary,
         "secondary": [],
         "proof_requests": [],
-        "petition": {
-            "main": "Archivo / estimación íntegra",
-            "subsidiary": "Subsidiariamente, práctica de prueba y aportación documental completa",
-        },
+        "petition": {"main": "Archivo / estimación íntegra", "subsidiary": "Subsidiariamente, práctica de prueba y aportación documental completa"},
+        "meta": {},
     }
 
 
-def _compute_context_intensity(extraction_core: Dict[str, Any], infraction_type: str) -> str:
-    if infraction_type == "velocidad":
-        return "critico"
-    return "normal"
+def _compute_context_intensity(infraction_type: str) -> str:
+    return "critico" if infraction_type == "velocidad" else "normal"
 
 
 # ==========================
@@ -626,11 +562,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     classify = _llm_json(PROMPT_CLASSIFY, {"case_id": case_id, "documents": docs, "latest_extraction": extraction_wrapper})
     timeline = _llm_json(PROMPT_TIMELINE, {"case_id": case_id, "classification": classify, "documents": docs, "latest_extraction": extraction_wrapper})
     phase = _llm_json(PROMPT_PHASE, {"case_id": case_id, "classification": classify, "timeline": timeline, "latest_extraction": extraction_wrapper})
-
-    admissibility = _llm_json(
-        PROMPT_GUARD,
-        {"case_id": case_id, "recommended_action": phase, "timeline": timeline, "classification": classify, "latest_extraction": extraction_wrapper},
-    )
+    admissibility = _llm_json(PROMPT_GUARD, {"case_id": case_id, "recommended_action": phase, "timeline": timeline, "classification": classify, "latest_extraction": extraction_wrapper})
 
     flags = _load_case_flags(case_id)
     override_mode = _override_mode()
@@ -657,15 +589,15 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
 
     infraction_type = (attack_plan or {}).get("infraction_type") or "generic"
     facts_summary = _build_facts_summary(extraction_core, infraction_type)
-    context_intensity = _compute_context_intensity(extraction_core, infraction_type)
+    context_intensity = _compute_context_intensity(infraction_type)
 
-    # VSE-1
+    if (admissibility.get("admissibility") or "").upper() != "ADMISSIBLE":
+        # si el guard decide no, no bloqueamos aquí; SVL decide
+        pass
+
     velocity_calc: Dict[str, Any] = {}
-    try:
-        if infraction_type == "velocidad":
-            velocity_calc = _compute_velocity_calc(docs, extraction_core, capture_mode)
-    except Exception:
-        velocity_calc = {"ok": False, "reason": "error_interno_velocity_calc"}
+    if infraction_type == "velocidad":
+        velocity_calc = _compute_velocity_calc(docs, extraction_core, capture_mode)
 
     draft = None
     if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
@@ -690,7 +622,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
             },
         )
 
-        # POSTPROCESADO DETERMINISTA (VELOCIDAD)
+        # POSTPROCESADO DETERMINISTA EN VELOCIDAD
         try:
             if isinstance(draft, dict) and infraction_type == "velocidad":
                 cuerpo = draft.get("cuerpo") or ""
@@ -698,11 +630,13 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 cuerpo = _ensure_velocity_calc_paragraph(cuerpo, velocity_calc)
                 cuerpo = _velocity_pro_enrich(cuerpo, velocity_calc)
                 cuerpo = _force_archivo_in_speed_body(cuerpo)
+                cuerpo = _normalize_velocity_titles_and_remove_tipicity(cuerpo, attack_plan)
+                cuerpo = _fix_solicito_newline(cuerpo)
                 draft["cuerpo"] = cuerpo
         except Exception:
             pass
 
-        # AUTO-REPAIR (1 intento) si no cumple mínimos
+        # AUTO-REPAIR (1 intento) si no cumple mínimos VSE-1
         try:
             if isinstance(draft, dict) and infraction_type == "velocidad":
                 missing = _velocity_strict_missing(draft.get("cuerpo") or "")
@@ -730,6 +664,8 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                         cuerpo = _ensure_velocity_calc_paragraph(cuerpo, velocity_calc)
                         cuerpo = _velocity_pro_enrich(cuerpo, velocity_calc)
                         cuerpo = _force_archivo_in_speed_body(cuerpo)
+                        cuerpo = _normalize_velocity_titles_and_remove_tipicity(cuerpo, attack_plan)
+                        cuerpo = _fix_solicito_newline(cuerpo)
                         draft["cuerpo"] = cuerpo
         except Exception as _e:
             _save_event(case_id, "draft_repair_failed", {"error": str(_e)})
