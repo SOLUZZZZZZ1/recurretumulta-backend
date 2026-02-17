@@ -18,23 +18,25 @@ from ai.prompts.module_semaforo import module_semaforo
 MAX_EXCERPT_CHARS = 12000
 
 PROMPT_DRAFT_REPAIR_VELOCIDAD = """
-Eres abogado especialista en sancionador (España). Debes REPARAR un borrador de recurso por EXCESO DE VELOCIDAD.
+Eres abogado especialista en Derecho Administrativo Sancionador (España). Debes REPARAR un borrador de alegaciones por EXCESO DE VELOCIDAD.
 
 OBJETIVO: reescribir el borrador COMPLETO para que pase una validación estricta.
 
-REGLAS OBLIGATORIAS:
+REGLAS OBLIGATORIAS (NO OMITIR):
 1) La PRIMERA ALEGACIÓN NO puede ser 'Presunción de inocencia'.
-2) La PRIMERA ALEGACIÓN debe titularse exactamente:
+2) La PRIMERA ALEGACIÓN debe titularse EXACTAMENTE:
    'ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA (CINEMÓMETRO)'
-3) El cuerpo debe contener literalmente la expresión: 'cadena de custodia'.
-4) Debe incluir 'margen' y 'velocidad corregida'.
+3) El cuerpo debe contener literalmente: 'cadena de custodia'.
+4) Debe incluir literalmente: 'margen' y 'velocidad corregida'.
 5) Debe exigir 'certificado' y 'verificación' (metrológica) del cinemómetro.
-6) Debe exigir 'captura' o 'fotograma' completo.
-7) No inventes hechos. Mantén prudencia: 'no consta acreditado', 'no se aporta'.
+6) Debe exigir 'captura' o 'fotograma' completo (sin recortes).
+7) En el SOLICITO, el punto 2 debe pedir ARCHIVO (no 'revisión').
+8) No inventes hechos. Usa lenguaje prudente: 'no consta acreditado', 'no se aporta'.
 
 ENTRADA: JSON con borrador anterior y contexto.
 SALIDA: SOLO JSON con la misma forma {asunto,cuerpo,variables_usadas,checks,notes_for_operator}.
 """
+
 
 def _velocity_strict_missing(body: str) -> List[str]:
     b = (body or "").lower()
@@ -66,6 +68,21 @@ def _velocity_strict_missing(body: str) -> List[str]:
         if x not in seen:
             seen.add(x); out.append(x)
     return out
+
+def _append_velocity_terms_if_missing(body: str) -> str:
+    """Última red de seguridad: si faltan términos mínimos VSE en el texto, añade un párrafo breve sin inventar hechos."""
+    if not body:
+        body = ""
+    b = body.lower()
+    must = ["margen", "velocidad corregida", "certificado", "verificación", "cinemómetro", "captura", "cadena de custodia"]
+    if all(t in b for t in must):
+        return body
+    paragraph = (
+        "\n\nNota técnica: No consta acreditado el margen aplicado ni la velocidad corregida, "
+        "ni se aporta certificado de verificación metrológica del cinemómetro, "
+        "ni captura/fotograma completo, ni cadena de custodia e integridad del registro.\n"
+    )
+    return body + paragraph
 
 
 def _force_velocity_asunto(draft: Dict[str, Any]) -> None:
@@ -1094,6 +1111,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 cuerpo = _fix_solicito_format(cuerpo)
                 cuerpo = _normalize_velocity_titles_and_remove_tipicity(cuerpo, attack_plan)
                 cuerpo = _fix_solicito_newline(cuerpo)
+                cuerpo = _append_velocity_terms_if_missing(cuerpo)
                 draft["cuerpo"] = cuerpo
         except Exception as _e:
             _save_event(case_id, "postprocess_speed_failed", {"error": str(_e)})
@@ -1131,6 +1149,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                             cuerpo = _force_archivo_in_speed_body(cuerpo)
                             cuerpo = _normalize_velocity_titles_and_remove_tipicity(cuerpo, attack_plan)
                             cuerpo = _fix_solicito_newline(cuerpo)
+                            cuerpo = _append_velocity_terms_if_missing(cuerpo)
                             draft["cuerpo"] = cuerpo
                     except Exception as _e:
                         _save_event(case_id, "postprocess_speed_failed", {"error": str(_e)})
