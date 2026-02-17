@@ -165,6 +165,94 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
     }
 
 
+def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
+    """Extrae campos estructurados típicos de multas de velocidad desde texto libre/OCR.
+    Devuelve None si no hay suficiente fiabilidad.
+    """
+    t = (text_blob or "").replace("\n", " ").lower()
+    t = re.sub(r"\s+", " ", t).strip()
+
+    measured = None
+    limit = None
+
+    # Patrón fuerte: circular a X km/h ... limitada ... a Y km/h
+    ms = re.search(
+        r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,120}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)[^\d]{0,40}(\d{2,3})\s*km\s*/?h",
+        t,
+    )
+    if ms:
+        try:
+            measured = int(ms.group(1))
+            limit = int(ms.group(2))
+        except Exception:
+            measured = None
+            limit = None
+
+    # Secundarios
+    if measured is None:
+        m1 = re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?h\b", t)
+        if m1:
+            try:
+                measured = int(m1.group(1))
+            except Exception:
+                measured = None
+
+    if limit is None:
+        m2 = re.search(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)\b[^\d]{0,40}(\d{2,3})\s*km\s*/?h\b", t)
+        if m2:
+            try:
+                limit = int(m2.group(1))
+            except Exception:
+                limit = None
+
+    # Fallback: dos o más velocidades => mayor=medida, menor=límite si coherente
+    if measured is None or limit is None:
+        nums = [int(x) for x in re.findall(r"\b(\d{2,3})\s*km\s*/?h\b", t)]
+        nums = [n for n in nums if 10 <= n <= 250]
+        if len(nums) >= 2:
+            hi = max(nums)
+            lo = min(nums)
+            if measured is None:
+                measured = hi
+            if limit is None:
+                limit = lo
+
+    # Importe sanción (euros)
+    fine_eur = None
+    mf = re.search(r"\b(\d{2,4})\s*(?:€|euros)\b", t)
+    if mf:
+        try:
+            fine_eur = int(mf.group(1))
+        except Exception:
+            fine_eur = None
+
+    # Puntos
+    points = None
+    mp = re.search(r"\b(\d)\s*puntos?\b", t)
+    if mp:
+        try:
+            points = int(mp.group(1))
+        except Exception:
+            points = None
+
+    # Radar/cinemómetro hint
+    radar_model = None
+    mr = re.search(r"(multaradar\s*[a-z0-9\-]*)", t)
+    if mr:
+        radar_model = mr.group(1).strip()
+    elif "cinem" in t:
+        radar_model = "cinemometro (no especificado)"
+
+    return {
+        "velocidad_medida_kmh": measured,
+        "velocidad_limite_kmh": limit,
+        "sancion_importe_eur": fine_eur,
+        "puntos_detraccion": points,
+        "radar_modelo_hint": radar_model,
+    }
+
+
+
 def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
     t = (text_blob or "").lower()
     facts: List[str] = []
@@ -317,6 +405,12 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     out["articulo_infringido_num"] = pre.get("articulo_num")
     out["apartado_infringido_num"] = pre.get("apartado_num")
     out["norma_hint"] = pre.get("norma_hint")
+
+    # Campos estructurados adicionales (velocidad / sanción) para robustez del motor
+    extra_fields = _extract_speed_and_sanction_fields(text_blob)
+    for k, v in (extra_fields or {}).items():
+        if v is not None:
+            out[k] = v
     return out
 
 
@@ -402,6 +496,10 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
 
             blob = _flatten_text(extracted_core, text_content=text_content)
             extracted_core = _enrich_with_triage(extracted_core, blob)
+
+            # Guardar el texto completo extraído/analizado para que el motor pueda extraer velocidades incluso cuando el OCR sea pobre
+            if text_content:
+                extracted_core["raw_text_blob"] = text_content
 
             wrapper = {
                 "filename": file.filename,
