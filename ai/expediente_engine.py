@@ -103,72 +103,6 @@ def _clean_velocity_style(body: str) -> str:
     if not body:
         return body
 
-def _fmt_es_decimal(x: Any) -> str:
-    try:
-        if isinstance(x, (int, float)):
-            return f"{float(x):.2f}".replace(".", ",")
-    except Exception:
-        pass
-    return str(x)
-
-
-def _radar_expert_enrich(body: str, velocity_calc: Dict[str, Any]) -> str:
-    """Refuerzo experto para RADAR (UNE 26444, margen fijo/móvil, presión por tramo)."""
-    if not body:
-        return body
-
-    b = body.lower()
-    radar_signals = any(s in b for s in ["une 26444", "multanova", "multaradar", "cinemómetro", "cinemometro", "radar"])
-    if not radar_signals:
-        return body
-
-    vc = velocity_calc or {}
-    measured = vc.get("measured")
-    limit = vc.get("limit")
-    corrected = vc.get("corrected")
-    expected = vc.get("expected") or {}
-    band = expected.get("band")
-    fine = expected.get("fine")
-    pts = expected.get("points")
-
-    lines = []
-    lines.append("— Refuerzo técnico (radar):")
-    lines.append("La referencia genérica a normas técnicas (p. ej., UNE 26444) o a \"márgenes aplicados\" no sustituye la aportación del certificado metrológico vigente del equipo concreto, ni la determinación expresa de la velocidad corregida y del margen efectivamente aplicado.")
-    lines.append("El margen aplicable depende del tipo de instalación y condiciones de medición (fija/móvil). Corresponde a la Administración acreditar el margen efectivamente aplicado y su fundamento, así como la velocidad corregida resultante.")
-    if isinstance(measured, int) and isinstance(limit, int) and isinstance(corrected, (int, float)):
-        lines.append(f"A efectos ilustrativos: medida {measured} km/h, límite {limit} km/h, velocidad corregida ≈ {_fmt_es_decimal(corrected)} km/h.")
-    if band:
-        extra = f"Ello se situaría en la banda orientativa: {band}"
-        if isinstance(fine, int) or isinstance(pts, int):
-            extra += f" (multa {fine}€ / puntos {pts})."
-        else:
-            extra += "."
-        lines.append(extra)
-        lines.append("Una aplicación incorrecta del margen puede desplazar el hecho a un tramo sancionador distinto, con consecuencias directas en importe y puntos; por ello la acreditación documental es imprescindible.")
-
-    block = "\n".join(lines) + "\n"
-
-    # Insertar tras el párrafo de cálculo si existe; si no, tras el título de Alegación Primera
-    if "a efectos ilustrativos" in b:
-        parts = body.split("\n")
-        out=[]
-        inserted=False
-        for line in parts:
-            out.append(line)
-            if (not inserted) and ("A efectos ilustrativos" in line):
-                out.append(block.rstrip())
-                inserted=True
-        if not inserted:
-            out.append(block.rstrip())
-        return "\n".join(out)
-
-    mm = re.search(r"(ALEGACIÓN\s+PRIMERA[^\n]*\n)", body, flags=re.IGNORECASE)
-    if mm:
-        i = mm.end(1)
-        return body[:i] + block + body[i:]
-    return body + "\n" + block
-
-
     # 1) Encabezados pegados: 'ALEGACIÓN SEGUNDA — ...1.' -> salto de línea
     body = re.sub(r"(ALEGACIÓN\s+SEGUNDA[^\n]*?)(?=\s*\d[\)\.]\s)", r"\1\n", body, flags=re.IGNORECASE)
     body = re.sub(r"(ALEGACIÓN\s+TERCERA[^\n]*?)(?=\s*\d[\)\.]\s)", r"\1\n", body, flags=re.IGNORECASE)
@@ -987,44 +921,6 @@ def _compute_context_intensity(timeline: Dict[str, Any], extraction_core: Dict[s
     return "normal"
 
 
-
-def _force_velocity_minimum_compliance(body: str, velocity_calc: Dict[str, Any]) -> str:
-    """Garantiza que el texto cumpla Velocity Strict aunque el LLM sea escueto.
-    Inserta un bloque mínimo con términos obligatorios: margen, velocidad corregida, certificado, verificación, cinemómetro, captura, cadena de custodia.
-    No inventa números si velocity_calc.ok es False.
-    """
-    if not body:
-        body = ""
-
-    b = body.lower()
-    required_tokens = ["margen", "velocidad corregida", "certificado", "verificación", "cinemómetro", "captura", "cadena de custodia"]
-    if all(tok in b for tok in required_tokens):
-        return body
-
-    calc_line = ""
-    try:
-        if (velocity_calc or {}).get("ok"):
-            corrected = velocity_calc.get("corrected")
-            if isinstance(corrected, (int, float)):
-                calc_line = f"A efectos ilustrativos, la aplicación del margen situaría la velocidad corregida en torno a {float(corrected):.2f} km/h."
-    except Exception:
-        calc_line = ""
-
-    block = (
-        "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA (CINEMÓMETRO)\n"
-        "No consta acreditado en el expediente: (i) la identificación del cinemómetro, (ii) el certificado de verificación metrológica vigente, "
-        "(iii) la captura/fotograma completo, (iv) el margen aplicado y la velocidad corregida, y (v) la cadena de custodia e integridad del registro.\n"
-    )
-    if calc_line:
-        block += calc_line + "\n"
-
-    if "ii. alegaciones" in b:
-        body = re.sub(r"(II\.\s*ALEGACIONES\s*\n)", r"\1\n" + block + "\n", body, flags=re.IGNORECASE)
-    else:
-        body = block + "\n" + body
-
-    return body
-
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     docs = _load_case_documents(case_id)
     if not docs:
@@ -1191,7 +1087,6 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 _force_velocity_asunto(draft)
                 cuerpo = _ensure_speed_antecedentes(cuerpo, velocity_calc)
                 cuerpo = _ensure_velocity_calc_paragraph(cuerpo, velocity_calc)
-                cuerpo = _radar_expert_enrich(cuerpo, velocity_calc)
                 cuerpo = _velocity_pro_enrich(cuerpo, velocity_calc)
                 cuerpo = _remove_tipicity_intruder_in_speed(cuerpo)
                 cuerpo = _clean_velocity_style(cuerpo)
@@ -1199,9 +1094,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 cuerpo = _fix_solicito_format(cuerpo)
                 cuerpo = _normalize_velocity_titles_and_remove_tipicity(cuerpo, attack_plan)
                 cuerpo = _fix_solicito_newline(cuerpo)
-                cuerpo = _force_velocity_minimum_compliance(cuerpo, velocity_calc)
-                cuerpo = _force_velocity_minimum_compliance(cuerpo, velocity_calc)
-                            draft["cuerpo"] = cuerpo
+                draft["cuerpo"] = cuerpo
         except Exception as _e:
             _save_event(case_id, "postprocess_speed_failed", {"error": str(_e)})
         # Auto-repair (1 intento) para VELOCIDAD si el borrador no cumple mínimos VSE-1
@@ -1234,7 +1127,6 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                             cuerpo = draft.get("cuerpo") or ""
                             cuerpo = _ensure_speed_antecedentes(cuerpo, velocity_calc)
                             cuerpo = _ensure_velocity_calc_paragraph(cuerpo, velocity_calc)
-                            cuerpo = _radar_expert_enrich(cuerpo, velocity_calc)
                             cuerpo = _velocity_pro_enrich(cuerpo, velocity_calc)
                             cuerpo = _force_archivo_in_speed_body(cuerpo)
                             cuerpo = _normalize_velocity_titles_and_remove_tipicity(cuerpo, attack_plan)
