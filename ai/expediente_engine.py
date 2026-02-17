@@ -344,19 +344,13 @@ def _sanitize_for_sandbox_demo(attack_plan: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _extract_speed_pair_from_blob(blob: str) -> Dict[str, Any]:
-    """Extrae velocidad medida y límite de forma robusta (OCR/texto libre).
+    """Extrae velocidad medida y límite de forma robusta, SIN asumir límite si no está explícito.
 
-    Soporta patrones típicos DGT:
-      - "CIRCULAR A 123 KM/H, ESTANDO LIMITADA ... A 90 KM/H"
-      - "circulaba a 76 km/h ... limitada a 50 km/h"
-      - "velocidad: 123 km/h" y "límite: 90 km/h"
-      - Variantes con "limitada la velocidad a", "límite de", "limite", etc.
-
-    Devuelve:
-      - measured: int|None
-      - limit: int|None
-      - confidence: float (0..1)
-      - raw_hits: lista de coincidencias
+    Reglas:
+    - Prioriza patrón fuerte: 'circular a X km/h ... limitada ... a Y (km/h opcional)'.
+    - Acepta 'límite 120' sin 'km/h' si el contexto lo indica.
+    - Fallback: solo usa (max,min) si hay AL MENOS 2 valores distintos y existe señal de límite.
+    - Si no se puede inferir límite con seguridad, devuelve limit=None (para no inventar).
     """
     t = (blob or "").replace("\n", " ").replace("\t", " ").lower()
     t = re.sub(r"\s+", " ", t).strip()
@@ -365,18 +359,21 @@ def _extract_speed_pair_from_blob(blob: str) -> Dict[str, Any]:
     limit = None
     hits = []
 
-    # 1) Patrón fuerte: "circular a X km/h ... limitada ... a Y km/h"
-    p_strong = r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,120}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)[^\d]{0,40}(\d{2,3})\s*km\s*/?h"
-    ms = re.search(p_strong, t)
+    # 1) Patrón fuerte: circular a X km/h ... limitada ... a Y (km/h opcional)
+    ms = re.search(
+        r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,160}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)[^\d]{0,40}(\d{2,3})(?:\s*km\s*/?h)?",
+        t,
+    )
     if ms:
         try:
             measured = int(ms.group(1))
             limit = int(ms.group(2))
             hits.append(("strong", measured, limit))
         except Exception:
-            pass
+            measured = None
+            limit = None
 
-    # 2) "a X km/h" (medida) + "limitada ... a Y km/h" (límite) por separado
+    # 2) Medida: 'circulaba a X km/h' o 'velocidad X km/h'
     if measured is None:
         m1 = re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?h\b", t)
         if m1:
@@ -384,46 +381,44 @@ def _extract_speed_pair_from_blob(blob: str) -> Dict[str, Any]:
                 measured = int(m1.group(1)); hits.append(("measured_phrase", measured))
             except Exception:
                 measured = None
-
-    if limit is None:
-        m2 = re.search(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)\b[^\d]{0,40}(\d{2,3})\s*km\s*/?h\b", t)
+    if measured is None:
+        m2 = re.search(r"\bvelocidad\b[^\d]{0,25}(\d{2,3})\b(?:\s*km\s*/?h)?", t)
         if m2:
             try:
-                limit = int(m2.group(1)); hits.append(("limit_phrase", limit))
-            except Exception:
-                limit = None
-
-    # 3) "velocidad X km/h" + "límite Y km/h"
-    if measured is None:
-        m3 = re.search(r"\bvelocidad\b[^\d]{0,20}(\d{2,3})\s*km\s*/?h\b", t)
-        if m3:
-            try:
-                measured = int(m3.group(1)); hits.append(("measured_velocidad", measured))
+                measured = int(m2.group(1)); hits.append(("measured_velocidad", measured))
             except Exception:
                 measured = None
 
+    # 3) Límite: 'limitada a 120' / 'límite 120' (km/h opcional)
     if limit is None:
-        m4 = re.search(r"\b(?:l[ií]mite|limite)\b[^\d]{0,20}(\d{2,3})\s*km\s*/?h\b", t)
-        if m4:
+        ml = re.search(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)\b[^\d]{0,40}(\d{2,3})(?:\s*km\s*/?h)?\b", t)
+        if ml:
             try:
-                limit = int(m4.group(1)); hits.append(("limit_limite", limit))
+                limit = int(ml.group(1)); hits.append(("limit_phrase", limit))
             except Exception:
                 limit = None
 
-    # 4) Fallback inteligente: dos o más velocidades => mayor=medida, menor=límite (si coherente)
-    if measured is None or limit is None:
-        nums = [int(x) for x in re.findall(r"\b(\d{2,3})\s*km\s*/?h\b", t)]
+    # 4) Fallback inteligente (solo si hay señal de límite)
+    if (measured is None or limit is None):
+        nums = [int(x) for x in re.findall(r"\b(\d{2,3})\b\s*(?:km\s*/?h)?", t)]
         nums = [n for n in nums if 10 <= n <= 250]
-        if len(nums) >= 2:
-            hi = max(nums)
-            lo = min(nums)
+        uniq = sorted(set(nums))
+        has_limit_signal = any(k in t for k in ["limitad", "límite", "limite", "limitada la velocidad"])
+        if has_limit_signal and len(uniq) >= 2:
+            hi = max(uniq)
+            lo = min(uniq)
             if measured is None:
                 measured = hi
             if limit is None:
                 limit = lo
-            hits.append(("fallback_pair", hi, lo, nums))
+            hits.append(("fallback_signal", measured, limit, uniq))
 
-    # Normalización y confianza
+    # 5) Seguridad: si limit==measured, no lo aceptamos como límite (sería inventar)
+    if isinstance(measured, int) and isinstance(limit, int) and measured == limit:
+        hits.append(("reject_equal", measured))
+        limit = None
+
+    # Confianza
     conf = 0.0
     if isinstance(measured, int):
         conf += 0.45
@@ -431,11 +426,6 @@ def _extract_speed_pair_from_blob(blob: str) -> Dict[str, Any]:
         conf += 0.45
     if isinstance(measured, int) and isinstance(limit, int) and 20 <= limit <= 130 and measured >= limit:
         conf += 0.10
-
-    # Si el fallback usó 2+ números pero no hay palabras clave, bajamos un poco la confianza
-    if hits and hits[-1][0] == "fallback_pair" and not any(k in t for k in ["limitad", "límite", "limite", "velocidad", "circular", "circulaba"]):
-        conf = max(0.5, conf - 0.1)
-
     conf = round(min(conf, 1.0), 2)
 
     return {"measured": measured, "limit": limit, "confidence": conf, "raw_hits": hits}
