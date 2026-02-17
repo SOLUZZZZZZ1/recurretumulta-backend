@@ -48,6 +48,33 @@ def _flatten_text(extracted_core: Dict[str, Any], text_content: str = "") -> str
     return "\n".join(parts)
 
 
+def _merge_extracted(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[str, Any]:
+    """Conserva valores no vacíos de primary y rellena con secondary."""
+    primary = primary or {}
+    secondary = secondary or {}
+    out = dict(secondary)
+    for k, v in primary.items():
+        if v not in (None, "", [], {}):
+            out[k] = v
+    return out
+
+def _needs_speed_retry(core: Dict[str, Any]) -> bool:
+    """True si parece velocidad pero faltan medida/límite."""
+    if not isinstance(core, dict):
+        return True
+    tipo = (core.get("tipo_infraccion") or "").lower().strip()
+    measured = core.get("velocidad_medida_kmh")
+    limit = core.get("velocidad_limite_kmh")
+    if tipo == "velocidad":
+        return not (isinstance(measured, (int, float)) and isinstance(limit, (int, float)))
+    blob = json.dumps(core, ensure_ascii=False).lower()
+    signals = any(s in blob for s in ["km/h", "cinemomet", "radar", "exceso de velocidad"])
+    if signals:
+        return not (isinstance(measured, (int, float)) and isinstance(limit, (int, float)))
+    return False
+
+
+
 def _extract_precepts(text_blob: str) -> Dict[str, Any]:
     """
     Extrae referencias normativas/preceptos con heurística robusta.
@@ -166,76 +193,55 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
 
 
 def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
-    """Extrae campos estructurados típicos de multas de velocidad desde texto libre/OCR.
-    Devuelve None si no hay suficiente fiabilidad.
-    """
+    """Extrae campos estructurados típicos de velocidad desde texto libre/OCR."""
     t = (text_blob or "").replace("\n", " ").lower()
     t = re.sub(r"\s+", " ", t).strip()
 
     measured = None
     limit = None
 
-    # Patrón fuerte: circular a X km/h ... limitada ... a Y km/h
     ms = re.search(
         r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,120}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)[^\d]{0,40}(\d{2,3})\s*km\s*/?h",
         t,
     )
     if ms:
         try:
-            measured = int(ms.group(1))
-            limit = int(ms.group(2))
+            measured = int(ms.group(1)); limit = int(ms.group(2))
         except Exception:
-            measured = None
-            limit = None
+            measured = None; limit = None
 
-    # Secundarios
     if measured is None:
         m1 = re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?h\b", t)
         if m1:
-            try:
-                measured = int(m1.group(1))
-            except Exception:
-                measured = None
+            try: measured = int(m1.group(1))
+            except Exception: measured = None
 
     if limit is None:
         m2 = re.search(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)\b[^\d]{0,40}(\d{2,3})\s*km\s*/?h\b", t)
         if m2:
-            try:
-                limit = int(m2.group(1))
-            except Exception:
-                limit = None
+            try: limit = int(m2.group(1))
+            except Exception: limit = None
 
-    # Fallback: dos o más velocidades => mayor=medida, menor=límite si coherente
     if measured is None or limit is None:
         nums = [int(x) for x in re.findall(r"\b(\d{2,3})\s*km\s*/?h\b", t)]
         nums = [n for n in nums if 10 <= n <= 250]
         if len(nums) >= 2:
-            hi = max(nums)
-            lo = min(nums)
-            if measured is None:
-                measured = hi
-            if limit is None:
-                limit = lo
+            hi = max(nums); lo = min(nums)
+            if measured is None: measured = hi
+            if limit is None: limit = lo
 
-    # Importe sanción (euros)
     fine_eur = None
     mf = re.search(r"\b(\d{2,4})\s*(?:€|euros)\b", t)
     if mf:
-        try:
-            fine_eur = int(mf.group(1))
-        except Exception:
-            fine_eur = None
+        try: fine_eur = int(mf.group(1))
+        except Exception: fine_eur = None
 
-    # Puntos
     points = None
     mp = re.search(r"\b(\d)\s*puntos?\b", t)
     if mp:
-        try:
-            points = int(mp.group(1))
-        except Exception:
-            points = None
+        try: points = int(mp.group(1))
+        except Exception: points = None
 
-    # Radar/cinemómetro hint
     radar_model = None
     mr = re.search(r"(multaradar\s*[a-z0-9\-]*)", t)
     if mr:
@@ -406,7 +412,6 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     out["apartado_infringido_num"] = pre.get("apartado_num")
     out["norma_hint"] = pre.get("norma_hint")
 
-    # Campos estructurados adicionales (velocidad / sanción) para robustez del motor
     extra_fields = _extract_speed_and_sanction_fields(text_blob)
     for k, v in (extra_fields or {}).items():
         if v is not None:
@@ -450,17 +455,58 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                 extracted_core = extract_from_image_bytes(content, mime, file.filename)
                 model_used = "openai_vision"
                 confidence = 0.7
+                try:
+                    extracted_core["raw_text_blob"] = _flatten_text(extracted_core, text_content="")
+                except Exception:
+                    pass
 
+            
             elif mime == "application/pdf":
+                # Paso 1: texto por pypdf
                 text_content = extract_text_from_pdf_bytes(content)
+
+                extracted_text: Dict[str, Any] = {}
+                extracted_vision: Dict[str, Any] = {}
+
+                # Paso 2: extracción por texto si hay suficiente
                 if has_enough_text(text_content):
-                    extracted_core = extract_from_text(text_content)
+                    extracted_text = extract_from_text(text_content)
                     model_used = "openai_text"
                     confidence = 0.8
                 else:
-                    extracted_core = extract_from_image_bytes(content, mime, file.filename)
+                    extracted_text = {}
                     model_used = "openai_vision"
                     confidence = 0.6
+
+                # Paso 3: SIEMPRE hacemos visión como segunda pasada (robustez)
+                extracted_vision = extract_from_image_bytes(content, mime, file.filename)
+
+                # Paso 4: triage de ambos
+                blob_text = _flatten_text(extracted_text, text_content=text_content) if extracted_text else (text_content or "")
+                triaged_text = _enrich_with_triage(extracted_text or {}, blob_text)
+
+                blob_vision = _flatten_text(extracted_vision, text_content="") if extracted_vision else ""
+                triaged_vision = _enrich_with_triage(extracted_vision or {}, blob_vision)
+
+                # Paso 5: merge (prioriza texto)
+                extracted_core = _merge_extracted(triaged_text, triaged_vision)
+
+                # Paso 6: persistimos blobs para motores posteriores
+                if text_content:
+                    extracted_core["raw_text_pdf"] = text_content
+                if blob_vision:
+                    extracted_core["raw_text_vision"] = blob_vision
+
+                extracted_core["raw_text_blob"] = _flatten_text(extracted_core, text_content=text_content)
+
+                # Ajuste de metadatos de modelo
+                if extracted_text and not _needs_speed_retry(extracted_core):
+                    model_used = "openai_text"
+                    confidence = 0.8
+                else:
+                    model_used = "openai_vision+text"
+                    confidence = 0.75
+
 
             elif mime in DOCX_MIMES:
                 text_content = extract_text_from_docx_bytes(content)
@@ -497,9 +543,11 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             blob = _flatten_text(extracted_core, text_content=text_content)
             extracted_core = _enrich_with_triage(extracted_core, blob)
 
-            # Guardar el texto completo extraído/analizado para que el motor pueda extraer velocidades incluso cuando el OCR sea pobre
-            if text_content:
-                extracted_core["raw_text_blob"] = text_content
+                        if isinstance(extracted_core, dict) and not extracted_core.get("raw_text_blob"):
+                try:
+                    extracted_core["raw_text_blob"] = blob
+                except Exception:
+                    pass
 
             wrapper = {
                 "filename": file.filename,
