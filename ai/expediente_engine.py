@@ -987,6 +987,44 @@ def _compute_context_intensity(timeline: Dict[str, Any], extraction_core: Dict[s
     return "normal"
 
 
+
+def _force_velocity_minimum_compliance(body: str, velocity_calc: Dict[str, Any]) -> str:
+    """Garantiza que el texto cumpla Velocity Strict aunque el LLM sea escueto.
+    Inserta un bloque mínimo con términos obligatorios: margen, velocidad corregida, certificado, verificación, cinemómetro, captura, cadena de custodia.
+    No inventa números si velocity_calc.ok es False.
+    """
+    if not body:
+        body = ""
+
+    b = body.lower()
+    required_tokens = ["margen", "velocidad corregida", "certificado", "verificación", "cinemómetro", "captura", "cadena de custodia"]
+    if all(tok in b for tok in required_tokens):
+        return body
+
+    calc_line = ""
+    try:
+        if (velocity_calc or {}).get("ok"):
+            corrected = velocity_calc.get("corrected")
+            if isinstance(corrected, (int, float)):
+                calc_line = f"A efectos ilustrativos, la aplicación del margen situaría la velocidad corregida en torno a {float(corrected):.2f} km/h."
+    except Exception:
+        calc_line = ""
+
+    block = (
+        "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA (CINEMÓMETRO)\n"
+        "No consta acreditado en el expediente: (i) la identificación del cinemómetro, (ii) el certificado de verificación metrológica vigente, "
+        "(iii) la captura/fotograma completo, (iv) el margen aplicado y la velocidad corregida, y (v) la cadena de custodia e integridad del registro.\n"
+    )
+    if calc_line:
+        block += calc_line + "\n"
+
+    if "ii. alegaciones" in b:
+        body = re.sub(r"(II\.\s*ALEGACIONES\s*\n)", r"\1\n" + block + "\n", body, flags=re.IGNORECASE)
+    else:
+        body = block + "\n" + body
+
+    return body
+
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     docs = _load_case_documents(case_id)
     if not docs:
@@ -1161,7 +1199,9 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 cuerpo = _fix_solicito_format(cuerpo)
                 cuerpo = _normalize_velocity_titles_and_remove_tipicity(cuerpo, attack_plan)
                 cuerpo = _fix_solicito_newline(cuerpo)
-                draft["cuerpo"] = cuerpo
+                cuerpo = _force_velocity_minimum_compliance(cuerpo, velocity_calc)
+                cuerpo = _force_velocity_minimum_compliance(cuerpo, velocity_calc)
+                            draft["cuerpo"] = cuerpo
         except Exception as _e:
             _save_event(case_id, "postprocess_speed_failed", {"error": str(_e)})
         # Auto-repair (1 intento) para VELOCIDAD si el borrador no cumple mínimos VSE-1
