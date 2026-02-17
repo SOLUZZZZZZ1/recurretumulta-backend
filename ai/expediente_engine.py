@@ -195,7 +195,7 @@ def _ensure_velocity_calc_paragraph(body: str, velocity_calc: Dict[str, Any]) ->
         if isinstance(limit, int) and isinstance(measured, int):
             parts.append(f"con un límite de {limit} km/h y una medición de {measured} km/h,")
         if isinstance(corrected, (int, float)):
-            parts.append(f"la aplicación del margen situaría la velocidad corregida en torno a {float(corrected):.2f} km/h,")
+            parts.append(f"la aplicación del margen situaría la velocidad corregida en torno a {_fmt_es_decimal(corrected)} km/h,")
         parts.append("extremo cuya acreditación corresponde a la Administración (margen aplicado, velocidad corregida y banda/tramo resultante).")
         if band:
             tail = f"De acuerdo con la tabla orientativa, ello podría encajar en la banda: {band}"
@@ -214,6 +214,76 @@ def _ensure_velocity_calc_paragraph(body: str, velocity_calc: Dict[str, Any]) ->
     except Exception:
         return body
 
+
+
+def _fmt_es_decimal(x: Any) -> str:
+    try:
+        if isinstance(x, (int, float)):
+            return f"{float(x):.2f}".replace(".", ",")
+    except Exception:
+        pass
+    return str(x)
+
+
+def _radar_expert_enrich(body: str, velocity_calc: Dict[str, Any]) -> str:
+    """Refuerzo experto para RADAR/velocidad: UNE 26444, margen fijo/móvil, presión por tramo."""
+    if not body:
+        return body
+    b = body.lower()
+
+    # Señales de radar/metrología específica
+    radar_signals = any(s in b for s in ["une 26444", "multanova", "multaradar", "cinemómetro", "cinemometro", "radar"])
+    if not radar_signals:
+        return body
+
+    vc = velocity_calc or {}
+    corrected = vc.get("corrected")
+    limit = vc.get("limit")
+    measured = vc.get("measured")
+    expected = vc.get("expected") or {}
+    band = expected.get("band")
+    fine = expected.get("fine")
+    pts = expected.get("points")
+
+    # Párrafo experto (prudente: no afirma fijo/móvil, exige acreditación)
+    expert_lines = []
+    expert_lines.append("— Refuerzo técnico (radar):")
+    expert_lines.append("La referencia genérica a normas técnicas (p. ej., UNE 26444) o a "márgenes aplicados" no sustituye la aportación del certificado metrológico vigente del equipo concreto, ni la determinación expresa de la velocidad corregida y del margen efectivamente aplicado.")
+    expert_lines.append("El margen aplicable depende del tipo de instalación y condiciones de medición (fija/móvil). Corresponde a la Administración acreditar el margen efectivamente aplicado y su fundamento, así como la velocidad corregida resultante.")
+    if isinstance(measured, int) and isinstance(limit, int) and isinstance(corrected, (int, float)):
+        expert_lines.append(f"A efectos ilustrativos: medida {measured} km/h, límite {limit} km/h, velocidad corregida ≈ {_fmt_es_decimal(corrected)} km/h.")
+    if band:
+        extra = f"Ello se situaría en la banda orientativa: {band}"
+        if isinstance(fine, int) or isinstance(pts, int):
+            extra += f" (multa {fine}€ / puntos {pts})."
+        else:
+            extra += "."
+        expert_lines.append(extra)
+        expert_lines.append("Una aplicación incorrecta del margen puede desplazar el hecho a un tramo sancionador distinto, con consecuencias directas en importe y puntos; por ello la acreditación documental es imprescindible.")
+
+    expert_block = "\n".join(expert_lines) + "\n"
+
+    # Insert after the calculation paragraph if present; otherwise after Alegación Primera title
+    if "a efectos ilustrativos" in b:
+        # insert after first occurrence of that sentence block end: we insert after the first paragraph containing it
+        parts = body.split("\n")
+        out_lines=[]
+        inserted=False
+        for i,line in enumerate(parts):
+            out_lines.append(line)
+            if (not inserted) and ("A efectos ilustrativos" in line or "A efectos ilustrativos," in line):
+                # insert after this line
+                out_lines.append(expert_block.rstrip())
+                inserted=True
+        if not inserted:
+            out_lines.append(expert_block.rstrip())
+        return "\n".join(out_lines)
+
+    m = re.search(r"(ALEGACIÓN\s+PRIMERA[^\n]*\n)", body, flags=re.IGNORECASE)
+    if m:
+        i = m.end(1)
+        return body[:i] + expert_block + body[i:]
+    return body + "\n" + expert_block
 
 def _velocity_pro_enrich(body: str, velocity_calc: Dict[str, Any]) -> str:
     if not body:
@@ -237,7 +307,7 @@ def _velocity_pro_enrich(body: str, velocity_calc: Dict[str, Any]) -> str:
         fine = expected.get("fine")
         pts = expected.get("points")
         if isinstance(limit, int) and isinstance(measured, int) and isinstance(corrected, (int, float)):
-            calc_sentence = f"A efectos ilustrativos, con un límite de {limit} km/h y una medición de {measured} km/h, la aplicación del margen legal podría situar la velocidad corregida en torno a {float(corrected):.2f} km/h."
+            calc_sentence = f"A efectos ilustrativos, con un límite de {limit} km/h y una medición de {measured} km/h, la aplicación del margen legal podría situar la velocidad corregida en torno a {_fmt_es_decimal(corrected)} km/h."
             if band:
                 calc_sentence += f" Ello podría encajar en la banda: {band}"
                 if isinstance(fine, int) or isinstance(pts, int):
@@ -1087,6 +1157,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 _force_velocity_asunto(draft)
                 cuerpo = _ensure_speed_antecedentes(cuerpo, velocity_calc)
                 cuerpo = _ensure_velocity_calc_paragraph(cuerpo, velocity_calc)
+                cuerpo = _radar_expert_enrich(cuerpo, velocity_calc)
                 cuerpo = _velocity_pro_enrich(cuerpo, velocity_calc)
                 cuerpo = _remove_tipicity_intruder_in_speed(cuerpo)
                 cuerpo = _clean_velocity_style(cuerpo)
@@ -1127,6 +1198,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                             cuerpo = draft.get("cuerpo") or ""
                             cuerpo = _ensure_speed_antecedentes(cuerpo, velocity_calc)
                             cuerpo = _ensure_velocity_calc_paragraph(cuerpo, velocity_calc)
+                cuerpo = _radar_expert_enrich(cuerpo, velocity_calc)
                             cuerpo = _velocity_pro_enrich(cuerpo, velocity_calc)
                             cuerpo = _force_archivo_in_speed_body(cuerpo)
                             cuerpo = _normalize_velocity_titles_and_remove_tipicity(cuerpo, attack_plan)
