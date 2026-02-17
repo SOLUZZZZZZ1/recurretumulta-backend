@@ -248,7 +248,7 @@ def _radar_expert_enrich(body: str, velocity_calc: Dict[str, Any]) -> str:
     # Párrafo experto (prudente: no afirma fijo/móvil, exige acreditación)
     expert_lines = []
     expert_lines.append("— Refuerzo técnico (radar):")
-    expert_lines.append("La referencia genérica a normas técnicas (p. ej., UNE 26444) o a "márgenes aplicados" no sustituye la aportación del certificado metrológico vigente del equipo concreto, ni la determinación expresa de la velocidad corregida y del margen efectivamente aplicado.")
+    expert_lines.append("La referencia genérica a normas técnicas (p. ej., UNE 26444) o a \"márgenes aplicados\" no sustituye la aportación del certificado metrológico vigente del equipo concreto, ni la determinación expresa de la velocidad corregida y del margen efectivamente aplicado.")
     expert_lines.append("El margen aplicable depende del tipo de instalación y condiciones de medición (fija/móvil). Corresponde a la Administración acreditar el margen efectivamente aplicado y su fundamento, así como la velocidad corregida resultante.")
     if isinstance(measured, int) and isinstance(limit, int) and isinstance(corrected, (int, float)):
         expert_lines.append(f"A efectos ilustrativos: medida {measured} km/h, límite {limit} km/h, velocidad corregida ≈ {_fmt_es_decimal(corrected)} km/h.")
