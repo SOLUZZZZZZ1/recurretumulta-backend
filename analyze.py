@@ -543,11 +543,7 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             blob = _flatten_text(extracted_core, text_content=text_content)
             extracted_core = _enrich_with_triage(extracted_core, blob)
 
-                        if isinstance(extracted_core, dict) and not extracted_core.get("raw_text_blob"):
-                try:
-                    extracted_core["raw_text_blob"] = blob
-                except Exception:
-                    pass
+                        
 
             wrapper = {
                 "filename": file.filename,
