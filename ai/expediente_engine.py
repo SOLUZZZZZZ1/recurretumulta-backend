@@ -361,7 +361,7 @@ def _extract_speed_pair_from_blob(blob: str) -> Dict[str, Any]:
 
     # 1) Patrón fuerte: circular a X km/h ... limitada ... a Y (km/h opcional)
     ms = re.search(
-        r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,260}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)[^\d]{0,40}(\d{2,3})(?:\s*km\s*/?h)?",
+        r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,160}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)[^\d]{0,40}(\d{2,3})(?:\s*km\s*/?h)?",
         t,
     )
     if ms:
@@ -391,23 +391,14 @@ def _extract_speed_pair_from_blob(blob: str) -> Dict[str, Any]:
 
     # 3) Límite: 'limitada a 120' / 'límite 120' (km/h opcional)
     if limit is None:
-        ml = re.search(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|velocidad\s+m[aá]xima|l[ií]mite|limite)\b[\s\S]{0,200}?(\d{2,3})(?:\s*km\s*/?h)?\b", t)
+        ml = re.search(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)\b[^\d]{0,40}(\d{2,3})(?:\s*km\s*/?h)?\b", t)
         if ml:
             try:
                 limit = int(ml.group(1)); hits.append(("limit_phrase", limit))
             except Exception:
                 limit = None
 
-    # 4)
-        # Patrón específico: 'limitada la velocidad a 120' aunque el OCR inserte saltos/puntuación
-        if limit is None:
-            ml2 = re.search(r"limitada\s+la\s+velocidad\s+a[\s\S]{0,120}?(\d{2,3})(?:\s*km\s*/?h)?\b", t)
-            if ml2:
-                try:
-                    limit = int(ml2.group(1)); hits.append(("limit_limitada_velocidad_a", limit))
-                except Exception:
-                    limit = None
- Fallback inteligente (solo si hay señal de límite)
+    # 4) Fallback inteligente (solo si hay señal de límite)
     if (measured is None or limit is None):
         nums = [int(x) for x in re.findall(r"\b(\d{2,3})\b\s*(?:km\s*/?h)?", t)]
         nums = [n for n in nums if 10 <= n <= 250]
