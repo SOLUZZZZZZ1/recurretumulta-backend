@@ -94,6 +94,35 @@ def _remove_tipicity_intruder_in_speed(body: str) -> str:
     return body
 
 
+def _clean_velocity_style(body: str) -> str:
+    """Limpieza automática de estilo para VELOCIDAD:
+    1) Corrige encabezados pegados (p.ej. 'ALEGACIÓN SEGUNDA ...1.')
+    2) Elimina listas redundantes genéricas que el LLM a veces inserta después del checklist técnico,
+       sin tocar el checklist 1) .. 7) de metrología.
+    """
+    if not body:
+        return body
+
+    # 1) Encabezados pegados: 'ALEGACIÓN SEGUNDA — ...1.' -> salto de línea
+    body = re.sub(r"(ALEGACIÓN\s+SEGUNDA[^\n]*?)(?=\s*\d[\)\.]\s)", r"\1\n", body, flags=re.IGNORECASE)
+    body = re.sub(r"(ALEGACIÓN\s+TERCERA[^\n]*?)(?=\s*\d[\)\.]\s)", r"\1\n", body, flags=re.IGNORECASE)
+
+    # 2) Bloque redundante típico (presunción de inocencia / expediente ilegible / seguridad jurídica)
+    # Lo cortamos SOLO si aparece tras el checklist técnico y antes de 'III. SOLICITO'.
+    # Patrón de inicio: línea que empieza por '1.' o '1)' y contiene 'La carga de la prueba corresponde'.
+    body = re.sub(
+        r"\n1[\)\.]\s*La\s+carga\s+de\s+la\s+prueba\s+corresponde[\s\S]*?(?=\nIII\.\s*SOLICITO)",
+        "\n",
+        body,
+        flags=re.IGNORECASE,
+    )
+
+    # 3) Normaliza saltos antes de SOLICITO si se pegó
+    body = re.sub(r"\n\s*III\.\s*SOLICITO", "\n\nIII. SOLICITO", body, flags=re.IGNORECASE)
+
+    return body
+
+
 def _fix_solicito_format(body: str) -> str:
     if not body:
         return body
@@ -1060,6 +1089,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 cuerpo = _ensure_velocity_calc_paragraph(cuerpo, velocity_calc)
                 cuerpo = _velocity_pro_enrich(cuerpo, velocity_calc)
                 cuerpo = _remove_tipicity_intruder_in_speed(cuerpo)
+                cuerpo = _clean_velocity_style(cuerpo)
                 cuerpo = _force_archivo_in_speed_body(cuerpo)
                 cuerpo = _fix_solicito_format(cuerpo)
                 cuerpo = _normalize_velocity_titles_and_remove_tipicity(cuerpo, attack_plan)
