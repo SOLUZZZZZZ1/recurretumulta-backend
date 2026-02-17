@@ -344,66 +344,76 @@ def _sanitize_for_sandbox_demo(attack_plan: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _extract_speed_pair_from_blob(blob: str) -> Dict[str, Any]:
-    """Extrae velocidad medida y límite de forma robusta, SIN asumir límite si no está explícito.
+    """Extrae (measured, limit) de texto libre con tolerancia OCR, sin inventar límite.
 
-    Reglas:
-    - Prioriza patrón fuerte: 'circular a X km/h ... limitada ... a Y (km/h opcional)'.
-    - Acepta 'límite 120' sin 'km/h' si el contexto lo indica.
-    - Fallback: solo usa (max,min) si hay AL MENOS 2 valores distintos y existe señal de límite.
-    - Si no se puede inferir límite con seguridad, devuelve limit=None (para no inventar).
+    - Prioriza patrón fuerte: 'circular a X km/h ... limitada ... a Y' (km/h opcional).
+    - Detecta 'limitada la velocidad a 120' aunque el OCR inserte saltos/puntuación y aunque falte 'km/h'.
+    - Detecta 'límite 120' / 'velocidad máxima 120' (km/h opcional).
+    - Fallback SOLO si:
+        * hay señal de límite (limitad/límite/velocidad máxima), y
+        * hay al menos 2 valores distintos.
+      En caso contrario, limit=None.
     """
     t = (blob or "").replace("\n", " ").replace("\t", " ").lower()
     t = re.sub(r"\s+", " ", t).strip()
 
     measured = None
     limit = None
-    hits = []
+    raw_hits = []
 
-    # 1) Patrón fuerte: circular a X km/h ... limitada ... a Y (km/h opcional)
+    # 1) Patrón fuerte completo
     ms = re.search(
-        r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,160}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)[^\d]{0,40}(\d{2,3})(?:\s*km\s*/?h)?",
+        r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,260}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|velocidad\s+m[aá]xima|l[ií]mite|limite)[^\d]{0,80}(\d{2,3})(?:\s*km\s*/?h)?",
         t,
     )
     if ms:
         try:
             measured = int(ms.group(1))
             limit = int(ms.group(2))
-            hits.append(("strong", measured, limit))
+            raw_hits.append(("strong", measured, limit))
         except Exception:
             measured = None
             limit = None
 
-    # 2) Medida: 'circulaba a X km/h' o 'velocidad X km/h'
+    # 2) Medida por frase
     if measured is None:
         m1 = re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?h\b", t)
         if m1:
             try:
-                measured = int(m1.group(1)); hits.append(("measured_phrase", measured))
-            except Exception:
-                measured = None
-    if measured is None:
-        m2 = re.search(r"\bvelocidad\b[^\d]{0,25}(\d{2,3})\b(?:\s*km\s*/?h)?", t)
-        if m2:
-            try:
-                measured = int(m2.group(1)); hits.append(("measured_velocidad", measured))
+                measured = int(m1.group(1))
+                raw_hits.append(("measured_phrase", measured))
             except Exception:
                 measured = None
 
-    # 3) Límite: 'limitada a 120' / 'límite 120' (km/h opcional)
+    # 3) Límite por frase genérica (km/h opcional)
     if limit is None:
-        ml = re.search(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)\b[^\d]{0,40}(\d{2,3})(?:\s*km\s*/?h)?\b", t)
+        ml = re.search(
+            r"\b(?:limitad[ao]a?|l[ií]mite|limite|velocidad\s+m[aá]xima)\b[\s\S]{0,200}?(\d{2,3})(?:\s*km\s*/?h)?\b",
+            t,
+        )
         if ml:
             try:
-                limit = int(ml.group(1)); hits.append(("limit_phrase", limit))
+                limit = int(ml.group(1))
+                raw_hits.append(("limit_phrase", limit))
             except Exception:
                 limit = None
 
-    # 4) Fallback inteligente (solo si hay señal de límite)
-    if (measured is None or limit is None):
+    # 4) Patrón específico 'limitada la velocidad a 120' (muy tolerante)
+    if limit is None:
+        ml2 = re.search(r"limitada\s+la\s+velocidad\s+a[\s\S]{0,140}?(\d{2,3})(?:\s*km\s*/?h)?\b", t)
+        if ml2:
+            try:
+                limit = int(ml2.group(1))
+                raw_hits.append(("limit_limitada_velocidad_a", limit))
+            except Exception:
+                limit = None
+
+    # 5) Fallback: max/min SOLO si hay señal y hay 2+ distintos
+    if measured is None or limit is None:
         nums = [int(x) for x in re.findall(r"\b(\d{2,3})\b\s*(?:km\s*/?h)?", t)]
         nums = [n for n in nums if 10 <= n <= 250]
         uniq = sorted(set(nums))
-        has_limit_signal = any(k in t for k in ["limitad", "límite", "limite", "limitada la velocidad"])
+        has_limit_signal = any(k in t for k in ["limitad", "límite", "limite", "velocidad máxima", "velocidad maxima"])
         if has_limit_signal and len(uniq) >= 2:
             hi = max(uniq)
             lo = min(uniq)
@@ -411,14 +421,13 @@ def _extract_speed_pair_from_blob(blob: str) -> Dict[str, Any]:
                 measured = hi
             if limit is None:
                 limit = lo
-            hits.append(("fallback_signal", measured, limit, uniq))
+            raw_hits.append(("fallback_signal", measured, limit, uniq))
 
-    # 5) Seguridad: si limit==measured, no lo aceptamos como límite (sería inventar)
+    # 6) Seguridad: si limit==measured, rechazamos límite (no inventar)
     if isinstance(measured, int) and isinstance(limit, int) and measured == limit:
-        hits.append(("reject_equal", measured))
+        raw_hits.append(("reject_equal", measured))
         limit = None
 
-    # Confianza
     conf = 0.0
     if isinstance(measured, int):
         conf += 0.45
@@ -428,7 +437,7 @@ def _extract_speed_pair_from_blob(blob: str) -> Dict[str, Any]:
         conf += 0.10
     conf = round(min(conf, 1.0), 2)
 
-    return {"measured": measured, "limit": limit, "confidence": conf, "raw_hits": hits}
+    return {"measured": measured, "limit": limit, "confidence": conf, "raw_hits": raw_hits}
 
 def _speed_margin_value(measured: int, capture_mode: str) -> float:
     """Margen conservador según Orden ICT/155/2020 (verificación periódica) para cinemómetros en servicio.
