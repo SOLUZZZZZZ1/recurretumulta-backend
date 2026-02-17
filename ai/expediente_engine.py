@@ -1,7 +1,9 @@
+# ai/expediente_engine.py
+
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import text
 from database import get_engine
@@ -17,6 +19,11 @@ from ai.prompts.module_semaforo import module_semaforo
 
 MAX_EXCERPT_CHARS = 12000
 
+
+# ==========================
+# REPAIR PROMPT (VELOCIDAD)
+# ==========================
+
 PROMPT_DRAFT_REPAIR_VELOCIDAD = """
 Eres abogado especialista en sancionador (España). Debes REPARAR un borrador de recurso por EXCESO DE VELOCIDAD.
 
@@ -30,17 +37,21 @@ REGLAS OBLIGATORIAS:
 4) Debe incluir 'margen' y 'velocidad corregida'.
 5) Debe exigir 'certificado' y 'verificación' (metrológica) del cinemómetro.
 6) Debe exigir 'captura' o 'fotograma' completo.
-7) No inventes hechos. Mantén prudencia: 'no consta acreditado', 'no se aporta'.
+7) Debe solicitar ARCHIVO (no "revisión") en el SOLICITO para velocidad.
+8) No inventes hechos. Mantén prudencia: 'no consta acreditado', 'no se aporta'.
 
 ENTRADA: JSON con borrador anterior y contexto.
 SALIDA: SOLO JSON con la misma forma {asunto,cuerpo,variables_usadas,checks,notes_for_operator}.
 """
 
+
 def _velocity_strict_missing(body: str) -> List[str]:
     b = (body or "").lower()
-    missing = []
+    missing: List[str] = []
+
     if "cadena de custodia" not in b:
         missing.append("cadena_custodia")
+
     # primera alegación
     first = ""
     for line in (body or "").splitlines():
@@ -50,29 +61,53 @@ def _velocity_strict_missing(body: str) -> List[str]:
             break
     if first and ("presunción" in first or "presuncion" in first or "inocencia" in first):
         missing.append("orden_alegaciones")
+
     # mínimos VSE
-    for key, needles in {
+    required = {
         "margen": ["margen"],
         "velocidad_corregida": ["velocidad corregida", "corregida"],
-        "metrologia": ["certificado", "verificación", "verificacion"],
+        "metrologia": ["certificado", "verificación", "verificacion", "metrológ", "metrolog"],
         "cinemometro": ["cinemómetro", "cinemometro", "radar"],
         "captura": ["captura", "fotograma", "imagen"],
-    }.items():
+    }
+    for key, needles in required.items():
         if not any(n in b for n in needles):
             missing.append(key)
+
     # unique
-    seen=set(); out=[]
+    seen = set()
+    out: List[str] = []
     for x in missing:
         if x not in seen:
-            seen.add(x); out.append(x)
+            seen.add(x)
+            out.append(x)
     return out
 
 
+def _force_archivo_in_speed_body(body: str) -> str:
+    """Asegura petitum firme en VELOCIDAD: reemplaza cualquier 'revisión del expediente' por ARCHIVO."""
+    if not body:
+        return body
+    # variantes típicas
+    body = body.replace("Que se acuerde la revisión del expediente", "Que se acuerde el ARCHIVO del expediente")
+    body = body.replace("Que se acuerde la REVISIÓN del expediente", "Que se acuerde el ARCHIVO del expediente")
+    body = body.replace("Que se acuerde la revisión del Expediente", "Que se acuerde el ARCHIVO del expediente")
+    body = body.replace("Que se acuerde la REVISIÓN del Expediente", "Que se acuerde el ARCHIVO del expediente")
+    # si aparece en formato con viñetas (2) ...
+    body = body.replace("2) Que se acuerde la revisión del expediente", "2) Que se acuerde el ARCHIVO del expediente")
+    body = body.replace("2) Que se acuerde la REVISIÓN del expediente", "2) Que se acuerde el ARCHIVO del expediente")
+    return body
+
+
+# ==========================
+# OVERRIDE MODE
+# ==========================
+
 def _override_mode() -> str:
-    """Controla el modo de override para pruebas.
-    Valores:
-      - TEST_REALISTA: fuerza admisibilidad para poder generar, pero mantiene contexto (antigüedad, etc.)
-      - SANDBOX_DEMO: fuerza admisibilidad y normaliza el contexto para simular un caso 'actual' en demos internas.
+    """
+    Controla el modo de override para pruebas.
+      - TEST_REALISTA: fuerza admisibilidad para generar, pero mantiene contexto.
+      - SANDBOX_DEMO: fuerza admisibilidad y normaliza el contexto para simular caso 'actual'.
     Se configura por variable de entorno RTM_OVERRIDE_MODE.
     """
     m = (os.getenv("RTM_OVERRIDE_MODE") or "TEST_REALISTA").strip().upper()
@@ -80,9 +115,10 @@ def _override_mode() -> str:
         m = "TEST_REALISTA"
     return m
 
+
 def _sanitize_for_sandbox_demo(attack_plan: Dict[str, Any]) -> Dict[str, Any]:
-    """Elimina módulos claramente ligados a antigüedad/prescripción para pruebas tipo demo.
-    No inventa hechos; simplemente evita argumentar sobre fechas pasadas cuando el objetivo es probar el generador.
+    """
+    Elimina módulos ligados a antigüedad/prescripción para pruebas tipo demo.
     """
     plan = dict(attack_plan or {})
     sec = plan.get("secondary") or []
@@ -91,7 +127,6 @@ def _sanitize_for_sandbox_demo(attack_plan: Dict[str, Any]) -> Dict[str, Any]:
         for item in sec:
             title = (item or {}).get("title") if isinstance(item, dict) else ""
             tl = (title or "").lower()
-            # Quitar módulos de 'antigüedad', 'actos interruptivos', 'firmeza' típicos de expedientes antiguos
             if any(k in tl for k in ["antigüedad", "actos interrupt", "firmeza", "notificación válida", "notificacion valida"]):
                 continue
             sec2.append(item)
@@ -112,15 +147,21 @@ def _sanitize_for_sandbox_demo(attack_plan: Dict[str, Any]) -> Dict[str, Any]:
     return plan
 
 
+# ==========================
+# VELOCITY STRICT (VSE-1)
+# ==========================
+
 def _extract_speed_pair_from_blob(blob: str) -> Dict[str, Any]:
-    """Intenta extraer (measured_speed, limit_speed) de texto libre (OCR/extracts).
-    Busca patrones típicos: 'CIRCULAR A 123 KM/H ... LIMITADA ... A 90 KM/H' o 'a 76 km/h ... a 50 km/h'.
+    """
+    Intenta extraer (measured_speed, limit_speed) de texto libre.
     """
     t = (blob or "").replace("\n", " ").lower()
-    # measured
+
     m_meas = re.search(r"circular\s+a\s+(\d{2,3})\s*km\s*/?h", t) or re.search(r"\b(\d{2,3})\s*km\s*/?h\b", t)
-    # limit (prioriza 'limitada a X' / 'límite' / 'estando limitada')
-    m_lim = re.search(r"(?:limitad[ao]a?|l[ií]mit[eé])\s*(?:la\s*velocidad\s*)?(?:a\s*)?(\d{2,3})\s*km\s*/?h", t)             or re.search(r"estando\s+limitad[ao]a?\s+la\s+velocidad\s+a\s+(\d{2,3})\s*km\s*/?h", t)
+    m_lim = (
+        re.search(r"(?:limitad[ao]a?|l[ií]mit[eé])\s*(?:la\s*velocidad\s*)?(?:a\s*)?(\d{2,3})\s*km\s*/?h", t)
+        or re.search(r"estando\s+limitad[ao]a?\s+la\s+velocidad\s+a\s+(\d{2,3})\s*km\s*/?h", t)
+    )
 
     out: Dict[str, Any] = {"measured": None, "limit": None, "confidence": 0.0}
     try:
@@ -141,70 +182,54 @@ def _extract_speed_pair_from_blob(blob: str) -> Dict[str, Any]:
     out["confidence"] = round(conf, 2)
     return out
 
+
 def _speed_margin_value(measured: int, capture_mode: str) -> float:
-    """Margen conservador según Orden ICT/155/2020 (verificación periódica) para cinemómetros en servicio.
-    - Instalación fija/estática: ±5 km/h (v<=100), ±5% (v>100)
-    - Instalación móvil sobre vehículo: ±7 km/h (v<=100), ±7% (v>100)
-    Si no se conoce modo, usa fijo/estático (más favorable al denunciado) como default.
+    """
+    Margen conservador (Orden ICT/155/2020):
+      - fija/estática: ±5 km/h (<=100), ±5% (>100)
+      - móvil: ±7 km/h (<=100), ±7% (>100)
     """
     cm = (capture_mode or "").upper()
-    mobile = (cm == "MOBILE") or (cm == "MOVING") or (cm == "VEHICLE") or (cm == "AGENT")
-    # Nota: AGENT no siempre implica radar en movimiento, pero para el cálculo interno
-    # usamos MOBILE como escenario habitual de patrulla. Si se prefiere, cambiar a False.
+    mobile = (cm in ("MOBILE", "MOVING", "VEHICLE", "AGENT"))
+
     if measured <= 100:
         return 7.0 if mobile else 5.0
-    # porcentaje
     pct = 0.07 if mobile else 0.05
     return round(measured * pct, 2)
 
+
 def _dgt_speed_sanction_table() -> Dict[int, list]:
-    """Tabla DGT (Sede electrónica) de sanciones por exceso de velocidad captado por cinemómetro.
-
-    Devuelve por límite (20..120) una lista de bandas: (from,to,fine,points,label)
-
-    Fuente visual: PDF DGT 'Sanciones por exceso de velocidad'.
-    """
-    # Bandas leídas de la tabla DGT (rangos inclusivos).
+    """Tabla DGT por límite. Rangos inclusivos."""
     return {
-
         20: [(21,40,100,0,'100€ sin puntos'), (41,50,300,2,'300€ 2 puntos'), (51,60,400,4,'400€ 4 puntos'), (61,70,500,6,'500€ 6 puntos'), (71,999,600,6,'600€ 6 puntos')],
-
         30: [(31,50,100,0,'100€ sin puntos'), (51,60,300,2,'300€ 2 puntos'), (61,70,400,4,'400€ 4 puntos'), (71,80,500,6,'500€ 6 puntos'), (81,999,600,6,'600€ 6 puntos')],
-
         40: [(41,60,100,0,'100€ sin puntos'), (61,70,300,2,'300€ 2 puntos'), (71,80,400,4,'400€ 4 puntos'), (81,90,500,6,'500€ 6 puntos'), (91,999,600,6,'600€ 6 puntos')],
-
         50: [(51,70,100,0,'100€ sin puntos'), (71,80,300,2,'300€ 2 puntos'), (81,90,400,4,'400€ 4 puntos'), (91,100,500,6,'500€ 6 puntos'), (121,999,600,6,'600€ 6 puntos')],
-
         60: [(61,90,100,0,'100€ sin puntos'), (91,110,300,2,'300€ 2 puntos'), (111,120,400,4,'400€ 4 puntos'), (121,130,500,6,'500€ 6 puntos'), (131,999,600,6,'600€ 6 puntos')],
-
         70: [(71,100,100,0,'100€ sin puntos'), (101,120,300,2,'300€ 2 puntos'), (121,130,400,4,'400€ 4 puntos'), (131,140,500,6,'500€ 6 puntos'), (141,999,600,6,'600€ 6 puntos')],
-
         80: [(81,110,100,0,'100€ sin puntos'), (111,130,300,2,'300€ 2 puntos'), (131,140,400,4,'400€ 4 puntos'), (141,150,500,6,'500€ 6 puntos'), (151,999,600,6,'600€ 6 puntos')],
-
         90: [(91,120,100,0,'100€ sin puntos'), (121,140,300,2,'300€ 2 puntos'), (141,150,400,4,'400€ 4 puntos'), (151,160,500,6,'500€ 6 puntos'), (161,999,600,6,'600€ 6 puntos')],
-
         100:[(101,130,100,0,'100€ sin puntos'), (131,150,300,2,'300€ 2 puntos'), (151,160,400,4,'400€ 4 puntos'), (161,170,500,6,'500€ 6 puntos'), (171,999,600,6,'600€ 6 puntos')],
-
         110:[(111,140,100,0,'100€ sin puntos'), (141,160,300,2,'300€ 2 puntos'), (161,170,400,4,'400€ 4 puntos'), (171,180,500,6,'500€ 6 puntos'), (181,999,600,6,'600€ 6 puntos')],
-
         120:[(121,150,100,0,'100€ sin puntos'), (151,170,300,2,'300€ 2 puntos'), (171,180,400,4,'400€ 4 puntos'), (181,190,500,6,'500€ 6 puntos'), (191,999,600,6,'600€ 6 puntos')],
-
     }
 
 
 def _expected_speed_sanction(limit: int, corrected: float) -> Dict[str, Any]:
     tbl = _dgt_speed_sanction_table()
-    lim = int(limit) if limit in tbl else None
+    lim = int(limit) if int(limit) in tbl else None
     if lim is None:
         return {"fine": None, "points": None, "band": None, "table_limit": None}
+
     v = int(round(corrected))
     for lo, hi, fine, pts, label in tbl[lim]:
         if v >= lo and v <= hi:
             return {"fine": fine, "points": pts, "band": label, "table_limit": lim, "corrected_int": v}
     return {"fine": None, "points": None, "band": None, "table_limit": lim, "corrected_int": v}
 
+
 def _compute_velocity_calc(docs: List[Dict[str, Any]], extraction_core: Optional[Dict[str, Any]], capture_mode: str) -> Dict[str, Any]:
-    blob_parts = []
+    blob_parts: List[str] = []
     try:
         blob_parts.append(json.dumps(extraction_core or {}, ensure_ascii=False))
     except Exception:
@@ -213,6 +238,7 @@ def _compute_velocity_calc(docs: List[Dict[str, Any]], extraction_core: Optional
         if d.get("text_excerpt"):
             blob_parts.append(d["text_excerpt"])
     blob = "\n".join(blob_parts)
+
     pair = _extract_speed_pair_from_blob(blob)
     measured = pair.get("measured")
     limit = pair.get("limit")
@@ -227,7 +253,7 @@ def _compute_velocity_calc(docs: List[Dict[str, Any]], extraction_core: Optional
         "ok": True,
         "limit": int(limit),
         "measured": int(measured),
-        "capture_mode_for_margin": ("MOBILE" if (capture_mode or "").upper()=="AGENT" else (capture_mode or "UNKNOWN")),
+        "capture_mode_for_margin": ("MOBILE" if (capture_mode or "").upper() == "AGENT" else (capture_mode or "UNKNOWN")),
         "margin_value": margin,
         "corrected": round(corrected, 2),
         "expected": expected,
@@ -235,6 +261,9 @@ def _compute_velocity_calc(docs: List[Dict[str, Any]], extraction_core: Optional
     }
 
 
+# ==========================
+# LLM + DB HELPERS
+# ==========================
 
 def _llm_json(prompt: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -263,7 +292,6 @@ def _save_event(case_id: str, event_type: str, payload: Dict[str, Any]) -> None:
 
 
 def _load_latest_extraction(case_id: str) -> Optional[Dict[str, Any]]:
-    """Devuelve el JSONB tal y como está guardado en extractions.extracted_json."""
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(
@@ -326,13 +354,16 @@ def _load_case_documents(case_id: str) -> List[Dict[str, Any]]:
     return docs
 
 
+# ==========================
+# SIGNALS / TRIAGE
+# ==========================
+
 def _detect_capture_mode(docs: List[Dict[str, Any]], extraction_core: Optional[Dict[str, Any]]) -> str:
     blob_parts: List[str] = []
     try:
         blob_parts.append(json.dumps(extraction_core or {}, ensure_ascii=False))
     except Exception:
         pass
-
     for d in docs or []:
         t = (d.get("text_excerpt") or "")
         if t:
@@ -352,11 +383,6 @@ def _detect_capture_mode(docs: List[Dict[str, Any]], extraction_core: Optional[D
 
     auto_score = sum(1 for s in auto_signals if s in blob)
     agent_score = sum(1 for s in agent_signals if s in blob)
-
-    if ("motivo de no notificación" in blob or "motivo de no notificacion" in blob) and (
-        "vehículo en marcha" in blob or "vehiculo en marcha" in blob
-    ):
-        pass
 
     if auto_score >= 2 and auto_score >= agent_score + 1:
         return "AUTO"
@@ -422,6 +448,10 @@ def _build_facts_summary(extraction_core: Optional[Dict[str, Any]], attack_plan:
     return ""
 
 
+# ==========================
+# ATTACK PLAN (PRIMARY DETERMINISTA)
+# ==========================
+
 def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extraction_core: Dict[str, Any]) -> Dict[str, Any]:
     global_refs = (classify or {}).get("global_refs") or {}
     organism = (global_refs.get("main_organism") or "").lower()
@@ -430,14 +460,9 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extra
     blob = json.dumps(extraction_core or {}, ensure_ascii=False).lower()
     inferred = _infer_infraction_from_facts_phrases(classify)
 
-    triage_tipo = None
-    try:
-        triage_tipo = (extraction_core or {}).get("tipo_infraccion")
-    except Exception:
-        triage_tipo = None
+    triage_tipo = (extraction_core or {}).get("tipo_infraccion") if isinstance(extraction_core, dict) else None
 
     infraction_type = inferred or "generic"
-
     if infraction_type == "generic" and triage_tipo in ("semaforo", "velocidad", "movil", "atencion", "parking"):
         infraction_type = triage_tipo
 
@@ -449,15 +474,18 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extra
         elif any(s in blob for s in ["km/h", "radar", "cinemómetro", "cinemometro", "velocidad"]):
             infraction_type = "velocidad"
 
-    plan = {
+    # PRIMARY determinista (no plantilla)
+    primary = {"title": "Insuficiencia probatoria específica", "points": []}
+    if infraction_type == "velocidad":
+        primary = {"title": "Prueba técnica, metrología y cadena de custodia (cinemómetro)", "points": []}
+    elif infraction_type == "movil":
+        primary = {"title": "Uso manual del móvil: prueba objetiva y motivación reforzada", "points": []}
+    elif infraction_type == "semaforo":
+        primary = {"title": "Semáforo: fase roja y prueba completa", "points": []}
+
+    plan: Dict[str, Any] = {
         "infraction_type": infraction_type,
-        "primary": {
-            "title": "Presunción de inocencia e insuficiencia probatoria (art. 24 CE)",
-            "points": [
-                "La carga de la prueba corresponde a la Administración.",
-                "No cabe sancionar sin prueba suficiente y concreta del hecho infractor.",
-            ],
-        },
+        "primary": primary,
         "secondary": [],
         "proof_requests": [],
         "petition": {
@@ -468,37 +496,19 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extra
 
     if traffic:
         if infraction_type == "movil":
-            plan["secondary"].append(
-                {
-                    "title": "Uso manual del móvil: prueba objetiva y motivación reforzada",
-                    "points": [
-                        "Debe acreditarse de forma concreta el uso manual (circunstancias y descripción suficiente).",
-                        "Si no consta prueba objetiva o descripción detallada, procede el archivo por insuficiencia probatoria.",
-                    ],
-                }
-            )
             plan["proof_requests"] += [
                 "Boletín/denuncia/acta completa, con identificación del agente si consta.",
                 "Descripción detallada del hecho y circunstancias (lugar/hora/forma de observación).",
                 "Si existiera: fotografía/vídeo/capturas completas.",
             ]
-
         if infraction_type == "velocidad":
-            plan["secondary"].append(
-                {
-                    "title": "Velocidad: prueba técnica completa (cinemómetro/radar)",
-                    "points": [
-                        "Debe constar identificación del cinemómetro y certificado vigente de verificación/calibración.",
-                        "Debe constar margen aplicado y capturas completas.",
-                    ],
-                }
-            )
             plan["proof_requests"] += [
                 "Capturas/fotografías completas del hecho infractor.",
                 "Identificación del cinemómetro (marca/modelo/nº serie) y ubicación exacta.",
                 "Certificado de verificación/calibración vigente y constancia del margen aplicado.",
             ]
 
+        # antigüedad (solo como secondary)
         tl = (timeline or {}).get("timeline") or []
         dates: List[str] = []
         for ev in tl:
@@ -568,29 +578,24 @@ def _apply_tipicity_guard(attack_plan: Dict[str, Any], extraction_core: Dict[str
         plan["meta"]["precept_forced_type"] = mapped
         return plan
 
+    # mismatch real -> forzar PRIMARY (no secondary)
     if mapped and inferred and mapped != inferred:
-        sec = plan.get("secondary") or []
-        sec = list(sec) if isinstance(sec, list) else []
-        sec.insert(
-            0,
-            {
-                "title": "Principio de tipicidad: posible incongruencia entre el precepto citado y el hecho denunciado",
-                "points": [
-                    "La Administración debe subsumir el hecho descrito en el precepto concreto citado, con motivación suficiente.",
-                    "Si el hecho denunciado no encaja en el artículo indicado, se vulnera el principio de tipicidad (Derecho sancionador) y procede el archivo.",
-                    "Se solicita aclaración y acreditación completa del encaje típico, aportando el expediente íntegro y la base normativa aplicada.",
-                ],
-            },
-        )
-        plan["secondary"] = sec
-
+        plan["primary"] = {
+            "title": "Vulneración del principio de tipicidad y subsunción",
+            "points": [
+                "Existe incongruencia entre el hecho descrito y el precepto aplicado.",
+                "Ello impide conocer con precisión la conducta sancionada y genera indefensión.",
+                "Procede el archivo por falta de adecuada subsunción típica.",
+            ],
+        }
         pr = plan.get("proof_requests") or []
         pr = list(pr) if isinstance(pr, list) else []
         pr += [
             "Copia íntegra del expediente administrativo (incluyendo propuesta/resolución y fundamentos).",
             "Identificación expresa del precepto aplicado (artículo/apartado) y su encaje con el hecho denunciado.",
-            "Aportación de la norma/ordenanza aplicable y motivación completa.",
+            "Aportación de la norma aplicable y motivación completa.",
         ]
+        # unique
         seen = set()
         pr2 = []
         for x in pr:
@@ -639,6 +644,10 @@ def _compute_context_intensity(timeline: Dict[str, Any], extraction_core: Dict[s
     return "normal"
 
 
+# ==========================
+# MAIN
+# ==========================
+
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     docs = _load_case_documents(case_id)
     if not docs:
@@ -675,6 +684,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         },
     )
 
+    # override
     flags = _load_case_flags(case_id)
     override_mode = _override_mode()
     if flags.get("test_mode") and flags.get("override_deadlines"):
@@ -683,7 +693,6 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         admissibility["admissibility"] = "ADMISSIBLE"
         admissibility["can_generate_draft"] = True
         admissibility["deadline_status"] = admissibility.get("deadline_status") or "UNKNOWN"
-        # En pruebas, forzamos un estado de plazo no bloqueante para que el generador no se autolimite.
         if override_mode == "SANDBOX_DEMO":
             admissibility["deadline_status"] = "OK"
         admissibility["required_constraints"] = admissibility.get("required_constraints") or []
@@ -748,11 +757,12 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     else:
         attack_plan = _build_attack_plan(classify, timeline, extraction_core or {})
 
+    # tipicidad guard (puede forzar PRIMARY)
     attack_plan = _apply_tipicity_guard(attack_plan, extraction_core)
     facts_summary = _build_facts_summary(extraction_core, attack_plan)
     context_intensity = _compute_context_intensity(timeline, extraction_core, classify)
 
-    # Normalización opcional para demos internas en modo SANDBOX_DEMO
+    # sandbox demo normalization
     try:
         if (admissibility or {}).get("override_applied") and (admissibility or {}).get("override_mode") == "SANDBOX_DEMO":
             attack_plan = _sanitize_for_sandbox_demo(attack_plan)
@@ -760,23 +770,22 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # VELOCITY STRICT ENGINE (VSE-1): cálculo automático de margen, velocidad corregida y tramo sancionador
-    velocity_calc = {}
+    # VSE-1 velocity calc
+    velocity_calc: Dict[str, Any] = {}
     try:
         if (attack_plan or {}).get("infraction_type") == "velocidad":
             velocity_calc = _compute_velocity_calc(docs, extraction_core, capture_mode)
             if velocity_calc.get("ok"):
                 attack_plan.setdefault("meta", {})
                 attack_plan["meta"]["velocity_calc"] = velocity_calc
-                # Si no consta acreditado margen/tabla o hay inconsistencia evidente, subimos intensidad
                 context_intensity = "critico"
     except Exception:
         velocity_calc = {"ok": False, "reason": "error_interno_velocity_calc"}
 
-
     draft = None
     if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
         interested_data = _load_interested_data(case_id)
+
         draft = _llm_json(
             PROMPT_DRAFT,
             {
@@ -792,16 +801,26 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 "facts_summary": facts_summary,
                 "context_intensity": context_intensity,
                 "velocity_calc": velocity_calc,
-                "sandbox": {"override_applied": bool((admissibility or {}).get("override_applied")), "override_mode": (admissibility or {}).get("override_mode")},
+                "sandbox": {
+                    "override_applied": bool((admissibility or {}).get("override_applied")),
+                    "override_mode": (admissibility or {}).get("override_mode"),
+                },
             },
         )
 
-        # Auto-repair (1 intento) para VELOCIDAD si el borrador no cumple mínimos VSE-1
+        # Force petitum in speed (even before repair)
         try:
-            if isinstance(draft, dict):
+            if isinstance(draft, dict) and ((attack_plan or {}).get("infraction_type") == "velocidad"):
+                draft["cuerpo"] = _force_archivo_in_speed_body(draft.get("cuerpo") or "")
+        except Exception:
+            pass
+
+        # Auto-repair (1 intento) si no cumple mínimos VSE-1
+        try:
+            if isinstance(draft, dict) and ((attack_plan or {}).get("infraction_type") == "velocidad"):
                 cuerpo0 = (draft.get("cuerpo") or "")
                 missing = _velocity_strict_missing(cuerpo0) if cuerpo0 else []
-                if missing and ((attack_plan or {}).get("infraction_type") == "velocidad"):
+                if missing:
                     _save_event(case_id, "draft_repair_triggered", {"missing": missing})
                     draft = _llm_json(
                         PROMPT_DRAFT_REPAIR_VELOCIDAD,
@@ -819,9 +838,11 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                             "admissibility": admissibility,
                         },
                     )
+                    # Force petitum again after repair
+                    if isinstance(draft, dict):
+                        draft["cuerpo"] = _force_archivo_in_speed_body(draft.get("cuerpo") or "")
         except Exception as _e:
             _save_event(case_id, "draft_repair_failed", {"error": str(_e)})
-
 
     result = {
         "ok": True,
