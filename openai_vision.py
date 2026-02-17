@@ -25,7 +25,9 @@ def extract_from_image_bytes(
 ) -> Dict[str, Any]:
     """
     Extracción desde IMAGEN usando OpenAI Responses API (visión).
-    Devuelve un JSON estructurado.
+
+    Devuelve un JSON estructurado + un OCR textual completo en 'vision_raw_text',
+    para que el motor pueda extraer velocidades (123/90) incluso en PDFs escaneados.
     """
     api_key = _env("OPENAI_API_KEY")
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
@@ -34,12 +36,13 @@ def extract_from_image_bytes(
 
     system_text = (
         "Eres un asistente experto en sanciones administrativas en España. "
-        "Analizas imágenes de multas y extraes datos clave para preparar recursos administrativos."
+        "Analizas imágenes de multas y extraes datos clave para preparar recursos administrativos. "
+        "Devuelve siempre JSON válido."
     )
 
     user_text = (
         "Analiza la imagen de la sanción administrativa y devuelve EXCLUSIVAMENTE "
-        "un objeto JSON válido con estas claves EXACTAS:\n\n"
+        "un objeto JSON válido con estas claves EXACTAS (incluye también 'vision_raw_text'):\n\n"
         "{\n"
         '  "organismo": string|null,\n'
         '  "expediente_ref": string|null,\n'
@@ -49,9 +52,13 @@ def extract_from_image_bytes(
         '  "tipo_sancion": string|null,\n'
         '  "pone_fin_via_administrativa": boolean|null,\n'
         '  "plazo_recurso_sugerido": string|null,\n'
-        '  "observaciones": string\n'
+        '  "observaciones": string,\n'
+        '  "vision_raw_text": string\n'
         "}\n\n"
-        "Si algún dato no se ve con claridad, usa null y explica el motivo en observaciones."
+        "Reglas:\n"
+        "- Si algún dato no se ve con claridad, usa null y explica el motivo en observaciones.\n"
+        "- vision_raw_text debe ser una transcripción OCR lo más literal posible del documento (máx. ~4000 caracteres).\n"
+        "- NO inventes texto que no se vea. Si hay zonas ilegibles, usa '[ILEGIBLE]'.\n"
     )
 
     payload = {
@@ -59,9 +66,7 @@ def extract_from_image_bytes(
         "input": [
             {
                 "role": "system",
-                "content": [
-                    {"type": "input_text", "text": system_text}
-                ],
+                "content": [{"type": "input_text", "text": system_text}],
             },
             {
                 "role": "user",
@@ -71,18 +76,14 @@ def extract_from_image_bytes(
                 ],
             },
         ],
-        "text": {
-            "format": {
-                "type": "json_object"
-            }
-        }
+        "text": {"format": {"type": "json_object"}},
     }
 
     r = requests.post(
         "https://api.openai.com/v1/responses",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json=payload,
-        timeout=60,
+        timeout=90,
     )
 
     if not r.ok:
@@ -101,6 +102,12 @@ def extract_from_image_bytes(
         raise RuntimeError("OpenAI no devolvió contenido.")
 
     try:
-        return json.loads(output_text)
+        obj = json.loads(output_text)
     except Exception as e:
         raise RuntimeError(f"JSON inválido devuelto por OpenAI: {e}. Texto: {output_text[:400]}")
+
+    # Garantía: que siempre exista la clave
+    if isinstance(obj, dict) and "vision_raw_text" not in obj:
+        obj["vision_raw_text"] = ""
+
+    return obj
