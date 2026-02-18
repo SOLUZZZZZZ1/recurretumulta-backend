@@ -953,6 +953,98 @@ def _compute_context_intensity(timeline: Dict[str, Any], extraction_core: Dict[s
     return "normal"
 
 
+
+# ==========================
+# TIPICIDAD STRICT (ARTÍCULO ↔ HECHOS)
+# ==========================
+
+# Mapa cerrado (conservador). Solo incluye artículos de alta confianza.
+# norma_hint -> artículo -> tipo esperado
+ARTICLE_TYPE_MAP = {
+    "RGC": {  # Reglamento General de Circulación
+        48: "velocidad",
+        18: "atencion",
+        167: "marcas_viales",
+        12: "condiciones_vehiculo",
+        15: "condiciones_vehiculo",
+    },
+    "RDL 8/2004": {
+        2: "seguro",
+    },
+}
+
+def _norma_key_from_hint(extraction_core: Dict[str, Any]) -> str:
+    hint = (extraction_core or {}).get("norma_hint") or ""
+    h = str(hint).upper()
+    if "RDL 8/2004" in h or "8/2004" in h:
+        return "RDL 8/2004"
+    if "RGC" in h or "REGLAMENTO GENERAL DE CIRCUL" in h:
+        return "RGC"
+    return ""
+
+def _get_article_num(extraction_core: Dict[str, Any]) -> Optional[int]:
+    art = (extraction_core or {}).get("articulo_infringido_num")
+    if isinstance(art, int):
+        return art
+    if isinstance(art, str) and art.strip().isdigit():
+        try:
+            return int(art.strip())
+        except Exception:
+            return None
+    return None
+
+def _expected_type_from_article(extraction_core: Dict[str, Any]) -> Optional[str]:
+    norma_key = _norma_key_from_hint(extraction_core)
+    art = _get_article_num(extraction_core)
+    if not norma_key or art is None:
+        return None
+    return (ARTICLE_TYPE_MAP.get(norma_key) or {}).get(art)
+
+def _strict_tipicity_check(extraction_core: Dict[str, Any], inferred_type: str) -> Dict[str, Any]:
+    expected = _expected_type_from_article(extraction_core or {})
+    art = _get_article_num(extraction_core or {})
+    norma_key = _norma_key_from_hint(extraction_core or {})
+    inferred = (inferred_type or "").lower().strip()
+    exp = (expected or "").lower().strip()
+    if not expected or not inferred:
+        return {"ok": False, "match": None, "expected": expected, "inferred": inferred_type, "article": art, "norma_key": norma_key}
+    return {"ok": True, "match": (exp == inferred), "expected": expected, "inferred": inferred_type, "article": art, "norma_key": norma_key}
+
+def _apply_tipicity_strict_to_attack_plan(attack_plan: Dict[str, Any], extraction_core: Dict[str, Any]) -> Dict[str, Any]:
+    plan = dict(attack_plan or {})
+    inferred = (plan.get("infraction_type") or "").lower().strip()
+    check = _strict_tipicity_check(extraction_core or {}, inferred)
+    plan.setdefault("meta", {})
+    plan["meta"]["tipicity_check"] = check
+
+    if check.get("ok") and check.get("match") is False:
+        plan["meta"]["tipicity_mismatch_strict"] = True
+        plan["meta"]["expected_type"] = check.get("expected")
+        plan["meta"]["inferred_type"] = check.get("inferred")
+
+        plan["primary"] = {
+            "title": "Vulneración del principio de tipicidad y errónea subsunción normativa",
+            "points": [
+                "El Derecho sancionador exige subsunción exacta entre el hecho descrito y el precepto aplicado (principio de tipicidad y legalidad sancionadora).",
+                "Si el artículo citado no se corresponde con la conducta efectivamente imputada, la sanción carece de cobertura típica suficiente y genera indefensión.",
+                "Procede el ARCHIVO por ausencia de adecuada subsunción normativa, sin perjuicio de la práctica de prueba y aportación íntegra del expediente."
+            ],
+        }
+
+        pr = list(plan.get("proof_requests") or [])
+        pr += [
+            "Copia íntegra del expediente administrativo (denuncia/boletín, propuesta y resolución, si existieran).",
+            "Identificación expresa del precepto aplicado (artículo/apartado) y motivación del encaje con el hecho descrito.",
+            "Aportación de la norma aplicable y fundamentos jurídicos utilizados."
+        ]
+        seen=set(); pr2=[]
+        for x in pr:
+            if x not in seen:
+                seen.add(x); pr2.append(x)
+        plan["proof_requests"] = pr2
+
+    return plan
+
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     docs = _load_case_documents(case_id)
     if not docs:
@@ -1063,8 +1155,15 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         attack_plan = _build_attack_plan(classify, timeline, extraction_core or {})
 
     attack_plan = _apply_tipicity_guard(attack_plan, extraction_core)
+    attack_plan = _apply_tipicity_strict_to_attack_plan(attack_plan, extraction_core)
     facts_summary = _build_facts_summary(extraction_core, attack_plan)
     context_intensity = _compute_context_intensity(timeline, extraction_core, classify)
+    # Tipicidad STRICT: elevamos intensidad automáticamente si hay mismatch
+    try:
+        if (attack_plan or {}).get('meta', {}).get('tipicity_mismatch_strict'):
+            context_intensity = 'critico'
+    except Exception:
+        pass
 
     # Normalización opcional para demos internas en modo SANDBOX_DEMO
     try:
