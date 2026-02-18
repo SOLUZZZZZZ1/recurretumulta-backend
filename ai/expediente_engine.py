@@ -194,55 +194,67 @@ def _ensure_speed_antecedentes(body: str, velocity_calc: Dict[str, Any]) -> str:
 
 
 def _ensure_velocity_calc_paragraph(body: str, velocity_calc: Dict[str, Any]) -> str:
-    """Inserta o NORMALIZA el párrafo de cálculo en VELOCIDAD.
+    """Inserta un párrafo técnico de cálculo cuando velocity_calc.ok=True.
 
-    Regla: si velocity_calc.ok == True, el texto debe mencionar SIEMPRE:
-    - límite (km/h)
-    - medición (km/h)
-    - velocidad corregida
-    - y, si existe, banda/tramo (multa/puntos)
+    Incluye SIEMPRE:
+      - límite (km/h)
+      - medición (km/h)
+      - margen aplicado (valor)
+      - velocidad corregida (km/h)
+      - exceso efectivo (km/h)
+      - banda/tramo orientativo (si disponible)
 
-    Si el borrador ya incluye una frase 'A efectos ilustrativos...', se sustituye por la versión completa.
+    No inventa si faltan datos.
     """
     try:
-        if not body or not (velocity_calc or {}).get("ok"):
+        if not body or not isinstance(velocity_calc, dict) or not velocity_calc.get("ok"):
+            return body
+
+        # Si ya existe, no duplicar
+        if "a efectos ilustrativos" in body.lower() and "velocidad corregida" in body.lower():
             return body
 
         limit = velocity_calc.get("limit")
         measured = velocity_calc.get("measured")
+        margin_value = velocity_calc.get("margin_value")
         corrected = velocity_calc.get("corrected")
         expected = velocity_calc.get("expected") or {}
         band = expected.get("band")
         fine = expected.get("fine")
         pts = expected.get("points")
 
-        pieces = ["A efectos ilustrativos,"]
+        # Construcción prudente pero contundente
+        parts = []
+        parts.append("A efectos ilustrativos y sin perjuicio de la prueba que corresponde a la Administración,")
+
         if isinstance(limit, int) and isinstance(measured, int):
-            pieces.append(f"con un límite de {limit} km/h y una medición de {measured} km/h,")
-        if isinstance(corrected, (int, float)):
-            pieces.append(f"la aplicación del margen situaría la velocidad corregida en torno a {float(corrected):.2f} km/h,")
-        pieces.append("extremo cuya acreditación corresponde a la Administración (margen aplicado, velocidad corregida y tramo resultante).")
+            parts.append(f"con un límite de {limit} km/h y una medición de {measured} km/h,")
+
+        if isinstance(margin_value, (int, float)) and isinstance(corrected, (int, float)):
+            parts.append(f"aplicando un margen de {float(margin_value):.2f} km/h, la velocidad corregida se situaría en torno a {float(corrected):.2f} km/h,")
+
+        # exceso efectivo
+        if isinstance(corrected, (int, float)) and isinstance(limit, int):
+            exceso = float(corrected) - float(limit)
+            if exceso >= 0:
+                parts.append(f"lo que supondría un exceso efectivo aproximado de {exceso:.2f} km/h sobre el límite.")
+
+        parts.append("Debe acreditarse documentalmente el margen efectivamente aplicado, la velocidad corregida resultante y su encaje en el tramo sancionador.")
 
         if band:
-            extra = f"De acuerdo con la tabla orientativa, ello podría encajar en la banda: {band}"
+            tramo = f"Según tabla orientativa, el tramo resultante podría ser: {band}"
             if isinstance(fine, int) or isinstance(pts, int):
-                extra += f" (multa {fine}€ / puntos {pts})."
+                tramo += f" (multa {fine}€ / puntos {pts})."
             else:
-                extra += "."
-            pieces.append(extra)
+                tramo += "."
+            parts.append(tramo)
 
-        paragraph = " ".join(pieces)
-
-        # Si ya existe, sustituir primera ocurrencia
-        if "a efectos ilustrativos" in body.lower():
-            body = re.sub(r"A efectos ilustrativos[^\n]*", paragraph, body, count=1, flags=re.IGNORECASE)
-            return body
+        paragraph = " ".join(parts)
 
         mm = re.search(r"(ALEGACIÓN\s+PRIMERA[^\n]*\n)", body, flags=re.IGNORECASE)
         if mm:
             i = mm.end(1)
             return body[:i] + paragraph + "\n" + body[i:]
-
         return re.sub(r"(\nIII\.\s*SOLICITO)", "\n" + paragraph + r"\n\1", body, flags=re.IGNORECASE)
 
     except Exception:
