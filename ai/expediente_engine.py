@@ -1100,7 +1100,7 @@ def _atencion_strict_enrich(body: str, capture_mode: str) -> str:
 )
 
 
-"
+
     )
 
     # Insert after II. ALEGACIONES if present, else before current first alegación
