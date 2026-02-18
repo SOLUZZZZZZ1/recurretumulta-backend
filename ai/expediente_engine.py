@@ -194,10 +194,18 @@ def _ensure_speed_antecedentes(body: str, velocity_calc: Dict[str, Any]) -> str:
 
 
 def _ensure_velocity_calc_paragraph(body: str, velocity_calc: Dict[str, Any]) -> str:
+    """Inserta o NORMALIZA el párrafo de cálculo en VELOCIDAD.
+
+    Regla: si velocity_calc.ok == True, el texto debe mencionar SIEMPRE:
+    - límite (km/h)
+    - medición (km/h)
+    - velocidad corregida
+    - y, si existe, banda/tramo (multa/puntos)
+
+    Si el borrador ya incluye una frase 'A efectos ilustrativos...', se sustituye por la versión completa.
+    """
     try:
         if not body or not (velocity_calc or {}).get("ok"):
-            return body
-        if "a efectos ilustrativos" in body.lower() and "velocidad corregida" in body.lower():
             return body
 
         limit = velocity_calc.get("limit")
@@ -208,29 +216,37 @@ def _ensure_velocity_calc_paragraph(body: str, velocity_calc: Dict[str, Any]) ->
         fine = expected.get("fine")
         pts = expected.get("points")
 
-        parts = ["A efectos ilustrativos,"]
+        pieces = ["A efectos ilustrativos,"]
         if isinstance(limit, int) and isinstance(measured, int):
-            parts.append(f"con un límite de {limit} km/h y una medición de {measured} km/h,")
+            pieces.append(f"con un límite de {limit} km/h y una medición de {measured} km/h,")
         if isinstance(corrected, (int, float)):
-            parts.append(f"la aplicación del margen situaría la velocidad corregida en torno a {float(corrected):.2f} km/h,")
-        parts.append("extremo cuya acreditación corresponde a la Administración (margen aplicado, velocidad corregida y banda/tramo resultante).")
-        if band:
-            tail = f"De acuerdo con la tabla orientativa, ello podría encajar en la banda: {band}"
-            if isinstance(fine, int) or isinstance(pts, int):
-                tail += f" (multa {fine}€ / puntos {pts})."
-            else:
-                tail += "."
-            parts.append(tail)
+            pieces.append(f"la aplicación del margen situaría la velocidad corregida en torno a {float(corrected):.2f} km/h,")
+        pieces.append("extremo cuya acreditación corresponde a la Administración (margen aplicado, velocidad corregida y tramo resultante).")
 
-        paragraph = " ".join(parts)
+        if band:
+            extra = f"De acuerdo con la tabla orientativa, ello podría encajar en la banda: {band}"
+            if isinstance(fine, int) or isinstance(pts, int):
+                extra += f" (multa {fine}€ / puntos {pts})."
+            else:
+                extra += "."
+            pieces.append(extra)
+
+        paragraph = " ".join(pieces)
+
+        # Si ya existe, sustituir primera ocurrencia
+        if "a efectos ilustrativos" in body.lower():
+            body = re.sub(r"A efectos ilustrativos[^\n]*", paragraph, body, count=1, flags=re.IGNORECASE)
+            return body
+
         mm = re.search(r"(ALEGACIÓN\s+PRIMERA[^\n]*\n)", body, flags=re.IGNORECASE)
         if mm:
             i = mm.end(1)
             return body[:i] + paragraph + "\n" + body[i:]
+
         return re.sub(r"(\nIII\.\s*SOLICITO)", "\n" + paragraph + r"\n\1", body, flags=re.IGNORECASE)
+
     except Exception:
         return body
-
 
 def _velocity_pro_enrich(body: str, velocity_calc: Dict[str, Any]) -> str:
     if not body:
