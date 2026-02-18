@@ -1087,26 +1087,18 @@ def _atencion_strict_enrich(body: str, capture_mode: str) -> str:
         return body
 
     block = (
-        "ALEGACIÓN PRIMERA — MOTIVACIÓN REFORZADA Y PRUEBA DE LA DISTRACCIÓN (ART. 18)
-"
-        "En infracciones por "no mantener la atención permanente", la Administración debe describir con precisión la conducta observada "
-        "y las circunstancias de percepción, pues se trata de un juicio de hecho que requiere motivación reforzada para permitir contradicción efectiva.
+    "ALEGACIÓN PRIMERA — MOTIVACIÓN REFORZADA Y PRUEBA DE LA DISTRACCIÓN (ART. 18)\n"
+    "En infracciones por 'no mantener la atención permanente', la Administración debe describir con precisión la conducta observada "
+    "y las circunstancias de percepción, pues se trata de un juicio de hecho que requiere motivación reforzada para permitir contradicción efectiva.\n\n"
+    "No consta acreditado en el expediente, de forma concreta:\n"
+    "1) La posición del agente y su distancia aproximada al vehículo.\n"
+    "2) El ángulo de visión y condiciones de visibilidad (tráfico, luz, obstáculos).\n"
+    "3) El tiempo de observación y la descripción concreta de la supuesta distracción (qué hizo exactamente el conductor y durante cuánto).\n"
+    "4) Si existe prueba objetiva (fotografía/vídeo) o solo apreciación visual.\n"
+    "5) En su caso, el motivo de no notificación en el acto y por qué impidió la identificación/contraste inmediato.\n\n"
+    "La falta de esta concreción impide la contradicción y genera indefensión, por lo que procede el ARCHIVO por insuficiencia probatoria.\n\n"
+)
 
-"
-        "No consta acreditado en el expediente, de forma concreta:
-"
-        "1) La posición del agente y su distancia aproximada al vehículo.
-"
-        "2) El ángulo de visión y condiciones de visibilidad (tráfico, luz, obstáculos).
-"
-        "3) El tiempo de observación y la descripción concreta de la supuesta distracción (qué hizo exactamente el conductor y durante cuánto).
-"
-        "4) Si existe prueba objetiva (fotografía/vídeo) o solo apreciación visual.
-"
-        "5) En su caso, el motivo de no notificación en el acto y por qué impidió la identificación/contraste inmediato.
-
-"
-        "La falta de esta concreción impide la contradicción y genera indefensión, por lo que procede el ARCHIVO por insuficiencia probatoria.
 
 "
     )
