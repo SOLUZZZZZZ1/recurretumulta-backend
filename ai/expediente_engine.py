@@ -1057,6 +1057,68 @@ def _apply_tipicity_strict_to_attack_plan(attack_plan: Dict[str, Any], extractio
 
     return plan
 
+
+# ==========================
+# ATENCIÓN STRICT (ART. 18) — IMPOSIBLE DE REBATIR SIN DETALLE
+# ==========================
+
+ATENCION_REQUIRED = [
+    "posición del agente",
+    "distancia aproximada",
+    "ángulo de visión",
+    "tiempo de observación",
+    "circunstancias de visibilidad",
+    "descripción concreta de la distracción",
+    "motivo de no notificación en el acto (si aplica)",
+]
+
+def _detect_atencion_signals(text_blob: str) -> bool:
+    t = (text_blob or "").lower()
+    return any(k in t for k in ["atención permanente", "atencion permanente", "art. 18", "artículo 18", "distracción", "distraccion"])
+
+def _atencion_strict_enrich(body: str, capture_mode: str) -> str:
+    """Inserta bloque determinista para ART.18 (atención), sin inventar hechos."""
+    if not body:
+        return body
+    b = body.lower()
+
+    # Si ya hay un checklist mínimo, no duplicar
+    if "atención strict" in b or "posicion del agente" in b or "posición del agente" in b:
+        return body
+
+    block = (
+        "ALEGACIÓN PRIMERA — MOTIVACIÓN REFORZADA Y PRUEBA DE LA DISTRACCIÓN (ART. 18)
+"
+        "En infracciones por "no mantener la atención permanente", la Administración debe describir con precisión la conducta observada "
+        "y las circunstancias de percepción, pues se trata de un juicio de hecho que requiere motivación reforzada para permitir contradicción efectiva.
+
+"
+        "No consta acreditado en el expediente, de forma concreta:
+"
+        "1) La posición del agente y su distancia aproximada al vehículo.
+"
+        "2) El ángulo de visión y condiciones de visibilidad (tráfico, luz, obstáculos).
+"
+        "3) El tiempo de observación y la descripción concreta de la supuesta distracción (qué hizo exactamente el conductor y durante cuánto).
+"
+        "4) Si existe prueba objetiva (fotografía/vídeo) o solo apreciación visual.
+"
+        "5) En su caso, el motivo de no notificación en el acto y por qué impidió la identificación/contraste inmediato.
+
+"
+        "La falta de esta concreción impide la contradicción y genera indefensión, por lo que procede el ARCHIVO por insuficiencia probatoria.
+
+"
+    )
+
+    # Insert after II. ALEGACIONES if present, else before current first alegación
+    if "ii. alegaciones" in b:
+        body = re.sub(r"(II\.\s*ALEGACIONES\s*\n)", r"\1\n" + block, body, flags=re.IGNORECASE)
+    else:
+        body = block + body
+
+    return body
+
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     docs = _load_case_documents(case_id)
     if not docs:
@@ -1239,6 +1301,26 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 cuerpo = _fix_solicito_newline(cuerpo)
                 cuerpo = _append_velocity_terms_if_missing(cuerpo)
                 draft["cuerpo"] = cuerpo
+
+            # Post-procesado determinista ATENCIÓN (ART.18): implacable sin inventar hechos
+            try:
+                if isinstance(draft, dict) and ((attack_plan or {}).get("infraction_type") in ("atencion", "atención")):
+                    _force_velocity_asunto(draft)  # mismo asunto (ARCHIVO) para coherencia
+                    cuerpo = draft.get("cuerpo") or ""
+                    cuerpo = _atencion_strict_enrich(cuerpo, capture_mode)
+                    cuerpo = _force_archivo_in_speed_body(cuerpo)
+                    cuerpo = _fix_solicito_format(cuerpo)
+                    # Si el título de alegación primera es flojo, lo subimos a uno estándar de atención
+                    cuerpo = re.sub(
+                        r"ALEGACIÓN\s+PRIMERA\s+—\s+INSUFICIENCIA\s+PROBATORIA[^\n]*",
+                        "ALEGACIÓN PRIMERA — MOTIVACIÓN REFORZADA Y PRUEBA DE LA DISTRACCIÓN (ART. 18)",
+                        cuerpo,
+                        flags=re.IGNORECASE,
+                    )
+                    draft["cuerpo"] = cuerpo
+            except Exception as _e:
+                _save_event(case_id, "postprocess_atencion_failed", {"error": str(_e)})
+
         except Exception as _e:
             _save_event(case_id, "postprocess_speed_failed", {"error": str(_e)})
         # Auto-repair (1 intento) para VELOCIDAD si el borrador no cumple mínimos VSE-1
