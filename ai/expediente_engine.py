@@ -1080,36 +1080,44 @@ def _atencion_strict_enrich(body: str, capture_mode: str) -> str:
     """Inserta bloque determinista para ART.18 (atención), sin inventar hechos."""
     if not body:
         return body
+
     b = body.lower()
 
-    # Si ya hay un checklist mínimo, no duplicar
-    if "atención strict" in b or "posicion del agente" in b or "posición del agente" in b:
+    # Evitar duplicado
+    if "motivación reforzada y prueba de la distracción" in b:
         return body
 
     block = (
-    "ALEGACIÓN PRIMERA — MOTIVACIÓN REFORZADA Y PRUEBA DE LA DISTRACCIÓN (ART. 18)\n"
-    "En infracciones por 'no mantener la atención permanente', la Administración debe describir con precisión la conducta observada "
-    "y las circunstancias de percepción, pues se trata de un juicio de hecho que requiere motivación reforzada para permitir contradicción efectiva.\n\n"
-    "No consta acreditado en el expediente, de forma concreta:\n"
-    "1) La posición del agente y su distancia aproximada al vehículo.\n"
-    "2) El ángulo de visión y condiciones de visibilidad (tráfico, luz, obstáculos).\n"
-    "3) El tiempo de observación y la descripción concreta de la supuesta distracción (qué hizo exactamente el conductor y durante cuánto).\n"
-    "4) Si existe prueba objetiva (fotografía/vídeo) o solo apreciación visual.\n"
-    "5) En su caso, el motivo de no notificación en el acto y por qué impidió la identificación/contraste inmediato.\n\n"
-    "La falta de esta concreción impide la contradicción y genera indefensión, por lo que procede el ARCHIVO por insuficiencia probatoria.\n\n"
-)
+        "ALEGACIÓN PRIMERA — MOTIVACIÓN REFORZADA Y PRUEBA DE LA DISTRACCIÓN (ART. 18)\n"
+        "En infracciones por 'no mantener la atención permanente', la Administración debe describir con precisión "
+        "la conducta observada y las circunstancias de percepción, pues se trata de un juicio de hecho que requiere "
+        "motivación reforzada para permitir contradicción efectiva.\n\n"
 
+        "No consta acreditado en el expediente, de forma concreta:\n"
+        "1) La posición del agente y su distancia aproximada al vehículo.\n"
+        "2) El ángulo de visión y condiciones de visibilidad (tráfico, luz, obstáculos).\n"
+        "3) El tiempo de observación y la descripción concreta de la supuesta distracción "
+        "(qué hizo exactamente el conductor y durante cuánto tiempo).\n"
+        "4) Si existe prueba objetiva (fotografía o vídeo) o únicamente apreciación visual.\n"
+        "5) En su caso, el motivo de no notificación en el acto y por qué impidió la identificación o contraste inmediato.\n\n"
 
+        "La falta de esta concreción impide la contradicción y genera indefensión, "
+        "por lo que procede el ARCHIVO por insuficiencia probatoria.\n\n"
+    )
 
-  
-
-    # Insert after II. ALEGACIONES if present, else before current first alegación
+    # Insertar después de II. ALEGACIONES si existe
     if "ii. alegaciones" in b:
-        body = re.sub(r"(II\.\s*ALEGACIONES\s*\n)", r"\1\n" + block, body, flags=re.IGNORECASE)
+        body = re.sub(
+            r"(II\.\s*ALEGACIONES\s*\n)",
+            r"\1\n" + block,
+            body,
+            flags=re.IGNORECASE
+        )
     else:
         body = block + body
 
     return body
+
 
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     docs = _load_case_documents(case_id)
