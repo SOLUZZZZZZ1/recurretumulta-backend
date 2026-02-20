@@ -194,71 +194,43 @@ def _ensure_speed_antecedentes(body: str, velocity_calc: Dict[str, Any]) -> str:
 
 
 def _ensure_velocity_calc_paragraph(body: str, velocity_calc: Dict[str, Any]) -> str:
-    """Inserta un párrafo técnico de cálculo cuando velocity_calc.ok=True.
-
-    Incluye SIEMPRE:
-      - límite (km/h)
-      - medición (km/h)
-      - margen aplicado (valor)
-      - velocidad corregida (km/h)
-      - exceso efectivo (km/h)
-      - banda/tramo orientativo (si disponible)
-
-    No inventa si faltan datos.
-    """
     try:
-        if not body or not isinstance(velocity_calc, dict) or not velocity_calc.get("ok"):
+        if not body or not (velocity_calc or {}).get("ok"):
             return body
-
-        # Si ya existe, no duplicar
         if "a efectos ilustrativos" in body.lower() and "velocidad corregida" in body.lower():
             return body
 
         limit = velocity_calc.get("limit")
         measured = velocity_calc.get("measured")
-        margin_value = velocity_calc.get("margin_value")
         corrected = velocity_calc.get("corrected")
         expected = velocity_calc.get("expected") or {}
         band = expected.get("band")
         fine = expected.get("fine")
         pts = expected.get("points")
 
-        # Construcción prudente pero contundente
-        parts = []
-        parts.append("A efectos ilustrativos y sin perjuicio de la prueba que corresponde a la Administración,")
-
+        parts = ["A efectos ilustrativos,"]
         if isinstance(limit, int) and isinstance(measured, int):
             parts.append(f"con un límite de {limit} km/h y una medición de {measured} km/h,")
-
-        if isinstance(margin_value, (int, float)) and isinstance(corrected, (int, float)):
-            parts.append(f"aplicando un margen de {float(margin_value):.2f} km/h, la velocidad corregida se situaría en torno a {float(corrected):.2f} km/h,")
-
-        # exceso efectivo
-        if isinstance(corrected, (int, float)) and isinstance(limit, int):
-            exceso = float(corrected) - float(limit)
-            if exceso >= 0:
-                parts.append(f"lo que supondría un exceso efectivo aproximado de {exceso:.2f} km/h sobre el límite.")
-
-        parts.append("Debe acreditarse documentalmente el margen efectivamente aplicado, la velocidad corregida resultante y su encaje en el tramo sancionador.")
-
+        if isinstance(corrected, (int, float)):
+            parts.append(f"la aplicación del margen situaría la velocidad corregida en torno a {float(corrected):.2f} km/h,")
+        parts.append("extremo cuya acreditación corresponde a la Administración (margen aplicado, velocidad corregida y banda/tramo resultante).")
         if band:
-            tramo = f"Según tabla orientativa, el tramo resultante podría ser: {band}"
+            tail = f"De acuerdo con la tabla orientativa, ello podría encajar en la banda: {band}"
             if isinstance(fine, int) or isinstance(pts, int):
-                tramo += f" (multa {fine}€ / puntos {pts})."
+                tail += f" (multa {fine}€ / puntos {pts})."
             else:
-                tramo += "."
-            parts.append(tramo)
+                tail += "."
+            parts.append(tail)
 
         paragraph = " ".join(parts)
-
         mm = re.search(r"(ALEGACIÓN\s+PRIMERA[^\n]*\n)", body, flags=re.IGNORECASE)
         if mm:
             i = mm.end(1)
             return body[:i] + paragraph + "\n" + body[i:]
         return re.sub(r"(\nIII\.\s*SOLICITO)", "\n" + paragraph + r"\n\1", body, flags=re.IGNORECASE)
-
     except Exception:
         return body
+
 
 def _velocity_pro_enrich(body: str, velocity_calc: Dict[str, Any]) -> str:
     if not body:
@@ -372,76 +344,66 @@ def _sanitize_for_sandbox_demo(attack_plan: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _extract_speed_pair_from_blob(blob: str) -> Dict[str, Any]:
-    """Extrae (measured, limit) de texto libre con tolerancia OCR, sin inventar límite.
+    """Extrae velocidad medida y límite de forma robusta, SIN asumir límite si no está explícito.
 
-    - Prioriza patrón fuerte: 'circular a X km/h ... limitada ... a Y' (km/h opcional).
-    - Detecta 'limitada la velocidad a 120' aunque el OCR inserte saltos/puntuación y aunque falte 'km/h'.
-    - Detecta 'límite 120' / 'velocidad máxima 120' (km/h opcional).
-    - Fallback SOLO si:
-        * hay señal de límite (limitad/límite/velocidad máxima), y
-        * hay al menos 2 valores distintos.
-      En caso contrario, limit=None.
+    Reglas:
+    - Prioriza patrón fuerte: 'circular a X km/h ... limitada ... a Y (km/h opcional)'.
+    - Acepta 'límite 120' sin 'km/h' si el contexto lo indica.
+    - Fallback: solo usa (max,min) si hay AL MENOS 2 valores distintos y existe señal de límite.
+    - Si no se puede inferir límite con seguridad, devuelve limit=None (para no inventar).
     """
     t = (blob or "").replace("\n", " ").replace("\t", " ").lower()
     t = re.sub(r"\s+", " ", t).strip()
 
     measured = None
     limit = None
-    raw_hits = []
+    hits = []
 
-    # 1) Patrón fuerte completo
+    # 1) Patrón fuerte: circular a X km/h ... limitada ... a Y (km/h opcional)
     ms = re.search(
-        r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,260}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|velocidad\s+m[aá]xima|l[ií]mite|limite)[^\d]{0,80}(\d{2,3})(?:\s*km\s*/?h)?",
+        r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,160}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)[^\d]{0,40}(\d{2,3})(?:\s*km\s*/?h)?",
         t,
     )
     if ms:
         try:
             measured = int(ms.group(1))
             limit = int(ms.group(2))
-            raw_hits.append(("strong", measured, limit))
+            hits.append(("strong", measured, limit))
         except Exception:
             measured = None
             limit = None
 
-    # 2) Medida por frase
+    # 2) Medida: 'circulaba a X km/h' o 'velocidad X km/h'
     if measured is None:
         m1 = re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?h\b", t)
         if m1:
             try:
-                measured = int(m1.group(1))
-                raw_hits.append(("measured_phrase", measured))
+                measured = int(m1.group(1)); hits.append(("measured_phrase", measured))
+            except Exception:
+                measured = None
+    if measured is None:
+        m2 = re.search(r"\bvelocidad\b[^\d]{0,25}(\d{2,3})\b(?:\s*km\s*/?h)?", t)
+        if m2:
+            try:
+                measured = int(m2.group(1)); hits.append(("measured_velocidad", measured))
             except Exception:
                 measured = None
 
-    # 3) Límite por frase genérica (km/h opcional)
+    # 3) Límite: 'limitada a 120' / 'límite 120' (km/h opcional)
     if limit is None:
-        ml = re.search(
-            r"\b(?:limitad[ao]a?|l[ií]mite|limite|velocidad\s+m[aá]xima)\b[\s\S]{0,200}?(\d{2,3})(?:\s*km\s*/?h)?\b",
-            t,
-        )
+        ml = re.search(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)\b[^\d]{0,40}(\d{2,3})(?:\s*km\s*/?h)?\b", t)
         if ml:
             try:
-                limit = int(ml.group(1))
-                raw_hits.append(("limit_phrase", limit))
+                limit = int(ml.group(1)); hits.append(("limit_phrase", limit))
             except Exception:
                 limit = None
 
-    # 4) Patrón específico 'limitada la velocidad a 120' (muy tolerante)
-    if limit is None:
-        ml2 = re.search(r"limitada\s+la\s+velocidad\s+a[\s\S]{0,140}?(\d{2,3})(?:\s*km\s*/?h)?\b", t)
-        if ml2:
-            try:
-                limit = int(ml2.group(1))
-                raw_hits.append(("limit_limitada_velocidad_a", limit))
-            except Exception:
-                limit = None
-
-    # 5) Fallback: max/min SOLO si hay señal y hay 2+ distintos
-    if measured is None or limit is None:
+    # 4) Fallback inteligente (solo si hay señal de límite)
+    if (measured is None or limit is None):
         nums = [int(x) for x in re.findall(r"\b(\d{2,3})\b\s*(?:km\s*/?h)?", t)]
         nums = [n for n in nums if 10 <= n <= 250]
         uniq = sorted(set(nums))
-        has_limit_signal = any(k in t for k in ["limitad", "límite", "limite", "velocidad máxima", "velocidad maxima"])
+        has_limit_signal = any(k in t for k in ["limitad", "límite", "limite", "limitada la velocidad"])
         if has_limit_signal and len(uniq) >= 2:
             hi = max(uniq)
             lo = min(uniq)
@@ -449,13 +411,14 @@ def _extract_speed_pair_from_blob(blob: str) -> Dict[str, Any]:
                 measured = hi
             if limit is None:
                 limit = lo
-            raw_hits.append(("fallback_signal", measured, limit, uniq))
+            hits.append(("fallback_signal", measured, limit, uniq))
 
-    # 6) Seguridad: si limit==measured, rechazamos límite (no inventar)
+    # 5) Seguridad: si limit==measured, no lo aceptamos como límite (sería inventar)
     if isinstance(measured, int) and isinstance(limit, int) and measured == limit:
-        raw_hits.append(("reject_equal", measured))
+        hits.append(("reject_equal", measured))
         limit = None
 
+    # Confianza
     conf = 0.0
     if isinstance(measured, int):
         conf += 0.45
@@ -465,7 +428,7 @@ def _extract_speed_pair_from_blob(blob: str) -> Dict[str, Any]:
         conf += 0.10
     conf = round(min(conf, 1.0), 2)
 
-    return {"measured": measured, "limit": limit, "confidence": conf, "raw_hits": raw_hits}
+    return {"measured": measured, "limit": limit, "confidence": conf, "raw_hits": hits}
 
 def _speed_margin_value(measured: int, capture_mode: str) -> float:
     """Margen conservador según Orden ICT/155/2020 (verificación periódica) para cinemómetros en servicio.
@@ -967,149 +930,46 @@ def _compute_context_intensity(timeline: Dict[str, Any], extraction_core: Dict[s
 
 
 # ==========================
-# TIPICIDAD STRICT (ARTÍCULO ↔ HECHOS)
+# ASE-2 — ATENCIÓN STRICT (ART. 18) CICLISTAS / SUBSUNCIÓN
 # ==========================
 
-# Mapa cerrado (conservador). Solo incluye artículos de alta confianza.
-# norma_hint -> artículo -> tipo esperado
-ARTICLE_TYPE_MAP = {
-    "RGC": {  # Reglamento General de Circulación
-        48: "velocidad",
-        18: "atencion",
-        167: "marcas_viales",
-        12: "condiciones_vehiculo",
-        15: "condiciones_vehiculo",
-    },
-    "RDL 8/2004": {
-        2: "seguro",
-    },
-}
+def _detect_ciclista_context(extraction_core: Dict[str, Any], docs: List[Dict[str, Any]]) -> bool:
+    """Detecta contexto de bicicleta/ciclista desde extraction_core y excerpts."""
+    parts = []
+    try:
+        parts.append(json.dumps(extraction_core or {}, ensure_ascii=False))
+    except Exception:
+        pass
+    for d in (docs or []):
+        t = d.get("text_excerpt") or ""
+        if t:
+            parts.append(t)
+    blob = " ".join(parts).lower()
+    return any(k in blob for k in ["bicicleta", "ciclista", "circula en bicicleta", "junto con otros ciclistas"])
 
-def _norma_key_from_hint(extraction_core: Dict[str, Any]) -> str:
-    hint = (extraction_core or {}).get("norma_hint") or ""
-    h = str(hint).upper()
-    if "RDL 8/2004" in h or "8/2004" in h:
-        return "RDL 8/2004"
-    if "RGC" in h or "REGLAMENTO GENERAL DE CIRCUL" in h:
-        return "RGC"
-    return ""
-
-def _get_article_num(extraction_core: Dict[str, Any]) -> Optional[int]:
-    art = (extraction_core or {}).get("articulo_infringido_num")
-    if isinstance(art, int):
-        return art
-    if isinstance(art, str) and art.strip().isdigit():
-        try:
-            return int(art.strip())
-        except Exception:
-            return None
-    return None
-
-def _expected_type_from_article(extraction_core: Dict[str, Any]) -> Optional[str]:
-    norma_key = _norma_key_from_hint(extraction_core)
-    art = _get_article_num(extraction_core)
-    if not norma_key or art is None:
-        return None
-    return (ARTICLE_TYPE_MAP.get(norma_key) or {}).get(art)
-
-def _strict_tipicity_check(extraction_core: Dict[str, Any], inferred_type: str) -> Dict[str, Any]:
-    expected = _expected_type_from_article(extraction_core or {})
-    art = _get_article_num(extraction_core or {})
-    norma_key = _norma_key_from_hint(extraction_core or {})
-    inferred = (inferred_type or "").lower().strip()
-    exp = (expected or "").lower().strip()
-    if not expected or not inferred:
-        return {"ok": False, "match": None, "expected": expected, "inferred": inferred_type, "article": art, "norma_key": norma_key}
-    return {"ok": True, "match": (exp == inferred), "expected": expected, "inferred": inferred_type, "article": art, "norma_key": norma_key}
-
-def _apply_tipicity_strict_to_attack_plan(attack_plan: Dict[str, Any], extraction_core: Dict[str, Any]) -> Dict[str, Any]:
-    plan = dict(attack_plan or {})
-    inferred = (plan.get("infraction_type") or "").lower().strip()
-    check = _strict_tipicity_check(extraction_core or {}, inferred)
-    plan.setdefault("meta", {})
-    plan["meta"]["tipicity_check"] = check
-
-    if check.get("ok") and check.get("match") is False:
-        plan["meta"]["tipicity_mismatch_strict"] = True
-        plan["meta"]["expected_type"] = check.get("expected")
-        plan["meta"]["inferred_type"] = check.get("inferred")
-
-        plan["primary"] = {
-            "title": "Vulneración del principio de tipicidad y errónea subsunción normativa",
-            "points": [
-                "El Derecho sancionador exige subsunción exacta entre el hecho descrito y el precepto aplicado (principio de tipicidad y legalidad sancionadora).",
-                "Si el artículo citado no se corresponde con la conducta efectivamente imputada, la sanción carece de cobertura típica suficiente y genera indefensión.",
-                "Procede el ARCHIVO por ausencia de adecuada subsunción normativa, sin perjuicio de la práctica de prueba y aportación íntegra del expediente."
-            ],
-        }
-
-        pr = list(plan.get("proof_requests") or [])
-        pr += [
-            "Copia íntegra del expediente administrativo (denuncia/boletín, propuesta y resolución, si existieran).",
-            "Identificación expresa del precepto aplicado (artículo/apartado) y motivación del encaje con el hecho descrito.",
-            "Aportación de la norma aplicable y fundamentos jurídicos utilizados."
-        ]
-        seen=set(); pr2=[]
-        for x in pr:
-            if x not in seen:
-                seen.add(x); pr2.append(x)
-        plan["proof_requests"] = pr2
-
-    return plan
-
-
-# ==========================
-# ATENCIÓN STRICT (ART. 18) — IMPLACABLE, SIN INVENTAR HECHOS
-# ==========================
-
-ATENCION_TITLE = "ALEGACIÓN PRIMERA — MOTIVACIÓN REFORZADA Y PRUEBA DE LA DISTRACCIÓN (ART. 18)"
-
-def _atencion_strict_block() -> str:
-    return (
-        "ALEGACIÓN PRIMERA — MOTIVACIÓN REFORZADA Y PRUEBA DE LA DISTRACCIÓN (ART. 18)\n"
-        "En infracciones por 'no mantener la atención permanente', la Administración debe describir con precisión "
-        "la conducta observada y las circunstancias de percepción, pues se trata de un juicio de hecho que requiere "
-        "motivación reforzada para permitir contradicción efectiva.\n\n"
-        "No consta acreditado en el expediente, de forma concreta:\n"
-        "1) La posición del agente y su distancia aproximada al vehículo.\n"
-        "2) El ángulo de visión y condiciones de visibilidad (tráfico, luz, obstáculos).\n"
-        "3) El tiempo de observación y la descripción concreta de la supuesta distracción (qué hizo exactamente el conductor y durante cuánto tiempo).\n"
-        "4) Si existe prueba objetiva (fotografía o vídeo) o únicamente apreciación visual.\n"
-        "5) En su caso, el motivo de no notificación en el acto y por qué impidió la identificación/contraste inmediato.\n\n"
-        "La falta de esta concreción impide la contradicción y genera indefensión, por lo que procede el ARCHIVO por insuficiencia probatoria.\n\n"
-    )
-
-def _dedupe_atencion_alegacion_primera(body: str) -> str:
-    """Mantiene la primera aparición de la alegación de atención y elimina repeticiones posteriores."""
-    title = "ALEGACIÓN PRIMERA — MOTIVACIÓN REFORZADA Y PRUEBA DE LA DISTRACCIÓN (ART. 18)"
-    parts = body.split(title)
-    if len(parts) <= 2:
-        return body
-    # Mantener la primera aparición con su contenido inmediato; eliminar el resto de títulos repetidos
-    return parts[0] + title + parts[1] + "".join(parts[2:]).replace(title, "")
-
-def _atencion_strict_enrich(body: str) -> str:
+def _ase2_atencion_ciclista_enrich(body: str) -> str:
+    """Bloque determinista ASE-2 para art. 18 cuando los hechos describen posición en carril (ciclistas) y no distracción real."""
     if not body:
         body = ""
-    block = _atencion_strict_block()
-
-    # Insertar tras II. ALEGACIONES si existe, si no, al inicio
+    block = (
+        "ALEGACIÓN PRIMERA — ERROR DE TIPICIDAD Y SUBSUNCIÓN NORMATIVA (ART. 18 RGC)\n\n"
+        "El hecho descrito en la denuncia no encaja en el tipo sancionador del artículo 18 RGC.\n\n"
+        "El art. 18 sanciona la falta de atención permanente a la conducción, lo que exige la descripción de una distracción real "
+        "o una pérdida efectiva de control.\n\n"
+        "Sin embargo, el hecho narrado se refiere a la circulación en bicicleta junto con otros ciclistas, conversación y ocupación de parte del carril.\n"
+        "En ningún momento se describe pérdida de control, maniobra errática, invasión de carril contrario, uso de dispositivos ni conducta "
+        "objetivamente incompatible con una conducción atenta.\n\n"
+        "La expresión 'exponiéndose a un atropello' constituye una valoración subjetiva de riesgo, no un hecho objetivo acreditado.\n\n"
+        "Si la Administración entiende que existió una infracción por posición en la vía o circulación en paralelo, la subsunción natural "
+        "debería realizarse en la normativa específica aplicable a ciclistas, no en el artículo 18 RGC.\n\n"
+        "Rige el principio de tipicidad estricta en Derecho sancionador: no puede sancionarse por un precepto distinto al que describe "
+        "exactamente la conducta.\n\n"
+        "Procede el ARCHIVO por incorrecta subsunción normativa y falta de acreditación de distracción real.\n\n"
+    )
     if re.search(r"II\.\s*ALEGACIONES", body, flags=re.IGNORECASE):
         body = re.sub(r"(II\.\s*ALEGACIONES\s*\n)", r"\1\n" + block, body, flags=re.IGNORECASE)
     else:
         body = block + body
-
-    # Si hay otras 'ALEGACIÓN PRIMERA — ...' distintas, degradarlas a SEGUNDA (para no duplicar la primera)
-    body = re.sub(
-        r"\nALEGACIÓN\s+PRIMERA\s+—\s+(?!MOTIVACIÓN\s+REFORZADA\s+Y\s+PRUEBA\s+DE\s+LA\s+DISTRACCIÓN\s+\(ART\.\s*18\))",
-        "\nALEGACIÓN SEGUNDA — ",
-        body,
-        flags=re.IGNORECASE,
-    )
-
-    # Eliminar repeticiones del mismo bloque
-    body = _dedupe_atencion_alegacion_primera(body)
-
     return body
 
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
@@ -1222,15 +1082,8 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         attack_plan = _build_attack_plan(classify, timeline, extraction_core or {})
 
     attack_plan = _apply_tipicity_guard(attack_plan, extraction_core)
-    attack_plan = _apply_tipicity_strict_to_attack_plan(attack_plan, extraction_core)
     facts_summary = _build_facts_summary(extraction_core, attack_plan)
     context_intensity = _compute_context_intensity(timeline, extraction_core, classify)
-    # Tipicidad STRICT: elevamos intensidad automáticamente si hay mismatch
-    try:
-        if (attack_plan or {}).get('meta', {}).get('tipicity_mismatch_strict'):
-            context_intensity = 'critico'
-    except Exception:
-        pass
 
     # Normalización opcional para demos internas en modo SANDBOX_DEMO
     try:
@@ -1294,19 +1147,6 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 cuerpo = _fix_solicito_newline(cuerpo)
                 cuerpo = _append_velocity_terms_if_missing(cuerpo)
                 draft["cuerpo"] = cuerpo
-
-                # Post-procesado determinista ATENCIÓN (ART.18): implacable, sin inventar hechos
-                try:
-                    if isinstance(draft, dict) and ((attack_plan or {}).get("infraction_type") in ("atencion", "atención")):
-                        _force_velocity_asunto(draft)
-                        cuerpo = draft.get("cuerpo") or ""
-                        cuerpo = _atencion_strict_enrich(cuerpo)
-                        cuerpo = _force_archivo_in_speed_body(cuerpo)
-                        cuerpo = _fix_solicito_format(cuerpo)
-                        draft["cuerpo"] = cuerpo
-                except Exception as _e:
-                    _save_event(case_id, "postprocess_atencion_failed", {"error": str(_e)})
-
         except Exception as _e:
             _save_event(case_id, "postprocess_speed_failed", {"error": str(_e)})
         # Auto-repair (1 intento) para VELOCIDAD si el borrador no cumple mínimos VSE-1
