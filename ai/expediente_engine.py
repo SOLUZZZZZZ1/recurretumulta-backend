@@ -12,7 +12,7 @@ from ai.prompts.classify_documents import PROMPT as PROMPT_CLASSIFY
 from ai.prompts.timeline_builder import PROMPT as PROMPT_TIMELINE
 from ai.prompts.procedure_phase import PROMPT as PROMPT_PHASE
 from ai.prompts.admissibility_guard import PROMPT as PROMPT_GUARD
-from ai.prompts.draft_recurso_v3_2 import PROMPT as PROMPT_DRAFT
+from ai.prompts.draft_recurso_v3_1 import PROMPT as PROMPT_DRAFT
 from ai.velocity_pro_engine_v3 import build_velocity_verdict, build_prudente_text_blocks
 from ai.velocity_tipicity_v3 import build_tipicity_verdict, build_tipicity_text_blocks
 from ai.velocity_score_v3 import compute_velocity_strength_score
@@ -152,38 +152,6 @@ def _fix_solicito_format(body: str) -> str:
     body = re.sub(r"(\.\s*)3[\)\.]", r"\1\n3)", body)
     return body
 
-
-
-
-def _ensure_section_headers(body: str) -> str:
-    """Asegura encabezados mínimos para pasar SVL (estructura_alegaciones).
-    Inserta I. ANTECEDENTES / II. ALEGACIONES / III. SOLICITO si faltan, sin inventar hechos.
-    """
-    if not body:
-        return body
-    b = body
-
-    # Normaliza si vienen variantes sin punto
-    if re.search(r"^I\s+ANTECEDENTES", b, flags=re.IGNORECASE | re.MULTILINE) and "I. ANTECEDENTES" not in b:
-        b = re.sub(r"^I\s+ANTECEDENTES", "I. ANTECEDENTES", b, flags=re.IGNORECASE | re.MULTILINE)
-
-    # Si no existe II. ALEGACIONES, lo insertamos antes de la primera 'ALEGACIÓN'
-    if not re.search(r"^II\.\s*ALEGACIONES\b", b, flags=re.IGNORECASE | re.MULTILINE):
-        m = re.search(r"^ALEGACI[ÓO]N\s+PRIMERA\b", b, flags=re.IGNORECASE | re.MULTILINE)
-        if m:
-            b = b[:m.start()] + "II. ALEGACIONES\n" + b[m.start():]
-        else:
-            # fallback: al final de antecedentes si existe
-            m2 = re.search(r"^I\.\s*ANTECEDENTES[\s\S]*?$", b, flags=re.IGNORECASE | re.MULTILINE)
-            if m2:
-                b = b + "\n\nII. ALEGACIONES\n"
-            else:
-                b = "I. ANTECEDENTES\n" + b + "\n\nII. ALEGACIONES\n"
-
-    # Si falta III. SOLICITO pero hay 'SOLICITO', normalizamos
-    if not re.search(r"^III\.\s*SOLICITO\b", b, flags=re.IGNORECASE | re.MULTILINE):
-        b = re.sub(r"^SOLICITO\b", "III. SOLICITO", b, flags=re.IGNORECASE | re.MULTILINE)
-    return b
 
 
 def _fix_solicito_newline(body: str) -> str:
@@ -1143,6 +1111,49 @@ def _apply_ase_ciclista(body: str) -> str:
         body = block + body
     return body
 
+
+def _ensure_velocity_alegacion_block(body: str) -> str:
+    """Si el borrador de VELOCIDAD no contiene una 'ALEGACIÓN PRIMERA', inserta un bloque mínimo VSE-1.
+    No inventa hechos; solo exige prueba y documentación.
+    """
+    if not body:
+        body = ""
+    # Si ya existe alegación primera, no tocar
+    if re.search(r"^ALEGACI[ÓO]N\s+PRIMERA\b", body, flags=re.IGNORECASE | re.MULTILINE):
+        return body
+
+    # Asegura II. ALEGACIONES
+    if not re.search(r"^II\.\s*ALEGACIONES\b", body, flags=re.IGNORECASE | re.MULTILINE):
+        m = re.search(r"^I\.\s*ANTECEDENTES[\s\S]*?$", body, flags=re.IGNORECASE | re.MULTILINE)
+        if m:
+            body = body + "\n\nII. ALEGACIONES\n"
+        else:
+            body = "I. ANTECEDENTES\n" + body + "\n\nII. ALEGACIONES\n"
+
+    # Insert after II. ALEGACIONES line
+    m2 = re.search(r"^II\.\s*ALEGACIONES\b.*?$", body, flags=re.IGNORECASE | re.MULTILINE)
+    insert_at = 0
+    if m2:
+        line_end = body.find("\n", m2.end())
+        insert_at = len(body) if line_end == -1 else line_end + 1
+
+    block = (
+        "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA (CINEMÓMETRO)\n\n"
+        "La validez de una sanción por exceso de velocidad basada en cinemómetro exige la acreditación documental "
+        "del control metrológico conforme a la normativa aplicable (Orden ICT/155/2020). No basta una afirmación genérica "
+        "de verificación: debe aportarse soporte documental verificable.\n\n"
+        "No consta acreditado en el expediente:\n\n"
+        "1) Identificación completa del cinemómetro utilizado (marca, modelo y número de serie) y emplazamiento exacto (vía, punto kilométrico y sentido).\n"
+        "2) Certificado de verificación metrológica vigente a la fecha del hecho, así como constancia de la última verificación periódica o, en su caso, tras reparación.\n"
+        "3) Captura o fotograma COMPLETO, sin recortes y legible, que permita asociar inequívocamente la medición al vehículo denunciado.\n"
+        "4) Margen aplicado y determinación de la velocidad corregida (velocidad medida vs velocidad corregida), con motivación técnica suficiente.\n"
+        "5) Acreditación de la cadena de custodia del dato (integridad del registro, sistema de almacenamiento y correspondencia inequívoca con el vehículo denunciado).\n"
+        "6) Acreditación del límite aplicable y su señalización en el punto exacto (genérica vs específica) y su coherencia con la ubicación consignada.\n"
+        "7) Motivación técnica individualizada que vincule medición, margen aplicado, velocidad corregida y tramo sancionador resultante.\n\n"
+    )
+    return body[:insert_at] + block + body[insert_at:]
+
+
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     docs = _load_case_documents(case_id)
     if not docs:
@@ -1340,20 +1351,18 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 "sandbox": {"override_applied": bool((admissibility or {}).get("override_applied")), "override_mode": (admissibility or {}).get("override_mode")},
             },
         )
-
-        # Asegura estructura mínima para SVL (evita 422 por 'estructura_alegaciones')
-        try:
-            if isinstance(draft, dict):
-                draft['cuerpo'] = _ensure_section_headers(draft.get('cuerpo') or '')
-        except Exception:
-            pass
+# VSE-1: si es velocidad y el borrador no trae 'ALEGACIÓN PRIMERA', inyectamos bloque mínimo determinista
+try:
+    if isinstance(draft, dict) and ((attack_plan or {}).get("infraction_type") == "velocidad"):
+        draft["cuerpo"] = _ensure_velocity_alegacion_block(draft.get("cuerpo") or "")
+except Exception:
+    pass
 
 
         # Post-procesado determinista VELOCIDAD (potencia + coherencia + archivo)
         try:
             if isinstance(draft, dict) and ((attack_plan or {}).get("infraction_type") == "velocidad"):
                 cuerpo = draft.get("cuerpo") or ""
-                cuerpo = _ensure_section_headers(cuerpo)
                 cuerpo = _force_velocity_first_title(cuerpo)
                 _force_velocity_asunto(draft)
                 cuerpo = _ensure_speed_antecedentes(cuerpo, velocity_calc)
