@@ -1121,6 +1121,37 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
 
     capture_mode = _detect_capture_mode(docs, extraction_core)
 
+    # === V3 Defaults (evita NameError en cualquier flujo) ===
+    tipicity_verdict = {
+        "ok": True,
+        "match": None,
+        "severity": "reforzado",
+        "dominant_argument": "motivacion_tipo",
+    }
+    velocity_verdict = {
+        "ok": False,
+        "mode": "unknown",
+        "severity_level": "normal",
+        "dominant_argument": "metrologia",
+    }
+    strength_score = {
+        "score": 0,
+        "label": "TÉCNICO DÉBIL",
+        "reasons": ["not_computed"],
+    }
+
+    # === Tipicidad v3 (Capa 0 transversal) ===
+    try:
+        tipicity_verdict = build_tipicity_verdict(docs, extraction_core)
+    except Exception:
+        tipicity_verdict = {
+            "ok": False,
+            "match": None,
+            "severity": "reforzado",
+            "dominant_argument": "motivacion_tipo",
+            "error": "tipicity_exception",
+        }
+
     classify = _llm_json(
         PROMPT_CLASSIFY,
         {"case_id": case_id, "documents": docs, "latest_extraction": extraction_wrapper},
@@ -1222,6 +1253,9 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
 
     attack_plan = _apply_tipicity_guard(attack_plan, extraction_core)
     attack_plan = _apply_tipicity_strict_to_attack_plan(attack_plan, extraction_core)
+    # Guardar tipicidad v3 (Capa 0) en meta para auditoría interna
+    attack_plan.setdefault("meta", {})
+    attack_plan["meta"]["tipicity_verdict_v3"] = tipicity_verdict
     facts_summary = _build_facts_summary(extraction_core, attack_plan)
     context_intensity = _compute_context_intensity(timeline, extraction_core, classify)
     # Tipicidad v3: si mismatch, elevar intensidad automáticamente
@@ -1260,6 +1294,21 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         velocity_calc = {"ok": False, "reason": "error_interno_velocity_calc"}
 
 
+    # === Velocity Verdict v3 + Score técnico v3.2 (solo si tipo velocidad) ===
+    try:
+        if (attack_plan or {}).get("infraction_type") == "velocidad":
+            velocity_verdict = build_velocity_verdict(docs, extraction_core, velocity_calc)
+            strength_score = compute_velocity_strength_score(
+                docs, extraction_core, tipicity_verdict, velocity_verdict, velocity_calc
+            )
+            attack_plan.setdefault("meta", {})
+            attack_plan["meta"]["velocity_verdict_v3"] = velocity_verdict
+            attack_plan["meta"]["strength_score_v3"] = strength_score
+    except Exception:
+        # Mantener defaults si algo falla
+        pass
+
+
     draft = None
     if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
         interested_data = _load_interested_data(case_id)
@@ -1278,9 +1327,6 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 "facts_summary": facts_summary,
                 "context_intensity": context_intensity,
                 "velocity_calc": velocity_calc,
-                "velocity_verdict": velocity_verdict,
-                "tipicity_verdict": tipicity_verdict,
-                "strength_score": strength_score,
 
                 "sandbox": {"override_applied": bool((admissibility or {}).get("override_applied")), "override_mode": (admissibility or {}).get("override_mode")},
             },
@@ -1323,9 +1369,6 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                             "facts_summary": facts_summary,
                             "context_intensity": context_intensity,
                             "velocity_calc": velocity_calc,
-                "velocity_verdict": velocity_verdict,
-                "tipicity_verdict": tipicity_verdict,
-                "strength_score": strength_score,
 
                             "latest_extraction": extraction_wrapper,
                             "classification": classify,
@@ -1365,9 +1408,9 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         "facts_summary": facts_summary,
         "context_intensity": context_intensity,
         "velocity_calc": velocity_calc,
-                "velocity_verdict": velocity_verdict,
-                "tipicity_verdict": tipicity_verdict,
-                "strength_score": strength_score,
+        "velocity_verdict": velocity_verdict,
+        "tipicity_verdict": tipicity_verdict,
+        "strength_score": strength_score,
 
         "extraction_debug": {
             "wrapper_keys": list(extraction_wrapper.keys()) if isinstance(extraction_wrapper, dict) else [],
