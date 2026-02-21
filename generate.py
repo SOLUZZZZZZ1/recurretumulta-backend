@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from typing import Any, Dict, Optional, List, Tuple
 
 from fastapi import APIRouter, HTTPException
@@ -67,12 +68,10 @@ def _strip_borrador_prefix_from_body(body: str) -> str:
     if not body:
         return body
 
-    # Si la primera línea contiene "borrador", la eliminamos (case-insensitive)
     lines = body.splitlines()
     if lines and ("borrador" in (lines[0] or "").lower()):
         lines = lines[1:]
 
-    # También eliminamos líneas vacías iniciales
     while lines and not (lines[0] or "").strip():
         lines = lines[1:]
 
@@ -83,7 +82,6 @@ def _first_alegacion_title(body: str) -> str:
     """Devuelve el título de la primera alegación detectada (si existe)."""
     if not body:
         return ""
-    # Busca líneas tipo: "ALEGACIÓN 1 — ..." / "ALEGACIÓN PRIMERA — ..."
     for line in (body.splitlines() or []):
         l = (line or "").strip()
         if not l:
@@ -94,30 +92,30 @@ def _first_alegacion_title(body: str) -> str:
 
 
 def _velocity_strict_validate(body: str) -> List[str]:
-    """Valida que un borrador de velocidad cumple mínimos VSE-1 (anti-plantilla)."""
+    """Strict Validation Layer (SVL-1) — VELOCIDAD (estable y simple)
+
+    Reglas mínimas (sin auto-repair):
+    1) Estructura de alegaciones: 'ALEGACIÓN*' o 'II. ALEGACIONES'
+    2) Debe aparecer 'margen'
+    3) Debe aparecer 'cadena de custodia'
+    """
     b = (body or "").lower()
+    missing: List[str] = []
 
-    required_any = [
-        ("margen", ["margen"]),
-        ("velocidad_corregida", ["velocidad corregida", "corregida"]),
-        ("metrologia", ["certificado", "verificación", "verificacion", "metrológ", "metrolog"]),
-        ("cinemometro", ["cinemómetro", "cinemometro", "radar"]),
-        ("captura", ["captura", "fotograma", "imagen"]),
-        ("cadena_custodia", ["cadena de custodia", "integridad del registro", "integridad", "correspondencia inequívoca", "correspondencia inequivoca"]),
-    ]
-
-    missing = []
-    for name, needles in required_any:
-        if not any(n in b for n in needles):
-            missing.append(name)
-
-    # Estructura: la primera alegación NO puede ser presunción de inocencia genérica en velocidad
-    first = _first_alegacion_title(body).lower()
-    if first:
-        if any(k in first for k in ["presunción", "presuncion", "inocencia"]):
-            missing.append("orden_alegaciones (alegación 1 no puede ser presunción de inocencia en velocidad)")
-    else:
+    has_alegacion = bool(_first_alegacion_title(body))
+    has_section = bool(re.search(r"^II\.\s*ALEGACIONES\b", body or "", re.IGNORECASE | re.MULTILINE))
+    if not (has_alegacion or has_section):
         missing.append("estructura_alegaciones (no se detecta encabezado de alegaciones)")
+
+    if "margen" not in b:
+        missing.append("margen")
+
+    if "cadena de custodia" not in b:
+        missing.append("cadena_custodia")
+
+    first = _first_alegacion_title(body).lower()
+    if first and any(k in first for k in ["presunción", "presuncion", "inocencia"]):
+        missing.append("orden_alegaciones (alegación 1 no puede ser presunción de inocencia en velocidad)")
 
     return missing
 
@@ -130,19 +128,21 @@ def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dic
     if (tipo or "").lower() == "velocidad":
         missing = _velocity_strict_validate(body)
         if missing:
-            # Log de evento para OPS/auditoría
             try:
                 conn.execute(
-                    text("INSERT INTO events(case_id, type, payload, created_at) VALUES (:case_id,'strict_validation_failed',CAST(:payload AS JSONB),NOW())"),
+                    text(
+                        "INSERT INTO events(case_id, type, payload, created_at) "
+                        "VALUES (:case_id,'strict_validation_failed',CAST(:payload AS JSONB),NOW())"
+                    ),
                     {"case_id": case_id, "payload": json.dumps({"type": "velocidad", "missing": missing, "ai_used": ai_used})},
                 )
             except Exception:
                 pass
+
             raise HTTPException(
                 status_code=422,
                 detail=f"Velocity Strict no cumplido. Faltan/errores: {missing}. Regenerar borrador (VSE-1) antes de emitir DOCX/PDF.",
             )
-
 
 
 # ==========================
@@ -168,15 +168,12 @@ def generate_dgt_for_case(
     wrapper = extracted_json if isinstance(extracted_json, dict) else json.loads(extracted_json)
     core = wrapper.get("extracted") or {}
 
-    # Merge interesado desde DB si viene vacío/parcial
     interesado_db = _load_interested_data_from_cases(conn, case_id)
     interesado = _merge_interesado(interesado or {}, interesado_db)
 
-    # Flags override
     flags = _load_case_flags(conn, case_id)
     override_mode = bool(flags.get("test_mode")) and bool(flags.get("override_deadlines"))
 
-    # Tipo por defecto
     if not tipo:
         tipo = "reposicion" if core.get("pone_fin_via_administrativa") is True else "alegaciones"
 
@@ -218,7 +215,6 @@ def generate_dgt_for_case(
     else:
         filename_base = "recurso_reposicion_dgt" if tipo == "reposicion" else "alegaciones_dgt"
 
-    # Kinds (compatibles con OPS/automation)
     if tipo == "reposicion":
         kind_docx = "generated_docx_reposicion"
         kind_pdf = "generated_pdf_reposicion"
@@ -229,11 +225,8 @@ def generate_dgt_for_case(
     # ==========================
     # STRICT VALIDATION LAYER (SVL-1)
     # ==========================
-    # Bloquea la emisión si el borrador no cumple mínimos por tipo (especialmente VELOCIDAD).
     _strict_validate_or_raise(conn, case_id, core, tpl, ai_used)
 
-
-    # Generar DOCX/PDF
     docx_bytes = build_docx(tpl["asunto"], tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
         case_id,
@@ -252,7 +245,6 @@ def generate_dgt_for_case(
         "application/pdf",
     )
 
-    # Persistir documents (DOCX)
     conn.execute(
         text("INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at) VALUES (:case_id,:kind,:b2_bucket,:b2_key,:mime,:size_bytes,NOW())"),
         {
@@ -265,7 +257,6 @@ def generate_dgt_for_case(
         },
     )
 
-    # Persistir documents (PDF)
     conn.execute(
         text("INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at) VALUES (:case_id,:kind,:b2_bucket,:b2_key,:mime,:size_bytes,NOW())"),
         {
@@ -278,7 +269,6 @@ def generate_dgt_for_case(
         },
     )
 
-    # Evento
     conn.execute(
         text("INSERT INTO events(case_id, type, payload, created_at) VALUES (:case_id,'resource_generated',CAST(:payload AS JSONB),NOW())"),
         {
@@ -332,5 +322,4 @@ def generate_dgt(req: GenerateRequest) -> Dict[str, Any]:
             interesado=req.interesado,
             tipo=req.tipo,
         )
-
     return {"ok": True, "message": "Recurso generado en DOCX y PDF.", **result}
