@@ -361,6 +361,13 @@ def generate_dgt_for_case(
         kind_docx = "generated_docx_alegaciones"
         kind_pdf = "generated_pdf_alegaciones"
 
+    # FORCE bucket injection on final tpl (último punto seguro antes de validar/generar)
+    try:
+        if tpl and isinstance(tpl, dict):
+            tpl["cuerpo"] = _inject_bucket_paragraph(tpl.get("cuerpo") or "", decision)
+    except Exception:
+        pass
+
     # STRICT
     _strict_validate_or_raise(conn, case_id, core, tpl, ai_used)
 
