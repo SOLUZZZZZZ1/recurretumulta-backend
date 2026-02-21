@@ -107,26 +107,25 @@ def _velocity_strict_validate(body: str) -> List[str]:
         ("cadena_custodia", ["cadena de custodia", "integridad del registro", "integridad", "correspondencia inequívoca", "correspondencia inequivoca"]),
     ]
 
-    missing = []
+    missing: List[str] = []
     for name, needles in required_any:
         if not any(n in b for n in needles):
             missing.append(name)
 
-    # Estructura: debe existir un bloque de alegaciones.
-# Aceptamos como estructura válida:
-#  - Encabezado explícito de alegación ("ALEGACIÓN PRIMERA..."), o
-#  - Sección "II. ALEGACIONES" aunque el redactor use numeración 1), 2), etc.
-first = _first_alegacion_title(body).lower()
-if not first:
-    if not re.search(r"^II\.\s*ALEGACIONES\b", body or "", re.IGNORECASE | re.MULTILINE):
-        missing.append("estructura_alegaciones (no se detecta encabezado de alegaciones)")
-else:
-    if any(k in first for k in ["presunción", "presuncion", "inocencia"]):
-        missing.append("orden_alegaciones (alegación 1 no puede ser presunción de inocencia en velocidad)")
+    # Estructura: debe existir bloque de alegaciones.
+    # Aceptamos como estructura válida:
+    #  - Encabezado explícito de alegación ("ALEGACIÓN PRIMERA..."), o
+    #  - Sección "II. ALEGACIONES" aunque el redactor use numeración 1), 2), etc.
+    first = _first_alegacion_title(body).lower()
 
+    if not first:
+        if not re.search(r"^II\.\s*ALEGACIONES\b", body or "", re.IGNORECASE | re.MULTILINE):
+            missing.append("estructura_alegaciones (no se detecta encabezado de alegaciones)")
+    else:
+        if any(k in first for k in ["presunción", "presuncion", "inocencia"]):
+            missing.append("orden_alegaciones (alegación 1 no puede ser presunción de inocencia en velocidad)")
 
     return missing
-
 
 
 def _ensure_min_section_headers(body: str) -> str:
@@ -200,7 +199,7 @@ def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dic
             repaired = _repair_velocity_body_minimal(body)
             missing2 = _velocity_strict_validate(repaired)
             if not missing2:
-                tpl['cuerpo'] = repaired
+                tpl["cuerpo"] = repaired
                 return
             missing = missing2
             # Log de evento para OPS/auditoría
