@@ -7,7 +7,6 @@ from database import get_engine
 from ai.expediente_engine import run_expediente_ai
 from generate import generate_dgt_for_case
 
-# ✅ IMPORTANTE: router debe definirse ANTES de usar @router.post(...)
 router = APIRouter(prefix="/ai", tags=["ai"])
 
 
@@ -51,9 +50,5 @@ def run_ai(req: RunExpedienteAI):
 
         return result
 
-    except HTTPException:
-        # ✅ NO convertir 422/400/etc. en 500
-        raise
-
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error Modo Dios (inesperado): {e}")
+        raise HTTPException(status_code=500, detail=f"Error Modo Dios: {e}")
