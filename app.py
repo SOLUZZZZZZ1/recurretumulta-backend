@@ -66,4 +66,4 @@ def health():
         ping_db(engine)
         return HealthResponse(ok=True)
     except Exception:
-        return HealthResponse(ok=True)
+    return HealthResponse(ok=False)
