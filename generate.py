@@ -192,7 +192,7 @@ def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dic
     tipo = (core or {}).get("tipo_infraccion") or ""
     body = (tpl or {}).get("cuerpo") or ""
 
-    if (tipo or "").lower() == "velocidad":
+    if _is_velocity_context(core, tpl):
         missing = _velocity_strict_validate(body)
         if missing:
             # Auto-repair determinista (1 intento) para evitar falsos 422 por formato
@@ -215,6 +215,22 @@ def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dic
                 detail=f"Velocity Strict no cumplido. Faltan/errores: {missing}. Regenerar borrador (VSE-1) antes de emitir DOCX/PDF.",
             )
 
+
+
+
+def _is_velocity_context(core: Dict[str, Any], tpl: Dict[str, str]) -> bool:
+    """Detecta contexto de velocidad incluso si core.tipo_infraccion no viene bien."""
+    tipo = (core or {}).get("tipo_infraccion") or ""
+    if str(tipo).lower().strip() == "velocidad":
+        return True
+    # señales en core
+    if (core or {}).get("velocidad_medida_kmh") or (core or {}).get("velocidad_limite_kmh"):
+        return True
+    body = (tpl or {}).get("cuerpo") or ""
+    bl = body.lower()
+    if "exceso de velocidad" in bl or "km/h" in bl or "cinemómetro" in bl or "cinemometro" in bl or "radar" in bl:
+        return True
+    return False
 
 
 # ==========================
