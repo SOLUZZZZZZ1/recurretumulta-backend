@@ -12,10 +12,7 @@ from ai.prompts.classify_documents import PROMPT as PROMPT_CLASSIFY
 from ai.prompts.timeline_builder import PROMPT as PROMPT_TIMELINE
 from ai.prompts.procedure_phase import PROMPT as PROMPT_PHASE
 from ai.prompts.admissibility_guard import PROMPT as PROMPT_GUARD
-from ai.prompts.draft_recurso_v3_1 import PROMPT as PROMPT_DRAFT
-from ai.velocity_pro_engine_v3 import build_velocity_verdict, build_prudente_text_blocks
-from ai.velocity_tipicity_v3 import build_tipicity_verdict, build_tipicity_text_blocks
-from ai.velocity_score_v3 import compute_velocity_strength_score
+from ai.prompts.draft_recurso_v2 import PROMPT as PROMPT_DRAFT
 from ai.prompts.module_semaforo import module_semaforo
 
 MAX_EXCERPT_CHARS = 12000
@@ -1111,49 +1108,6 @@ def _apply_ase_ciclista(body: str) -> str:
         body = block + body
     return body
 
-
-def _ensure_velocity_alegacion_block(body: str) -> str:
-    """Si el borrador de VELOCIDAD no contiene una 'ALEGACIÓN PRIMERA', inserta un bloque mínimo VSE-1.
-    No inventa hechos; solo exige prueba y documentación.
-    """
-    if not body:
-        body = ""
-    # Si ya existe alegación primera, no tocar
-    if re.search(r"^ALEGACI[ÓO]N\s+PRIMERA\b", body, flags=re.IGNORECASE | re.MULTILINE):
-        return body
-
-    # Asegura II. ALEGACIONES
-    if not re.search(r"^II\.\s*ALEGACIONES\b", body, flags=re.IGNORECASE | re.MULTILINE):
-        m = re.search(r"^I\.\s*ANTECEDENTES[\s\S]*?$", body, flags=re.IGNORECASE | re.MULTILINE)
-        if m:
-            body = body + "\n\nII. ALEGACIONES\n"
-        else:
-            body = "I. ANTECEDENTES\n" + body + "\n\nII. ALEGACIONES\n"
-
-    # Insert after II. ALEGACIONES line
-    m2 = re.search(r"^II\.\s*ALEGACIONES\b.*?$", body, flags=re.IGNORECASE | re.MULTILINE)
-    insert_at = 0
-    if m2:
-        line_end = body.find("\n", m2.end())
-        insert_at = len(body) if line_end == -1 else line_end + 1
-
-    block = (
-        "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA (CINEMÓMETRO)\n\n"
-        "La validez de una sanción por exceso de velocidad basada en cinemómetro exige la acreditación documental "
-        "del control metrológico conforme a la normativa aplicable (Orden ICT/155/2020). No basta una afirmación genérica "
-        "de verificación: debe aportarse soporte documental verificable.\n\n"
-        "No consta acreditado en el expediente:\n\n"
-        "1) Identificación completa del cinemómetro utilizado (marca, modelo y número de serie) y emplazamiento exacto (vía, punto kilométrico y sentido).\n"
-        "2) Certificado de verificación metrológica vigente a la fecha del hecho, así como constancia de la última verificación periódica o, en su caso, tras reparación.\n"
-        "3) Captura o fotograma COMPLETO, sin recortes y legible, que permita asociar inequívocamente la medición al vehículo denunciado.\n"
-        "4) Margen aplicado y determinación de la velocidad corregida (velocidad medida vs velocidad corregida), con motivación técnica suficiente.\n"
-        "5) Acreditación de la cadena de custodia del dato (integridad del registro, sistema de almacenamiento y correspondencia inequívoca con el vehículo denunciado).\n"
-        "6) Acreditación del límite aplicable y su señalización en el punto exacto (genérica vs específica) y su coherencia con la ubicación consignada.\n"
-        "7) Motivación técnica individualizada que vincule medición, margen aplicado, velocidad corregida y tramo sancionador resultante.\n\n"
-    )
-    return body[:insert_at] + block + body[insert_at:]
-
-
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     docs = _load_case_documents(case_id)
     if not docs:
@@ -1162,18 +1116,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     extraction_wrapper = _load_latest_extraction(case_id) or {}
     extraction_core = (extraction_wrapper.get("extracted") or {}) if isinstance(extraction_wrapper, dict) else {}
 
-    # === V3 Defaults (evita NameError en cualquier flujo de ejecución) ===
-    tipicity_verdict = {"ok": True, "match": None, "severity": "reforzado", "dominant_argument": "motivacion_tipo"}
-    velocity_verdict = {"ok": False, "mode": "unknown", "severity_level": "normal", "dominant_argument": "metrologia"}
-    strength_score = {"score": 0, "label": "TÉCNICO DÉBIL", "reasons": ["not_computed"]}
-
     capture_mode = _detect_capture_mode(docs, extraction_core)
-
-    # === Tipicidad v3 (Capa 0 transversal) ===
-    try:
-        tipicity_verdict = build_tipicity_verdict(docs, extraction_core)
-    except Exception:
-        tipicity_verdict = {"ok": False, "match": None, "severity": "reforzado", "dominant_argument": "motivacion_tipo", "error": "tipicity_exception"}
 
     classify = _llm_json(
         PROMPT_CLASSIFY,
@@ -1278,13 +1221,6 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     attack_plan = _apply_tipicity_strict_to_attack_plan(attack_plan, extraction_core)
     facts_summary = _build_facts_summary(extraction_core, attack_plan)
     context_intensity = _compute_context_intensity(timeline, extraction_core, classify)
-    # Tipicidad v3: si mismatch, elevar intensidad automáticamente
-    try:
-        if tipicity_verdict.get('match') is False:
-            context_intensity = 'critico'
-    except Exception:
-        pass
-
     # Tipicidad STRICT: elevamos intensidad automáticamente si hay mismatch
     try:
         if (attack_plan or {}).get('meta', {}).get('tipicity_mismatch_strict'):
@@ -1313,18 +1249,6 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     except Exception:
         velocity_calc = {"ok": False, "reason": "error_interno_velocity_calc"}
 
-    # === Velocity Verdict v3 + Score técnico v3.2 (solo si tipo velocidad) ===
-    try:
-        if (attack_plan or {}).get("infraction_type") == "velocidad":
-            velocity_verdict = build_velocity_verdict(docs, extraction_core, velocity_calc)
-            strength_score = compute_velocity_strength_score(docs, extraction_core, tipicity_verdict, velocity_verdict, velocity_calc)
-            attack_plan.setdefault("meta", {})
-            attack_plan["meta"]["velocity_verdict_v3"] = velocity_verdict
-            attack_plan["meta"]["strength_score_v3"] = strength_score
-    except Exception:
-        pass
-
-
 
     draft = None
     if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
@@ -1344,19 +1268,9 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 "facts_summary": facts_summary,
                 "context_intensity": context_intensity,
                 "velocity_calc": velocity_calc,
-                "velocity_verdict": velocity_verdict,
-                "tipicity_verdict": tipicity_verdict,
-                "strength_score": strength_score,
-
                 "sandbox": {"override_applied": bool((admissibility or {}).get("override_applied")), "override_mode": (admissibility or {}).get("override_mode")},
             },
         )
-# VSE-1: si es velocidad y el borrador no trae 'ALEGACIÓN PRIMERA', inyectamos bloque mínimo determinista
-try:
-    if isinstance(draft, dict) and ((attack_plan or {}).get("infraction_type") == "velocidad"):
-        draft["cuerpo"] = _ensure_velocity_alegacion_block(draft.get("cuerpo") or "")
-except Exception:
-    pass
 
 
         # Post-procesado determinista VELOCIDAD (potencia + coherencia + archivo)
@@ -1395,10 +1309,6 @@ except Exception:
                             "facts_summary": facts_summary,
                             "context_intensity": context_intensity,
                             "velocity_calc": velocity_calc,
-                "velocity_verdict": velocity_verdict,
-                "tipicity_verdict": tipicity_verdict,
-                "strength_score": strength_score,
-
                             "latest_extraction": extraction_wrapper,
                             "classification": classify,
                             "timeline": timeline,
@@ -1437,10 +1347,6 @@ except Exception:
         "facts_summary": facts_summary,
         "context_intensity": context_intensity,
         "velocity_calc": velocity_calc,
-                "velocity_verdict": velocity_verdict,
-                "tipicity_verdict": tipicity_verdict,
-                "strength_score": strength_score,
-
         "extraction_debug": {
             "wrapper_keys": list(extraction_wrapper.keys()) if isinstance(extraction_wrapper, dict) else [],
             "core_keys": list(extraction_core.keys()) if isinstance(extraction_core, dict) else [],
