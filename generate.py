@@ -1,6 +1,5 @@
 import json
 import os
-import re
 from typing import Any, Dict, Optional, List, Tuple
 
 from fastapi import APIRouter, HTTPException
@@ -107,84 +106,20 @@ def _velocity_strict_validate(body: str) -> List[str]:
         ("cadena_custodia", ["cadena de custodia", "integridad del registro", "integridad", "correspondencia inequívoca", "correspondencia inequivoca"]),
     ]
 
-    missing: List[str] = []
+    missing = []
     for name, needles in required_any:
         if not any(n in b for n in needles):
             missing.append(name)
 
-    # Estructura: debe existir bloque de alegaciones.
-    # Aceptamos como estructura válida:
-    #  - Encabezado explícito de alegación ("ALEGACIÓN PRIMERA..."), o
-    #  - Sección "II. ALEGACIONES" aunque el redactor use numeración 1), 2), etc.
+    # Estructura: la primera alegación NO puede ser presunción de inocencia genérica en velocidad
     first = _first_alegacion_title(body).lower()
-
-    if not first:
-        if not re.search(r"^II\.\s*ALEGACIONES\b", body or "", re.IGNORECASE | re.MULTILINE):
-            missing.append("estructura_alegaciones (no se detecta encabezado de alegaciones)")
-    else:
+    if first:
         if any(k in first for k in ["presunción", "presuncion", "inocencia"]):
             missing.append("orden_alegaciones (alegación 1 no puede ser presunción de inocencia en velocidad)")
+    else:
+        missing.append("estructura_alegaciones (no se detecta encabezado de alegaciones)")
 
     return missing
-
-
-def _ensure_min_section_headers(body: str) -> str:
-    """Asegura encabezados mínimos I/II/III si faltan."""
-    body = (body or "").strip()
-    if not body:
-        return body
-    b = body
-
-    if not re.search(r"^I\.\s*ANTECEDENTES\b", b, re.IGNORECASE | re.MULTILINE):
-        b = "I. ANTECEDENTES\n" + b
-
-    if not re.search(r"^II\.\s*ALEGACIONES\b", b, re.IGNORECASE | re.MULTILINE):
-        m = re.search(r"^ALEGACI[ÓO]N\s+PRIMERA\b", b, re.IGNORECASE | re.MULTILINE)
-        if m:
-            b = b[:m.start()] + "II. ALEGACIONES\n" + b[m.start():]
-        else:
-            b = b + "\n\nII. ALEGACIONES\n"
-
-    if not re.search(r"^III\.\s*SOLICITO\b", b, re.IGNORECASE | re.MULTILINE):
-        if re.search(r"^SOLICITO\b", b, re.IGNORECASE | re.MULTILINE):
-            b = re.sub(r"^SOLICITO\b", "III. SOLICITO", b, flags=re.IGNORECASE | re.MULTILINE)
-        else:
-            b = b + "\n\nIII. SOLICITO\n"
-
-    return b.strip()
-
-
-def _repair_velocity_body_minimal(body: str) -> str:
-    """Reparación determinista mínima para VELOCIDAD para pasar VSE-1/SVL.
-    No inventa hechos: formula 'no consta acreditado' y checklist técnico.
-    """
-    b = _ensure_min_section_headers(body or "")
-
-    # Si no hay 'ALEGACIÓN PRIMERA', insertamos bloque estándar tras 'II. ALEGACIONES'
-    if not re.search(r"^ALEGACI[ÓO]N\s+PRIMERA\b", b, re.IGNORECASE | re.MULTILINE):
-        m = re.search(r"^II\.\s*ALEGACIONES\b", b, re.IGNORECASE | re.MULTILINE)
-        insert_at = 0
-        if m:
-            line_end = b.find("\n", m.end())
-            insert_at = len(b) if line_end == -1 else line_end + 1
-
-        block = (
-            "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA (CINEMÓMETRO)\n\n"
-            "La validez de una sanción por exceso de velocidad basada en cinemómetro exige la acreditación documental "
-            "del control metrológico conforme a la normativa aplicable (Orden ICT/155/2020). No basta una afirmación genérica "
-            "de verificación: debe aportarse soporte documental verificable.\n\n"
-            "No consta acreditado en el expediente:\n\n"
-            "1) Identificación completa del cinemómetro utilizado (marca, modelo y número de serie) y emplazamiento exacto (vía, punto kilométrico y sentido).\n"
-            "2) Certificado de verificación metrológica vigente a la fecha del hecho, así como constancia de la última verificación periódica o, en su caso, tras reparación.\n"
-            "3) Captura o fotograma COMPLETO, sin recortes y legible, que permita asociar inequívocamente la medición al vehículo denunciado.\n"
-            "4) Margen aplicado y determinación de la velocidad corregida (velocidad medida vs velocidad corregida), con motivación técnica suficiente.\n"
-            "5) Acreditación de la cadena de custodia del dato (integridad del registro, sistema de almacenamiento y correspondencia inequívoca con el vehículo denunciado).\n"
-            "6) Acreditación del límite aplicable y su señalización en el punto exacto (genérica vs específica) y su coherencia con la ubicación consignada.\n"
-            "7) Motivación técnica individualizada que vincule medición, margen aplicado, velocidad corregida y tramo sancionador resultante.\n\n"
-        )
-        b = b[:insert_at] + block + b[insert_at:]
-
-    return b.strip()
 
 
 def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dict[str, str], ai_used: bool) -> None:
@@ -192,16 +127,9 @@ def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dic
     tipo = (core or {}).get("tipo_infraccion") or ""
     body = (tpl or {}).get("cuerpo") or ""
 
-    if _is_velocity_context(core, tpl):
+    if (tipo or "").lower() == "velocidad":
         missing = _velocity_strict_validate(body)
         if missing:
-            # Auto-repair determinista (1 intento) para evitar falsos 422 por formato
-            repaired = _repair_velocity_body_minimal(body)
-            missing2 = _velocity_strict_validate(repaired)
-            if not missing2:
-                tpl["cuerpo"] = repaired
-                return
-            missing = missing2
             # Log de evento para OPS/auditoría
             try:
                 conn.execute(
@@ -215,22 +143,6 @@ def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dic
                 detail=f"Velocity Strict no cumplido. Faltan/errores: {missing}. Regenerar borrador (VSE-1) antes de emitir DOCX/PDF.",
             )
 
-
-
-
-def _is_velocity_context(core: Dict[str, Any], tpl: Dict[str, str]) -> bool:
-    """Detecta contexto de velocidad incluso si core.tipo_infraccion no viene bien."""
-    tipo = (core or {}).get("tipo_infraccion") or ""
-    if str(tipo).lower().strip() == "velocidad":
-        return True
-    # señales en core
-    if (core or {}).get("velocidad_medida_kmh") or (core or {}).get("velocidad_limite_kmh"):
-        return True
-    body = (tpl or {}).get("cuerpo") or ""
-    bl = body.lower()
-    if "exceso de velocidad" in bl or "km/h" in bl or "cinemómetro" in bl or "cinemometro" in bl or "radar" in bl:
-        return True
-    return False
 
 
 # ==========================
