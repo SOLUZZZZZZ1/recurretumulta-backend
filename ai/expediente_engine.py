@@ -12,7 +12,10 @@ from ai.prompts.classify_documents import PROMPT as PROMPT_CLASSIFY
 from ai.prompts.timeline_builder import PROMPT as PROMPT_TIMELINE
 from ai.prompts.procedure_phase import PROMPT as PROMPT_PHASE
 from ai.prompts.admissibility_guard import PROMPT as PROMPT_GUARD
-from ai.prompts.draft_recurso_v2 import PROMPT as PROMPT_DRAFT
+from ai.prompts.draft_recurso_v3_1 import PROMPT as PROMPT_DRAFT
+from ai.velocity_pro_engine_v3 import build_velocity_verdict, build_prudente_text_blocks
+from ai.velocity_tipicity_v3 import build_tipicity_verdict, build_tipicity_text_blocks
+from ai.velocity_score_v3 import compute_velocity_strength_score
 from ai.prompts.module_semaforo import module_semaforo
 
 MAX_EXCERPT_CHARS = 12000
@@ -1221,6 +1224,13 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     attack_plan = _apply_tipicity_strict_to_attack_plan(attack_plan, extraction_core)
     facts_summary = _build_facts_summary(extraction_core, attack_plan)
     context_intensity = _compute_context_intensity(timeline, extraction_core, classify)
+    # Tipicidad v3: si mismatch, elevar intensidad automáticamente
+    try:
+        if tipicity_verdict.get('match') is False:
+            context_intensity = 'critico'
+    except Exception:
+        pass
+
     # Tipicidad STRICT: elevamos intensidad automáticamente si hay mismatch
     try:
         if (attack_plan or {}).get('meta', {}).get('tipicity_mismatch_strict'):
@@ -1268,6 +1278,10 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 "facts_summary": facts_summary,
                 "context_intensity": context_intensity,
                 "velocity_calc": velocity_calc,
+                "velocity_verdict": velocity_verdict,
+                "tipicity_verdict": tipicity_verdict,
+                "strength_score": strength_score,
+
                 "sandbox": {"override_applied": bool((admissibility or {}).get("override_applied")), "override_mode": (admissibility or {}).get("override_mode")},
             },
         )
@@ -1309,6 +1323,10 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                             "facts_summary": facts_summary,
                             "context_intensity": context_intensity,
                             "velocity_calc": velocity_calc,
+                "velocity_verdict": velocity_verdict,
+                "tipicity_verdict": tipicity_verdict,
+                "strength_score": strength_score,
+
                             "latest_extraction": extraction_wrapper,
                             "classification": classify,
                             "timeline": timeline,
@@ -1347,6 +1365,10 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         "facts_summary": facts_summary,
         "context_intensity": context_intensity,
         "velocity_calc": velocity_calc,
+                "velocity_verdict": velocity_verdict,
+                "tipicity_verdict": tipicity_verdict,
+                "strength_score": strength_score,
+
         "extraction_debug": {
             "wrapper_keys": list(extraction_wrapper.keys()) if isinstance(extraction_wrapper, dict) else [],
             "core_keys": list(extraction_core.keys()) if isinstance(extraction_core, dict) else [],
