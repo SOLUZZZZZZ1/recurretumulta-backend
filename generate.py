@@ -113,7 +113,7 @@ def _speed_margin_value(measured: int) -> float:
 
 def _build_velocity_calc_paragraph(core: Dict[str, Any]) -> str:
     """Párrafo ilustrativo de cálculo. Si faltan datos, devuelve cadena vacía.
-    Evita 'exceso negativo' en la redacción: si la velocidad corregida queda por debajo del límite,
+    Evita 'exceso negativo': si la velocidad corregida queda por debajo del límite,
     se formula como 'por debajo del límite máximo permitido'.
     """
     try:
@@ -149,20 +149,49 @@ def _build_velocity_calc_paragraph(core: Dict[str, Any]) -> str:
         return ""
 
 
+def _inject_bucket_paragraph(body: str, decision: Dict[str, Any]) -> str:
+    """Inserta párrafo extra según bucket (leve/grave) antes de 'III. SOLICITO'."""
+    if not body or not isinstance(decision, dict):
+        return body
+    if (decision.get("mode") or "") != "probatorio_puro":
+        return body
+
+    bucket = decision.get("bucket")
+    if bucket not in ("leve", "grave"):
+        return body
+
+    if bucket == "leve":
+        extra = (
+            "A mayor abundamiento, aun en hipótesis de que se tuviera por acreditada la medición, se trataría de un exceso mínimo, "
+            "sin constancia de riesgo concreto, por lo que procede extremar las exigencias de motivación y prueba y ponderar la proporcionalidad "
+            "de la reacción sancionadora.\n"
+        )
+    else:  # grave
+        extra = (
+            "Dada la gravedad potencial atribuida, la exigencia de prueba técnica completa, trazabilidad e integridad/cadena de custodia del dato debe ser máxima, "
+            "evitando fórmulas estereotipadas y aportando soporte documental verificable.\n"
+        )
+
+    # Insert before III. SOLICITO
+    m = re.search(r"^III\.\s*SOLICITO\b", body, flags=re.IGNORECASE | re.MULTILINE)
+    if not m:
+        return body + "\n\n" + extra
+    return body[:m.start()] + extra + "\n" + body[m.start():]
+
+
 def _force_velocity_vse1_if_needed(asunto: str, cuerpo: str, core: Dict[str, Any]) -> Tuple[str, str]:
     """Opción B real: IA-first, pero si VELOCIDAD no trae estructura VSE-1, imponemos plantilla fija."""
     # Si ya trae ALEGACIÓN PRIMERA (estructura buena), no tocar
     if re.search(r"^ALEGACI[ÓO]N\s+PRIMERA\b", cuerpo or "", re.IGNORECASE | re.MULTILINE):
         return asunto, cuerpo
 
-    # Solo si es velocidad (o señales claras)
+    # Solo si es velocidad
     if not _is_velocity_context(core, cuerpo):
         return asunto, cuerpo
 
     expediente = (core or {}).get("expediente_ref") or (core or {}).get("numero_expediente") or None
     organo = (core or {}).get("organo") or (core or {}).get("organismo") or None
     hecho = (core or {}).get("hecho_imputado") or "EXCESO DE VELOCIDAD."
-    # si hecho no contiene 'EXCESO', normalizamos sin inventar
     if isinstance(hecho, str) and hecho.strip() and "veloc" not in hecho.lower():
         hecho = "EXCESO DE VELOCIDAD."
 
@@ -210,7 +239,7 @@ def _force_velocity_vse1_if_needed(asunto: str, cuerpo: str, core: Dict[str, Any
 
 
 def _velocity_strict_validate(body: str) -> List[str]:
-    """SVL-1 VELOCIDAD (simple, compatible con la plantilla fija)."""
+    """SVL-1 VELOCIDAD (simple, compatible con plantilla fija)."""
     b = (body or "").lower()
     missing: List[str] = []
 
@@ -218,14 +247,12 @@ def _velocity_strict_validate(body: str) -> List[str]:
     has_section = bool(re.search(r"^II\.\s*ALEGACIONES\b", body or "", re.IGNORECASE | re.MULTILINE))
     if not (has_alegacion or has_section):
         missing.append("estructura_alegaciones (no se detecta encabezado de alegaciones)")
-
     if "margen" not in b:
         missing.append("margen")
     if "cadena de custodia" not in b:
         missing.append("cadena_custodia")
     if "cinemómetro" not in b and "cinemometro" not in b and "radar" not in b:
         missing.append("cinemometro")
-
     return missing
 
 
@@ -274,9 +301,9 @@ def generate_dgt_for_case(
     ai_used = False
     ai_error: Optional[str] = None
 
-    # Velocity Decision Engine (audit defaults)
+    # auditoría (no rompe si falla)
     decision_mode = "unknown"
-    decision = {"mode": "unknown", "reasons": ["not_computed"]}
+    decision: Dict[str, Any] = {"mode": "unknown", "reasons": ["not_computed"]}
 
     # IA PRIMERO
     if RTM_DGT_GENERATION_MODE != "TEMPLATES_ONLY":
@@ -291,18 +318,20 @@ def generate_dgt_for_case(
                     asunto = "RECURSO (MODO PRUEBA)"
                     cuerpo = _strip_borrador_prefix_from_body(cuerpo)
 
-                # ✅ Opción B real: forzar VSE-1 si es velocidad y el LLM no estructuró bien
+                # Opción B: forzar VSE-1 si es velocidad y el LLM no estructuró bien
                 asunto, cuerpo = _force_velocity_vse1_if_needed(asunto, cuerpo, core)
 
-                tpl = {"asunto": asunto, "cuerpo": cuerpo}
-                # === Velocity Decision Engine (modo abogado) — auditoría (no altera el cuerpo) ===
+                # Decision sobre el cuerpo ya final
                 try:
-                    decision = decide_modo_velocidad(core, body=cuerpo, capture_mode="UNKNOWN")
-                    decision_mode = (decision or {}).get("mode") or "unknown"
+                    decision = decide_modo_velocidad(core, body=cuerpo, capture_mode="UNKNOWN") or decision
+                    decision_mode = (decision.get("mode") or "unknown") if isinstance(decision, dict) else "unknown"
                 except Exception:
-                    decision = {"mode": "unknown", "reasons": ["decision_exception"]}
-                    decision_mode = "unknown"
+                    pass
 
+                # Bucket paragraph (leve/grave) antes de SOLICITO
+                cuerpo = _inject_bucket_paragraph(cuerpo, decision)
+
+                tpl = {"asunto": asunto, "cuerpo": cuerpo}
                 ai_used = True
         except Exception as e:
             ai_error = str(e)
@@ -316,16 +345,15 @@ def generate_dgt_for_case(
         else:
             tpl = build_dgt_alegaciones_text(core, interesado)
             filename_base = "alegaciones_dgt"
+
+        # decision también en plantillas (solo auditoría)
+        try:
+            decision = decide_modo_velocidad(core, body=(tpl.get("cuerpo") or ""), capture_mode="UNKNOWN") or decision
+            decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
+        except Exception:
+            pass
     else:
         filename_base = "recurso_reposicion_dgt" if tipo == "reposicion" else "alegaciones_dgt"
-
-
-    # === Velocity Decision Engine (modo abogado) — auditoría (también si viene de plantillas) ===
-    try:
-        decision = decide_modo_velocidad(core, body=(tpl.get("cuerpo") if tpl else ""), capture_mode="UNKNOWN")
-        decision_mode = (decision or {}).get("mode") or decision_mode
-    except Exception:
-        pass
 
     if tipo == "reposicion":
         kind_docx = "generated_docx_reposicion"
@@ -393,7 +421,6 @@ def generate_dgt_for_case(
                     "missing_interested_fields": _missing_interested_fields(interesado),
                     "velocity_decision_mode": decision_mode,
                     "velocity_decision": decision,
-
                 }
             ),
         },
@@ -409,6 +436,7 @@ def generate_dgt_for_case(
         "ai_used": ai_used,
         "ai_error": ai_error,
         "override_mode": override_mode,
+        "velocity_decision_mode": decision_mode,
     }
 
 
