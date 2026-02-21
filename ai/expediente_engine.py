@@ -12,7 +12,7 @@ from ai.prompts.classify_documents import PROMPT as PROMPT_CLASSIFY
 from ai.prompts.timeline_builder import PROMPT as PROMPT_TIMELINE
 from ai.prompts.procedure_phase import PROMPT as PROMPT_PHASE
 from ai.prompts.admissibility_guard import PROMPT as PROMPT_GUARD
-from ai.prompts.draft_recurso_v3_1 import PROMPT as PROMPT_DRAFT
+from ai.prompts.draft_recurso_v3_2 import PROMPT as PROMPT_DRAFT
 from ai.velocity_pro_engine_v3 import build_velocity_verdict, build_prudente_text_blocks
 from ai.velocity_tipicity_v3 import build_tipicity_verdict, build_tipicity_text_blocks
 from ai.velocity_score_v3 import compute_velocity_strength_score
@@ -152,6 +152,38 @@ def _fix_solicito_format(body: str) -> str:
     body = re.sub(r"(\.\s*)3[\)\.]", r"\1\n3)", body)
     return body
 
+
+
+
+def _ensure_section_headers(body: str) -> str:
+    """Asegura encabezados mínimos para pasar SVL (estructura_alegaciones).
+    Inserta I. ANTECEDENTES / II. ALEGACIONES / III. SOLICITO si faltan, sin inventar hechos.
+    """
+    if not body:
+        return body
+    b = body
+
+    # Normaliza si vienen variantes sin punto
+    if re.search(r"^I\s+ANTECEDENTES", b, flags=re.IGNORECASE | re.MULTILINE) and "I. ANTECEDENTES" not in b:
+        b = re.sub(r"^I\s+ANTECEDENTES", "I. ANTECEDENTES", b, flags=re.IGNORECASE | re.MULTILINE)
+
+    # Si no existe II. ALEGACIONES, lo insertamos antes de la primera 'ALEGACIÓN'
+    if not re.search(r"^II\.\s*ALEGACIONES\b", b, flags=re.IGNORECASE | re.MULTILINE):
+        m = re.search(r"^ALEGACI[ÓO]N\s+PRIMERA\b", b, flags=re.IGNORECASE | re.MULTILINE)
+        if m:
+            b = b[:m.start()] + "II. ALEGACIONES\n" + b[m.start():]
+        else:
+            # fallback: al final de antecedentes si existe
+            m2 = re.search(r"^I\.\s*ANTECEDENTES[\s\S]*?$", b, flags=re.IGNORECASE | re.MULTILINE)
+            if m2:
+                b = b + "\n\nII. ALEGACIONES\n"
+            else:
+                b = "I. ANTECEDENTES\n" + b + "\n\nII. ALEGACIONES\n"
+
+    # Si falta III. SOLICITO pero hay 'SOLICITO', normalizamos
+    if not re.search(r"^III\.\s*SOLICITO\b", b, flags=re.IGNORECASE | re.MULTILINE):
+        b = re.sub(r"^SOLICITO\b", "III. SOLICITO", b, flags=re.IGNORECASE | re.MULTILINE)
+    return b
 
 
 def _fix_solicito_newline(body: str) -> str:
@@ -1309,11 +1341,19 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
             },
         )
 
+        # Asegura estructura mínima para SVL (evita 422 por 'estructura_alegaciones')
+        try:
+            if isinstance(draft, dict):
+                draft['cuerpo'] = _ensure_section_headers(draft.get('cuerpo') or '')
+        except Exception:
+            pass
+
 
         # Post-procesado determinista VELOCIDAD (potencia + coherencia + archivo)
         try:
             if isinstance(draft, dict) and ((attack_plan or {}).get("infraction_type") == "velocidad"):
                 cuerpo = draft.get("cuerpo") or ""
+                cuerpo = _ensure_section_headers(cuerpo)
                 cuerpo = _force_velocity_first_title(cuerpo)
                 _force_velocity_asunto(draft)
                 cuerpo = _ensure_speed_antecedentes(cuerpo, velocity_calc)
