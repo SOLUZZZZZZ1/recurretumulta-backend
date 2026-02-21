@@ -201,7 +201,6 @@ def _force_velocity_vse1_if_needed(asunto: str, cuerpo: str, core: Dict[str, Any
     asunto2 = "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE"
 
     cuerpo2 = (
-        "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE\n"
         "A la atención del órgano competente,\n\n"
         "I. ANTECEDENTES\n"
         f"1. Órgano: {organo if organo else 'No consta acreditado.'}\n"
