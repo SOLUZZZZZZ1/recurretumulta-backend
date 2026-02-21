@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from typing import Any, Dict, Optional, List, Tuple
 
 from fastapi import APIRouter, HTTPException
@@ -111,15 +112,17 @@ def _velocity_strict_validate(body: str) -> List[str]:
         if not any(n in b for n in needles):
             missing.append(name)
 
-    # Estructura: la primera alegación NO puede ser presunción de inocencia genérica en velocidad
+    # Estructura: debe existir un bloque de alegaciones.
+    # Aceptamos como estructura válida:
+    #  - Encabezado explícito de alegación ("ALEGACIÓN PRIMERA..."), o
+    #  - Sección "II. ALEGACIONES" aunque el redactor use numeración 1), 2), etc.
     first = _first_alegacion_title(body).lower()
-    if first:
-        if any(k in first for k in ["presunción", "presuncion", "inocencia"]):
-            missing.append("orden_alegaciones (alegación 1 no puede ser presunción de inocencia en velocidad)")
+    if not first:
+        if not re.search(r"^II\.\s*ALEGACIONES\b", body or "", re.IGNORECASE | re.MULTILINE):
+            missing.append("estructura_alegaciones (no se detecta encabezado de alegaciones)")
     else:
-        missing.append("estructura_alegaciones (no se detecta encabezado de alegaciones)")
-
-    return missing
+        if any(k in first for k in ["presunción", "presuncion", "inocencia"]):
+            missing.append("orden_alegaciones (alegación 1 no puede ser presunción de inocencia en velocidad)")return missing
 
 
 def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dict[str, str], ai_used: bool) -> None:
