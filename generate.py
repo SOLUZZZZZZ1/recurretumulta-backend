@@ -112,17 +112,20 @@ def _velocity_strict_validate(body: str) -> List[str]:
         if not any(n in b for n in needles):
             missing.append(name)
 
-    # Estructura: debe existir un bloque de alegaciones.
+        # Estructura: debe existir un bloque de alegaciones.
     # Aceptamos como estructura válida:
     #  - Encabezado explícito de alegación ("ALEGACIÓN PRIMERA..."), o
-    #  - Sección "II. ALEGACIONES" aunque el redactor use numeración 1), 2), etc.
+    #  - Sección "II. ALEGACIONES"
     first = _first_alegacion_title(body).lower()
+
     if not first:
         if not re.search(r"^II\.\s*ALEGACIONES\b", body or "", re.IGNORECASE | re.MULTILINE):
             missing.append("estructura_alegaciones (no se detecta encabezado de alegaciones)")
     else:
         if any(k in first for k in ["presunción", "presuncion", "inocencia"]):
-            missing.append("orden_alegaciones (alegación 1 no puede ser presunción de inocencia en velocidad)")return missing
+            missing.append("orden_alegaciones (alegación 1 no puede ser presunción de inocencia en velocidad)")
+
+    return missing
 
 
 def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dict[str, str], ai_used: bool) -> None:
