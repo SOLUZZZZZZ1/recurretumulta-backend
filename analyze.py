@@ -385,32 +385,18 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         return ("marcas_viales", facts[0], facts)
 
     # Semáforo (evitar 'luz roja' suelta)
-    # Semáforo (municipal y DGT): redacción a veces enrevesada.
-# Activadores fuertes:
-# - "semáforo" / "semaforo"
-# - "fase roja"
-# - "luz roja no intermitente" (típico en boletines)
-# - "señal luminosa roja" / "indicacion roja"
-# Evitamos falsos positivos de luces del vehículo (alumbrado/posición/freno/piloto).
-sema_signal = (
-    ("semáfor" in t)
-    or ("semafor" in t)
-    or ("fase roja" in t)
-    or ("luz roja no intermitente" in t)
-    or ("señal luminosa roja" in t or "senal luminosa roja" in t)
-    or ("indicación roja" in t or "indicacion roja" in t)
-    or (("luz roja" in t) and ("semáfor" in t or "semafor" in t or "señal luminosa" in t or "senal luminosa" in t))
-)
-
-vehicle_light_context = any(k in t for k in [
-    "alumbrado", "señalización óptica", "senalizacion optica", "luz de freno", "luces de freno",
-    "luz de posición", "luces de posicion", "piloto", "intermitente del veh", "intermitente del vehiculo",
-    "dispositivos de alumbrado", "anexo i", "rd 2822/98", "2822/98"
-])
-
-if sema_signal and not vehicle_light_context:
-    facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
-    return ("semaforo", facts[0], facts)
+    sema_patterns = [
+        r"circular\s+con\s+luz\s+roja",
+        r"sem[aá]foro",
+        r"fase\s+roja",
+        r"luz\s+roja\s+del\s+sem[aá]foro",
+        r"no\s+respetar\s+la\s+luz\s+roja",
+        r"no\s+respetar\s+.*sem[aá]foro",
+    ]
+    for ptn in sema_patterns:
+        if re.search(ptn, t):
+            facts.append("CIRCULAR CON LUZ ROJA")
+            return ("semaforo", facts[0], facts)
 
     # Velocidad
     m = re.search(r"\b(\d{2,3})\s*km\s*/?\s*h\b", t)
