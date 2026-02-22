@@ -74,6 +74,97 @@ def _needs_speed_retry(core: Dict[str, Any]) -> bool:
     return False
 
 
+def _extract_speed_pair_strong(text_blob: str) -> Tuple[Optional[int], Optional[int], str]:
+    """Extrae (measured, limit) con patrón fuerte desde texto bruto."""
+    t = (text_blob or "").lower().replace("\n", " ")
+    t = re.sub(r"\s+", " ", t).strip()
+
+    m = re.search(
+        r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,260}?"
+        r"(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite|velocidad\s+m[aá]xima)"
+        r"[^\d]{0,80}(\d{2,3})(?:\s*km\s*/?h)?",
+        t
+    )
+    if m:
+        try:
+            return int(m.group(1)), int(m.group(2)), "pattern_strong"
+        except Exception:
+            pass
+
+    nums = [int(x) for x in re.findall(r"\b(\d{2,3})\b", t)]
+    nums = [n for n in nums if 10 <= n <= 250]
+    if len(nums) >= 2 and any(k in t for k in ["limitad", "límite", "limite", "velocidad máxima", "velocidad maxima"]):
+        return max(nums), min(nums), "fallback_maxmin"
+    return None, None, "none"
+
+
+def _validate_speed_consistency(core: Dict[str, Any], raw_texts: List[str]) -> Dict[str, Any]:
+    """Valida y corrige (si procede) velocidad_medida_kmh / velocidad_limite_kmh usando texto bruto."""
+    out = dict(core or {})
+    measured_core = out.get("velocidad_medida_kmh")
+    limit_core = out.get("velocidad_limite_kmh")
+
+    try:
+        if isinstance(measured_core, str) and measured_core.strip().isdigit():
+            measured_core = int(measured_core.strip())
+        if isinstance(limit_core, str) and limit_core.strip().isdigit():
+            limit_core = int(limit_core.strip())
+    except Exception:
+        pass
+
+    best = {"measured": None, "limit": None, "source": None}
+    for txt in raw_texts or []:
+        m, l, tag = _extract_speed_pair_strong(txt)
+        if isinstance(m, int) and isinstance(l, int):
+            best = {"measured": m, "limit": l, "source": tag}
+            break
+
+    if best["measured"] is None or best["limit"] is None:
+        return out
+
+    m_raw = best["measured"]
+    l_raw = best["limit"]
+
+    flags = {
+        "applied": False,
+        "source": best["source"],
+        "core_before": {"measured": measured_core, "limit": limit_core},
+        "raw_pair": {"measured": m_raw, "limit": l_raw},
+        "reason": None,
+    }
+
+    if not isinstance(measured_core, (int, float)) or not isinstance(limit_core, (int, float)):
+        out["velocidad_medida_kmh"] = int(m_raw)
+        out["velocidad_limite_kmh"] = int(l_raw)
+        flags["applied"] = True
+        flags["reason"] = "filled_missing_from_raw"
+        out["speed_validation"] = flags
+        return out
+
+    if abs(int(measured_core) - int(m_raw)) >= 30:
+        out["velocidad_medida_kmh"] = int(m_raw)
+        flags["applied"] = True
+        flags["reason"] = "measured_corrected_from_raw_discrepancy"
+    if abs(int(limit_core) - int(l_raw)) >= 20:
+        out["velocidad_limite_kmh"] = int(l_raw)
+        flags["applied"] = True
+        flags["reason"] = (flags["reason"] or "") + "|limit_corrected_from_raw_discrepancy"
+
+    try:
+        mm = int(out.get("velocidad_medida_kmh"))
+        ll = int(out.get("velocidad_limite_kmh"))
+        if mm < ll and (ll - mm) >= 20:
+            out["velocidad_medida_kmh"], out["velocidad_limite_kmh"] = max(mm, ll), min(mm, ll)
+            flags["applied"] = True
+            flags["reason"] = (flags["reason"] or "") + "|swap_sanity"
+    except Exception:
+        pass
+
+    if flags["applied"]:
+        out["speed_validation"] = flags
+    return out
+
+
 
 def _extract_precepts(text_blob: str) -> Dict[str, Any]:
     """
@@ -490,6 +581,20 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
 
                 # Paso 5: merge (prioriza texto)
                 extracted_core = _merge_extracted(triaged_text, triaged_vision)
+
+                # ✅ Validación numérica anti-OCR para VELOCIDAD (corrige 117↔177, etc.)
+                try:
+                    raw_candidates = []
+                    if text_content:
+                        raw_candidates.append(text_content)
+                    if blob_vision:
+                        raw_candidates.append(blob_vision)
+                    if extracted_core.get('raw_text_blob'):
+                        raw_candidates.append(str(extracted_core.get('raw_text_blob')))
+                    extracted_core = _validate_speed_consistency(extracted_core, raw_candidates)
+                except Exception:
+                    pass
+
 
                 # Paso 6: persistimos blobs para motores posteriores
                 if text_content:
