@@ -825,25 +825,6 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extra
                 "Certificado de verificación/calibración vigente y constancia del margen aplicado.",
             ]
 
-
-if infraction_type == "itv":
-    plan["secondary"].append(
-        {
-            "title": "ITV: acreditación de vigencia, fecha de caducidad y prueba del hecho",
-            "points": [
-                "Debe acreditarse de forma precisa la fecha de caducidad de la ITV y la fecha/hora exacta del hecho imputado.",
-                "Debe aportarse prueba suficiente de que el vehículo circulaba efectivamente (no mero estacionamiento) y su identificación inequívoca.",
-                "Si el documento no concreta fechas, lugar exacto o prueba objetiva, procede el archivo por insuficiencia probatoria.",
-                "La Administración debe motivar la subsunción concreta en el precepto aplicable y la graduación de la sanción.",
-            ],
-        }
-    )
-    plan["proof_requests"] += [
-        "Copia íntegra del boletín/denuncia y, en su caso, acta/informe, con identificación del agente o sistema de captación.",
-        "Acreditación documental de la fecha de caducidad de la ITV (consulta DGT/estación ITV) y ficha técnica si procede.",
-        "Acreditación de fecha/hora/lugar exactos del hecho y prueba de circulación efectiva (no solo presencia del vehículo).",
-        "Resolución/propuesta si existieran y fundamentos jurídicos completos (artículo/apartado aplicable).",
-    ]
         tl = (timeline or {}).get("timeline") or []
         dates: List[str] = []
         for ev in tl:
