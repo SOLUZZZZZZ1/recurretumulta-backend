@@ -549,43 +549,19 @@ def _compute_velocity_calc(docs: List[Dict[str, Any]], extraction_core: Optional
     corrected = max(0.0, float(measured) - float(margin))
     expected = _expected_speed_sanction(int(limit), corrected)
 
-    imposed_fine = None
-imposed_points = None
-try:
-    imposed_fine = (extraction_core or {}).get("sancion_importe_eur")
-    if isinstance(imposed_fine, str) and imposed_fine.strip().isdigit():
-        imposed_fine = int(imposed_fine.strip())
-except Exception:
-    imposed_fine = None
-try:
-    imposed_points = (extraction_core or {}).get("puntos_detraccion")
-    if isinstance(imposed_points, str) and imposed_points.strip().isdigit():
-        imposed_points = int(imposed_points.strip())
-except Exception:
-    imposed_points = None
+    return {
+        "ok": True,
+        "limit": int(limit),
+        "measured": int(measured),
+        "capture_mode_for_margin": ("MOBILE" if (capture_mode or "").upper()=="AGENT" else (capture_mode or "UNKNOWN")),
+        "margin_value": margin,
+        "corrected": round(corrected, 2),
+        "expected": expected,
+        "extraction_confidence": pair.get("confidence", 0.0),
+    }
 
-mismatch = False
-mismatch_reasons = []
-if isinstance(imposed_fine, int) and isinstance(expected.get("fine"), int) and imposed_fine != expected.get("fine"):
-    mismatch = True
-    mismatch_reasons.append("fine_mismatch")
-if isinstance(imposed_points, int) and isinstance(expected.get("points"), int) and imposed_points != expected.get("points"):
-    mismatch = True
-    mismatch_reasons.append("points_mismatch")
 
-return {
-    "ok": True,
-    "limit": int(limit),
-    "measured": int(measured),
-    "capture_mode_for_margin": ("MOBILE" if (capture_mode or "").upper()=="AGENT" else (capture_mode or "UNKNOWN")),
-    "margin_value": margin,
-    "corrected": round(corrected, 2),
-    "expected": expected,
-    "imposed": {"fine": imposed_fine, "points": imposed_points},
-    "mismatch": mismatch,
-    "mismatch_reasons": mismatch_reasons,
-    "extraction_confidence": pair.get("confidence", 0.0),
-}
+
 def _llm_json(prompt: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     resp = client.chat.completions.create(
@@ -1264,13 +1240,14 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     velocity_calc = {}
     try:
         if (attack_plan or {}).get("infraction_type") == "velocidad":
-            velocity_calc = _compute_velocity_calc(docs, extraction_core, capture_mode)
-            if velocity_calc.get("ok"):
-                attack_plan.setdefault("meta", {})
-                attack_plan["meta"]["velocity_calc"] = velocity_calc
-# Si hay discrepancia entre lo impuesto y lo esperado (tabla orientativa), añadimos alegación específica (sin inventar).
-try:
-    if isinstance(velocity_calc, dict) and velocity_calc.get("mismatch"):
+            
+velocity_calc = _compute_velocity_calc(docs, extraction_core, capture_mode)
+if velocity_calc.get("ok"):
+    attack_plan.setdefault("meta", {})
+    attack_plan["meta"]["velocity_calc"] = velocity_calc
+    context_intensity = "critico"
+    # Si hay discrepancia entre lo impuesto y lo esperado, añadimos alegación determinista
+    if velocity_calc.get("mismatch"):
         sec = list((attack_plan or {}).get("secondary") or [])
         sec.insert(0, {
             "title": "Posible error de tramo sancionador (importe/puntos) y falta de motivación técnica",
@@ -1286,10 +1263,7 @@ try:
             "expected": (velocity_calc.get("expected") or {}),
             "reasons": velocity_calc.get("mismatch_reasons") or [],
         }
-except Exception:
-    pass
-                # Si no consta acreditado margen/tabla o hay inconsistencia evidente, subimos intensidad
-                context_intensity = "critico"
+
     except Exception:
         velocity_calc = {"ok": False, "reason": "error_interno_velocity_calc"}
 
