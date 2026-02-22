@@ -199,6 +199,10 @@ def _compute_velocity_calc_from_core(core: Dict[str, Any]) -> Dict[str, Any]:
 def _inject_tramo_error_paragraph(body: str, velocity_calc: Dict[str, Any]) -> str:
     """Si hay mismatch de tramo (expected vs impuesto), inserta un párrafo antes de III. SOLICITO."""
     try:
+        # Evitar duplicados
+        if "posible error de tramo sancionador" in (body or "").lower():
+            return body
+
         if not body or not isinstance(velocity_calc, dict) or not velocity_calc.get("ok") or not velocity_calc.get("mismatch"):
             return body
 
