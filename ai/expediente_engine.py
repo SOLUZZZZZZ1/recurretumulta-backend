@@ -1240,30 +1240,12 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     velocity_calc = {}
     try:
         if (attack_plan or {}).get("infraction_type") == "velocidad":
-            
-velocity_calc = _compute_velocity_calc(docs, extraction_core, capture_mode)
-if velocity_calc.get("ok"):
-    attack_plan.setdefault("meta", {})
-    attack_plan["meta"]["velocity_calc"] = velocity_calc
-    context_intensity = "critico"
-    # Si hay discrepancia entre lo impuesto y lo esperado, añadimos alegación determinista
-    if velocity_calc.get("mismatch"):
-        sec = list((attack_plan or {}).get("secondary") or [])
-        sec.insert(0, {
-            "title": "Posible error de tramo sancionador (importe/puntos) y falta de motivación técnica",
-            "points": [
-                "De la aplicación orientativa del margen legal y de la velocidad corregida podría derivarse un tramo distinto al aplicado; corresponde a la Administración justificar expresamente margen, velocidad corregida y banda/tramo utilizados.",
-                "La discrepancia, de existir, exige motivación reforzada y soporte documental verificable; en su defecto, procede el archivo por falta de acreditación técnica suficiente."
-            ],
-        })
-        attack_plan["secondary"] = sec
-        attack_plan.setdefault("meta", {})
-        attack_plan["meta"]["velocity_tramo_mismatch"] = {
-            "imposed": (velocity_calc.get("imposed") or {}),
-            "expected": (velocity_calc.get("expected") or {}),
-            "reasons": velocity_calc.get("mismatch_reasons") or [],
-        }
-
+            velocity_calc = _compute_velocity_calc(docs, extraction_core, capture_mode)
+            if velocity_calc.get("ok"):
+                attack_plan.setdefault("meta", {})
+                attack_plan["meta"]["velocity_calc"] = velocity_calc
+                # Si no consta acreditado margen/tabla o hay inconsistencia evidente, subimos intensidad
+                context_intensity = "critico"
     except Exception:
         velocity_calc = {"ok": False, "reason": "error_interno_velocity_calc"}
 
