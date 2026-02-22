@@ -361,7 +361,15 @@ def generate_dgt_for_case(
         kind_docx = "generated_docx_alegaciones"
         kind_pdf = "generated_pdf_alegaciones"
 
-    # FORCE bucket injection on final tpl (último punto seguro antes de validar/generar)
+    # Recalcular decision sobre cuerpo definitivo (último punto seguro)
+    try:
+        if tpl and isinstance(tpl, dict):
+            decision = decide_modo_velocidad(core, body=(tpl.get('cuerpo') or ''), capture_mode='UNKNOWN') or decision
+            decision_mode = (decision.get('mode') or decision_mode) if isinstance(decision, dict) else decision_mode
+    except Exception:
+        pass
+
+# FORCE bucket injection on final tpl (último punto seguro antes de validar/generar)
     try:
         if tpl and isinstance(tpl, dict):
             tpl["cuerpo"] = _inject_bucket_paragraph(tpl.get("cuerpo") or "", decision)
