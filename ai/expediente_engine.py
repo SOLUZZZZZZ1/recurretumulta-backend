@@ -1291,16 +1291,15 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 "subsidiary": "Subsidiariamente, práctica de prueba y aportación documental completa",
             },
             "meta": {"capture_mode": capture_mode, "forced": True},
-# Refuerzo determinista: si la descripción del semáforo es genérica (fórmula estereotipada) → módulo de falta de concreción
-try:
-    sem_blob = _semaforo_generic_description_blob(docs, extraction_core, classify)
-    if _is_semaforo_generic_description(sem_blob):
-        attack_plan = _apply_semaforo_generic_module(attack_plan, capture_mode=capture_mode)
-except Exception:
-    pass
-
-
         }
+        # Refuerzo determinista: si la descripción del semáforo es genérica (fórmula estereotipada) → módulo de falta de concreción
+        try:
+            sem_blob = _semaforo_generic_description_blob(docs, extraction_core, classify)
+            if _is_semaforo_generic_description(sem_blob):
+                attack_plan = _apply_semaforo_generic_module(attack_plan, capture_mode=capture_mode)
+        except Exception:
+            pass
+
     else:
         attack_plan = _build_attack_plan(classify, timeline, extraction_core or {})
 
