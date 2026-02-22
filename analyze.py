@@ -284,7 +284,13 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
 
 
 def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
-    """Extrae campos estructurados típicos de velocidad desde texto libre/OCR."""
+    """Extrae campos estructurados típicos de velocidad desde texto libre/OCR.
+
+    Mejora robustez:
+      - Importes con decimales: '300,00 €' / '300.00 €'
+      - Separadores de miles: '1.200,00 €' / '1,200.00 €' (se toma parte entera)
+      - Puntos en formatos: 'Puntos a detraer: 2' / 'Puntos a detraer 2' / '2 puntos'
+    """
     t = (text_blob or "").replace("\n", " ").lower()
     t = re.sub(r"\s+", " ", t).strip()
 
@@ -321,17 +327,82 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
             if measured is None: measured = hi
             if limit is None: limit = lo
 
+    # ----- Importe (EUR) robusto -----
     fine_eur = None
-    mf = re.search(r"\b(\d{2,4})\s*(?:€|euros)\b", t)
-    if mf:
-        try: fine_eur = int(mf.group(1))
-        except Exception: fine_eur = None
 
+    # Preferimos si aparece cerca de 'importe' / 'multa'
+    money_candidates = []
+    for mm in re.finditer(r"(importe\s+multa|importe|multa)[^\d]{0,25}((?:\d{1,3}(?:[\.,]\d{3})*|\d{1,4})(?:[\.,]\d{2})?)\s*(€|euros)", t):
+        money_candidates.append(mm.group(2))
+
+    # Fallback: cualquier cantidad con €
+    if not money_candidates:
+        for mm in re.finditer(r"((?:\d{1,3}(?:[\.,]\d{3})*|\d{1,4})(?:[\.,]\d{2})?)\s*(€|euros)", t):
+            money_candidates.append(mm.group(1))
+
+    def _parse_money_to_int(s: str) -> int | None:
+        if not s:
+            return None
+        s = s.strip()
+        # Normalizar: si hay ambos separadores, asumimos último como decimal
+        # Caso típico ES: 1.200,00 -> miles '.', decimal ','
+        # Caso típico EN: 1,200.00 -> miles ',', decimal '.'
+        if "," in s and "." in s:
+            # decimal = el que aparece más a la derecha
+            if s.rfind(",") > s.rfind("."):
+                # miles '.'
+                s2 = s.replace(".", "").replace(",", ".")
+            else:
+                # miles ','
+                s2 = s.replace(",", "")
+            try:
+                return int(float(s2))
+            except Exception:
+                return None
+        # Solo coma: puede ser decimal o miles, pero en multas suele ser decimal
+        if "," in s:
+            s2 = s.replace(".", "").replace(",", ".")
+            try:
+                return int(float(s2))
+            except Exception:
+                return None
+        # Solo punto: puede ser decimal o miles; si hay 2 dígitos al final, decimal
+        if "." in s:
+            if re.search(r"\.\d{2}$", s):
+                try:
+                    return int(float(s))
+                except Exception:
+                    return None
+            # si no, interpretamos como miles: 1.200 -> 1200
+            try:
+                return int(s.replace(".", ""))
+            except Exception:
+                return None
+        # Entero simple
+        if s.isdigit():
+            return int(s)
+        return None
+
+    for cand in money_candidates:
+        val = _parse_money_to_int(cand)
+        if isinstance(val, int) and 0 < val < 10000:
+            fine_eur = val
+            break
+
+    # ----- Puntos -----
     points = None
-    mp = re.search(r"\b(\d)\s*puntos?\b", t)
+    # "Puntos a detraer: 2" / "puntos a detraer 2"
+    mp = re.search(r"\bpuntos?\s*(?:a\s*detraer)?\s*[:\-]?\s*(\d)\b", t)
     if mp:
         try: points = int(mp.group(1))
         except Exception: points = None
+
+    # Fallback: "2 puntos"
+    if points is None:
+        mp2 = re.search(r"\b(\d)\s*puntos?\b", t)
+        if mp2:
+            try: points = int(mp2.group(1))
+            except Exception: points = None
 
     radar_model = None
     mr = re.search(r"(multaradar\s*[a-z0-9\-]*)", t)
