@@ -724,84 +724,6 @@ def _has_semaforo_signals(docs: List[Dict[str, Any]], extraction_core: Optional[
     signals = ["semáforo", "semaforo", "fase roja", "no respetar la luz roja", "circular con luz roja"]
     return any(s in blob for s in signals)
 
-def _semaforo_generic_description_blob(docs: List[Dict[str, Any]], extraction_core: Optional[Dict[str, Any]], classify: Optional[Dict[str, Any]] = None) -> str:
-    parts: List[str] = []
-    try:
-        parts.append(json.dumps(extraction_core or {}, ensure_ascii=False))
-    except Exception:
-        pass
-    for d in (docs or []):
-        t = d.get("text_excerpt") or ""
-        if t:
-            parts.append(t)
-    try:
-        phrases = (classify or {}).get("facts_phrases") or []
-        if phrases:
-            parts.append("\n".join([str(p) for p in phrases if p]))
-    except Exception:
-        pass
-    return " ".join(parts).lower()
-
-def _is_semaforo_generic_description(blob: str) -> bool:
-    """True si el hecho de semáforo parece fórmula estereotipada sin concreción fáctica."""
-    b = (blob or "").lower()
-    has_signal = any(k in b for k in ["semáforo", "semaforo", "fase roja", "luz roja"])
-    if not has_signal:
-        return False
-    # Si no aparecen elementos fácticos clave, lo tratamos como genérico
-    detail_keys = [
-        "línea de detención", "linea de detencion", "línea", "linea", "detención", "detencion",
-        "rebas", "cruz", "intersección", "interseccion", "secuencia", "fotograma", "grabación", "grabacion", "vídeo", "video"
-    ]
-    return not any(k in b for k in detail_keys)
-
-def _apply_semaforo_generic_module(attack_plan: Dict[str, Any], capture_mode: str) -> Dict[str, Any]:
-    """Refuerza semáforo cuando la redacción es genérica (p.ej. 'no respetar la luz roja no intermitente').
-    No inventa hechos. Prioriza falta de concreción fáctica y motivación individualizada.
-    """
-    plan = dict(attack_plan or {})
-    # Primary sustituido por uno más quirúrgico
-    plan["primary"] = {
-        "title": "Insuficiencia probatoria y falta de concreción fáctica en la supuesta fase roja",
-        "points": [
-            "La denuncia se limita a una fórmula estereotipada que reproduce el tipo sancionador (p.ej., 'no respetar la luz roja no intermitente') sin describir con precisión los elementos fácticos del hecho.",
-            "No se concreta si el vehículo rebasó la línea de detención ni el momento exacto del supuesto cruce.",
-            "No se indica si la fase roja estaba ya activada antes del rebasamiento ni durante cuánto tiempo, lo que impide descartar situaciones de transición o dudas razonables.",
-            "No se detallan las circunstancias de observación (posición del agente, distancia, visibilidad, condiciones del tráfico), lo que impide la contradicción efectiva.",
-            "En ausencia de concreción mínima, no resulta posible verificar la adecuada subsunción del hecho en el precepto aplicado, generándose indefensión."
-        ],
-    }
-
-    sec = list(plan.get("secondary") or [])
-    sec.insert(0, {
-        "title": "Falta de motivación individualizada y necesidad de prueba completa",
-        "points": [
-            "El acto sancionador debe estar suficientemente motivado y permitir conocer los hechos concretos imputados; una redacción genérica impide el ejercicio pleno del derecho de defensa.",
-            "Corresponde a la Administración aportar prueba objetiva o descripción detallada y verificable del cruce en rojo (fase roja activa y rebasamiento), evitando fórmulas estereotipadas.",
-        ],
-    })
-    plan["secondary"] = sec
-
-    pr = list(plan.get("proof_requests") or [])
-    pr += [
-        "Aportación íntegra del expediente administrativo.",
-        "En su caso, secuencia completa de imágenes o grabación que acredite el instante del supuesto cruce/rebasamiento.",
-        "Identificación del agente actuante (si fue denuncia presencial) y descripción detallada de su posición, distancia y condiciones de visibilidad.",
-        "Acreditación de que el semáforo se encontraba en fase roja fija activa en el instante del supuesto rebasamiento y del punto exacto (intersección/línea de detención).",
-    ]
-    # Dedup
-    seen = set(); pr2 = []
-    for x in pr:
-        if x not in seen:
-            seen.add(x); pr2.append(x)
-    plan["proof_requests"] = pr2
-
-    plan.setdefault("meta", {})
-    plan["meta"]["semaforo_generic_module"] = True
-    plan["meta"]["capture_mode"] = capture_mode
-    return plan
-
-
 
 def _build_facts_summary(extraction_core: Optional[Dict[str, Any]], attack_plan: Dict[str, Any]) -> str:
     inf = ((attack_plan or {}).get("infraction_type") or "").lower()
@@ -1292,14 +1214,6 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
             },
             "meta": {"capture_mode": capture_mode, "forced": True},
         }
-        # Refuerzo determinista: si la descripción del semáforo es genérica (fórmula estereotipada) → módulo de falta de concreción
-        try:
-            sem_blob = _semaforo_generic_description_blob(docs, extraction_core, classify)
-            if _is_semaforo_generic_description(sem_blob):
-                attack_plan = _apply_semaforo_generic_module(attack_plan, capture_mode=capture_mode)
-        except Exception:
-            pass
-
     else:
         attack_plan = _build_attack_plan(classify, timeline, extraction_core or {})
 
