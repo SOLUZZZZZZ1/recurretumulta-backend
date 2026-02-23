@@ -19,6 +19,14 @@ from ai.infractions.velocidad import (
     velocity_strict_missing,
 )
 
+
+from ai.infractions.movil import (
+    is_movil_context,
+    build_movil_strong_template,
+    strict_missing as movil_strict_missing,
+)
+
+
 from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
@@ -193,6 +201,48 @@ def _semaforo_strict_validate(body: str) -> List[str]:
     return missing
 
 
+def _force_movil_template_if_needed(asunto: str, cuerpo: str, core: Dict[str, Any], capture_mode: str = "UNKNOWN") -> Tuple[str, str]:
+    """Opción determinista MÓVIL: si el LLM sale genérico, imponemos plantilla fuerte."""
+    if not is_movil_context(core, cuerpo or ""):
+        return asunto, cuerpo
+
+    b = (cuerpo or "").lower()
+
+    # Señales de borrador flojo/genérico
+    weak_signals = [
+        "insuficiencia probatoria específica del tipo",
+        "solicita revisión del expediente",
+        "no consta acreditado el uso manual",
+    ]
+    has_strong_signals = any(k in b for k in [
+        "uso manual efectivo",
+        "tipicidad",
+        "distancia aproximada",
+        "vehículo camuflado",
+        "camión camuflado",
+        "ángulo de visión",
+        "no notificación en el acto",
+    ])
+
+    if (not has_strong_signals) and any(ws in b for ws in weak_signals):
+        tpl_m = build_movil_strong_template(core)
+        return (tpl_m.get("asunto") or asunto, tpl_m.get("cuerpo") or cuerpo)
+
+    # Si no hay ALEGACIÓN PRIMERA, también imponemos plantilla
+    if not re.search(r"^ALEGACI[ÓO]N\s+PRIMERA\b", cuerpo or "", re.IGNORECASE | re.MULTILINE):
+        tpl_m = build_movil_strong_template(core)
+        return (tpl_m.get("asunto") or asunto, tpl_m.get("cuerpo") or cuerpo)
+
+    return asunto, cuerpo
+
+
+def _movil_strict_validate(body: str, core: Dict[str, Any]) -> List[str]:
+    """SVL-MOV-2: validación mínima para evitar escritos genéricos en móvil."""
+    if not is_movil_context(core, body or ""):
+        return []
+    return movil_strict_missing(body or "")
+
+
 
 
 # ==========================
@@ -355,6 +405,10 @@ def _velocity_strict_validate(body: str) -> List[str]:
         missing.append("cinemometro")
     return missing
 
+# MÓVIL STRICT (SVL-MOV-2)
+missing_movil = _movil_strict_validate(body, core)
+if missing_movil:
+    raise HTTPException(status_code=422, detail=f"Movil Strict no cumplido. Faltan/errores: {missing_movil}.")
 
 def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dict[str, str], ai_used: bool) -> None:
     tipo = (core or {}).get("tipo_infraccion") or ""
@@ -432,6 +486,9 @@ def generate_dgt_for_case(
 
                 # Opción determinista SEMÁFORO: si el LLM no estructuró bien, imponemos plantilla fija
                 asunto, cuerpo = _force_semaforo_template_if_needed(asunto, cuerpo, core)
+
+                # Opción determinista MÓVIL: si el LLM sale genérico, imponemos plantilla fuerte
+                asunto, cuerpo = _force_movil_template_if_needed(asunto, cuerpo, core, capture_mode='UNKNOWN')
 
                 # Decision sobre el cuerpo ya final
                 try:
