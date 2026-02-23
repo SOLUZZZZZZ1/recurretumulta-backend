@@ -74,97 +74,6 @@ def _needs_speed_retry(core: Dict[str, Any]) -> bool:
     return False
 
 
-def _extract_speed_pair_strong(text_blob: str) -> Tuple[Optional[int], Optional[int], str]:
-    """Extrae (measured, limit) con patrón fuerte desde texto bruto."""
-    t = (text_blob or "").lower().replace("\n", " ")
-    t = re.sub(r"\s+", " ", t).strip()
-
-    m = re.search(
-        r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,260}?"
-        r"(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite|velocidad\s+m[aá]xima)"
-        r"[^\d]{0,80}(\d{2,3})(?:\s*km\s*/?h)?",
-        t
-    )
-    if m:
-        try:
-            return int(m.group(1)), int(m.group(2)), "pattern_strong"
-        except Exception:
-            pass
-
-    nums = [int(x) for x in re.findall(r"\b(\d{2,3})\b", t)]
-    nums = [n for n in nums if 10 <= n <= 250]
-    if len(nums) >= 2 and any(k in t for k in ["limitad", "límite", "limite", "velocidad máxima", "velocidad maxima"]):
-        return max(nums), min(nums), "fallback_maxmin"
-    return None, None, "none"
-
-
-def _validate_speed_consistency(core: Dict[str, Any], raw_texts: List[str]) -> Dict[str, Any]:
-    """Valida y corrige (si procede) velocidad_medida_kmh / velocidad_limite_kmh usando texto bruto."""
-    out = dict(core or {})
-    measured_core = out.get("velocidad_medida_kmh")
-    limit_core = out.get("velocidad_limite_kmh")
-
-    try:
-        if isinstance(measured_core, str) and measured_core.strip().isdigit():
-            measured_core = int(measured_core.strip())
-        if isinstance(limit_core, str) and limit_core.strip().isdigit():
-            limit_core = int(limit_core.strip())
-    except Exception:
-        pass
-
-    best = {"measured": None, "limit": None, "source": None}
-    for txt in raw_texts or []:
-        m, l, tag = _extract_speed_pair_strong(txt)
-        if isinstance(m, int) and isinstance(l, int):
-            best = {"measured": m, "limit": l, "source": tag}
-            break
-
-    if best["measured"] is None or best["limit"] is None:
-        return out
-
-    m_raw = best["measured"]
-    l_raw = best["limit"]
-
-    flags = {
-        "applied": False,
-        "source": best["source"],
-        "core_before": {"measured": measured_core, "limit": limit_core},
-        "raw_pair": {"measured": m_raw, "limit": l_raw},
-        "reason": None,
-    }
-
-    if not isinstance(measured_core, (int, float)) or not isinstance(limit_core, (int, float)):
-        out["velocidad_medida_kmh"] = int(m_raw)
-        out["velocidad_limite_kmh"] = int(l_raw)
-        flags["applied"] = True
-        flags["reason"] = "filled_missing_from_raw"
-        out["speed_validation"] = flags
-        return out
-
-    if abs(int(measured_core) - int(m_raw)) >= 30:
-        out["velocidad_medida_kmh"] = int(m_raw)
-        flags["applied"] = True
-        flags["reason"] = "measured_corrected_from_raw_discrepancy"
-    if abs(int(limit_core) - int(l_raw)) >= 20:
-        out["velocidad_limite_kmh"] = int(l_raw)
-        flags["applied"] = True
-        flags["reason"] = (flags["reason"] or "") + "|limit_corrected_from_raw_discrepancy"
-
-    try:
-        mm = int(out.get("velocidad_medida_kmh"))
-        ll = int(out.get("velocidad_limite_kmh"))
-        if mm < ll and (ll - mm) >= 20:
-            out["velocidad_medida_kmh"], out["velocidad_limite_kmh"] = max(mm, ll), min(mm, ll)
-            flags["applied"] = True
-            flags["reason"] = (flags["reason"] or "") + "|swap_sanity"
-    except Exception:
-        pass
-
-    if flags["applied"]:
-        out["speed_validation"] = flags
-    return out
-
-
 
 def _extract_precepts(text_blob: str) -> Dict[str, Any]:
     """
@@ -284,13 +193,7 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
 
 
 def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
-    """Extrae campos estructurados típicos de velocidad desde texto libre/OCR.
-
-    Mejora robustez:
-      - Importes con decimales: '300,00 €' / '300.00 €'
-      - Separadores de miles: '1.200,00 €' / '1,200.00 €' (se toma parte entera)
-      - Puntos en formatos: 'Puntos a detraer: 2' / 'Puntos a detraer 2' / '2 puntos'
-    """
+    """Extrae campos estructurados típicos de velocidad desde texto libre/OCR."""
     t = (text_blob or "").replace("\n", " ").lower()
     t = re.sub(r"\s+", " ", t).strip()
 
@@ -327,82 +230,17 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
             if measured is None: measured = hi
             if limit is None: limit = lo
 
-    # ----- Importe (EUR) robusto -----
     fine_eur = None
+    mf = re.search(r"\b(\d{2,4})\s*(?:€|euros)\b", t)
+    if mf:
+        try: fine_eur = int(mf.group(1))
+        except Exception: fine_eur = None
 
-    # Preferimos si aparece cerca de 'importe' / 'multa'
-    money_candidates = []
-    for mm in re.finditer(r"(importe\s+multa|importe|multa)[^\d]{0,25}((?:\d{1,3}(?:[\.,]\d{3})*|\d{1,4})(?:[\.,]\d{2})?)\s*(€|euros)", t):
-        money_candidates.append(mm.group(2))
-
-    # Fallback: cualquier cantidad con €
-    if not money_candidates:
-        for mm in re.finditer(r"((?:\d{1,3}(?:[\.,]\d{3})*|\d{1,4})(?:[\.,]\d{2})?)\s*(€|euros)", t):
-            money_candidates.append(mm.group(1))
-
-    def _parse_money_to_int(s: str) -> int | None:
-        if not s:
-            return None
-        s = s.strip()
-        # Normalizar: si hay ambos separadores, asumimos último como decimal
-        # Caso típico ES: 1.200,00 -> miles '.', decimal ','
-        # Caso típico EN: 1,200.00 -> miles ',', decimal '.'
-        if "," in s and "." in s:
-            # decimal = el que aparece más a la derecha
-            if s.rfind(",") > s.rfind("."):
-                # miles '.'
-                s2 = s.replace(".", "").replace(",", ".")
-            else:
-                # miles ','
-                s2 = s.replace(",", "")
-            try:
-                return int(float(s2))
-            except Exception:
-                return None
-        # Solo coma: puede ser decimal o miles, pero en multas suele ser decimal
-        if "," in s:
-            s2 = s.replace(".", "").replace(",", ".")
-            try:
-                return int(float(s2))
-            except Exception:
-                return None
-        # Solo punto: puede ser decimal o miles; si hay 2 dígitos al final, decimal
-        if "." in s:
-            if re.search(r"\.\d{2}$", s):
-                try:
-                    return int(float(s))
-                except Exception:
-                    return None
-            # si no, interpretamos como miles: 1.200 -> 1200
-            try:
-                return int(s.replace(".", ""))
-            except Exception:
-                return None
-        # Entero simple
-        if s.isdigit():
-            return int(s)
-        return None
-
-    for cand in money_candidates:
-        val = _parse_money_to_int(cand)
-        if isinstance(val, int) and 0 < val < 10000:
-            fine_eur = val
-            break
-
-    # ----- Puntos -----
     points = None
-    # "Puntos a detraer: 2" / "puntos a detraer 2"
-    mp = re.search(r"\bpuntos?\s*(?:a\s*detraer)?\s*[:\-]?\s*(\d)\b", t)
+    mp = re.search(r"\b(\d)\s*puntos?\b", t)
     if mp:
         try: points = int(mp.group(1))
         except Exception: points = None
-
-    # Fallback: "2 puntos"
-    if points is None:
-        mp2 = re.search(r"\b(\d)\s*puntos?\b", t)
-        if mp2:
-            try: points = int(mp2.group(1))
-            except Exception: points = None
 
     radar_model = None
     mr = re.search(r"(multaradar\s*[a-z0-9\-]*)", t)
@@ -577,7 +415,21 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     extra_fields = _extract_speed_and_sanction_fields(text_blob)
     for k, v in (extra_fields or {}).items():
         if v is not None:
-            out[k] = v
+            out[k] = v# semaforo_override_determinista:
+# Si el texto contiene semáforo/luz roja no intermitente, forzamos tipo_infraccion=semaforo
+# para evitar malas clasificaciones (ORA/móvil/cinturón) por OCR/LLM.
+try:
+    tt = (text_blob or "").lower()
+    if (
+        ("semáforo" in tt or "semaforo" in tt)
+        and ("luz roja" in tt or "fase roja" in tt or "señal luminosa" in tt or "senal luminosa" in tt or "indicación roja" in tt or "indicacion roja" in tt)
+    ):
+        out["tipo_infraccion"] = "semaforo"
+        out["hecho_imputado"] = "NO RESPETAR LA LUZ ROJA (SEMÁFORO)"
+except Exception:
+    pass
+
+
     return out
 
 
@@ -652,20 +504,6 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
 
                 # Paso 5: merge (prioriza texto)
                 extracted_core = _merge_extracted(triaged_text, triaged_vision)
-
-                # ✅ Validación numérica anti-OCR para VELOCIDAD (corrige 117↔177, etc.)
-                try:
-                    raw_candidates = []
-                    if text_content:
-                        raw_candidates.append(text_content)
-                    if blob_vision:
-                        raw_candidates.append(blob_vision)
-                    if extracted_core.get('raw_text_blob'):
-                        raw_candidates.append(str(extracted_core.get('raw_text_blob')))
-                    extracted_core = _validate_speed_consistency(extracted_core, raw_candidates)
-                except Exception:
-                    pass
-
 
                 # Paso 6: persistimos blobs para motores posteriores
                 if text_content:
