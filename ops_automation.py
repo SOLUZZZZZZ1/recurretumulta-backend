@@ -1,7 +1,7 @@
 # ops_automation.py — automatización “sin humanos” (tick/worker)
 import json
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, List
 
 from fastapi import HTTPException
 from sqlalchemy import text
@@ -90,7 +90,10 @@ def _ensure_generated(conn, case_id: str) -> Dict[str, Any]:
         return pdf_doc
 
     # Cargamos datos de interesado guardados en cases.interested_data (si existe)
-    row = conn.execute(text("SELECT COALESCE(interested_data,'{}'::jsonb) FROM cases WHERE id=:id"), {"id": case_id}).fetchone()
+    row = conn.execute(
+        text("SELECT COALESCE(interested_data,'{}'::jsonb) FROM cases WHERE id=:id"),
+        {"id": case_id},
+    ).fetchone()
     interesado = row[0] if row and row[0] else {}
 
     # Llamamos directamente al handler existente (reutiliza B2 + documents + events)
@@ -104,13 +107,48 @@ def _ensure_generated(conn, case_id: str) -> Dict[str, Any]:
     return pdf_doc
 
 
+def _ensure_submission_row(conn, case_id: str) -> None:
+    """
+    Inserta fila en submissions (cola DGT_DEV) si no existe.
+    NO crea events. NO genera XML. NO toca DGT.
+    """
+    exists = conn.execute(
+        text("SELECT id FROM submissions WHERE case_id=:id AND channel='DGT_DEV' LIMIT 1"),
+        {"id": case_id},
+    ).fetchone()
+    if exists:
+        return
+
+    conn.execute(
+        text(
+            """
+            INSERT INTO submissions (case_id, channel, status, dry_run)
+            VALUES (:id, 'DGT_DEV', 'queued', TRUE)
+            """
+        ),
+        {"id": case_id},
+    )
+
+
 def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
     """Pipeline sin humanos: generar (si falta) -> presentar -> guardar justificante -> status=submitted.
     Es idempotente: si ya hay justificante, no re-presenta.
+
+    IMPORTANTE (fase actual):
+    - Aunque no tengamos endpoint DGT/DEV aún, sí creamos submissions.
+    - Si DGT no está configurado, NO fallamos: dejamos ready_to_submit para reintento futuro.
     """
     engine = get_engine()
     with engine.begin() as conn:
         meta = _require_paid_and_authorized(conn, case_id)
+
+        # ✅ NO tocar pruebas (doble seguridad)
+        if meta.get("test_mode"):
+            _event(conn, case_id, "auto_skip_test_mode", {})
+            return {"ok": True, "case_id": case_id, "status": meta.get("status", ""), "skipped": True, "reason": "test_mode"}
+
+        # ✅ Crear fila en submissions (idempotente)
+        _ensure_submission_row(conn, case_id)
 
         if _has_justificante(conn, case_id):
             # Ya presentado
@@ -122,15 +160,16 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
         # Descargar PDF bytes desde B2
         pdf_bytes = download_bytes(pdf_doc["bucket"], pdf_doc["key"])
 
+        # Intentar presentar por canal DGT (cuando esté configurado)
         try:
             resp = submit_pdf(case_id, pdf_bytes, metadata={"generated_kind": pdf_doc["kind"]})
         except DGTNotConfigured as e:
-            _event(conn, case_id, "dgt_not_configured", {"error": str(e)})
-            # Dejamos el caso en ready_to_submit para reintento automático futuro
-            raise HTTPException(status_code=501, detail=str(e))
+            # ✅ No endpoint aún: no fallar el worker, solo dejar huella y seguir.
+            _event(conn, case_id, "dgt_not_configured_skip", {"error": str(e)})
+            return {"ok": True, "case_id": case_id, "status": "ready_to_submit", "skipped": True, "reason": "dgt_not_configured"}
         except NotImplementedError as e:
-            _event(conn, case_id, "dgt_not_implemented", {"error": str(e)})
-            raise HTTPException(status_code=501, detail=str(e))
+            _event(conn, case_id, "dgt_not_implemented_skip", {"error": str(e)})
+            return {"ok": True, "case_id": case_id, "status": "ready_to_submit", "skipped": True, "reason": "dgt_not_implemented"}
         except Exception as e:
             _event(conn, case_id, "dgt_submit_failed", {"error": str(e)})
             raise HTTPException(status_code=502, detail=f"Fallo al presentar en DGT: {e}")
@@ -168,14 +207,20 @@ def tick(limit: int = 25) -> Dict[str, Any]:
     Diseñado para ser llamado por un cron cada 2-5 minutos.
     """
     engine = get_engine()
-    picked = []
+    picked: List[str] = []
+
     with engine.begin() as conn:
         rows = conn.execute(
             text(
-                "SELECT id FROM cases "
-                "WHERE status='ready_to_submit' AND payment_status='paid' AND authorized=TRUE "
-                "ORDER BY created_at ASC "
-                "LIMIT :limit"
+                """
+                SELECT id FROM cases
+                WHERE status='ready_to_submit'
+                  AND payment_status='paid'
+                  AND authorized=TRUE
+                  AND COALESCE(test_mode,FALSE)=FALSE
+                ORDER BY created_at ASC
+                LIMIT :limit
+                """
             ),
             {"limit": limit},
         ).fetchall()
@@ -184,6 +229,7 @@ def tick(limit: int = 25) -> Dict[str, Any]:
     ok = 0
     failed = 0
     results = []
+
     for cid in picked:
         try:
             res = submit_case_fully_automatic(cid)
@@ -193,4 +239,4 @@ def tick(limit: int = 25) -> Dict[str, Any]:
             failed += 1
             results.append({"case_id": cid, "ok": False, "error": str(e)})
 
-    return {"ok": True, "picked": len(picked), "submitted": ok, "failed": failed, "results": results}
+    return {"ok": True, "picked": len(picked), "processed": ok, "failed": failed, "results": results}

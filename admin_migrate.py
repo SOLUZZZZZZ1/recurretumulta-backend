@@ -212,3 +212,67 @@ def migrate_partners_must_change_password(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error migrando partners_must_change_password: {e}")
+
+# =========================================================
+# MIGRACIÓN: DGT/DEV submissions + submission_events
+# =========================================================
+
+@router.post("/dgt_dev_submissions", response_model=MigrateResponse)
+def migrate_dgt_dev_submissions(x_admin_token: str | None = Header(default=None, alias="x-admin-token")):
+    _require_admin_token(x_admin_token)
+
+    from database import get_engine
+    engine = get_engine()
+
+    ddl = [
+        (
+            "submissions_table",
+            """
+            CREATE TABLE IF NOT EXISTS submissions (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+
+              -- canal de envío (DGT_DEV, etc.)
+              channel TEXT NOT NULL DEFAULT 'DGT_DEV',
+
+              -- identificadores DEV/NOSTRA (cuando existan)
+              remesa_id TEXT,
+              notification_id TEXT,
+
+              -- estado del envío
+              status TEXT NOT NULL DEFAULT 'queued',
+
+              -- contexto (normal/reforzado/critico) y modo
+              context_intensity TEXT,
+              dry_run BOOLEAN NOT NULL DEFAULT TRUE,
+
+              -- robustez
+              retry_count INT NOT NULL DEFAULT 0,
+              last_error TEXT,
+
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+        ),
+        ("idx_submissions_case", "CREATE INDEX IF NOT EXISTS idx_submissions_case ON submissions(case_id);"),
+        ("idx_submissions_status", "CREATE INDEX IF NOT EXISTS idx_submissions_status ON submissions(status);"),
+        ("idx_submissions_channel", "CREATE INDEX IF NOT EXISTS idx_submissions_channel ON submissions(channel);"),
+
+        (
+            "submission_events_table",
+            """
+            CREATE TABLE IF NOT EXISTS submission_events (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              submission_id UUID NOT NULL REFERENCES submissions(id) ON DELETE CASCADE,
+              type TEXT NOT NULL,
+              payload JSONB,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+        ),
+        ("idx_submission_events_sub", "CREATE INDEX IF NOT EXISTS idx_submission_events_sub ON submission_events(submission_id);"),
+    ]
+
+    applied = _run(engine, ddl)
+    return MigrateResponse(ok=True, message="Migración dgt_dev_submissions aplicada.", created=applied)

@@ -38,6 +38,11 @@ PRINCIPIO DE PRIORIZACIÓN (OBLIGATORIO):
 - Si velocity_calc viene informado y contiene expected, compara con los datos disponibles en el expediente: si la sanción/puntos no encajan o no consta el cálculo/margen aplicado, úsalo como argumento fuerte (error de tramo o falta de acreditación del margen).
 
 MÓDULO VELOCIDAD (CHECKLIST ESTRICTO):
+REGLA VSE-1 (OBLIGATORIA EN VELOCIDAD):
+- En el cuerpo debe aparecer literalmente la expresión: "cadena de custodia".
+- La primera alegación debe titularse y empezar con una fórmula inequívoca de prueba técnica, por ejemplo:
+  "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA (CINEMÓMETRO)".
+- Queda PROHIBIDO que la primera alegación sea "Presunción de inocencia".
 Incluye SIEMPRE peticiones concretas y verificables de:
 1) Identificación del cinemómetro (marca/modelo/nº serie) y del emplazamiento exacto (vía/PK/sentido).
 2) Certificado de verificación metrológica vigente y fecha de última verificación (verificación periódica / después de reparación).
