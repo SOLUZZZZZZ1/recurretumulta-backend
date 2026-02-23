@@ -437,8 +437,28 @@ def generate_dgt_for_case(
                 # Bucket paragraph (leve/grave) antes de SOLICITO
                 cuerpo = _inject_bucket_paragraph(cuerpo, decision)
 
-                # VSE-1 (desde core) y alegación automática de posible error de tramo
-                velocity_calc = _compute_velocity_calc_from_core(core)
+                # VSE-1 (velocidad): usamos velocity_calc del engine si está disponible
+                velocity_calc = None
+                try:
+                    vc_engine = (ai_result or {}).get("velocity_calc")
+                    if isinstance(vc_engine, dict) and vc_engine.get("ok"):
+                        velocity_calc = vc_engine
+                except Exception:
+                    velocity_calc = None
+
+                if not isinstance(velocity_calc, dict) or not velocity_calc.get("ok"):
+                    velocity_calc = _compute_velocity_calc_from_core(core)
+
+                # Párrafo de cálculo ilustrativo (solo si hay datos fiables y aún no está en el cuerpo)
+                try:
+                    if isinstance(velocity_calc, dict) and velocity_calc.get("ok") and "a efectos ilustrativos" not in (cuerpo or "").lower():
+                        calc_p = _build_velocity_calc_paragraph(core)
+                        if calc_p:
+                            cuerpo = (cuerpo + "\n\n" + calc_p).strip() + "\n"
+                except Exception:
+                    pass
+
+                # Posible error de tramo (solo si el importe impuesto es válido: ver módulo velocidad)
                 cuerpo = _inject_tramo_error_paragraph(cuerpo, core)
 
                 tpl = {"asunto": asunto, "cuerpo": cuerpo}
