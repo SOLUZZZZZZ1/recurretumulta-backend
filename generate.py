@@ -19,6 +19,13 @@ from ai.infractions.velocidad import (
     velocity_strict_missing,
 )
 
+
+from ai.infractions.movil import (
+    is_movil_context,
+    build_movil_strong_template,
+    strict_missing as movil_strict_missing,
+)
+
 from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
@@ -191,6 +198,52 @@ def _semaforo_strict_validate(body: str) -> List[str]:
             missing.append("solicito_archivo_punto2")
 
     return missing
+
+
+def _force_movil_template_if_needed(asunto: str, cuerpo: str, core: Dict[str, Any]) -> Tuple[str, str]:
+    """Opción determinista MÓVIL: si el LLM sale genérico, imponemos plantilla fuerte."""
+    if not is_movil_context(core, cuerpo or ""):
+        return asunto, cuerpo
+
+    b = (cuerpo or "").lower()
+
+    weak_signals = [
+        "insuficiencia probatoria específica del tipo",
+        "solicita revisión del expediente",
+        "defectos de motivación",
+        "no consta acreditado el uso manual",
+    ]
+
+    strong_signals = [
+        "uso manual efectivo",
+        "distancia aproximada",
+        "vehículo camuflado",
+        "camión camuflado",
+        "ángulo de visión",
+        "no notificación en el acto",
+        "tipicidad",
+    ]
+
+    has_strong = any(s in b for s in strong_signals)
+    is_weak = any(s in b for s in weak_signals)
+
+    # Si el borrador es flojo o no tiene alegación primera, imponemos plantilla fuerte
+    if is_weak and not has_strong:
+        tpl = build_movil_strong_template(core)
+        return (tpl.get("asunto") or asunto, tpl.get("cuerpo") or cuerpo)
+
+    if not re.search(r"^ALEGACI[ÓO]N\s+PRIMERA\b", cuerpo or "", re.IGNORECASE | re.MULTILINE):
+        tpl = build_movil_strong_template(core)
+        return (tpl.get("asunto") or asunto, tpl.get("cuerpo") or cuerpo)
+
+    return asunto, cuerpo
+
+
+def _movil_strict_validate(body: str, core: Dict[str, Any]) -> List[str]:
+    """SVL-MOV-2: si es móvil, exige mínimos para que no sea genérico."""
+    if not is_movil_context(core, body or ""):
+        return []
+    return movil_strict_missing(body or "")
 
 
 
@@ -373,6 +426,11 @@ def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dic
                     status_code=422,
                     detail="Velocity Strict no cumplido. Falta alegación de posible error de tramo sancionador pese a discrepancia detectada.",
                 )
+
+# MÓVIL STRICT (SVL-MOV-2)
+missing_movil = _movil_strict_validate(body, core)
+if missing_movil:
+    raise HTTPException(status_code=422, detail=f"Movil Strict no cumplido. Faltan/errores: {missing_movil}.")
 
 # ==========================
 # FUNCIÓN PRINCIPAL
