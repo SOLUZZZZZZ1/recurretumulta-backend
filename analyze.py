@@ -415,21 +415,7 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     extra_fields = _extract_speed_and_sanction_fields(text_blob)
     for k, v in (extra_fields or {}).items():
         if v is not None:
-            out[k] = v# semaforo_override_determinista:
-# Si el texto contiene semáforo/luz roja no intermitente, forzamos tipo_infraccion=semaforo
-# para evitar malas clasificaciones (ORA/móvil/cinturón) por OCR/LLM.
-try:
-    tt = (text_blob or "").lower()
-    if (
-        ("semáforo" in tt or "semaforo" in tt)
-        and ("luz roja" in tt or "fase roja" in tt or "señal luminosa" in tt or "senal luminosa" in tt or "indicación roja" in tt or "indicacion roja" in tt)
-    ):
-        out["tipo_infraccion"] = "semaforo"
-        out["hecho_imputado"] = "NO RESPETAR LA LUZ ROJA (SEMÁFORO)"
-except Exception:
-    pass
-
-
+            out[k] = v
     return out
 
 
