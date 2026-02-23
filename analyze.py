@@ -294,6 +294,12 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         return ("marcas_viales", facts[0], facts)
 
     # Semáforo (evitar 'luz roja' suelta)
+    # Semáforo por precepto típico (art. 146 / 146.1) — fuerza tipo aunque el OCR sea raro
+    if re.search(r"\bart\.?\s*146\b", t) or re.search(r"\bart[ií]culo\s*146\b", t) or re.search(r"\b146\s*[\.,]\s*1\b", t):
+        facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
+        return ("semaforo", facts[0], facts)
+
+
     sema_patterns = [
         r"circular\s+con\s+luz\s+roja",
         r"sem[aá]foro",

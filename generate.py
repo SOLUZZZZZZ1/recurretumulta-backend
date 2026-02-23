@@ -100,6 +100,90 @@ def _is_velocity_context(core: Dict[str, Any], cuerpo: str) -> bool:
     bl = (cuerpo or "").lower()
     return any(k in bl for k in ["exceso de velocidad", "km/h", "cinemómetro", "cinemometro", "radar"])
 
+def _is_semaforo_context(core: Dict[str, Any], cuerpo: str) -> bool:
+    tipo = (core or {}).get("tipo_infraccion") or ""
+    if str(tipo).lower().strip() == "semaforo":
+        return True
+    bl = (cuerpo or "").lower()
+    try:
+        core_blob = json.dumps(core or {}, ensure_ascii=False).lower()
+    except Exception:
+        core_blob = ""
+    blob = core_blob + "\n" + bl
+    return any(k in blob for k in [
+        "semáforo", "semaforo", "luz roja", "fase roja",
+        "art. 146", "articulo 146", "artículo 146", "146.1", "146,1"
+    ])
+
+
+def _force_semaforo_template_if_needed(asunto: str, cuerpo: str, core: Dict[str, Any]) -> Tuple[str, str]:
+    """Opción determinista SEMÁFORO: IA-first, pero si no hay estructura robusta, imponemos plantilla fija."""
+    # Si ya trae ALEGACIÓN PRIMERA, no tocar
+    if re.search(r"^ALEGACI[ÓO]N\s+PRIMERA\b", cuerpo or "", re.IGNORECASE | re.MULTILINE):
+        return asunto, cuerpo
+
+    if not _is_semaforo_context(core, cuerpo or ""):
+        return asunto, cuerpo
+
+    expediente = (core or {}).get("expediente_ref") or (core or {}).get("numero_expediente") or None
+    organo = (core or {}).get("organo") or (core or {}).get("organismo") or None
+    hecho = (core or {}).get("hecho_imputado") or "NO RESPETAR LA LUZ ROJA (SEMÁFORO)."
+
+    asunto2 = "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE"
+
+    cuerpo2 = (
+        "A la atención del órgano competente,\n\n"
+        "I. ANTECEDENTES\n"
+        f"1) Órgano: {organo if organo else 'No consta acreditado.'}\n"
+        f"2) Identificación expediente: {expediente if expediente else 'No consta acreditado.'}\n"
+        f"3) Hecho imputado: {hecho.strip()}\n\n"
+        "II. ALEGACIONES\n"
+        "ALEGACIÓN PRIMERA — PRUEBA OBJETIVA DEL HECHO (FASE ROJA Y LÍNEA DE DETENCIÓN)\n\n"
+        "Para sancionar por no respetar la luz roja no intermitente de un semáforo, debe acreditarse de forma objetiva y verificable: "
+        "(i) que existía fase roja activa en el instante exacto del cruce; (ii) la posición del vehículo respecto a la línea de detención; "
+        "(iii) la identificación inequívoca del vehículo; y (iv) la correspondencia entre la captura/registro y el vehículo denunciado. "
+        "No consta aportada prueba completa que permita dicha verificación.\n\n"
+        "ALEGACIÓN SEGUNDA — SECUENCIA/IMÁGENES COMPLETAS, SIN RECORTES, Y MOTIVACIÓN REFORZADA\n\n"
+        "Se solicita la aportación de la secuencia/fotogramas completos (sin recortes) y, en su caso, acreditación del sistema de captación "
+        "y su sincronización, así como denuncia/acta completa con motivación individualizada (ubicación exacta, instante del cruce y circunstancias).\n\n"
+        "III. SOLICITO\n"
+        "1) Que se tengan por formuladas las presentes alegaciones.\n"
+        "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de acreditación suficiente del hecho.\n"
+        "3) Subsidiariamente, que se practique prueba y se aporte expediente íntegro.\n"
+    ).strip()
+
+    return asunto2, cuerpo2
+
+
+def _semaforo_strict_validate(body: str) -> List[str]:
+    """SVL SEMÁFORO (SSE-1): valida mínimos estructurales antes de emitir."""
+    b = (body or "").lower()
+    missing: List[str] = []
+
+    # Debe existir estructura de alegaciones
+    has_alegacion = bool(_first_alegacion_title(body))
+    has_section = bool(re.search(r"^II\.\s*ALEGACIONES\b", body or "", re.IGNORECASE | re.MULTILINE))
+    if not (has_alegacion or has_section):
+        missing.append("estructura_alegaciones")
+
+    # Mínimos semáforo
+    if not (("fase roja" in b) or ("luz roja" in b)):
+        missing.append("fase_roja_o_luz_roja")
+
+    if not (("línea de detención" in b) or ("linea de detencion" in b) or ("línea de detencion" in b)):
+        missing.append("linea_de_detencion")
+
+    if not any(k in b for k in ["secuencia", "fotograma", "captura", "imagen", "vídeo", "video"]):
+        missing.append("secuencia_o_fotogramas")
+
+    # Debe pedir ARCHIVO en el punto 2
+    if not re.search(r"^2\)\s*que\s+se\s+acuerde\s+el\s+archivo", body or "", flags=re.IGNORECASE | re.MULTILINE):
+        # Permitir variantes (ARCHIVO en mayúsculas o minúsculas)
+        if "archivo del expediente" not in b and "acuerde el archivo" not in b:
+            missing.append("solicito_archivo_punto2")
+
+    return missing
+
 
 def _speed_margin_value(measured: int) -> float:
     """Margen conservador (fijo/estático) conforme ICT/155/2020.
@@ -445,6 +529,9 @@ def generate_dgt_for_case(
 
                 # Opción B: forzar VSE-1 si es velocidad y el LLM no estructuró bien
                 asunto, cuerpo = _force_velocity_vse1_if_needed(asunto, cuerpo, core)
+
+                # Opción determinista SEMÁFORO: si el LLM no estructuró bien, imponemos plantilla fija
+                asunto, cuerpo = _force_semaforo_template_if_needed(asunto, cuerpo, core)
 
                 # Decision sobre el cuerpo ya final
                 try:
