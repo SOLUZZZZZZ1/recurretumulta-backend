@@ -1108,6 +1108,69 @@ def _apply_ase_ciclista(body: str) -> str:
         body = block + body
     return body
 
+
+def _force_semaforo_template(draft: Dict[str, Any], extraction_core: Dict[str, Any], capture_mode: str) -> Dict[str, Any]:
+    """Semáforo determinista (A): genera cuerpo robusto aunque el LLM flojee.
+    No inventa hechos; exige prueba objetiva y expediente íntegro. Pide ARCHIVO.
+    """
+    d = dict(draft or {})
+    asunto = "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE"
+
+    organo = (extraction_core or {}).get("organismo") or (extraction_core or {}).get("organo") or "No consta acreditado."
+    expediente = (extraction_core or {}).get("expediente_ref") or (extraction_core or {}).get("numero_expediente") or "No consta acreditado."
+    hecho = (extraction_core or {}).get("hecho_imputado") or "NO RESPETAR LA LUZ ROJA (SEMÁFORO)."
+
+    # Encaje de modo de captación
+    if (capture_mode or "").upper() == "AUTO":
+        captacion_block = (
+            "ALEGACIÓN SEGUNDA — CAPTACIÓN AUTOMÁTICA: SECUENCIA COMPLETA Y SINCRONIZACIÓN DEL SISTEMA\n\n"
+            "En captaciones automáticas, debe aportarse secuencia completa y verificable que permita constatar fase roja activa "
+            "en el instante exacto del cruce, así como acreditación del correcto funcionamiento/sincronización del sistema. "
+            "La ausencia de dicha secuencia y acreditación impide tener por probada la infracción.\n\n"
+        )
+    elif (capture_mode or "").upper() == "AGENT":
+        captacion_block = (
+            "ALEGACIÓN SEGUNDA — DENUNCIA PRESENCIAL: MOTIVACIÓN REFORZADA Y DESCRIPCIÓN DETALLADA\n\n"
+            "Si la imputación se basa en observación presencial, debe describirse con precisión la ubicación del agente, distancia, "
+            "visibilidad y circunstancias del hecho (línea de detención, instante del cruce y fase roja efectiva), evitando fórmulas estereotipadas. "
+            "La falta de detalle impide contradicción efectiva y genera indefensión.\n\n"
+        )
+    else:
+        captacion_block = (
+            "ALEGACIÓN SEGUNDA — TIPO DE CAPTACIÓN NO CONCLUYENTE: APORTACIÓN DE PRUEBA COMPLETA\n\n"
+            "Debe aportarse la prueba completa del hecho: secuencia/fotogramas si captación automática, o descripción detallada si denuncia presencial. "
+            "En caso de no constar, procede el archivo por insuficiencia probatoria.\n\n"
+        )
+
+    cuerpo = (
+        "A la atención del órgano competente,\n\n"
+        "I. ANTECEDENTES\n"
+        f"1) Órgano: {organo}\n"
+        f"2) Identificación expediente: {expediente}\n"
+        f"3) Hecho imputado: {hecho}\n\n"
+        "II. ALEGACIONES\n"
+        "ALEGACIÓN PRIMERA — PRUEBA OBJETIVA DEL HECHO Y EXIGENCIA DE ACREDITACIÓN COMPLETA\n\n"
+        "Para sancionar por no respetar la luz roja no intermitente de un semáforo, debe acreditarse de forma objetiva y verificable:\n"
+        "1) Que el semáforo se encontraba en fase roja activa en el instante exacto del cruce.\n"
+        "2) El momento exacto del supuesto rebase/cruce y la posición del vehículo respecto a la línea de detención.\n"
+        "3) La identificación inequívoca del vehículo y la correspondencia entre el registro/captura y el vehículo denunciado.\n"
+        "4) La ubicación exacta (vía/intersección) y condiciones relevantes de señalización.\n\n"
+        "No basta una afirmación genérica del hecho sin soporte probatorio suficiente. En ausencia de prueba completa, procede el ARCHIVO por insuficiencia probatoria.\n\n"
+        f"{captacion_block}"
+        "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y MOTIVACIÓN\n\n"
+        "Se interesa copia íntegra del expediente administrativo (boletín/denuncia, fotografías/secuencias, propuesta y resolución si existieran), "
+        "con identificación del precepto aplicado (artículo/apartado) y motivación completa de la subsunción y graduación.\n\n"
+        "III. SOLICITO\n"
+        "1) Que se tengan por formuladas las presentes alegaciones.\n"
+        "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de acreditación suficiente del hecho.\n"
+        "3) Subsidiariamente, que se practique prueba y se aporte expediente íntegro.\n"
+    )
+
+    d["asunto"] = asunto
+    d["cuerpo"] = cuerpo
+    return d
+
+
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
     docs = _load_case_documents(case_id)
     if not docs:
