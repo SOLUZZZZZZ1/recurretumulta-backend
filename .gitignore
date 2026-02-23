@@ -4,3 +4,5 @@ backup*/
 backend-git/
 backend-sync/
 backup*/
+echo __pycache__/>> .gitignore
+echo *.pyc>> .gitignore
