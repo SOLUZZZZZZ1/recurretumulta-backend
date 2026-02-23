@@ -975,6 +975,7 @@ def _compute_context_intensity(timeline: Dict[str, Any], extraction_core: Dict[s
 ARTICLE_TYPE_MAP = {
     "RGC": {  # Reglamento General de Circulación
         48: "velocidad",
+        146: "semaforo",
         18: "atencion",
         167: "marcas_viales",
         12: "condiciones_vehiculo",
