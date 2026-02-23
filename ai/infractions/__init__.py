@@ -1,1 +1,1 @@
-# RTM modular infractions package
+# ai.infractions package
