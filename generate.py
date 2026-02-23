@@ -254,6 +254,12 @@ def _inject_bucket_paragraph(body: str, decision: Dict[str, Any]) -> str:
     bucket = decision.get("bucket")
     if bucket not in ("leve", "grave"):
         return body
+    # Evitar duplicados: esta función se llama en AI-first y también en el último punto seguro antes de validar.
+    if "dada la gravedad potencial atribuida" in (body or "").lower():
+        return body
+    if "a mayor abundamiento" in (body or "").lower():
+        return body
+
 
     if bucket == "leve":
         extra = (
