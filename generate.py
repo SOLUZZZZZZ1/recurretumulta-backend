@@ -11,6 +11,14 @@ from database import get_engine
 from ai.expediente_engine import run_expediente_ai
 from ai.velocity_decision import decide_modo_velocidad
 
+from ai.infractions.velocidad import (
+    compute_velocity_calc_from_core,
+    build_velocity_calc_paragraph,
+    should_inject_tramo_error,
+    build_tramo_error_paragraph,
+    velocity_strict_missing,
+)
+
 from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
@@ -185,173 +193,57 @@ def _semaforo_strict_validate(body: str) -> List[str]:
     return missing
 
 
-def _speed_margin_value(measured: int) -> float:
-    """Margen conservador (fijo/estático) conforme ICT/155/2020.
-    - <=100: 5 km/h
-    - >100: 5%
-    """
-    if measured <= 100:
-        return 5.0
-    return round(measured * 0.05, 2)
 
 
-def _dgt_speed_sanction_table() -> Dict[int, list]:
-    """Tabla DGT (bandas) para sanciones por exceso de velocidad captado por cinemómetro.
-    Devuelve por límite (20..120) una lista de bandas: (from,to,fine,points,label)
-    Nota: rangos inclusivos. Tabla conservadora para control interno.
-    """
-    return {
-        20: [(21,40,100,0,'100€ sin puntos'), (41,50,300,2,'300€ 2 puntos'), (51,60,400,4,'400€ 4 puntos'), (61,70,500,6,'500€ 6 puntos'), (71,999,600,6,'600€ 6 puntos')],
-        30: [(31,50,100,0,'100€ sin puntos'), (51,60,300,2,'300€ 2 puntos'), (61,70,400,4,'400€ 4 puntos'), (71,80,500,6,'500€ 6 puntos'), (81,999,600,6,'600€ 6 puntos')],
-        40: [(41,60,100,0,'100€ sin puntos'), (61,70,300,2,'300€ 2 puntos'), (71,80,400,4,'400€ 4 puntos'), (81,90,500,6,'500€ 6 puntos'), (91,999,600,6,'600€ 6 puntos')],
-        50: [(51,70,100,0,'100€ sin puntos'), (71,80,300,2,'300€ 2 puntos'), (81,90,400,4,'400€ 4 puntos'), (91,100,500,6,'500€ 6 puntos'), (121,999,600,6,'600€ 6 puntos')],
-        60: [(61,90,100,0,'100€ sin puntos'), (91,110,300,2,'300€ 2 puntos'), (111,120,400,4,'400€ 4 puntos'), (121,130,500,6,'500€ 6 puntos'), (131,999,600,6,'600€ 6 puntos')],
-        70: [(71,100,100,0,'100€ sin puntos'), (101,120,300,2,'300€ 2 puntos'), (121,130,400,4,'400€ 4 puntos'), (131,140,500,6,'500€ 6 puntos'), (141,999,600,6,'600€ 6 puntos')],
-        80: [(81,110,100,0,'100€ sin puntos'), (111,130,300,2,'300€ 2 puntos'), (131,140,400,4,'400€ 4 puntos'), (141,150,500,6,'500€ 6 puntos'), (151,999,600,6,'600€ 6 puntos')],
-        90: [(91,120,100,0,'100€ sin puntos'), (121,140,300,2,'300€ 2 puntos'), (141,150,400,4,'400€ 4 puntos'), (151,160,500,6,'500€ 6 puntos'), (161,999,600,6,'600€ 6 puntos')],
-        100:[(101,130,100,0,'100€ sin puntos'), (131,150,300,2,'300€ 2 puntos'), (151,160,400,4,'400€ 4 puntos'), (161,170,500,6,'500€ 6 puntos'), (171,999,600,6,'600€ 6 puntos')],
-        110:[(111,140,100,0,'100€ sin puntos'), (141,160,300,2,'300€ 2 puntos'), (161,170,400,4,'400€ 4 puntos'), (171,180,500,6,'500€ 6 puntos'), (181,999,600,6,'600€ 6 puntos')],
-        120:[(121,150,100,0,'100€ sin puntos'), (151,170,300,2,'300€ 2 puntos'), (171,180,400,4,'400€ 4 puntos'), (181,190,500,6,'500€ 6 puntos'), (191,999,600,6,'600€ 6 puntos')],
-    }
-
-def _expected_speed_sanction(limit: int, corrected: float) -> Dict[str, Any]:
-    tbl = _dgt_speed_sanction_table()
-    lim = int(limit) if int(limit) in tbl else None
-    if lim is None:
-        return {"fine": None, "points": None, "band": None, "table_limit": None}
-    v = int(round(float(corrected)))
-    for lo, hi, fine, pts, label in tbl[lim]:
-        if v >= lo and v <= hi:
-            return {"fine": fine, "points": pts, "band": label, "table_limit": lim, "corrected_int": v}
-    return {"fine": None, "points": None, "band": None, "table_limit": lim, "corrected_int": v}
-
-def _compute_velocity_calc_from_core(core: Dict[str, Any]) -> Dict[str, Any]:
-    """Cálculo interno VSE-1 (compatible) desde core.
-    Usa margen conservador fijo (<=100: 5 km/h; >100: 5%).
-    Añade expected (tabla) y mismatch con lo impuesto si consta.
-    """
-    try:
-        measured = core.get("velocidad_medida_kmh")
-        limit = core.get("velocidad_limite_kmh")
-        if isinstance(measured, str) and measured.strip().isdigit():
-            measured = int(measured.strip())
-        if isinstance(limit, str) and limit.strip().isdigit():
-            limit = int(limit.strip())
-        if not isinstance(measured, int) or not isinstance(limit, int):
-            return {"ok": False, "reason": "missing_measured_or_limit"}
-
-        margin = _speed_margin_value(int(measured))
-        corrected = max(0.0, float(measured) - float(margin))
-        expected = _expected_speed_sanction(int(limit), corrected)
-
-        imposed_fine = core.get("sancion_importe_eur")
-        imposed_pts = core.get("puntos_detraccion")
-        try:
-            if isinstance(imposed_fine, str) and imposed_fine.strip().isdigit():
-                imposed_fine = int(imposed_fine.strip())
-        except Exception:
-            pass
-        try:
-            if isinstance(imposed_pts, str) and imposed_pts.strip().isdigit():
-                imposed_pts = int(imposed_pts.strip())
-        except Exception:
-            pass
-
-        mismatch = False
-        mismatch_reasons = []
-        if isinstance(imposed_fine, int) and isinstance(expected.get("fine"), int) and imposed_fine != expected.get("fine"):
-            mismatch = True
-            mismatch_reasons.append("fine_mismatch")
-        if isinstance(imposed_pts, int) and isinstance(expected.get("points"), int) and imposed_pts != expected.get("points"):
-            mismatch = True
-            mismatch_reasons.append("points_mismatch")
-
-        return {
-            "ok": True,
-            "limit": int(limit),
-            "measured": int(measured),
-            "margin_value": float(margin),
-            "corrected": round(float(corrected), 2),
-            "expected": expected,
-            "imposed": {"fine": imposed_fine, "points": imposed_pts},
-            "mismatch": mismatch,
-            "mismatch_reasons": mismatch_reasons,
-        }
-    except Exception as e:
-        return {"ok": False, "reason": f"error:{e}"}
-
-def _inject_tramo_error_paragraph(body: str, velocity_calc: Dict[str, Any]) -> str:
-    """Si hay mismatch de tramo (expected vs impuesto), inserta un párrafo antes de III. SOLICITO."""
-    try:
-        # Evitar duplicados
-        if "posible error de tramo sancionador" in (body or "").lower():
-            return body
-
-        if not body or not isinstance(velocity_calc, dict) or not velocity_calc.get("ok") or not velocity_calc.get("mismatch"):
-            return body
-
-        exp = velocity_calc.get("expected") or {}
-        imp = velocity_calc.get("imposed") or {}
-        if exp.get("fine") is None and exp.get("points") is None:
-            return body
-
-        parts = []
-        parts.append("De forma adicional, se aprecia posible error de tramo sancionador.")
-        if isinstance(imp.get("fine"), int) and isinstance(exp.get("fine"), int) and imp.get("fine") != exp.get("fine"):
-            parts.append(f"Consta un importe impuesto de {imp.get('fine')}€, mientras que, atendida la velocidad corregida, el tramo orientativo podría corresponder a {exp.get('fine')}€.")
-        if isinstance(imp.get("points"), int) and isinstance(exp.get("points"), int) and imp.get("points") != exp.get("points"):
-            parts.append(f"Asímismo, constan {imp.get('points')} puntos, cuando el tramo orientativo podría implicar {exp.get('points')} puntos.")
-        if exp.get("band"):
-            parts.append(f"Banda orientativa considerada: {exp.get('band')}.")
-
-        parts.append("En todo caso, corresponde a la Administración acreditar margen aplicado, velocidad corregida y banda/tramo aplicado, con motivación técnica verificable.")
-        extra = " ".join(parts) + "\n"
-
-        mm = re.search(r"^III\.\s*SOLICITO\b", body, flags=re.IGNORECASE | re.MULTILINE)
-        if not mm:
-            return body + "\n\n" + extra
-        return body[:mm.start()] + extra + "\n" + body[mm.start():]
-    except Exception:
-        return body
+# ==========================
+# VELOCIDAD (migrado a ai/infractions/velocidad.py)
+# ==========================
 
 def _build_velocity_calc_paragraph(core: Dict[str, Any]) -> str:
-    """Párrafo ilustrativo de cálculo. Si faltan datos, devuelve cadena vacía.
-    Evita 'exceso negativo': si la velocidad corregida queda por debajo del límite,
-    se formula como 'por debajo del límite máximo permitido'.
-    """
+    """Wrapper: párrafo ilustrativo de cálculo (VSE) desde módulo."""
     try:
-        measured = core.get("velocidad_medida_kmh")
-        limit = core.get("velocidad_limite_kmh")
-        if isinstance(measured, str) and measured.strip().isdigit():
-            measured = int(measured.strip())
-        if isinstance(limit, str) and limit.strip().isdigit():
-            limit = int(limit.strip())
-        if not isinstance(measured, int) or not isinstance(limit, int):
-            return ""
-        margin = _speed_margin_value(measured)
-        corrected = max(0.0, float(measured) - float(margin))
-        exceso = float(corrected) - float(limit)
-
-        if exceso <= 0:
-            return (
-                "A efectos ilustrativos y sin perjuicio de la prueba que corresponde a la Administración, "
-                f"con un límite de {limit} km/h y una medición de {measured} km/h, aplicando un margen de {margin:.2f} km/h, "
-                f"la velocidad corregida se situaría en torno a {corrected:.2f} km/h, "
-                "lo que la situaría por debajo del límite máximo permitido. "
-                "Debe acreditarse documentalmente el margen efectivamente aplicado, la velocidad corregida resultante y su encaje en el tramo sancionador."
-            )
-
-        return (
-            "A efectos ilustrativos y sin perjuicio de la prueba que corresponde a la Administración, "
-            f"con un límite de {limit} km/h y una medición de {measured} km/h, aplicando un margen de {margin:.2f} km/h, "
-            f"la velocidad corregida se situaría en torno a {corrected:.2f} km/h, "
-            f"lo que supondría un exceso efectivo aproximado de {exceso:.2f} km/h sobre el límite. "
-            "Debe acreditarse documentalmente el margen efectivamente aplicado, la velocidad corregida resultante y su encaje en el tramo sancionador."
-        )
+        return build_velocity_calc_paragraph(core, capture_mode="UNKNOWN") or ""
     except Exception:
         return ""
 
 
+def _compute_velocity_calc_from_core(core: Dict[str, Any]) -> Dict[str, Any]:
+    """Wrapper: cálculo interno VSE desde módulo."""
+    try:
+        return compute_velocity_calc_from_core(core, capture_mode="UNKNOWN") or {"ok": False, "reason": "not_computed"}
+    except Exception as e:
+        return {"ok": False, "reason": f"error:{e}"}
+
+
+def _inject_tramo_error_paragraph(body: str, core: Dict[str, Any]) -> str:
+    """Inserta párrafo de posible error de tramo si procede (y solo si el importe impuesto es válido)."""
+    try:
+        if not body:
+            return body
+        if "posible error de tramo sancionador" in body.lower():
+            return body
+        if not should_inject_tramo_error(core, capture_mode="UNKNOWN"):
+            return body
+
+        extra = build_tramo_error_paragraph(core, capture_mode="UNKNOWN") or ""
+        if not extra.strip():
+            return body
+
+        mm = re.search(r"^III\.\s*SOLICITO\b", body, flags=re.IGNORECASE | re.MULTILINE)
+        if not mm:
+            return body + "\n\n" + extra + "\n"
+        return body[:mm.start()] + extra + "\n\n" + body[mm.start():]
+    except Exception:
+        return body
+
+
+def _velocity_strict_validate(body: str) -> List[str]:
+    """SVL-1 VELOCIDAD: validación mínima delegada al módulo."""
+    try:
+        return velocity_strict_missing(body or "")
+    except Exception:
+        # En caso extremo, no bloquear por error interno del validador
+        return []
 def _inject_bucket_paragraph(body: str, decision: Dict[str, Any]) -> str:
     """Inserta párrafo extra según bucket (leve/grave) antes de 'III. SOLICITO'."""
     if not body or not isinstance(decision, dict):
@@ -468,7 +360,9 @@ def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dic
         # Validación estructural: si hay discrepancia importe/puntos (expected vs impuesto), el cuerpo debe mencionarlo.
         vc = _compute_velocity_calc_from_core(core)
         if isinstance(vc, dict) and vc.get("ok") and vc.get("mismatch"):
-            if "posible error de tramo sancionador" not in (body or "").lower():
+            imposed = (vc.get("imposed") or {})
+            # Solo exigimos la alegación si el "importe impuesto" es válido (no OCR tipo 120D)
+            if isinstance(imposed.get("fine"), int) and "posible error de tramo sancionador" not in (body or "").lower():
                 raise HTTPException(
                     status_code=422,
                     detail="Velocity Strict no cumplido. Falta alegación de posible error de tramo sancionador pese a discrepancia detectada.",
@@ -545,7 +439,7 @@ def generate_dgt_for_case(
 
                 # VSE-1 (desde core) y alegación automática de posible error de tramo
                 velocity_calc = _compute_velocity_calc_from_core(core)
-                cuerpo = _inject_tramo_error_paragraph(cuerpo, velocity_calc)
+                cuerpo = _inject_tramo_error_paragraph(cuerpo, core)
 
                 tpl = {"asunto": asunto, "cuerpo": cuerpo}
                 ai_used = True
@@ -592,7 +486,7 @@ def generate_dgt_for_case(
         if tpl and isinstance(tpl, dict):
             tpl["cuerpo"] = _inject_bucket_paragraph(tpl.get("cuerpo") or "", decision)
             velocity_calc_for_audit = _compute_velocity_calc_from_core(core)
-            tpl["cuerpo"] = _inject_tramo_error_paragraph(tpl.get("cuerpo") or "", velocity_calc_for_audit)
+            tpl["cuerpo"] = _inject_tramo_error_paragraph(tpl.get("cuerpo") or "", core)
     except Exception:
         pass
 
