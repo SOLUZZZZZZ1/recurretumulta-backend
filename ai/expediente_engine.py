@@ -15,7 +15,6 @@ from ai.prompts.admissibility_guard import PROMPT as PROMPT_GUARD
 from ai.prompts.draft_recurso_v2 import PROMPT as PROMPT_DRAFT
 from ai.prompts.module_semaforo import module_semaforo
 
-from ai.infractions.generic import build_generic_body
 MAX_EXCERPT_CHARS = 12000
 
 PROMPT_DRAFT_REPAIR_VELOCIDAD = """
@@ -976,6 +975,7 @@ def _compute_context_intensity(timeline: Dict[str, Any], extraction_core: Dict[s
 ARTICLE_TYPE_MAP = {
     "RGC": {  # Reglamento General de Circulación
         48: "velocidad",
+        146: "semaforo",
         18: "atencion",
         167: "marcas_viales",
         12: "condiciones_vehiculo",
@@ -1396,32 +1396,6 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                         _save_event(case_id, "postprocess_speed_failed", {"error": str(_e)})
         except Exception as _e:
             _save_event(case_id, "draft_repair_failed", {"error": str(_e)})
-
-# ==========================
-# FALLBACK DETERMINISTA (Commit 2)
-# ==========================
-# Si por cualquier motivo el LLM no devuelve borrador utilizable, generamos un escrito genérico seguro.
-try:
-    has_image_evidence = any(str(d.get("mime") or "").lower().startswith("image/") for d in (docs or []))
-except Exception:
-    has_image_evidence = False
-
-if not isinstance(draft, dict) or not (draft.get("asunto") or "").strip() or not (draft.get("cuerpo") or "").strip():
-    try:
-        draft = build_generic_body(extraction_core or {}, has_image_evidence=bool(has_image_evidence))
-        _save_event(case_id, "draft_fallback_generic_applied", {"has_image_evidence": bool(has_image_evidence)})
-    except Exception as _e:
-        # Última red de seguridad: no romper el backend
-        _save_event(case_id, "draft_fallback_generic_failed", {"error": str(_e)})
-        draft = {
-            "asunto": "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE",
-            "cuerpo": "A la atención del órgano competente.\n\nNo consta aportado borrador utilizable. Se solicita expediente íntegro y se interesa archivo por insuficiencia probatoria.",
-            "variables_usadas": {"organismo": None, "tipo_accion": "alegaciones", "expediente_ref": None, "fechas_clave": []},
-            "checks": [],
-            "notes_for_operator": "Fallback mínimo aplicado por error interno en la generación del borrador.",
-        }
-
-
 
 
     result = {
