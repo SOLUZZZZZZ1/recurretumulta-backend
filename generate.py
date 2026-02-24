@@ -124,6 +124,53 @@ def _velocity_missing_min_terms(body: str) -> List[str]:
 
 
 # ==========================
+# SEMÁFORO — detección ROBUSTA (usa raw_text_* guardados en core)
+# ==========================
+
+def _is_semaforo_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
+    """
+    Detecta semáforo aunque core.hecho_imputado/artículo venga roto (OCR),
+    usando también raw_text_pdf/raw_text_vision/raw_text_blob guardados en el extracted core.
+    """
+    core = core or {}
+    parts: List[str] = []
+
+    # Texto bruto persistido por analyze.py dentro de extracted_core
+    for k in ("raw_text_pdf", "raw_text_vision", "raw_text_blob"):
+        v = core.get(k)
+        if isinstance(v, str) and v.strip():
+            parts.append(v)
+
+    # Hecho y cuerpo IA
+    parts.append(str(core.get("hecho_imputado") or ""))
+    parts.append(cuerpo or "")
+
+    blob = " ".join(parts).lower()
+
+    # Señales fuertes (incluye OCR sucio)
+    sema_signals = [
+        "semáforo", "semaforo",
+        "fase roja",
+        "luz roja",
+        "cruce en rojo", "cruce con fase roja",
+        "t/s roja", "ts roja",
+        "señal luminosa roja", "senal luminosa roja",
+        "línea de detención", "linea de detencion",
+        "no respeta la luz roja", "no respetar la luz roja",
+        "rebase la linea de detencion", "rebasar la linea de detencion",
+    ]
+
+    if any(s in blob for s in sema_signals):
+        return True
+
+    # También por artículo típico si aparece en cualquier texto bruto
+    if re.search(r"\bart\.?\s*146\b", blob) or re.search(r"\bart[ií]culo\s*146\b", blob) or re.search(r"\b146\s*[\.,]\s*1\b", blob):
+        return True
+
+    return False
+
+
+# ==========================
 # VELOCIDAD (VSE-1 compatible)
 # ==========================
 
@@ -437,13 +484,13 @@ def generate_dgt_for_case(
                     asunto = "RECURSO (MODO PRUEBA)"
                     cuerpo = _strip_borrador_prefix_from_body(cuerpo)
 
-                # ✅ TRÁFICO DETERMINISTA: SEMÁFORO SIEMPRE
-                if is_semaforo_context(core, cuerpo):
+                # ✅ SEMÁFORO robusto (core + raw_text_* + cuerpo)
+                if _is_semaforo_context_robust(core, cuerpo) or is_semaforo_context(core, cuerpo):
                     tpl_s = build_semaforo_strong_template(core)
                     asunto = tpl_s.get("asunto") or asunto
                     cuerpo = tpl_s.get("cuerpo") or cuerpo
 
-                # ✅ TRÁFICO DETERMINISTA: MÓVIL SIEMPRE
+                # ✅ MÓVIL determinista
                 if is_movil_context(core, cuerpo):
                     tpl_m = build_movil_strong_template(core)
                     asunto = tpl_m.get("asunto") or asunto
@@ -478,8 +525,8 @@ def generate_dgt_for_case(
             tpl = build_dgt_alegaciones_text(core, interesado)
             filename_base = "alegaciones_dgt"
 
-        # Semáforo determinista en fallback
-        if is_semaforo_context(core, tpl.get("cuerpo") or ""):
+        # Semáforo determinista (robusto) en fallback
+        if _is_semaforo_context_robust(core, tpl.get("cuerpo") or "") or is_semaforo_context(core, tpl.get("cuerpo") or ""):
             tpl = build_semaforo_strong_template(core)
 
         # Móvil determinista en fallback
