@@ -220,6 +220,44 @@ def _semaforo_strict_validate(body: str) -> List[str]:
 
 
 
+def _force_movil_template_if_needed(asunto: str, cuerpo: str, core: Dict[str, Any]) -> Tuple[str, str]:
+    """Opción determinista MÓVIL (modo A): solo fuerza plantilla fuerte si el borrador es genérico.
+    No aplica strict (para no romper producción).
+    """
+    if not is_movil_context(core, cuerpo or ""):
+        return asunto, cuerpo
+
+    b = (cuerpo or "").lower()
+
+    weak_signals = [
+        "insuficiencia probatoria específica del tipo",
+        "solicita revisión del expediente",
+        "defectos de motivación",
+        "no consta acreditado el uso manual",
+    ]
+
+    strong_signals = [
+        "uso manual efectivo",
+        "distancia aproximada",
+        "vehículo camuflado",
+        "camión camuflado",
+        "ángulo de visión",
+        "no notificación en el acto",
+        "tipicidad",
+    ]
+
+    has_strong = any(s in b for s in strong_signals)
+    is_weak = any(s in b for s in weak_signals)
+
+    if is_weak and not has_strong:
+        tpl = build_movil_strong_template(core)
+        return (tpl.get("asunto") or asunto, tpl.get("cuerpo") or cuerpo)
+
+    return asunto, cuerpo
+
+
+
+
 
 # ==========================
 # VELOCIDAD (migrado a ai/infractions/velocidad.py)
@@ -458,6 +496,9 @@ def generate_dgt_for_case(
 
                 # Opción determinista SEMÁFORO: si el LLM no estructuró bien, imponemos plantilla fija
                 asunto, cuerpo = _force_semaforo_template_if_needed(asunto, cuerpo, core)
+
+                # Opción determinista MÓVIL (modo A): si el LLM sale genérico, imponemos plantilla fuerte
+                asunto, cuerpo = _force_movil_template_if_needed(asunto, cuerpo, core)
 
                 # Decision sobre el cuerpo ya final
                 try:
