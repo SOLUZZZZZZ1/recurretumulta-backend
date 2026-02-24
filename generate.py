@@ -19,12 +19,6 @@ from ai.infractions.velocidad import (
     velocity_strict_missing,
 )
 
-
-from ai.infractions.movil import (
-    is_movil_context,
-    build_movil_strong_template,
-)
-
 from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
@@ -65,6 +59,32 @@ def _missing_interested_fields(interesado: Dict[str, Any]) -> List[str]:
         if not v or not str(v).strip():
             missing.append(k)
     return missing
+
+
+def _soft_strict_movil(conn, case_id: str, core: Dict[str, Any], body: str) -> None:
+    """Soft-strict móvil: NO bloquea. Solo registra warning si faltan mínimos."""
+    try:
+        # Solo aplica si es móvil
+        if 'ai.infractions.movil' not in globals() and 'is_movil_context' not in globals():
+            return
+        if not is_movil_context(core or {}, body or ""):
+            return
+        missing = []
+        try:
+            missing = movil_strict_missing(body or "") if 'movil_strict_missing' in globals() else []
+        except Exception:
+            missing = []
+        if not missing:
+            return
+
+        payload = {"missing": missing, "tipo_infraccion": (core or {}).get("tipo_infraccion")}
+        conn.execute(
+            text("INSERT INTO events(case_id, type, payload, created_at) VALUES (:case_id,'movil_strict_warning',CAST(:payload AS JSONB),NOW())"),
+            {"case_id": case_id, "payload": json.dumps(payload)},
+        )
+    except Exception:
+        # Nunca romper generación por soft-strict
+        return
 
 
 def _load_case_flags(conn, case_id: str) -> Dict[str, bool]:
@@ -197,48 +217,6 @@ def _semaforo_strict_validate(body: str) -> List[str]:
             missing.append("solicito_archivo_punto2")
 
     return missing
-
-
-def _force_movil_template_if_needed(asunto: str, cuerpo: str, core: Dict[str, Any]) -> Tuple[str, str]:
-    """Opción determinista MÓVIL (SAFE): si el borrador es genérico, imponemos plantilla fuerte.
-    Nota: en esta fase NO aplicamos strict para no arriesgar el arranque en Render.
-    """
-    if not is_movil_context(core, cuerpo or ""):
-        return asunto, cuerpo
-
-    b = (cuerpo or "").lower()
-
-    # Señales de borrador flojo
-    weak_signals = [
-        "insuficiencia probatoria específica del tipo",
-        "solicita revisión del expediente",
-        "defectos de motivación",
-        "no consta acreditado el uso manual",
-    ]
-    strong_signals = [
-        "uso manual efectivo",
-        "distancia aproximada",
-        "vehículo camuflado",
-        "camión camuflado",
-        "ángulo de visión",
-        "no notificación en el acto",
-        "tipicidad",
-    ]
-
-    has_strong = any(s in b for s in strong_signals)
-    is_weak = any(s in b for s in weak_signals)
-
-    # Si es flojo, imponemos plantilla fuerte
-    if is_weak and not has_strong:
-        tpl = build_movil_strong_template(core)
-        return (tpl.get("asunto") or asunto, tpl.get("cuerpo") or cuerpo)
-
-    # Si no hay ALEGACIÓN PRIMERA, también imponemos
-    if not re.search(r"^ALEGACI[ÓO]N\s+PRIMERA\b", cuerpo or "", re.IGNORECASE | re.MULTILINE):
-        tpl = build_movil_strong_template(core)
-        return (tpl.get("asunto") or asunto, tpl.get("cuerpo") or cuerpo)
-
-    return asunto, cuerpo
 
 
 
@@ -480,9 +458,6 @@ def generate_dgt_for_case(
 
                 # Opción determinista SEMÁFORO: si el LLM no estructuró bien, imponemos plantilla fija
                 asunto, cuerpo = _force_semaforo_template_if_needed(asunto, cuerpo, core)
-
-                # Opción determinista MÓVIL (SAFE): si el borrador es genérico, imponemos plantilla fuerte
-                asunto, cuerpo = _force_movil_template_if_needed(asunto, cuerpo, core)
 
                 # Decision sobre el cuerpo ya final
                 try:
