@@ -165,7 +165,7 @@ def _expected_speed_sanction(limit: int, corrected: float) -> Dict[str, Any]:
     for lo, hi, fine, pts, label in tbl[lim]:
         if v >= lo and v <= hi:
             return {"fine": fine, "points": pts, "band": label, "table_limit": lim, "corrected_int": v}
-    return {"fine": None, "points": None, "band": None, "table_limit": lim, "corrected_int": v
+    return {"fine": None, "points": None, "band": None, "table_limit": lim, "corrected_int": v}
 
 
 def _compute_velocity_calc_from_core(core: Dict[str, Any]) -> Dict[str, Any]:
