@@ -5,14 +5,19 @@ Objetivo:
 - 100% determinista (sin OpenAI)
 - No inventa hechos: redacción prudente ("si", "no consta", "no se aporta")
 - Tipicidad quirúrgica: exige USO MANUAL EFECTIVO con descripción circunstanciada
-- Diferencia modo de captación: AGENT / AUTO / UNKNOWN (si se pasa capture_mode)
-- Solicita ARCHIVO (Tráfico determinista)
+- (Opcional) diferencia modo de captación: AGENT / AUTO / UNKNOWN si se pasa capture_mode
+- Solicita ARCHIVO (Tráfico determinista primero)
+
+Compatibilidad:
+- Mantiene nombres: is_movil_context(), build_movil_strong_template(), strict_missing()
+- build_movil_strong_template acepta solo (core) como antes, y opcionalmente capture_mode
 """
 
 from __future__ import annotations
+
 import json
 import re
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
 
 # --------------------------
@@ -23,7 +28,7 @@ def is_movil_context(core: Dict[str, Any], body: str = "") -> bool:
     blob = (body or "").lower()
     hecho = str(core.get("hecho_imputado") or "").lower()
 
-    # Señales estructurales (tipo_infraccion si viene)
+    # Señal estructural (si existe)
     tipo = str(core.get("tipo_infraccion") or "").lower().strip()
     if tipo == "movil":
         return True
@@ -31,7 +36,8 @@ def is_movil_context(core: Dict[str, Any], body: str = "") -> bool:
     signals = [
         "teléfono", "telefono", "móvil", "movil",
         "uso manual", "utilizando manualmente", "en la mano",
-        "manipulando", "pantalla", "whatsapp", "llamada",
+        "manipulando", "manipulación", "manipulacion",
+        "pantalla", "whatsapp", "llamada",
     ]
     return any(s in (blob + "\n" + hecho) for s in signals)
 
@@ -40,6 +46,12 @@ def is_movil_context(core: Dict[str, Any], body: str = "") -> bool:
 # Plantilla determinista fuerte
 # --------------------------
 def build_movil_strong_template(core: Dict[str, Any], capture_mode: str = "UNKNOWN") -> Dict[str, str]:
+    """
+    Genera un escrito robusto y prudente.
+    - No asume "vehículo camuflado" ni hechos no aportados.
+    - Exige acción concreta, mano, duración, modo de constatación y prueba.
+    - Pide ARCHIVO.
+    """
     core = core or {}
     cm = (capture_mode or "UNKNOWN").upper()
 
@@ -53,7 +65,7 @@ def build_movil_strong_template(core: Dict[str, Any], capture_mode: str = "UNKNO
 
     asunto = "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE"
 
-    # Bloque específico según modo de captación
+    # Bloque específico según modo de captación (si se conoce)
     if cm == "AGENT":
         captacion_block = (
             "ALEGACIÓN SEGUNDA — OBSERVACIÓN PRESENCIAL: FIABILIDAD PERCEPTIVA Y DESCRIPCIÓN CIRCUNSTANCIADA\n\n"
@@ -120,32 +132,25 @@ def build_movil_strong_template(core: Dict[str, Any], capture_mode: str = "UNKNO
 # Strict (SVL-MOV-3)
 # --------------------------
 def strict_missing(body: str) -> List[str]:
+    """
+    Valida mínimos robustos del texto (sin bloquear por sí solo).
+    """
     b = (body or "").lower()
     missing: List[str] = []
 
     # Tipicidad fuerte
-    if "uso manual efectivo" not in b and "uso manual" not in b:
+    if "uso manual" not in b:
         missing.append("tipicidad_uso_manual")
     if not any(k in b for k in ["acción exacta", "accion exacta", "manipulación activa", "manipulacion activa"]):
         missing.append("accion_concreta")
     if "mano" not in b:
         missing.append("mano_utilizada")
-    if not any(k in b for k in ["duración", "duracion", "tiempo durante"]):
+    if not any(k in b for k in ["duración", "duracion", "tiempo durante", "duración aproximada", "duracion aproximada"]):
         missing.append("duracion_aproximada")
 
-    # Descripción circunstanciada / fiabilidad
-    if not any(k in b for k in ["distancia", "ángulo", "angulo", "posición del agente", "posicion del agente", "captación", "captacion", "fotograf", "secuencia"]):
+    # Modo de constatación / soporte
+    if not any(k in b for k in ["observación", "observacion", "captación", "captacion", "fotograf", "secuencia", "distancia", "ángulo", "angulo"]):
         missing.append("modo_constatacion_y_soporte")
 
-    # Archivo en solicito
-    if not re.search(r"^2\)\s*que\s+se\s+acuerde\s+el\s+archivo", body or "", flags=re.IGNORECASE | re.MULTILINE):
-        if "archivo del expediente" not in b and "acuerde el archivo" not in b:
-            missing.append("solicito_archivo_punto2")
-
-    # unique
-    return list(dict.fromkeys(missing))
-
-
-# Alias compatibilidad (por si algún punto del sistema busca este nombre)
-def movil_strict_missing(body: str) -> List[str]:
-    return strict_missing(body)
+    # Archivo en el punto 2 del solicito
+    if not re.search(r"^2\)\s*que\s+se\s+acuerde\s+el\s+archivo", body or "", flags=re.IGNORECASE | re.MULTILINE
