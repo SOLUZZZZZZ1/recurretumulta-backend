@@ -19,6 +19,11 @@ from ai.infractions.velocidad import (
     velocity_strict_missing,
 )
 
+from ai.infractions.movil import (
+    is_movil_context,
+    build_movil_strong_template,
+)
+
 from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
@@ -59,32 +64,6 @@ def _missing_interested_fields(interesado: Dict[str, Any]) -> List[str]:
         if not v or not str(v).strip():
             missing.append(k)
     return missing
-
-
-def _soft_strict_movil(conn, case_id: str, core: Dict[str, Any], body: str) -> None:
-    """Soft-strict móvil: NO bloquea. Solo registra warning si faltan mínimos."""
-    try:
-        # Solo aplica si es móvil
-        if 'ai.infractions.movil' not in globals() and 'is_movil_context' not in globals():
-            return
-        if not is_movil_context(core or {}, body or ""):
-            return
-        missing = []
-        try:
-            missing = movil_strict_missing(body or "") if 'movil_strict_missing' in globals() else []
-        except Exception:
-            missing = []
-        if not missing:
-            return
-
-        payload = {"missing": missing, "tipo_infraccion": (core or {}).get("tipo_infraccion")}
-        conn.execute(
-            text("INSERT INTO events(case_id, type, payload, created_at) VALUES (:case_id,'movil_strict_warning',CAST(:payload AS JSONB),NOW())"),
-            {"case_id": case_id, "payload": json.dumps(payload)},
-        )
-    except Exception:
-        # Nunca romper generación por soft-strict
-        return
 
 
 def _load_case_flags(conn, case_id: str) -> Dict[str, bool]:
@@ -217,44 +196,6 @@ def _semaforo_strict_validate(body: str) -> List[str]:
             missing.append("solicito_archivo_punto2")
 
     return missing
-
-
-
-def _force_movil_template_if_needed(asunto: str, cuerpo: str, core: Dict[str, Any]) -> Tuple[str, str]:
-    """Opción determinista MÓVIL (modo A): solo fuerza plantilla fuerte si el borrador es genérico.
-    No aplica strict (para no romper producción).
-    """
-    if not is_movil_context(core, cuerpo or ""):
-        return asunto, cuerpo
-
-    b = (cuerpo or "").lower()
-
-    weak_signals = [
-        "insuficiencia probatoria específica del tipo",
-        "solicita revisión del expediente",
-        "defectos de motivación",
-        "no consta acreditado el uso manual",
-    ]
-
-    strong_signals = [
-        "uso manual efectivo",
-        "distancia aproximada",
-        "vehículo camuflado",
-        "camión camuflado",
-        "ángulo de visión",
-        "no notificación en el acto",
-        "tipicidad",
-    ]
-
-    has_strong = any(s in b for s in strong_signals)
-    is_weak = any(s in b for s in weak_signals)
-
-    if is_weak and not has_strong:
-        tpl = build_movil_strong_template(core)
-        return (tpl.get("asunto") or asunto, tpl.get("cuerpo") or cuerpo)
-
-    return asunto, cuerpo
-
 
 
 
@@ -497,9 +438,6 @@ def generate_dgt_for_case(
                 # Opción determinista SEMÁFORO: si el LLM no estructuró bien, imponemos plantilla fija
                 asunto, cuerpo = _force_semaforo_template_if_needed(asunto, cuerpo, core)
 
-                # Opción determinista MÓVIL (modo A): si el LLM sale genérico, imponemos plantilla fuerte
-                asunto, cuerpo = _force_movil_template_if_needed(asunto, cuerpo, core)
-
                 # Decision sobre el cuerpo ya final
                 try:
                     decision = decide_modo_velocidad(core, body=cuerpo, capture_mode="UNKNOWN") or decision
@@ -539,10 +477,13 @@ def generate_dgt_for_case(
         except Exception as e:
             ai_error = str(e)
             tpl = None
-
     # FALLBACK A PLANTILLAS
     if not tpl:
-        if tipo == "reposicion":
+        # 🔹 Si es móvil, usar plantilla fuerte en vez de plantilla genérica DGT
+        if is_movil_context(core, ""):
+            tpl = build_movil_strong_template(core)
+            filename_base = "alegaciones_dgt"
+        elif tipo == "reposicion":
             tpl = build_dgt_reposicion_text(core, interesado)
             filename_base = "recurso_reposicion_dgt"
         else:
@@ -555,33 +496,6 @@ def generate_dgt_for_case(
             decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
         except Exception:
             pass
-    else:
-        filename_base = "recurso_reposicion_dgt" if tipo == "reposicion" else "alegaciones_dgt"
-
-    if tipo == "reposicion":
-        kind_docx = "generated_docx_reposicion"
-        kind_pdf = "generated_pdf_reposicion"
-    else:
-        kind_docx = "generated_docx_alegaciones"
-        kind_pdf = "generated_pdf_alegaciones"
-
-    # Recalcular decision sobre cuerpo definitivo (último punto seguro)
-    try:
-        if tpl and isinstance(tpl, dict):
-            decision = decide_modo_velocidad(core, body=(tpl.get('cuerpo') or ''), capture_mode='UNKNOWN') or decision
-            decision_mode = (decision.get('mode') or decision_mode) if isinstance(decision, dict) else decision_mode
-    except Exception:
-        pass
-
-# FORCE bucket + tramo mismatch injection on final tpl (último punto seguro antes de validar/generar)
-    velocity_calc_for_audit: Dict[str, Any] = {"ok": False, "reason": "not_computed"}
-    try:
-        if tpl and isinstance(tpl, dict):
-            tpl["cuerpo"] = _inject_bucket_paragraph(tpl.get("cuerpo") or "", decision)
-            velocity_calc_for_audit = _compute_velocity_calc_from_core(core)
-            tpl["cuerpo"] = _inject_tramo_error_paragraph(tpl.get("cuerpo") or "", core)
-    except Exception:
-        pass
 
     # STRICT
     _strict_validate_or_raise(conn, case_id, core, tpl, ai_used)
