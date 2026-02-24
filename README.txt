@@ -1,10 +1,1 @@
-FIX /analyze — import json
-
-Este archivo corrige el error:
-Error en /analyze: name 'json' is not defined
-
-Acción:
-- Sustituye analyze.py por este.
-- git add .
-- git commit -m "Fix analyze triage import json"
-- git push origin main
+generate.py: móvil integrado SOLO con forzado de plantilla (SAFE). Sin strict para no romper Render.
