@@ -3,7 +3,7 @@ RTM — SEMÁFORO STRONG MODULE (SVL-SEM-1)
 
 Determinista, sin OpenAI.
 - Exige fase roja + línea de detención + secuencia completa.
-- Pide expediente íntegro y motivación reforzada.
+- Solicita expediente íntegro y motivación reforzada.
 - Solicita ARCHIVO.
 """
 
@@ -21,7 +21,6 @@ def is_semaforo_context(core: Dict[str, Any], body: str = "") -> bool:
     if tipo == "semaforo":
         return True
 
-    # señales robustas (OCR sucio incluido)
     signals = [
         "semáforo", "semaforo", "fase roja", "luz roja",
         "cruce en rojo", "cruce con fase roja",
@@ -33,7 +32,6 @@ def is_semaforo_context(core: Dict[str, Any], body: str = "") -> bool:
     if any(s in blob for s in signals):
         return True
 
-    # artículo típico
     precepts = " ".join([str(x) for x in (core.get("preceptos_detectados") or [])]).lower()
     if "146" in precepts or re.search(r"\bart\.?\s*146\b", blob):
         return True
