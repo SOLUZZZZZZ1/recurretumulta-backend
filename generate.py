@@ -17,7 +17,6 @@ from ai.infractions.movil import (
 )
 
 from ai.infractions.semaforo import (
-    is_semaforo_context,
     build_semaforo_strong_template,
 )
 
@@ -101,6 +100,10 @@ def _first_alegacion_title(body: str) -> str:
     return ""
 
 
+# ==========================
+# CONTEXT DETECTORS
+# ==========================
+
 def _is_velocity_context(core: Dict[str, Any], cuerpo: str) -> bool:
     tipo = (core or {}).get("tipo_infraccion") or ""
     if str(tipo).lower().strip() == "velocidad":
@@ -111,43 +114,24 @@ def _is_velocity_context(core: Dict[str, Any], cuerpo: str) -> bool:
     return any(k in bl for k in ["exceso de velocidad", "km/h", "cinemómetro", "cinemometro", "radar"])
 
 
-def _velocity_missing_min_terms(body: str) -> List[str]:
-    b = (body or "").lower()
-    missing: List[str] = []
-    if "margen" not in b:
-        missing.append("margen")
-    if "cadena de custodia" not in b:
-        missing.append("cadena_custodia")
-    if not any(k in b for k in ["cinemómetro", "cinemometro", "radar"]):
-        missing.append("cinemometro")
-    return missing
-
-
-# ==========================
-# SEMÁFORO — detección ROBUSTA (usa raw_text_* guardados en core)
-# ==========================
-
 def _is_semaforo_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
     """
-    Detecta semáforo aunque core.hecho_imputado/artículo venga roto (OCR),
-    usando también raw_text_pdf/raw_text_vision/raw_text_blob guardados en el extracted core.
+    Detecta semáforo aunque core venga roto.
+    Usa raw_text_pdf/raw_text_vision/raw_text_blob guardados en extracted_core por analyze.py.
     """
     core = core or {}
     parts: List[str] = []
 
-    # Texto bruto persistido por analyze.py dentro de extracted_core
     for k in ("raw_text_pdf", "raw_text_vision", "raw_text_blob"):
         v = core.get(k)
         if isinstance(v, str) and v.strip():
             parts.append(v)
 
-    # Hecho y cuerpo IA
     parts.append(str(core.get("hecho_imputado") or ""))
     parts.append(cuerpo or "")
 
     blob = " ".join(parts).lower()
 
-    # Señales fuertes (incluye OCR sucio)
     sema_signals = [
         "semáforo", "semaforo",
         "fase roja",
@@ -159,11 +143,9 @@ def _is_semaforo_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
         "no respeta la luz roja", "no respetar la luz roja",
         "rebase la linea de detencion", "rebasar la linea de detencion",
     ]
-
     if any(s in blob for s in sema_signals):
         return True
 
-    # También por artículo típico si aparece en cualquier texto bruto
     if re.search(r"\bart\.?\s*146\b", blob) or re.search(r"\bart[ií]culo\s*146\b", blob) or re.search(r"\b146\s*[\.,]\s*1\b", blob):
         return True
 
@@ -171,10 +153,11 @@ def _is_semaforo_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
 
 
 # ==========================
-# VELOCIDAD (VSE-1 compatible)
+# VELOCIDAD — VSE-1 DETERMINISTA SIEMPRE
 # ==========================
 
 def _speed_margin_value(measured: int) -> float:
+    # Conservador (fijo/estático) ICT/155/2020
     if measured <= 100:
         return 5.0
     return round(measured * 0.05, 2)
@@ -225,6 +208,8 @@ def _compute_velocity_calc_from_core(core: Dict[str, Any]) -> Dict[str, Any]:
 
         imposed_fine = core.get("sancion_importe_eur")
         imposed_pts = core.get("puntos_detraccion")
+
+        # parse basic ints (sin sanitizar aquí; es auditoría)
         try:
             if isinstance(imposed_fine, str) and imposed_fine.strip().isdigit():
                 imposed_fine = int(imposed_fine.strip())
@@ -260,7 +245,73 @@ def _compute_velocity_calc_from_core(core: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "reason": f"error:{e}"}
 
 
+def _build_velocity_calc_paragraph(core: Dict[str, Any]) -> str:
+    vc = _compute_velocity_calc_from_core(core)
+    if not vc.get("ok"):
+        return ""
+    limit = vc.get("limit")
+    measured = vc.get("measured")
+    margin = vc.get("margin_value")
+    corrected = vc.get("corrected")
+    exceso = float(corrected) - float(limit)
+
+    if exceso <= 0:
+        return (
+            "A efectos ilustrativos y sin perjuicio de la prueba que corresponde a la Administración, "
+            f"con un límite de {limit} km/h y una medición de {measured} km/h, aplicando un margen de {margin:.2f} km/h, "
+            f"la velocidad corregida se situaría en torno a {corrected:.2f} km/h, lo que la situaría por debajo del límite máximo permitido. "
+            "Debe acreditarse documentalmente el margen efectivamente aplicado, la velocidad corregida resultante y su encaje en el tramo sancionador."
+        )
+
+    return (
+        "A efectos ilustrativos y sin perjuicio de la prueba que corresponde a la Administración, "
+        f"con un límite de {limit} km/h y una medición de {measured} km/h, aplicando un margen de {margin:.2f} km/h, "
+        f"la velocidad corregida se situaría en torno a {corrected:.2f} km/h, lo que supondría un exceso efectivo aproximado de {exceso:.2f} km/h sobre el límite. "
+        "Debe acreditarse documentalmente el margen efectivamente aplicado, la velocidad corregida resultante y su encaje en el tramo sancionador."
+    )
+
+
+def _velocity_vse1_template(core: Dict[str, Any]) -> Tuple[str, str]:
+    """Plantilla fija VSE-1 SIEMPRE para velocidad."""
+    expediente = (core or {}).get("expediente_ref") or (core or {}).get("numero_expediente") or "No consta acreditado."
+    organo = (core or {}).get("organo") or (core or {}).get("organismo") or "No consta acreditado."
+    hecho = (core or {}).get("hecho_imputado") or "EXCESO DE VELOCIDAD."
+
+    calc = _build_velocity_calc_paragraph(core)
+    calc = (calc + "\n") if calc else ""
+
+    asunto = "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE"
+
+    cuerpo = (
+        "A la atención del órgano competente,\n\n"
+        "I. ANTECEDENTES\n"
+        f"1) Órgano: {organo}\n"
+        f"2) Identificación expediente: {expediente}\n"
+        f"3) Hecho imputado: {hecho}\n\n"
+        "II. ALEGACIONES\n"
+        "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA (CINEMÓMETRO)\n\n"
+        "La validez de una sanción por exceso de velocidad basada en cinemómetro exige la acreditación documental del control metrológico conforme a la normativa aplicable (Orden ICT/155/2020). "
+        "No basta una afirmación genérica de verificación: debe aportarse soporte documental verificable.\n\n"
+        "No consta acreditado en el expediente:\n"
+        "1) Identificación completa del cinemómetro utilizado (marca, modelo y número de serie) y emplazamiento exacto (vía, punto kilométrico y sentido).\n"
+        "2) Certificado de verificación metrológica vigente a la fecha del hecho, así como constancia de la última verificación periódica o, en su caso, tras reparación.\n"
+        "3) Captura o fotograma COMPLETO, sin recortes y legible, que permita asociar inequívocamente la medición al vehículo denunciado.\n"
+        "4) Margen aplicado y determinación de la velocidad corregida (velocidad medida vs velocidad corregida), con motivación técnica suficiente.\n"
+        "5) Acreditación de la cadena de custodia del dato (integridad del registro, sistema de almacenamiento y correspondencia inequívoca con el vehículo denunciado).\n"
+        "6) Acreditación del límite aplicable y su señalización en el punto exacto (genérica vs específica) y su coherencia con la ubicación consignada.\n"
+        "7) Motivación técnica individualizada que vincule medición, margen aplicado, velocidad corregida y tramo sancionador resultante.\n\n"
+        f"{calc}"
+        "III. SOLICITO\n"
+        "1) Que se tengan por formuladas las presentes alegaciones.\n"
+        "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de acreditación técnica suficiente.\n"
+        "3) Subsidiariamente, que se practique prueba y se aporte expediente íntegro.\n"
+    ).strip()
+
+    return asunto, cuerpo
+
+
 def _inject_tramo_error_paragraph(body: str, velocity_calc: Dict[str, Any]) -> str:
+    """Mantengo tu función tal cual (solo se usará en velocidad)."""
     try:
         if "posible error de tramo sancionador" in (body or "").lower():
             return body
@@ -291,39 +342,8 @@ def _inject_tramo_error_paragraph(body: str, velocity_calc: Dict[str, Any]) -> s
         return body
 
 
-def _build_velocity_calc_paragraph(core: Dict[str, Any]) -> str:
-    try:
-        measured = core.get("velocidad_medida_kmh")
-        limit = core.get("velocidad_limite_kmh")
-        if isinstance(measured, str) and measured.strip().isdigit():
-            measured = int(measured.strip())
-        if isinstance(limit, str) and limit.strip().isdigit():
-            limit = int(limit.strip())
-        if not isinstance(measured, int) or not isinstance(limit, int):
-            return ""
-        margin = _speed_margin_value(measured)
-        corrected = max(0.0, float(measured) - float(margin))
-        exceso = float(corrected) - float(limit)
-
-        if exceso <= 0:
-            return (
-                "A efectos ilustrativos y sin perjuicio de la prueba que corresponde a la Administración, "
-                f"con un límite de {limit} km/h y una medición de {measured} km/h, aplicando un margen de {margin:.2f} km/h, "
-                f"la velocidad corregida se situaría en torno a {corrected:.2f} km/h, lo que la situaría por debajo del límite máximo permitido. "
-                "Debe acreditarse documentalmente el margen efectivamente aplicado, la velocidad corregida resultante y su encaje en el tramo sancionador."
-            )
-
-        return (
-            "A efectos ilustrativos y sin perjuicio de la prueba que corresponde a la Administración, "
-            f"con un límite de {limit} km/h y una medición de {measured} km/h, aplicando un margen de {margin:.2f} km/h, "
-            f"la velocidad corregida se situaría en torno a {corrected:.2f} km/h, lo que supondría un exceso efectivo aproximado de {exceso:.2f} km/h sobre el límite. "
-            "Debe acreditarse documentalmente el margen efectivamente aplicado, la velocidad corregida resultante y su encaje en el tramo sancionador."
-        )
-    except Exception:
-        return ""
-
-
 def _inject_bucket_paragraph(body: str, decision: Dict[str, Any]) -> str:
+    """Mantengo tu bucket injection (si decide_modo_velocidad lo usa)."""
     if not body or not isinstance(decision, dict):
         return body
     if (decision.get("mode") or "") != "probatorio_puro":
@@ -350,56 +370,8 @@ def _inject_bucket_paragraph(body: str, decision: Dict[str, Any]) -> str:
     return body[:m.start()] + extra + "\n" + body[m.start():]
 
 
-def _force_velocity_vse1_if_needed(asunto: str, cuerpo: str, core: Dict[str, Any]) -> Tuple[str, str]:
-    if not _is_velocity_context(core, cuerpo):
-        return asunto, cuerpo
-
-    has_first = bool(re.search(r"^ALEGACI[ÓO]N\s+PRIMERA\b", cuerpo or "", re.IGNORECASE | re.MULTILINE))
-    if has_first:
-        miss = _velocity_missing_min_terms(cuerpo or "")
-        if not miss:
-            return asunto, cuerpo
-
-    expediente = (core or {}).get("expediente_ref") or (core or {}).get("numero_expediente") or None
-    organo = (core or {}).get("organo") or (core or {}).get("organismo") or None
-    hecho = (core or {}).get("hecho_imputado") or "EXCESO DE VELOCIDAD."
-    if isinstance(hecho, str) and hecho.strip() and "veloc" not in hecho.lower():
-        hecho = "EXCESO DE VELOCIDAD."
-
-    calc = _build_velocity_calc_paragraph(core)
-    calc = (calc + "\n") if calc else ""
-
-    asunto2 = "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE"
-
-    cuerpo2 = (
-        "A la atención del órgano competente,\n\n"
-        "I. ANTECEDENTES\n"
-        f"1. Órgano: {organo if organo else 'No consta acreditado.'}\n"
-        f"2) Identificación expediente: {expediente if expediente else 'No consta acreditado.'}\n"
-        f"3) Hecho imputado: {hecho.strip()}\n\n"
-        "II. ALEGACIONES\n"
-        "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA (CINEMÓMETRO)\n"
-        "La validez de una sanción por exceso de velocidad basada en cinemómetro exige la acreditación documental del control metrológico conforme a la normativa aplicable (Orden ICT/155/2020). "
-        "No basta una afirmación genérica de verificación: debe aportarse soporte documental verificable.\n\n"
-        "No consta acreditado en el expediente:\n"
-        "1) Identificación completa del cinemómetro (marca, modelo y nº de serie) y emplazamiento exacto.\n"
-        "2) Certificado de verificación metrológica vigente a la fecha del hecho.\n"
-        "3) Captura/fotograma COMPLETO, sin recortes, legible.\n"
-        "4) Margen aplicado y determinación de la velocidad corregida.\n"
-        "5) Cadena de custodia e integridad del registro.\n"
-        "6) Acreditación del límite aplicable y señalización.\n"
-        "7) Motivación técnica individualizada del tramo sancionador.\n\n"
-        f"{calc}"
-        "III. SOLICITO\n"
-        "1) Que se tengan por formuladas las presentes alegaciones.\n"
-        "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de acreditación técnica suficiente.\n"
-        "3) Subsidiariamente, que se practique prueba y se aporte expediente íntegro.\n"
-    ).strip()
-
-    return asunto2, cuerpo2
-
-
 def _velocity_strict_validate(body: str) -> List[str]:
+    """Strict mínimo: aquí no debería fallar nunca porque es plantilla fija."""
     b = (body or "").lower()
     missing: List[str] = []
 
@@ -484,8 +456,8 @@ def generate_dgt_for_case(
                     asunto = "RECURSO (MODO PRUEBA)"
                     cuerpo = _strip_borrador_prefix_from_body(cuerpo)
 
-                # ✅ SEMÁFORO robusto (core + raw_text_* + cuerpo)
-                if _is_semaforo_context_robust(core, cuerpo) or is_semaforo_context(core, cuerpo):
+                # ✅ SEMÁFORO determinista (robusto)
+                if _is_semaforo_context_robust(core, cuerpo):
                     tpl_s = build_semaforo_strong_template(core)
                     asunto = tpl_s.get("asunto") or asunto
                     cuerpo = tpl_s.get("cuerpo") or cuerpo
@@ -496,19 +468,22 @@ def generate_dgt_for_case(
                     asunto = tpl_m.get("asunto") or asunto
                     cuerpo = tpl_m.get("cuerpo") or cuerpo
 
-                # VELOCIDAD: si falta mínimos, forzar VSE-1
-                asunto, cuerpo = _force_velocity_vse1_if_needed(asunto, cuerpo, core)
+                # ✅ VELOCIDAD determinista SIEMPRE
+                if _is_velocity_context(core, cuerpo):
+                    asunto, cuerpo = _velocity_vse1_template(core)
 
+                # Auditoría (no rompe)
                 try:
                     decision = decide_modo_velocidad(core, body=cuerpo, capture_mode="UNKNOWN") or decision
                     decision_mode = (decision.get("mode") or "unknown") if isinstance(decision, dict) else "unknown"
                 except Exception:
                     pass
 
-                cuerpo = _inject_bucket_paragraph(cuerpo, decision)
-
-                velocity_calc = _compute_velocity_calc_from_core(core)
-                cuerpo = _inject_tramo_error_paragraph(cuerpo, velocity_calc)
+                # Bucket + tramo solo si el resultado final es velocidad
+                if _is_velocity_context(core, cuerpo):
+                    cuerpo = _inject_bucket_paragraph(cuerpo, decision)
+                    velocity_calc = _compute_velocity_calc_from_core(core)
+                    cuerpo = _inject_tramo_error_paragraph(cuerpo, velocity_calc)
 
                 tpl = {"asunto": asunto, "cuerpo": cuerpo}
                 ai_used = True
@@ -525,14 +500,20 @@ def generate_dgt_for_case(
             tpl = build_dgt_alegaciones_text(core, interesado)
             filename_base = "alegaciones_dgt"
 
-        # Semáforo determinista (robusto) en fallback
-        if _is_semaforo_context_robust(core, tpl.get("cuerpo") or "") or is_semaforo_context(core, tpl.get("cuerpo") or ""):
+        # Semáforo determinista (robusto)
+        if _is_semaforo_context_robust(core, tpl.get("cuerpo") or ""):
             tpl = build_semaforo_strong_template(core)
 
-        # Móvil determinista en fallback
+        # Móvil determinista
         if is_movil_context(core, tpl.get("cuerpo") or ""):
             tpl = build_movil_strong_template(core)
 
+        # Velocidad determinista SIEMPRE
+        if _is_velocity_context(core, tpl.get("cuerpo") or ""):
+            asunto_v, cuerpo_v = _velocity_vse1_template(core)
+            tpl = {"asunto": asunto_v, "cuerpo": cuerpo_v}
+
+        # Auditoría (no rompe)
         try:
             decision = decide_modo_velocidad(core, body=(tpl.get("cuerpo") or ""), capture_mode="UNKNOWN") or decision
             decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
@@ -548,20 +529,11 @@ def generate_dgt_for_case(
         kind_docx = "generated_docx_alegaciones"
         kind_pdf = "generated_pdf_alegaciones"
 
-    # Último punto seguro
-    try:
-        if tpl and isinstance(tpl, dict):
-            decision = decide_modo_velocidad(core, body=(tpl.get("cuerpo") or ""), capture_mode="UNKNOWN") or decision
-            decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
-    except Exception:
-        pass
-
+    # Último punto seguro antes de strict / generar
     velocity_calc_for_audit: Dict[str, Any] = {"ok": False, "reason": "not_computed"}
     try:
-        if tpl and isinstance(tpl, dict):
-            tpl["cuerpo"] = _inject_bucket_paragraph(tpl.get("cuerpo") or "", decision)
+        if tpl and isinstance(tpl, dict) and _is_velocity_context(core, tpl.get("cuerpo") or ""):
             velocity_calc_for_audit = _compute_velocity_calc_from_core(core)
-            tpl["cuerpo"] = _inject_tramo_error_paragraph(tpl.get("cuerpo") or "", velocity_calc_for_audit)
     except Exception:
         pass
 
