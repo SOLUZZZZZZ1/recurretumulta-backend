@@ -14,6 +14,11 @@ from ai.prompts.procedure_phase import PROMPT as PROMPT_PHASE
 from ai.prompts.admissibility_guard import PROMPT as PROMPT_GUARD
 from ai.prompts.draft_recurso_v2 import PROMPT as PROMPT_DRAFT
 from ai.prompts.module_semaforo import module_semaforo
+from ai.infractions.movil import (
+    is_movil_context,
+    build_movil_strong_template,
+    movil_strict_missing,
+)
 
 MAX_EXCERPT_CHARS = 12000
 
