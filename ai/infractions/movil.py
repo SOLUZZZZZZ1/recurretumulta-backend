@@ -10,12 +10,11 @@ Objetivo:
 
 Compatibilidad:
 - Mantiene nombres: is_movil_context(), build_movil_strong_template(), strict_missing()
-- build_movil_strong_template acepta solo (core) como antes, y opcionalmente capture_mode
+- build_movil_strong_template acepta (core) como antes, y opcionalmente capture_mode
 """
 
 from __future__ import annotations
 
-import json
 import re
 from typing import Any, Dict, List
 
@@ -39,7 +38,8 @@ def is_movil_context(core: Dict[str, Any], body: str = "") -> bool:
         "manipulando", "manipulación", "manipulacion",
         "pantalla", "whatsapp", "llamada",
     ]
-    return any(s in (blob + "\n" + hecho) for s in signals)
+    hay_senal = any(s in (blob + "\n" + hecho) for s in signals)
+    return bool(hay_senal)
 
 
 # --------------------------
@@ -134,6 +134,7 @@ def build_movil_strong_template(core: Dict[str, Any], capture_mode: str = "UNKNO
 def strict_missing(body: str) -> List[str]:
     """
     Valida mínimos robustos del texto (sin bloquear por sí solo).
+    Devuelve lista de claves faltantes.
     """
     b = (body or "").lower()
     missing: List[str] = []
@@ -153,4 +154,27 @@ def strict_missing(body: str) -> List[str]:
         missing.append("modo_constatacion_y_soporte")
 
     # Archivo en el punto 2 del solicito
-    if not re.search(r"^2\)\s*que\s+se\s+acuerde\s+el\s+archivo", body or "", flags=re.IGNORECASE | re.MULTILINE
+    ok_archivo = bool(
+        re.search(
+            r"^2\)\s*que\s+se\s+acuerde\s+el\s+archivo\b",
+            body or "",
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+    )
+    if not ok_archivo:
+        if "archivo del expediente" not in b and "acuerde el archivo" not in b:
+            missing.append("solicito_archivo_punto2")
+
+    # unique preserving order
+    seen = set()
+    out: List[str] = []
+    for x in missing:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+# Alias compatibilidad (por si algún punto del sistema busca este nombre)
+def movil_strict_missing(body: str) -> List[str]:
+    return strict_missing(body)
