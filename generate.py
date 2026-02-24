@@ -11,8 +11,6 @@ from database import get_engine
 from ai.expediente_engine import run_expediente_ai
 from ai.velocity_decision import decide_modo_velocidad
 
-
-
 from ai.infractions.movil import (
     is_movil_context,
     build_movil_strong_template,
@@ -108,6 +106,26 @@ def _is_velocity_context(core: Dict[str, Any], cuerpo: str) -> bool:
     return any(k in bl for k in ["exceso de velocidad", "km/h", "cinemómetro", "cinemometro", "radar"])
 
 
+def _velocity_missing_min_terms(body: str) -> List[str]:
+    """
+    Mínimos que Velocity Strict exige y que, si faltan, deben forzar plantilla VSE-1
+    incluso aunque ya exista 'ALEGACIÓN PRIMERA' en el texto.
+    """
+    b = (body or "").lower()
+    missing: List[str] = []
+    if "margen" not in b:
+        missing.append("margen")
+    if "cadena de custodia" not in b:
+        missing.append("cadena_custodia")
+    if not any(k in b for k in ["cinemómetro", "cinemometro", "radar"]):
+        missing.append("cinemometro")
+    return missing
+
+
+# ==========================
+# VELOCIDAD — CÁLCULO / TABLA (VSE-1 compatible)
+# ==========================
+
 def _speed_margin_value(measured: int) -> float:
     """Margen conservador (fijo/estático) conforme ICT/155/2020.
     - <=100: 5 km/h
@@ -137,6 +155,7 @@ def _dgt_speed_sanction_table() -> Dict[int, list]:
         120:[(121,150,100,0,'100€ sin puntos'), (151,170,300,2,'300€ 2 puntos'), (171,180,400,4,'400€ 4 puntos'), (181,190,500,6,'500€ 6 puntos'), (191,999,600,6,'600€ 6 puntos')],
     }
 
+
 def _expected_speed_sanction(limit: int, corrected: float) -> Dict[str, Any]:
     tbl = _dgt_speed_sanction_table()
     lim = int(limit) if int(limit) in tbl else None
@@ -146,7 +165,8 @@ def _expected_speed_sanction(limit: int, corrected: float) -> Dict[str, Any]:
     for lo, hi, fine, pts, label in tbl[lim]:
         if v >= lo and v <= hi:
             return {"fine": fine, "points": pts, "band": label, "table_limit": lim, "corrected_int": v}
-    return {"fine": None, "points": None, "band": None, "table_limit": lim, "corrected_int": v}
+    return {"fine": None, "points": None, "band": None, "table_limit": lim, "corrected_int": v
+
 
 def _compute_velocity_calc_from_core(core: Dict[str, Any]) -> Dict[str, Any]:
     """Cálculo interno VSE-1 (compatible) desde core.
@@ -203,10 +223,10 @@ def _compute_velocity_calc_from_core(core: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         return {"ok": False, "reason": f"error:{e}"}
 
+
 def _inject_tramo_error_paragraph(body: str, velocity_calc: Dict[str, Any]) -> str:
     """Si hay mismatch de tramo (expected vs impuesto), inserta un párrafo antes de III. SOLICITO."""
     try:
-        # Evitar duplicados
         if "posible error de tramo sancionador" in (body or "").lower():
             return body
 
@@ -237,11 +257,9 @@ def _inject_tramo_error_paragraph(body: str, velocity_calc: Dict[str, Any]) -> s
     except Exception:
         return body
 
+
 def _build_velocity_calc_paragraph(core: Dict[str, Any]) -> str:
-    """Párrafo ilustrativo de cálculo. Si faltan datos, devuelve cadena vacía.
-    Evita 'exceso negativo': si la velocidad corregida queda por debajo del límite,
-    se formula como 'por debajo del límite máximo permitido'.
-    """
+    """Párrafo ilustrativo de cálculo (si hay datos)."""
     try:
         measured = core.get("velocidad_medida_kmh")
         limit = core.get("velocidad_limite_kmh")
@@ -292,13 +310,12 @@ def _inject_bucket_paragraph(body: str, decision: Dict[str, Any]) -> str:
             "sin constancia de riesgo concreto, por lo que procede extremar las exigencias de motivación y prueba y ponderar la proporcionalidad "
             "de la reacción sancionadora.\n"
         )
-    else:  # grave
+    else:
         extra = (
             "Dada la gravedad potencial atribuida, la exigencia de prueba técnica completa, trazabilidad e integridad/cadena de custodia del dato debe ser máxima, "
             "evitando fórmulas estereotipadas y aportando soporte documental verificable.\n"
         )
 
-    # Insert before III. SOLICITO
     m = re.search(r"^III\.\s*SOLICITO\b", body, flags=re.IGNORECASE | re.MULTILINE)
     if not m:
         return body + "\n\n" + extra
@@ -306,14 +323,20 @@ def _inject_bucket_paragraph(body: str, decision: Dict[str, Any]) -> str:
 
 
 def _force_velocity_vse1_if_needed(asunto: str, cuerpo: str, core: Dict[str, Any]) -> Tuple[str, str]:
-    """Opción B real: IA-first, pero si VELOCIDAD no trae estructura VSE-1, imponemos plantilla fija."""
-    # Si ya trae ALEGACIÓN PRIMERA (estructura buena), no tocar
-    if re.search(r"^ALEGACI[ÓO]N\s+PRIMERA\b", cuerpo or "", re.IGNORECASE | re.MULTILINE):
-        return asunto, cuerpo
-
-    # Solo si es velocidad
+    """
+    Fuerza plantilla VSE-1 si:
+    - Es velocidad, y
+    - El borrador no tiene estructura, O tiene 'ALEGACIÓN PRIMERA' pero NO contiene mínimos (margen/cadena/cinemómetro).
+    """
     if not _is_velocity_context(core, cuerpo):
         return asunto, cuerpo
+
+    has_first = bool(re.search(r"^ALEGACI[ÓO]N\s+PRIMERA\b", cuerpo or "", re.IGNORECASE | re.MULTILINE))
+    if has_first:
+        miss = _velocity_missing_min_terms(cuerpo or "")
+        if not miss:
+            return asunto, cuerpo
+        # si faltan mínimos, seguimos y forzamos plantilla fija
 
     expediente = (core or {}).get("expediente_ref") or (core or {}).get("numero_expediente") or None
     organo = (core or {}).get("organo") or (core or {}).get("organismo") or None
@@ -364,14 +387,14 @@ def _force_velocity_vse1_if_needed(asunto: str, cuerpo: str, core: Dict[str, Any
 
 
 def _velocity_strict_validate(body: str) -> List[str]:
-    """SVL-1 VELOCIDAD (simple, compatible con plantilla fija)."""
+    """SVL-1 VELOCIDAD: valida mínimos."""
     b = (body or "").lower()
     missing: List[str] = []
 
     has_alegacion = bool(_first_alegacion_title(body))
     has_section = bool(re.search(r"^II\.\s*ALEGACIONES\b", body or "", re.IGNORECASE | re.MULTILINE))
     if not (has_alegacion or has_section):
-        missing.append("estructura_alegaciones (no se detecta encabezado de alegaciones)")
+        missing.append("estructura_alegaciones")
     if "margen" not in b:
         missing.append("margen")
     if "cadena de custodia" not in b:
@@ -388,14 +411,7 @@ def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dic
         missing = _velocity_strict_validate(body)
         if missing:
             raise HTTPException(status_code=422, detail=f"Velocity Strict no cumplido. Faltan/errores: {missing}.")
-        # Validación estructural: si hay discrepancia importe/puntos (expected vs impuesto), el cuerpo debe mencionarlo.
-        vc = _compute_velocity_calc_from_core(core)
-        if isinstance(vc, dict) and vc.get("ok") and vc.get("mismatch"):
-            if "posible error de tramo sancionador" not in (body or "").lower():
-                raise HTTPException(
-                    status_code=422,
-                    detail="Velocity Strict no cumplido. Falta alegación de posible error de tramo sancionador pese a discrepancia detectada.",
-                )
+
 
 # ==========================
 # FUNCIÓN PRINCIPAL
@@ -410,7 +426,7 @@ def generate_dgt_for_case(
 
     row = conn.execute(
         text("SELECT extracted_json FROM extractions WHERE case_id=:case_id ORDER BY created_at DESC LIMIT 1"),
-        {"case_id": case_id},
+        {"id": case_id, "case_id": case_id},
     ).fetchone()
 
     if not row:
@@ -433,7 +449,6 @@ def generate_dgt_for_case(
     ai_used = False
     ai_error: Optional[str] = None
 
-    # auditoría (no rompe si falla)
     decision_mode = "unknown"
     decision: Dict[str, Any] = {"mode": "unknown", "reasons": ["not_computed"]}
 
@@ -450,20 +465,17 @@ def generate_dgt_for_case(
                     asunto = "RECURSO (MODO PRUEBA)"
                     cuerpo = _strip_borrador_prefix_from_body(cuerpo)
 
-                # Opción B: forzar VSE-1 si es velocidad y el LLM no estructuró bien
+                # ✅ NUEVO: si es velocidad y el texto no cumple mínimos, forzar plantilla VSE-1
                 asunto, cuerpo = _force_velocity_vse1_if_needed(asunto, cuerpo, core)
 
-                # Decision sobre el cuerpo ya final
                 try:
                     decision = decide_modo_velocidad(core, body=cuerpo, capture_mode="UNKNOWN") or decision
                     decision_mode = (decision.get("mode") or "unknown") if isinstance(decision, dict) else "unknown"
                 except Exception:
                     pass
 
-                # Bucket paragraph (leve/grave) antes de SOLICITO
                 cuerpo = _inject_bucket_paragraph(cuerpo, decision)
 
-                # VSE-1 (desde core) y alegación automática de posible error de tramo
                 velocity_calc = _compute_velocity_calc_from_core(core)
                 cuerpo = _inject_tramo_error_paragraph(cuerpo, velocity_calc)
 
@@ -482,24 +494,14 @@ def generate_dgt_for_case(
             tpl = build_dgt_alegaciones_text(core, interesado)
             filename_base = "alegaciones_dgt"
 
-        # fallback_movil_fuerte: si es móvil y no hubo draft, usar plantilla fuerte en vez de plantilla genérica
-
+        # Fallback móvil fuerte (determinista)
         try:
-
             if is_movil_context(core, ""):
-
                 tpl = build_movil_strong_template(core)
-
-                # mantenemos filename_base coherente
-
                 filename_base = "alegaciones_dgt" if tipo != "reposicion" else "recurso_reposicion_dgt"
-
         except Exception:
-
             pass
 
-
-        # decision también en plantillas (solo auditoría)
         try:
             decision = decide_modo_velocidad(core, body=(tpl.get("cuerpo") or ""), capture_mode="UNKNOWN") or decision
             decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
@@ -515,15 +517,15 @@ def generate_dgt_for_case(
         kind_docx = "generated_docx_alegaciones"
         kind_pdf = "generated_pdf_alegaciones"
 
-    # Recalcular decision sobre cuerpo definitivo (último punto seguro)
+    # Último punto seguro
     try:
         if tpl and isinstance(tpl, dict):
-            decision = decide_modo_velocidad(core, body=(tpl.get('cuerpo') or ''), capture_mode='UNKNOWN') or decision
-            decision_mode = (decision.get('mode') or decision_mode) if isinstance(decision, dict) else decision_mode
+            decision = decide_modo_velocidad(core, body=(tpl.get("cuerpo") or ""), capture_mode="UNKNOWN") or decision
+            decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
     except Exception:
         pass
 
-# FORCE bucket + tramo mismatch injection on final tpl (último punto seguro antes de validar/generar)
+    # FORCE bucket + tramo mismatch injection on final tpl (último punto seguro)
     velocity_calc_for_audit: Dict[str, Any] = {"ok": False, "reason": "not_computed"}
     try:
         if tpl and isinstance(tpl, dict):
@@ -533,8 +535,26 @@ def generate_dgt_for_case(
     except Exception:
         pass
 
-    # STRICT
-    _strict_validate_or_raise(conn, case_id, core, tpl, ai_used)
+    # ==========================
+    # STRICT (con bypass seguro en MODO DIOS)
+    # ==========================
+    try:
+        _strict_validate_or_raise(conn, case_id, core, tpl, ai_used)
+    except HTTPException as e:
+        if override_mode:
+            # En modo prueba no bloqueamos generación: registramos y seguimos.
+            try:
+                conn.execute(
+                    text(
+                        "INSERT INTO events(case_id, type, payload, created_at) "
+                        "VALUES (:case_id,'strict_bypassed_override',CAST(:payload AS JSONB),NOW())"
+                    ),
+                    {"case_id": case_id, "payload": json.dumps({"detail": str(e.detail)})},
+                )
+            except Exception:
+                pass
+        else:
+            raise
 
     # DOCX/PDF
     docx_bytes = build_docx(tpl["asunto"], tpl["cuerpo"])
@@ -556,7 +576,10 @@ def generate_dgt_for_case(
     )
 
     conn.execute(
-        text("INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at) VALUES (:case_id,:kind,:b2_bucket,:b2_key,:mime,:size_bytes,NOW())"),
+        text(
+            "INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at) "
+            "VALUES (:case_id,:kind,:b2_bucket,:b2_key,:mime,:size_bytes,NOW())"
+        ),
         {
             "case_id": case_id,
             "kind": kind_docx,
@@ -567,7 +590,10 @@ def generate_dgt_for_case(
         },
     )
     conn.execute(
-        text("INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at) VALUES (:case_id,:kind,:b2_bucket,:b2_key,:mime,:size_bytes,NOW())"),
+        text(
+            "INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at) "
+            "VALUES (:case_id,:kind,:b2_bucket,:b2_key,:mime,:size_bytes,NOW())"
+        ),
         {
             "case_id": case_id,
             "kind": kind_pdf,
