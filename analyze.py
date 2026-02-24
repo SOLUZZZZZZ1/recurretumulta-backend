@@ -58,6 +58,7 @@ def _merge_extracted(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict
             out[k] = v
     return out
 
+
 def _needs_speed_retry(core: Dict[str, Any]) -> bool:
     """True si parece velocidad pero faltan medida/límite."""
     if not isinstance(core, dict):
@@ -74,24 +75,13 @@ def _needs_speed_retry(core: Dict[str, Any]) -> bool:
     return False
 
 
-
 def _extract_precepts(text_blob: str) -> Dict[str, Any]:
-    """
-    Extrae referencias normativas/preceptos con heurística robusta.
-
-    Devuelve:
-      - preceptos_detectados: lista de strings
-      - articulo_num: int|None
-      - apartado_num: int|None
-      - norma_hint: string|None
-    """
     t = (text_blob or "").lower()
 
     precepts: List[str] = []
     art_num: Optional[int] = None
     apt_num: Optional[int] = None
 
-    # 1) Patrones explícitos "artículo 18" / "art. 18" (admite ceros a la izquierda)
     m_art = re.search(r"\bart[ií]culo\s*0?(\d{1,3})\b", t) or re.search(r"\bart\.\s*0?(\d{1,3})\b", t)
     if m_art:
         try:
@@ -100,7 +90,6 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
         except Exception:
             art_num = None
 
-    # 2) Patrones explícitos "apartado 1" / "aptdo. 1"
     m_apt = re.search(r"\bapartado\s*(\d{1,3})\b", t) or re.search(r"\baptdo\.?\s*(\d{1,3})\b", t)
     if m_apt:
         try:
@@ -112,7 +101,6 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
         except Exception:
             apt_num = None
 
-    # 3) Patrón muy frecuente en boletines DGT: "052.1" / "52.1" (artículo.apartado)
     m_code = re.search(r"\b0?(\d{1,3})\.(\d{1,3})\b", t)
     if m_code:
         try:
@@ -128,7 +116,6 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # 4) Patrón contextual: "precepto infringido ... artículo X ... apartado Y"
     m_ctx = re.search(
         r"precepto\s+infringido[\s\S]{0,160}?art[ií]culo\s*0?(\d{1,3})[\s\S]{0,120}?(?:apartado|aptdo\.?)\s*(\d{1,3})",
         t
@@ -146,13 +133,6 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
                 precepts.append(f"articulo {art_num} apartado {apt_num}")
         except Exception:
             pass
-
-    # 5) Corrección conservadora de OCR (caso típico: 80 leído en vez de 18)
-    if art_num == 80 and ("atención permanente" in t or "atencion permanente" in t) and ("precepto infringido" in t) and ("cir" in t or "reglamento general de circul" in t):
-        art_num = 18
-        precepts.append("articulo 18")
-        if apt_num is not None:
-            precepts.append(f"articulo 18 apartado {apt_num}")
 
     # Normas típicas
     norma_hint: Optional[str] = None
@@ -175,7 +155,6 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
         norma_hint = norma_hint or "LSOA"
         precepts.append("LSOA")
 
-    # Normalizar únicos
     seen = set()
     uniq: List[str] = []
     for p in precepts:
@@ -193,7 +172,6 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
 
 
 def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
-    """Extrae campos estructurados típicos de velocidad desde texto libre/OCR."""
     t = (text_blob or "").replace("\n", " ").lower()
     t = re.sub(r"\s+", " ", t).strip()
 
@@ -201,46 +179,62 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
     limit = None
 
     ms = re.search(
-        r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,120}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)[^\d]{0,40}(\d{2,3})\s*km\s*/?h",
+        r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,160}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)[^\d]{0,80}(\d{2,3})",
         t,
     )
     if ms:
         try:
-            measured = int(ms.group(1)); limit = int(ms.group(2))
+            measured = int(ms.group(1))
+            limit = int(ms.group(2))
         except Exception:
-            measured = None; limit = None
+            measured = None
+            limit = None
 
     if measured is None:
         m1 = re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?h\b", t)
         if m1:
-            try: measured = int(m1.group(1))
-            except Exception: measured = None
+            try:
+                measured = int(m1.group(1))
+            except Exception:
+                measured = None
 
     if limit is None:
-        m2 = re.search(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)\b[^\d]{0,40}(\d{2,3})\s*km\s*/?h\b", t)
+        m2 = re.search(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)\b[^\d]{0,80}(\d{2,3})\b", t)
         if m2:
-            try: limit = int(m2.group(1))
-            except Exception: limit = None
+            try:
+                limit = int(m2.group(1))
+            except Exception:
+                limit = None
 
+    # Fallback SOLO si hay señal de límite y hay 2 valores distintos
     if measured is None or limit is None:
-        nums = [int(x) for x in re.findall(r"\b(\d{2,3})\s*km\s*/?h\b", t)]
+        nums = [int(x) for x in re.findall(r"\b(\d{2,3})\b", t)]
         nums = [n for n in nums if 10 <= n <= 250]
-        if len(nums) >= 2:
-            hi = max(nums); lo = min(nums)
-            if measured is None: measured = hi
-            if limit is None: limit = lo
+        uniq = sorted(set(nums))
+        has_limit_signal = any(k in t for k in ["limitad", "límite", "limite", "velocidad máxima", "velocidad maxima"])
+        if has_limit_signal and len(uniq) >= 2:
+            hi = max(uniq)
+            lo = min(uniq)
+            if measured is None:
+                measured = hi
+            if limit is None:
+                limit = lo
 
     fine_eur = None
     mf = re.search(r"\b(\d{2,4})\s*(?:€|euros)\b", t)
     if mf:
-        try: fine_eur = int(mf.group(1))
-        except Exception: fine_eur = None
+        try:
+            fine_eur = int(mf.group(1))
+        except Exception:
+            fine_eur = None
 
     points = None
     mp = re.search(r"\b(\d)\s*puntos?\b", t)
     if mp:
-        try: points = int(mp.group(1))
-        except Exception: points = None
+        try:
+            points = int(mp.group(1))
+        except Exception:
+            points = None
 
     radar_model = None
     mr = re.search(r"(multaradar\s*[a-z0-9\-]*)", t)
@@ -258,150 +252,69 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
     }
 
 
-
 def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
     t = (text_blob or "").lower()
     facts: List[str] = []
 
-    # Seguro (LSOA / RDL 8/2004)
-    if ("lsoa" in t) or (("r.d. legislativo" in t or "rd legislativo" in t) and "8/2004" in t):
-        facts.append("CARENCIA DE SEGURO OBLIGATORIO")
-        return ("seguro", facts[0], facts)
+    # ==========================
+    # SEMÁFORO (PRIORIDAD MÁXIMA, OCR SUCIO INCLUIDO)
+    # ==========================
+    sema_signals = [
+        "semáforo", "semaforo",
+        "fase roja",
+        "cruce en rojo", "cruce con fase roja",
+        "luz roja del semáforo", "luz roja del semaforo",
+        "no respetar la luz roja",
+        "t/s roja", "ts roja",
+        "señal luminosa roja", "senal luminosa roja",
+        "cruzó en rojo", "cruzo en rojo",
+        "rebasar la línea de detención", "rebasar la linea de detencion",
+        "no respeta la luz roja", "no respeta luz roja",
+    ]
+    if any(s in t for s in sema_signals):
+        facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
+        return ("semaforo", facts[0], facts)
 
-    # No identificar (art. 9.1 bis)
-    if re.search(r"\bart\.\s*9\.?\s*1\s*bis\b", t) or re.search(r"\bart[ií]culo\s*9\.?\s*1\s*bis\b", t):
-        facts.append("NO IDENTIFICAR AL CONDUCTOR (ART. 9.1 BIS)")
-        return ("no_identificar", facts[0], facts)
-
-    # Condiciones del vehículo (art. 12 / RD 2822/98)
-    if re.search(r"\bart[ií]culo\s*12\b", t) or re.search(r"\bart\.\s*12\b", t) or ("2822/98" in t):
-        facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
-        return ("condiciones_vehiculo", facts[0], facts)
-
-    # Alumbrado / señalización óptica (art. 15)
-    if re.search(r"\bart[ií]culo\s*15\b", t) or re.search(r"\bart\.\s*15\b", t):
-        facts.append("DEFECTOS EN ALUMBRADO/SEÑALIZACIÓN ÓPTICA (ART. 15)")
-        return ("condiciones_vehiculo", facts[0], facts)
-
-    # Atención permanente (art. 18)
-    if re.search(r"\bart[ií]culo\s*18\b", t) or re.search(r"\bart\.\s*18\b", t):
-        facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN (ART. 18)")
-        return ("atencion", facts[0], facts)
-
-    # Marcas viales (art. 167)
-    if re.search(r"\bart[ií]culo\s*167\b", t) or re.search(r"\bart\.\s*167\b", t):
-        facts.append("NO RESPETAR MARCA LONGITUDINAL CONTINUA (ART. 167)")
-        return ("marcas_viales", facts[0], facts)
-
-    # Semáforo (evitar 'luz roja' suelta)
-    # Semáforo por precepto típico (art. 146 / 146.1) — fuerza tipo aunque el OCR sea raro
+    # Artículo típico (si aparece)
     if re.search(r"\bart\.?\s*146\b", t) or re.search(r"\bart[ií]culo\s*146\b", t) or re.search(r"\b146\s*[\.,]\s*1\b", t):
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
 
-
-    sema_patterns = [
-        r"circular\s+con\s+luz\s+roja",
-        r"sem[aá]foro",
-        r"fase\s+roja",
-        r"luz\s+roja\s+del\s+sem[aá]foro",
-        r"no\s+respetar\s+la\s+luz\s+roja",
-        r"no\s+respetar\s+.*sem[aá]foro",
-    ]
-    for ptn in sema_patterns:
-        if re.search(ptn, t):
-            facts.append("CIRCULAR CON LUZ ROJA")
-            return ("semaforo", facts[0], facts)
-
-    # Velocidad
-    m = re.search(r"\b(\d{2,3})\s*km\s*/?\s*h\b", t)
-    if m:
-        vel = m.group(1)
-        facts.append(f"EXCESO DE VELOCIDAD ({vel} km/h)")
-        return ("velocidad", facts[0], facts)
-    if "exceso de velocidad" in t or "radar" in t or "cinemómetro" in t or "cinemometro" in t:
-        facts.append("EXCESO DE VELOCIDAD")
-        return ("velocidad", facts[0], facts)
-
-    # Marcas viales (texto)
-    if ("marca longitudinal continua" in t) or ("marca longitudinal" in t and "continua" in t) or ("línea continua" in t) or ("linea continua" in t):
-        facts.append("NO RESPETAR MARCA LONGITUDINAL CONTINUA")
-        return ("marcas_viales", facts[0], facts)
-    if ("adelant" in t) and (("línea continua" in t) or ("linea continua" in t) or ("marca longitudinal" in t)):
-        facts.append("ADELANTAMIENTO INDEBIDO CON LÍNEA CONTINUA")
-        return ("marcas_viales", facts[0], facts)
-
-    # Móvil
-    if "utilizando manualmente" in t and ("teléfono" in t or "telefono" in t or "móvil" in t or "movil" in t):
-        facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
-        return ("movil", facts[0], facts)
-    if "teléfono móvil" in t or "telefono movil" in t or "uso del teléfono" in t or "uso del telefono" in t:
-        facts.append("USO DEL TELÉFONO MÓVIL")
-        return ("movil", facts[0], facts)
-
-    # No identificar (texto)
-    if ("identificar" in t and "conductor" in t) and ("plazo de veinte" in t or "20" in t or "veinte días" in t or "veinte dias" in t):
-        facts.append("NO IDENTIFICAR AL CONDUCTOR")
-        return ("no_identificar", facts[0], facts)
-
-    # ITV / Seguro (texto)
-    if ("itv" in t and ("caduc" in t or "sin itv" in t or "no vigente" in t)) or ("inspección técnica" in t and ("caduc" in t or "no vigente" in t)):
-        facts.append("ITV NO VIGENTE / CADUCADA")
-        return ("itv", facts[0], facts)
-
-    if (
-        ("seguro" in t and ("obligatorio" in t or "carece" in t or "sin seguro" in t))
-        or ("contrato de seguro" in t and ("mantenga en vigor" in t or "mantener en vigor" in t or "suscrito" in t or "suscrita" in t))
-        or ("sin que conste" in t and "seguro" in t)
-        or ("responsabilidad civil derivada de su circulación" in t or "responsabilidad civil derivada de su circulacion" in t)
-        or ("8/2004" in t and ("responsabilidad civil" in t or "seguro" in t))
-    ):
+    # Seguro
+    if ("lsoa" in t) or (("r.d. legislativo" in t or "rd legislativo" in t) and "8/2004" in t) or ("8/2004" in t and "responsabilidad civil" in t):
         facts.append("CARENCIA DE SEGURO OBLIGATORIO")
         return ("seguro", facts[0], facts)
 
-    # Alcoholemia / drogas
-    if "alcoholemia" in t or "mg/l" in t or "aire espirado" in t:
-        facts.append("ALCOHOLEMIA")
-        return ("alcoholemia", facts[0], facts)
-    if "drogas" in t or "estupefac" in t or "cannabis" in t or "cocaína" in t or "cocaina" in t:
-        facts.append("CONDUCCIÓN BAJO EFECTOS DE DROGAS")
-        return ("drogas", facts[0], facts)
+    # Móvil
+    if "utilizando manualmente" in t and any(k in t for k in ["teléfono", "telefono", "móvil", "movil"]):
+        facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
+        return ("movil", facts[0], facts)
+    if any(k in t for k in ["teléfono móvil", "telefono movil", "uso del teléfono", "uso del telefono"]):
+        facts.append("USO DEL TELÉFONO MÓVIL")
+        return ("movil", facts[0], facts)
 
-    # Cinturón / casco / SRI
-    if "cinturón" in t or "cinturon" in t:
-        facts.append("NO UTILIZAR CINTURÓN DE SEGURIDAD")
-        return ("cinturon", facts[0], facts)
-    if "casco" in t:
-        facts.append("NO UTILIZAR CASCO")
-        return ("casco", facts[0], facts)
-    if "sri" in t or "sistema de retención infantil" in t or "retención infantil" in t:
-        facts.append("SISTEMA DE RETENCIÓN INFANTIL (SRI)")
-        return ("sri", facts[0], facts)
+    # Velocidad (después de semáforo)
+    if re.search(r"\b(\d{2,3})\s*km\s*/?\s*h\b", t):
+        facts.append("EXCESO DE VELOCIDAD")
+        return ("velocidad", facts[0], facts)
+    if any(k in t for k in ["exceso de velocidad", "radar", "cinemómetro", "cinemometro"]):
+        facts.append("EXCESO DE VELOCIDAD")
+        return ("velocidad", facts[0], facts)
 
-    # Condiciones vehículo (texto)
-    if any(k in t for k in [
-        "condiciones reglamentarias", "vehículo reseñado", "vehiculo reseñado",
-        "deslumbr", "dispositivos de alumbrado", "señalización óptica", "senalizacion optica",
-        "anexo i", "emite luz", "destellos", "luz roja en la parte trasera"
-    ]):
-        facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
-        return ("condiciones_vehiculo", facts[0], facts)
+    # Marcas viales
+    if re.search(r"\bart[ií]culo\s*167\b", t) or re.search(r"\bart\.\s*167\b", t) or ("línea continua" in t) or ("linea continua" in t):
+        facts.append("NO RESPETAR MARCA LONGITUDINAL CONTINUA")
+        return ("marcas_viales", facts[0], facts)
 
-    # Atención (texto)
-    if "atención permanente" in t or "atencion permanente" in t or "distracción" in t or "distraccion" in t:
+    # Atención
+    if re.search(r"\bart[ií]culo\s*18\b", t) or re.search(r"\bart\.\s*18\b", t) or ("atención permanente" in t) or ("atencion permanente" in t):
         facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN")
         return ("atencion", facts[0], facts)
 
-    # Parking
-    if "doble fila" in t:
-        facts.append("ESTACIONAR EN DOBLE FILA")
-        return ("parking", facts[0], facts)
-    if "minusválid" in t or "minusvalid" in t or "pmr" in t:
-        facts.append("ESTACIONAR EN PLAZA RESERVADA (PMR)")
-        return ("parking", facts[0], facts)
-    if "zona azul" in t or "ora" in t or "ticket" in t:
-        facts.append("ESTACIONAMIENTO REGULADO (ZONA ORA)")
-        return ("parking", facts[0], facts)
+    # ITV
+    if ("itv" in t and ("caduc" in t or "no vigente" in t)) or ("inspección técnica" in t and ("caduc" in t or "no vigente" in t)):
+        facts.append("ITV NO VIGENTE / CADUCADA")
+        return ("itv", facts[0], facts)
 
     return ("otro", "", [])
 
@@ -412,6 +325,7 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     out["tipo_infraccion"] = tipo
     out["hecho_imputado"] = hecho or None
     out["facts_phrases"] = facts
+
     pre = _extract_precepts(text_blob)
     out["preceptos_detectados"] = pre.get("preceptos_detectados") or []
     out["articulo_infringido_num"] = pre.get("articulo_num")
@@ -422,6 +336,7 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     for k, v in (extra_fields or {}).items():
         if v is not None:
             out[k] = v
+
     return out
 
 
@@ -466,15 +381,12 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                 except Exception:
                     pass
 
-            
             elif mime == "application/pdf":
-                # Paso 1: texto por pypdf
                 text_content = extract_text_from_pdf_bytes(content)
 
                 extracted_text: Dict[str, Any] = {}
                 extracted_vision: Dict[str, Any] = {}
 
-                # Paso 2: extracción por texto si hay suficiente
                 if has_enough_text(text_content):
                     extracted_text = extract_from_text(text_content)
                     model_used = "openai_text"
@@ -484,20 +396,16 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                     model_used = "openai_vision"
                     confidence = 0.6
 
-                # Paso 3: SIEMPRE hacemos visión como segunda pasada (robustez)
                 extracted_vision = extract_from_image_bytes(content, mime, file.filename)
 
-                # Paso 4: triage de ambos
                 blob_text = _flatten_text(extracted_text, text_content=text_content) if extracted_text else (text_content or "")
                 triaged_text = _enrich_with_triage(extracted_text or {}, blob_text)
 
                 blob_vision = _flatten_text(extracted_vision, text_content="") if extracted_vision else ""
                 triaged_vision = _enrich_with_triage(extracted_vision or {}, blob_vision)
 
-                # Paso 5: merge (prioriza texto)
                 extracted_core = _merge_extracted(triaged_text, triaged_vision)
 
-                # Paso 6: persistimos blobs para motores posteriores
                 if text_content:
                     extracted_core["raw_text_pdf"] = text_content
                 if blob_vision:
@@ -505,14 +413,12 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
 
                 extracted_core["raw_text_blob"] = _flatten_text(extracted_core, text_content=text_content)
 
-                # Ajuste de metadatos de modelo
                 if extracted_text and not _needs_speed_retry(extracted_core):
                     model_used = "openai_text"
                     confidence = 0.8
                 else:
                     model_used = "openai_vision+text"
                     confidence = 0.75
-
 
             elif mime in DOCX_MIMES:
                 text_content = extract_text_from_docx_bytes(content)
@@ -521,35 +427,13 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                     model_used = "openai_text"
                     confidence = 0.8
                 else:
-                    extracted_core = {
-                        "organismo": None,
-                        "expediente_ref": None,
-                        "importe": None,
-                        "fecha_notificacion": None,
-                        "fecha_documento": None,
-                        "tipo_sancion": None,
-                        "pone_fin_via_administrativa": None,
-                        "plazo_recurso_sugerido": None,
-                        "observaciones": "DOCX sin texto suficiente.",
-                    }
+                    extracted_core = {"observaciones": "DOCX sin texto suficiente."}
 
             else:
-                extracted_core = {
-                    "organismo": None,
-                    "expediente_ref": None,
-                    "importe": None,
-                    "fecha_notificacion": None,
-                    "fecha_documento": None,
-                    "tipo_sancion": None,
-                    "pone_fin_via_administrativa": None,
-                    "plazo_recurso_sugerido": None,
-                    "observaciones": "Tipo de archivo no soportado.",
-                }
+                extracted_core = {"observaciones": "Tipo de archivo no soportado."}
 
             blob = _flatten_text(extracted_core, text_content=text_content)
             extracted_core = _enrich_with_triage(extracted_core, blob)
-
-                        
 
             wrapper = {
                 "filename": file.filename,
