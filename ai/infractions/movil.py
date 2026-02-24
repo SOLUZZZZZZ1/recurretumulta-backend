@@ -1,89 +1,151 @@
-
 """
-RTM — MÓVIL STRONG MODULE (SVL‑MOV‑2)
+RTM — MÓVIL STRONG MODULE (SVL-MOV-3)
 
-Diseñado para denuncias presenciales (agente) y captación técnica.
-Ataca tipicidad, descripción circunstanciada y motivación de no notificación.
-No usa OpenAI. 100% determinista.
+Objetivo:
+- 100% determinista (sin OpenAI)
+- No inventa hechos: redacción prudente ("si", "no consta", "no se aporta")
+- Tipicidad quirúrgica: exige USO MANUAL EFECTIVO con descripción circunstanciada
+- Diferencia modo de captación: AGENT / AUTO / UNKNOWN (si se pasa capture_mode)
+- Solicita ARCHIVO (Tráfico determinista)
 """
 
 from __future__ import annotations
+import json
 import re
 from typing import Dict, Any, List
 
 
+# --------------------------
+# Detección de contexto
+# --------------------------
 def is_movil_context(core: Dict[str, Any], body: str = "") -> bool:
+    core = core or {}
     blob = (body or "").lower()
-    hecho = str((core or {}).get("hecho_imputado") or "").lower()
-    return any(k in (blob + hecho) for k in [
+    hecho = str(core.get("hecho_imputado") or "").lower()
+
+    # Señales estructurales (tipo_infraccion si viene)
+    tipo = str(core.get("tipo_infraccion") or "").lower().strip()
+    if tipo == "movil":
+        return True
+
+    signals = [
         "teléfono", "telefono", "móvil", "movil",
-        "utilizando manualmente", "en la mano"
-    ])
+        "uso manual", "utilizando manualmente", "en la mano",
+        "manipulando", "pantalla", "whatsapp", "llamada",
+    ]
+    return any(s in (blob + "\n" + hecho) for s in signals)
 
 
-def build_movil_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
-    expediente = (core or {}).get("expediente_ref") or "No consta acreditado."
-    organo = (core or {}).get("organo") or (core or {}).get("organismo") or "No consta acreditado."
-    hecho = (core or {}).get("hecho_imputado") or "USO MANUAL DEL TELÉFONO MÓVIL."
+# --------------------------
+# Plantilla determinista fuerte
+# --------------------------
+def build_movil_strong_template(core: Dict[str, Any], capture_mode: str = "UNKNOWN") -> Dict[str, str]:
+    core = core or {}
+    cm = (capture_mode or "UNKNOWN").upper()
+
+    expediente = core.get("expediente_ref") or core.get("numero_expediente") or "No consta acreditado."
+    organo = core.get("organo") or core.get("organismo") or "No consta acreditado."
+    hecho = core.get("hecho_imputado") or "USO MANUAL DEL TELÉFONO MÓVIL."
+
+    # Fecha/hora si consta (sin inventar)
+    fecha_hecho = core.get("fecha_infraccion") or core.get("fecha_hecho") or core.get("fecha_documento") or ""
+    fecha_line = f" (fecha indicada: {fecha_hecho})" if isinstance(fecha_hecho, str) and fecha_hecho.strip() else ""
 
     asunto = "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE"
 
-    cuerpo = f"""
-A la atención del órgano competente,
+    # Bloque específico según modo de captación
+    if cm == "AGENT":
+        captacion_block = (
+            "ALEGACIÓN SEGUNDA — OBSERVACIÓN PRESENCIAL: FIABILIDAD PERCEPTIVA Y DESCRIPCIÓN CIRCUNSTANCIADA\n\n"
+            "Si la imputación se basa en observación presencial, debe detallarse con precisión:\n"
+            "• Posición del agente y punto exacto de observación.\n"
+            "• Distancia aproximada y ángulo de visión respecto del habitáculo.\n"
+            "• Condiciones de visibilidad (tráfico, iluminación, obstáculos, lunas/tintes).\n"
+            "• Tiempo durante el cual se observó la conducta.\n"
+            "• Identificación clara de la mano utilizada y de la acción concreta realizada.\n\n"
+            "La ausencia de estos extremos impide verificar la fiabilidad perceptiva de la observación y ejercer contradicción efectiva.\n\n"
+        )
+    elif cm == "AUTO":
+        captacion_block = (
+            "ALEGACIÓN SEGUNDA — CAPTACIÓN TÉCNICA/AUTOMÁTICA: SOPORTE ÍNTEGRO Y LEGIBLE\n\n"
+            "Si se invoca captación técnica o automática, debe aportarse soporte íntegro, legible y sin recortes "
+            "(fotografías/secuencias/capturas), que permita constatar inequívocamente:\n"
+            "• La identidad del vehículo.\n"
+            "• El uso manual efectivo (no mera sujeción).\n"
+            "• La correspondencia temporal del registro con el hecho imputado.\n\n"
+            "En ausencia de soporte verificable, procede el archivo por insuficiencia probatoria.\n\n"
+        )
+    else:
+        captacion_block = (
+            "ALEGACIÓN SEGUNDA — MODO DE CONSTATACIÓN NO CONCLUYENTE: APORTACIÓN DE PRUEBA COMPLETA\n\n"
+            "No constando con claridad el modo de constatación (observación presencial vs captación técnica), "
+            "se solicita la aportación de la prueba completa y del acta/denuncia íntegra con motivación individualizada. "
+            "En caso de no constar, procede el archivo por insuficiencia probatoria.\n\n"
+        )
 
-I. ANTECEDENTES
-1) Órgano: {organo}
-2) Identificación expediente: {expediente}
-3) Hecho imputado: {hecho}
-
-II. ALEGACIONES
-
-ALEGACIÓN PRIMERA — TIPICIDAD: USO MANUAL EFECTIVO
-
-La infracción exige acreditar un USO MANUAL EFECTIVO del teléfono móvil incompatible con la conducción.
-No basta la mera sujeción del dispositivo ni su presencia en la mano.
-Debe acreditarse manipulación activa (marcar, escribir, interactuar con pantalla)
-y su duración concreta.
-
-No consta descripción específica de la acción realizada, duración, ni circunstancia concreta
-que permita afirmar manipulación activa incompatible con la conducción.
-
-ALEGACIÓN SEGUNDA — OBSERVACIÓN DESDE VEHÍCULO OFICIAL
-
-La supuesta infracción habría sido observada desde vehículo camuflado en circulación.
-Debe concretarse:
-
-• Distancia aproximada de observación.
-• Posición relativa de ambos vehículos.
-• Condiciones de tráfico.
-• Ángulo de visión y visibilidad real del interior del vehículo.
-• Tiempo durante el cual se observó la conducta.
-
-La ausencia de estos extremos impide verificar la fiabilidad perceptiva de la observación.
-
-ALEGACIÓN TERCERA — NO NOTIFICACIÓN EN EL ACTO
-
-La no notificación inmediata debe motivarse adecuadamente.
-La mera referencia a falta de medios de seguimiento no suple el deber de motivación
-cuando la infracción se habría observado directamente.
-
-III. SOLICITO
-
-1) Que se tengan por formuladas las presentes alegaciones.
-2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de acreditación suficiente del hecho.
-3) Subsidiariamente, que se practique prueba y se aporte expediente íntegro.
-""".strip()
+    cuerpo = (
+        "A la atención del órgano competente,\n\n"
+        "I. ANTECEDENTES\n"
+        f"1) Órgano: {organo}\n"
+        f"2) Identificación expediente: {expediente}\n"
+        f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
+        "II. ALEGACIONES\n\n"
+        "ALEGACIÓN PRIMERA — TIPICIDAD: EXIGENCIA DE USO MANUAL EFECTIVO Y DESCRIPCIÓN CONCRETA\n\n"
+        "La infracción exige acreditar un USO MANUAL EFECTIVO del teléfono móvil incompatible con la conducción. "
+        "No basta una mención genérica, ni la mera presencia o sujeción del dispositivo, "
+        "si no se describe una manipulación activa (p. ej., marcar, escribir, interactuar con pantalla) "
+        "y su incidencia real en la conducción.\n\n"
+        "No consta acreditado en el expediente, de forma concreta y verificable:\n"
+        "1) Qué acción exacta se realizaba con el dispositivo (manipulación activa vs mera sujeción).\n"
+        "2) Qué mano se utilizaba y cómo se constató dicho extremo.\n"
+        "3) La duración aproximada de la conducta y el momento exacto de la observación/captación.\n"
+        "4) Las circunstancias relevantes del tráfico y visibilidad en el instante del hecho.\n"
+        "5) La motivación individualizada que permita subsunción típica y contradicción efectiva.\n\n"
+        "En ausencia de descripción circunstanciada y prueba suficiente, no puede tenerse por acreditada la infracción, "
+        "procediendo el ARCHIVO por insuficiencia probatoria.\n\n"
+        f"{captacion_block}"
+        "ALEGACIÓN TERCERA — NO NOTIFICACIÓN EN EL ACTO (SI PROCEDIERE)\n\n"
+        "La no notificación inmediata debe motivarse de manera suficiente y específica. "
+        "La mera fórmula estereotipada no suple el deber de motivación cuando se afirma constatación directa del hecho.\n\n"
+        "III. SOLICITO\n"
+        "1) Que se tengan por formuladas las presentes alegaciones.\n"
+        "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de acreditación suficiente del uso manual efectivo.\n"
+        "3) Subsidiariamente, que se practique prueba y se aporte expediente íntegro (acta/denuncia completa y soportes, si existieran).\n"
+    ).strip()
 
     return {"asunto": asunto, "cuerpo": cuerpo}
 
 
+# --------------------------
+# Strict (SVL-MOV-3)
+# --------------------------
 def strict_missing(body: str) -> List[str]:
     b = (body or "").lower()
-    missing = []
-    if "uso manual" not in b:
+    missing: List[str] = []
+
+    # Tipicidad fuerte
+    if "uso manual efectivo" not in b and "uso manual" not in b:
         missing.append("tipicidad_uso_manual")
-    if "distancia" not in b:
-        missing.append("descripcion_circunstanciada")
-    if "archivo" not in b:
-        missing.append("solicito_archivo")
-    return missing
+    if not any(k in b for k in ["acción exacta", "accion exacta", "manipulación activa", "manipulacion activa"]):
+        missing.append("accion_concreta")
+    if "mano" not in b:
+        missing.append("mano_utilizada")
+    if not any(k in b for k in ["duración", "duracion", "tiempo durante"]):
+        missing.append("duracion_aproximada")
+
+    # Descripción circunstanciada / fiabilidad
+    if not any(k in b for k in ["distancia", "ángulo", "angulo", "posición del agente", "posicion del agente", "captación", "captacion", "fotograf", "secuencia"]):
+        missing.append("modo_constatacion_y_soporte")
+
+    # Archivo en solicito
+    if not re.search(r"^2\)\s*que\s+se\s+acuerde\s+el\s+archivo", body or "", flags=re.IGNORECASE | re.MULTILINE):
+        if "archivo del expediente" not in b and "acuerde el archivo" not in b:
+            missing.append("solicito_archivo_punto2")
+
+    # unique
+    return list(dict.fromkeys(missing))
+
+
+# Alias compatibilidad (por si algún punto del sistema busca este nombre)
+def movil_strict_missing(body: str) -> List[str]:
+    return strict_missing(body)
