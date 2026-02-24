@@ -107,10 +107,7 @@ def _is_velocity_context(core: Dict[str, Any], cuerpo: str) -> bool:
 
 
 def _velocity_missing_min_terms(body: str) -> List[str]:
-    """
-    Mínimos que Velocity Strict exige y que, si faltan, deben forzar plantilla VSE-1
-    incluso aunque ya exista 'ALEGACIÓN PRIMERA' en el texto.
-    """
+    """Mínimos que exige Velocity Strict."""
     b = (body or "").lower()
     missing: List[str] = []
     if "margen" not in b:
@@ -137,10 +134,7 @@ def _speed_margin_value(measured: int) -> float:
 
 
 def _dgt_speed_sanction_table() -> Dict[int, list]:
-    """Tabla DGT (bandas) para sanciones por exceso de velocidad captado por cinemómetro.
-    Devuelve por límite (20..120) una lista de bandas: (from,to,fine,points,label)
-    Nota: rangos inclusivos. Tabla conservadora para control interno.
-    """
+    """Tabla DGT (bandas) para sanciones por exceso de velocidad captado por cinemómetro."""
     return {
         20: [(21,40,100,0,'100€ sin puntos'), (41,50,300,2,'300€ 2 puntos'), (51,60,400,4,'400€ 4 puntos'), (61,70,500,6,'500€ 6 puntos'), (71,999,600,6,'600€ 6 puntos')],
         30: [(31,50,100,0,'100€ sin puntos'), (51,60,300,2,'300€ 2 puntos'), (61,70,400,4,'400€ 4 puntos'), (71,80,500,6,'500€ 6 puntos'), (81,999,600,6,'600€ 6 puntos')],
@@ -169,10 +163,7 @@ def _expected_speed_sanction(limit: int, corrected: float) -> Dict[str, Any]:
 
 
 def _compute_velocity_calc_from_core(core: Dict[str, Any]) -> Dict[str, Any]:
-    """Cálculo interno VSE-1 (compatible) desde core.
-    Usa margen conservador fijo (<=100: 5 km/h; >100: 5%).
-    Añade expected (tabla) y mismatch con lo impuesto si consta.
-    """
+    """Cálculo interno VSE-1 (compatible) desde core."""
     try:
         measured = core.get("velocidad_medida_kmh")
         limit = core.get("velocidad_limite_kmh")
@@ -225,7 +216,7 @@ def _compute_velocity_calc_from_core(core: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _inject_tramo_error_paragraph(body: str, velocity_calc: Dict[str, Any]) -> str:
-    """Si hay mismatch de tramo (expected vs impuesto), inserta un párrafo antes de III. SOLICITO."""
+    """Si hay mismatch de tramo, inserta párrafo antes de III. SOLICITO."""
     try:
         if "posible error de tramo sancionador" in (body or "").lower():
             return body
@@ -241,13 +232,19 @@ def _inject_tramo_error_paragraph(body: str, velocity_calc: Dict[str, Any]) -> s
         parts = []
         parts.append("De forma adicional, se aprecia posible error de tramo sancionador.")
         if isinstance(imp.get("fine"), int) and isinstance(exp.get("fine"), int) and imp.get("fine") != exp.get("fine"):
-            parts.append(f"Consta un importe impuesto de {imp.get('fine')}€, mientras que, atendida la velocidad corregida, el tramo orientativo podría corresponder a {exp.get('fine')}€.")
+            parts.append(
+                f"Consta un importe impuesto de {imp.get('fine')}€, mientras que, atendida la velocidad corregida, el tramo orientativo podría corresponder a {exp.get('fine')}€."
+            )
         if isinstance(imp.get("points"), int) and isinstance(exp.get("points"), int) and imp.get("points") != exp.get("points"):
-            parts.append(f"Asímismo, constan {imp.get('points')} puntos, cuando el tramo orientativo podría implicar {exp.get('points')} puntos.")
+            parts.append(
+                f"Asímismo, constan {imp.get('points')} puntos, cuando el tramo orientativo podría implicar {exp.get('points')} puntos."
+            )
         if exp.get("band"):
             parts.append(f"Banda orientativa considerada: {exp.get('band')}.")
 
-        parts.append("En todo caso, corresponde a la Administración acreditar margen aplicado, velocidad corregida y banda/tramo aplicado, con motivación técnica verificable.")
+        parts.append(
+            "En todo caso, corresponde a la Administración acreditar margen aplicado, velocidad corregida y banda/tramo aplicado, con motivación técnica verificable."
+        )
         extra = " ".join(parts) + "\n"
 
         mm = re.search(r"^III\.\s*SOLICITO\b", body, flags=re.IGNORECASE | re.MULTILINE)
@@ -323,11 +320,7 @@ def _inject_bucket_paragraph(body: str, decision: Dict[str, Any]) -> str:
 
 
 def _force_velocity_vse1_if_needed(asunto: str, cuerpo: str, core: Dict[str, Any]) -> Tuple[str, str]:
-    """
-    Fuerza plantilla VSE-1 si:
-    - Es velocidad, y
-    - El borrador no tiene estructura, O tiene 'ALEGACIÓN PRIMERA' pero NO contiene mínimos (margen/cadena/cinemómetro).
-    """
+    """Fuerza plantilla VSE-1 si es velocidad y faltan mínimos, aunque exista ALEGACIÓN PRIMERA."""
     if not _is_velocity_context(core, cuerpo):
         return asunto, cuerpo
 
@@ -336,7 +329,7 @@ def _force_velocity_vse1_if_needed(asunto: str, cuerpo: str, core: Dict[str, Any
         miss = _velocity_missing_min_terms(cuerpo or "")
         if not miss:
             return asunto, cuerpo
-        # si faltan mínimos, seguimos y forzamos plantilla fija
+        # si faltan mínimos, forzamos plantilla
 
     expediente = (core or {}).get("expediente_ref") or (core or {}).get("numero_expediente") or None
     organo = (core or {}).get("organo") or (core or {}).get("organismo") or None
@@ -387,7 +380,6 @@ def _force_velocity_vse1_if_needed(asunto: str, cuerpo: str, core: Dict[str, Any
 
 
 def _velocity_strict_validate(body: str) -> List[str]:
-    """SVL-1 VELOCIDAD: valida mínimos."""
     b = (body or "").lower()
     missing: List[str] = []
 
@@ -399,9 +391,17 @@ def _velocity_strict_validate(body: str) -> List[str]:
         missing.append("margen")
     if "cadena de custodia" not in b:
         missing.append("cadena_custodia")
-    if "cinemómetro" not in b and "cinemometro" not in b and "radar" not in b:
+    if not any(k in b for k in ["cinemómetro", "cinemometro", "radar"]):
         missing.append("cinemometro")
-    return missing
+
+    # unique
+    seen = set()
+    out: List[str] = []
+    for x in missing:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
 
 
 def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dict[str, str], ai_used: bool) -> None:
@@ -426,7 +426,7 @@ def generate_dgt_for_case(
 
     row = conn.execute(
         text("SELECT extracted_json FROM extractions WHERE case_id=:case_id ORDER BY created_at DESC LIMIT 1"),
-        {"id": case_id, "case_id": case_id},
+        {"case_id": case_id},
     ).fetchone()
 
     if not row:
@@ -452,7 +452,9 @@ def generate_dgt_for_case(
     decision_mode = "unknown"
     decision: Dict[str, Any] = {"mode": "unknown", "reasons": ["not_computed"]}
 
+    # ==========================
     # IA PRIMERO
+    # ==========================
     if RTM_DGT_GENERATION_MODE != "TEMPLATES_ONLY":
         try:
             ai_result = run_expediente_ai(case_id)
@@ -465,9 +467,19 @@ def generate_dgt_for_case(
                     asunto = "RECURSO (MODO PRUEBA)"
                     cuerpo = _strip_borrador_prefix_from_body(cuerpo)
 
-                # ✅ NUEVO: si es velocidad y el texto no cumple mínimos, forzar plantilla VSE-1
+                # ✅ TRÁFICO DETERMINISTA PRIMERO: MÓVIL SIEMPRE
+                # Si el caso es móvil, ignoramos el texto IA y usamos plantilla determinista fuerte.
+                try:
+                    if is_movil_context(core, cuerpo):
+                        tpl_m = build_movil_strong_template(core)
+                        asunto, cuerpo = (tpl_m.get("asunto") or asunto), (tpl_m.get("cuerpo") or cuerpo)
+                except Exception:
+                    pass
+
+                # VELOCIDAD: si falta mínimos, forzar VSE-1
                 asunto, cuerpo = _force_velocity_vse1_if_needed(asunto, cuerpo, core)
 
+                # Auditoría de decisión (no rompe)
                 try:
                     decision = decide_modo_velocidad(core, body=cuerpo, capture_mode="UNKNOWN") or decision
                     decision_mode = (decision.get("mode") or "unknown") if isinstance(decision, dict) else "unknown"
@@ -481,11 +493,14 @@ def generate_dgt_for_case(
 
                 tpl = {"asunto": asunto, "cuerpo": cuerpo}
                 ai_used = True
+
         except Exception as e:
             ai_error = str(e)
             tpl = None
 
+    # ==========================
     # FALLBACK A PLANTILLAS
+    # ==========================
     if not tpl:
         if tipo == "reposicion":
             tpl = build_dgt_reposicion_text(core, interesado)
@@ -494,9 +509,9 @@ def generate_dgt_for_case(
             tpl = build_dgt_alegaciones_text(core, interesado)
             filename_base = "alegaciones_dgt"
 
-        # Fallback móvil fuerte (determinista)
+        # ✅ MÓVIL determinista también en fallback (por si acaso)
         try:
-            if is_movil_context(core, ""):
+            if is_movil_context(core, tpl.get("cuerpo") or ""):
                 tpl = build_movil_strong_template(core)
                 filename_base = "alegaciones_dgt" if tipo != "reposicion" else "recurso_reposicion_dgt"
         except Exception:
@@ -525,7 +540,7 @@ def generate_dgt_for_case(
     except Exception:
         pass
 
-    # FORCE bucket + tramo mismatch injection on final tpl (último punto seguro)
+    # FORCE bucket + tramo mismatch injection on final tpl
     velocity_calc_for_audit: Dict[str, Any] = {"ok": False, "reason": "not_computed"}
     try:
         if tpl and isinstance(tpl, dict):
@@ -536,13 +551,12 @@ def generate_dgt_for_case(
         pass
 
     # ==========================
-    # STRICT (con bypass seguro en MODO DIOS)
+    # STRICT (bypass seguro en MODO DIOS)
     # ==========================
     try:
         _strict_validate_or_raise(conn, case_id, core, tpl, ai_used)
     except HTTPException as e:
         if override_mode:
-            # En modo prueba no bloqueamos generación: registramos y seguimos.
             try:
                 conn.execute(
                     text(
