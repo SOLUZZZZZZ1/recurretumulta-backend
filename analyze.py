@@ -116,40 +116,13 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-    m_ctx = re.search(
-        r"precepto\s+infringido[\s\S]{0,160}?art[ií]culo\s*0?(\d{1,3})[\s\S]{0,120}?(?:apartado|aptdo\.?)\s*(\d{1,3})",
-        t
-    )
-    if m_ctx:
-        try:
-            art_ctx = int(m_ctx.group(1))
-            apt_ctx = int(m_ctx.group(2))
-            if art_num is None:
-                art_num = art_ctx
-                precepts.append(f"articulo {art_num}")
-            if apt_num is None:
-                apt_num = apt_ctx
-            if art_num is not None and apt_num is not None:
-                precepts.append(f"articulo {art_num} apartado {apt_num}")
-        except Exception:
-            pass
-
-    # Normas típicas
     norma_hint: Optional[str] = None
-
     if ("r.d. legislativo" in t and "8/2004" in t) or ("rd legislativo" in t and "8/2004" in t) or ("8/2004" in t and "responsabilidad civil" in t):
         norma_hint = "RDL 8/2004"
         precepts.append("RDL 8/2004")
 
-    if "2822/98" in t or "r.d. 2822/98" in t or "rd 2822/98" in t:
-        norma_hint = norma_hint or "RD 2822/98"
-        precepts.append("RD 2822/98")
-
     if "reglamento general de circul" in t or "rgc" in t:
         precepts.append("Reglamento General de Circulación")
-
-    if "ley sobre tráfico" in t or "ley de trafico" in t or "trltsv" in t:
-        precepts.append("Ley de Tráfico (genérico)")
 
     if "lsoa" in t:
         norma_hint = norma_hint or "LSOA"
@@ -206,7 +179,7 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
             except Exception:
                 limit = None
 
-    # Fallback SOLO si hay señal de límite y hay 2 valores distintos
+    # Fallback SOLO si hay señal de límite y 2 números distintos
     if measured is None or limit is None:
         nums = [int(x) for x in re.findall(r"\b(\d{2,3})\b", t)]
         nums = [n for n in nums if 10 <= n <= 250]
@@ -256,9 +229,7 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
     t = (text_blob or "").lower()
     facts: List[str] = []
 
-    # ==========================
-    # SEMÁFORO (PRIORIDAD MÁXIMA, OCR SUCIO INCLUIDO)
-    # ==========================
+    # ✅ SEMÁFORO PRIORIDAD MÁXIMA (OCR sucio)
     sema_signals = [
         "semáforo", "semaforo",
         "fase roja",
@@ -267,23 +238,16 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         "no respetar la luz roja",
         "t/s roja", "ts roja",
         "señal luminosa roja", "senal luminosa roja",
-        "cruzó en rojo", "cruzo en rojo",
-        "rebasar la línea de detención", "rebasar la linea de detencion",
+        "línea de detención", "linea de detencion",
         "no respeta la luz roja", "no respeta luz roja",
     ]
     if any(s in t for s in sema_signals):
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
 
-    # Artículo típico (si aparece)
     if re.search(r"\bart\.?\s*146\b", t) or re.search(r"\bart[ií]culo\s*146\b", t) or re.search(r"\b146\s*[\.,]\s*1\b", t):
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
-
-    # Seguro
-    if ("lsoa" in t) or (("r.d. legislativo" in t or "rd legislativo" in t) and "8/2004" in t) or ("8/2004" in t and "responsabilidad civil" in t):
-        facts.append("CARENCIA DE SEGURO OBLIGATORIO")
-        return ("seguro", facts[0], facts)
 
     # Móvil
     if "utilizando manualmente" in t and any(k in t for k in ["teléfono", "telefono", "móvil", "movil"]):
@@ -293,7 +257,7 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("USO DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
 
-    # Velocidad (después de semáforo)
+    # Velocidad
     if re.search(r"\b(\d{2,3})\s*km\s*/?\s*h\b", t):
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
@@ -301,20 +265,10 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
 
-    # Marcas viales
-    if re.search(r"\bart[ií]culo\s*167\b", t) or re.search(r"\bart\.\s*167\b", t) or ("línea continua" in t) or ("linea continua" in t):
-        facts.append("NO RESPETAR MARCA LONGITUDINAL CONTINUA")
-        return ("marcas_viales", facts[0], facts)
-
-    # Atención
-    if re.search(r"\bart[ií]culo\s*18\b", t) or re.search(r"\bart\.\s*18\b", t) or ("atención permanente" in t) or ("atencion permanente" in t):
-        facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN")
-        return ("atencion", facts[0], facts)
-
-    # ITV
-    if ("itv" in t and ("caduc" in t or "no vigente" in t)) or ("inspección técnica" in t and ("caduc" in t or "no vigente" in t)):
-        facts.append("ITV NO VIGENTE / CADUCADA")
-        return ("itv", facts[0], facts)
+    # Seguro
+    if ("lsoa" in t) or (("r.d. legislativo" in t or "rd legislativo" in t) and "8/2004" in t) or ("8/2004" in t and "responsabilidad civil" in t):
+        facts.append("CARENCIA DE SEGURO OBLIGATORIO")
+        return ("seguro", facts[0], facts)
 
     return ("otro", "", [])
 
