@@ -115,10 +115,6 @@ def _is_velocity_context(core: Dict[str, Any], cuerpo: str) -> bool:
 
 
 def _is_semaforo_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
-    """
-    Detecta semáforo aunque core venga roto.
-    Usa raw_text_pdf/raw_text_vision/raw_text_blob guardados en extracted_core por analyze.py.
-    """
     core = core or {}
     parts: List[str] = []
 
@@ -157,7 +153,6 @@ def _is_semaforo_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
 # ==========================
 
 def _speed_margin_value(measured: int) -> float:
-    # Conservador (fijo/estático) ICT/155/2020
     if measured <= 100:
         return 5.0
     return round(measured * 0.05, 2)
@@ -191,6 +186,57 @@ def _expected_speed_sanction(limit: int, corrected: float) -> Dict[str, Any]:
     return {"fine": None, "points": None, "band": None, "table_limit": lim, "corrected_int": v}
 
 
+def sanitize_imposed_fine(value: Any) -> Optional[int]:
+    """
+    Evita falsos positivos tipo 'BMW 120D' -> '1200€' por OCR.
+    Acepta solo importes plausibles de radar: {100,200,300,400,500,600}.
+    Si hay letras o valores raros, devuelve None.
+    """
+    try:
+        if value is None:
+            return None
+
+        if isinstance(value, str):
+            v = value.strip()
+            if not v:
+                return None
+            # Si contiene letras, fuera (120D, etc.)
+            if re.search(r"[A-Za-z]", v):
+                return None
+            v = v.replace(".", "").replace(",", "").replace("€", "").strip()
+            if not v.isdigit():
+                return None
+            value = int(v)
+
+        if isinstance(value, (int, float)):
+            iv = int(round(float(value)))
+        else:
+            return None
+
+        allowed = {100, 200, 300, 400, 500, 600}
+        return iv if iv in allowed else None
+    except Exception:
+        return None
+
+
+def sanitize_imposed_points(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            v = value.strip()
+            if not v.isdigit():
+                return None
+            value = int(v)
+        if isinstance(value, (int, float)):
+            iv = int(round(float(value)))
+        else:
+            return None
+        return iv if 0 <= iv <= 6 else None
+    except Exception:
+        return None
+
+
 def _compute_velocity_calc_from_core(core: Dict[str, Any]) -> Dict[str, Any]:
     try:
         measured = core.get("velocidad_medida_kmh")
@@ -206,23 +252,12 @@ def _compute_velocity_calc_from_core(core: Dict[str, Any]) -> Dict[str, Any]:
         corrected = max(0.0, float(measured) - float(margin))
         expected = _expected_speed_sanction(int(limit), corrected)
 
-        imposed_fine = core.get("sancion_importe_eur")
-        imposed_pts = core.get("puntos_detraccion")
-
-        # parse basic ints (sin sanitizar aquí; es auditoría)
-        try:
-            if isinstance(imposed_fine, str) and imposed_fine.strip().isdigit():
-                imposed_fine = int(imposed_fine.strip())
-        except Exception:
-            pass
-        try:
-            if isinstance(imposed_pts, str) and imposed_pts.strip().isdigit():
-                imposed_pts = int(imposed_pts.strip())
-        except Exception:
-            pass
+        # ✅ SANITIZA (evita 120D -> 1200)
+        imposed_fine = sanitize_imposed_fine(core.get("sancion_importe_eur"))
+        imposed_pts = sanitize_imposed_points(core.get("puntos_detraccion"))
 
         mismatch = False
-        mismatch_reasons = []
+        mismatch_reasons: List[str] = []
         if isinstance(imposed_fine, int) and isinstance(expected.get("fine"), int) and imposed_fine != expected.get("fine"):
             mismatch = True
             mismatch_reasons.append("fine_mismatch")
@@ -272,7 +307,6 @@ def _build_velocity_calc_paragraph(core: Dict[str, Any]) -> str:
 
 
 def _velocity_vse1_template(core: Dict[str, Any]) -> Tuple[str, str]:
-    """Plantilla fija VSE-1 SIEMPRE para velocidad."""
     expediente = (core or {}).get("expediente_ref") or (core or {}).get("numero_expediente") or "No consta acreditado."
     organo = (core or {}).get("organo") or (core or {}).get("organismo") or "No consta acreditado."
     hecho = (core or {}).get("hecho_imputado") or "EXCESO DE VELOCIDAD."
@@ -311,15 +345,18 @@ def _velocity_vse1_template(core: Dict[str, Any]) -> Tuple[str, str]:
 
 
 def _inject_tramo_error_paragraph(body: str, velocity_calc: Dict[str, Any]) -> str:
-    """Mantengo tu función tal cual (solo se usará en velocidad)."""
     try:
+        # Solo si hay mismatch Y el imposed fine es fiable (sanitizado)
         if "posible error de tramo sancionador" in (body or "").lower():
             return body
         if not body or not isinstance(velocity_calc, dict) or not velocity_calc.get("ok") or not velocity_calc.get("mismatch"):
             return body
+        imposed = (velocity_calc.get("imposed") or {})
+        if not isinstance(imposed.get("fine"), int):
+            return body  # <- clave: si el "importe" no es fiable, NO inyectar
 
         exp = velocity_calc.get("expected") or {}
-        imp = velocity_calc.get("imposed") or {}
+        imp = imposed
         if exp.get("fine") is None and exp.get("points") is None:
             return body
 
@@ -343,7 +380,6 @@ def _inject_tramo_error_paragraph(body: str, velocity_calc: Dict[str, Any]) -> s
 
 
 def _inject_bucket_paragraph(body: str, decision: Dict[str, Any]) -> str:
-    """Mantengo tu bucket injection (si decide_modo_velocidad lo usa)."""
     if not body or not isinstance(decision, dict):
         return body
     if (decision.get("mode") or "") != "probatorio_puro":
@@ -371,7 +407,6 @@ def _inject_bucket_paragraph(body: str, decision: Dict[str, Any]) -> str:
 
 
 def _velocity_strict_validate(body: str) -> List[str]:
-    """Strict mínimo: aquí no debería fallar nunca porque es plantilla fija."""
     b = (body or "").lower()
     missing: List[str] = []
 
@@ -471,16 +506,12 @@ def generate_dgt_for_case(
                 # ✅ VELOCIDAD determinista SIEMPRE
                 if _is_velocity_context(core, cuerpo):
                     asunto, cuerpo = _velocity_vse1_template(core)
-
-                # Auditoría (no rompe)
-                try:
-                    decision = decide_modo_velocidad(core, body=cuerpo, capture_mode="UNKNOWN") or decision
-                    decision_mode = (decision.get("mode") or "unknown") if isinstance(decision, dict) else "unknown"
-                except Exception:
-                    pass
-
-                # Bucket + tramo solo si el resultado final es velocidad
-                if _is_velocity_context(core, cuerpo):
+                    # bucket + tramo error solo en velocidad
+                    try:
+                        decision = decide_modo_velocidad(core, body=cuerpo, capture_mode="UNKNOWN") or decision
+                        decision_mode = (decision.get("mode") or "unknown") if isinstance(decision, dict) else "unknown"
+                    except Exception:
+                        pass
                     cuerpo = _inject_bucket_paragraph(cuerpo, decision)
                     velocity_calc = _compute_velocity_calc_from_core(core)
                     cuerpo = _inject_tramo_error_paragraph(cuerpo, velocity_calc)
@@ -508,12 +539,20 @@ def generate_dgt_for_case(
         if is_movil_context(core, tpl.get("cuerpo") or ""):
             tpl = build_movil_strong_template(core)
 
-        # Velocidad determinista SIEMPRE
+        # Velocidad determinista
         if _is_velocity_context(core, tpl.get("cuerpo") or ""):
             asunto_v, cuerpo_v = _velocity_vse1_template(core)
+            try:
+                decision = decide_modo_velocidad(core, body=cuerpo_v, capture_mode="UNKNOWN") or decision
+                decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
+            except Exception:
+                pass
+            cuerpo_v = _inject_bucket_paragraph(cuerpo_v, decision)
+            velocity_calc = _compute_velocity_calc_from_core(core)
+            cuerpo_v = _inject_tramo_error_paragraph(cuerpo_v, velocity_calc)
             tpl = {"asunto": asunto_v, "cuerpo": cuerpo_v}
 
-        # Auditoría (no rompe)
+        # auditoría (no rompe)
         try:
             decision = decide_modo_velocidad(core, body=(tpl.get("cuerpo") or ""), capture_mode="UNKNOWN") or decision
             decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
