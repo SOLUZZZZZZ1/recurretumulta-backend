@@ -133,15 +133,14 @@ def _is_semaforo_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
     blob = " ".join(parts).lower()
 
     sema_signals = [
-        "semáforo", "semaforo",
-        "fase roja",
-        "luz roja",
-        "cruce en rojo", "cruce con fase roja",
-        "t/s roja", "ts roja",
-        "señal luminosa roja", "senal luminosa roja",
-        "línea de detención", "linea de detencion",
-        "no respeta la luz roja", "no respetar la luz roja",
-        "rebase la linea de detencion", "rebasar la linea de detencion",
+    "semáforo", "semaforo",
+    "fase roja",
+    "cruce en rojo", "cruce con fase roja",
+    "t/s roja", "ts roja",
+    "línea de detención", "linea de detencion",
+    "no respeta la luz roja",
+    "rebase la linea de detencion", "rebasar la linea de detencion",
+
     ]
     if any(s in blob for s in sema_signals):
         return True
