@@ -20,6 +20,10 @@ from ai.infractions.semaforo import (
     build_semaforo_strong_template,
 )
 
+from ai.infractions.condiciones_vehiculo import (
+    build_condiciones_vehiculo_strong_template,
+)
+
 from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
@@ -148,6 +152,66 @@ def _is_semaforo_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
     return False
 
 
+def _is_condiciones_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
+    """
+    Detecta condiciones_vehiculo (art. 12/15) aunque el OCR venga raro.
+    Prioridad antes que velocidad para evitar VSE-1 por números sueltos.
+    """
+    core = core or {}
+
+    tipo = str(core.get("tipo_infraccion") or "").lower().strip()
+    if tipo == "condiciones_vehiculo":
+        return True
+
+    # Por artículo detectado
+    art = core.get("articulo_infringido_num")
+    apt = core.get("apartado_infringido_num")
+    try:
+        art_i = int(art) if art is not None else None
+    except Exception:
+        art_i = None
+
+    if art_i in (12, 15):
+        return True
+
+    # Texto bruto
+    parts: List[str] = []
+    for k in ("raw_text_pdf", "raw_text_vision", "raw_text_blob"):
+        v = core.get(k)
+        if isinstance(v, str) and v.strip():
+            parts.append(v)
+
+    parts.append(str(core.get("hecho_imputado") or ""))
+    parts.append(cuerpo or "")
+
+    blob = " ".join(parts).lower()
+
+    signals = [
+        "alumbrado",
+        "señalización óptica", "senalizacion optica",
+        "dispositivos de alumbrado",
+        "reglamento general de vehículos", "reglamento general de vehiculos",
+        "rd 2822/98", "2822/98",
+        "anexo ii",
+        "condiciones reglamentarias",
+        "no cumplan las exigencias",
+        "luz roja en la parte trasera",
+        "emite luz en forma de destellos",
+        "dispositivo obligatorio",
+        "modificación no autorizada", "modificacion no autorizada",
+    ]
+    if any(s in blob for s in signals):
+        return True
+
+    # Art. 12/15 en texto (por si no se extrajo a core)
+    if re.search(r"\bart\.?\s*12\b", blob) or re.search(r"\bart[ií]culo\s*12\b", blob):
+        return True
+    if re.search(r"\bart\.?\s*15\b", blob) or re.search(r"\bart[ií]culo\s*15\b", blob):
+        return True
+
+    return False
+
+
 # ==========================
 # VELOCIDAD — VSE-1 DETERMINISTA SIEMPRE
 # ==========================
@@ -187,20 +251,13 @@ def _expected_speed_sanction(limit: int, corrected: float) -> Dict[str, Any]:
 
 
 def sanitize_imposed_fine(value: Any) -> Optional[int]:
-    """
-    Evita falsos positivos tipo 'BMW 120D' -> '1200€' por OCR.
-    Acepta solo importes plausibles de radar: {100,200,300,400,500,600}.
-    Si hay letras o valores raros, devuelve None.
-    """
     try:
         if value is None:
             return None
-
         if isinstance(value, str):
             v = value.strip()
             if not v:
                 return None
-            # Si contiene letras, fuera (120D, etc.)
             if re.search(r"[A-Za-z]", v):
                 return None
             v = v.replace(".", "").replace(",", "").replace("€", "").strip()
@@ -252,7 +309,6 @@ def _compute_velocity_calc_from_core(core: Dict[str, Any]) -> Dict[str, Any]:
         corrected = max(0.0, float(measured) - float(margin))
         expected = _expected_speed_sanction(int(limit), corrected)
 
-        # ✅ SANITIZA (evita 120D -> 1200)
         imposed_fine = sanitize_imposed_fine(core.get("sancion_importe_eur"))
         imposed_pts = sanitize_imposed_points(core.get("puntos_detraccion"))
 
@@ -346,14 +402,13 @@ def _velocity_vse1_template(core: Dict[str, Any]) -> Tuple[str, str]:
 
 def _inject_tramo_error_paragraph(body: str, velocity_calc: Dict[str, Any]) -> str:
     try:
-        # Solo si hay mismatch Y el imposed fine es fiable (sanitizado)
         if "posible error de tramo sancionador" in (body or "").lower():
             return body
         if not body or not isinstance(velocity_calc, dict) or not velocity_calc.get("ok") or not velocity_calc.get("mismatch"):
             return body
         imposed = (velocity_calc.get("imposed") or {})
         if not isinstance(imposed.get("fine"), int):
-            return body  # <- clave: si el "importe" no es fiable, NO inyectar
+            return body
 
         exp = velocity_calc.get("expected") or {}
         imp = imposed
@@ -497,16 +552,21 @@ def generate_dgt_for_case(
                     asunto = tpl_s.get("asunto") or asunto
                     cuerpo = tpl_s.get("cuerpo") or cuerpo
 
+                # ✅ CONDICIONES VEHÍCULO determinista (ANTES de velocidad)
+                if _is_condiciones_context_robust(core, cuerpo):
+                    tpl_c = build_condiciones_vehiculo_strong_template(core)
+                    asunto = tpl_c.get("asunto") or asunto
+                    cuerpo = tpl_c.get("cuerpo") or cuerpo
+
                 # ✅ MÓVIL determinista
                 if is_movil_context(core, cuerpo):
                     tpl_m = build_movil_strong_template(core)
                     asunto = tpl_m.get("asunto") or asunto
                     cuerpo = tpl_m.get("cuerpo") or cuerpo
 
-                # ✅ VELOCIDAD determinista SIEMPRE
-                if _is_velocity_context(core, cuerpo):
+                # ✅ VELOCIDAD determinista SIEMPRE (al final)
+                if _is_velocity_context(core, cuerpo) and not _is_condiciones_context_robust(core, cuerpo):
                     asunto, cuerpo = _velocity_vse1_template(core)
-                    # bucket + tramo error solo en velocidad
                     try:
                         decision = decide_modo_velocidad(core, body=cuerpo, capture_mode="UNKNOWN") or decision
                         decision_mode = (decision.get("mode") or "unknown") if isinstance(decision, dict) else "unknown"
@@ -531,16 +591,20 @@ def generate_dgt_for_case(
             tpl = build_dgt_alegaciones_text(core, interesado)
             filename_base = "alegaciones_dgt"
 
-        # Semáforo determinista (robusto)
+        # Semáforo determinista
         if _is_semaforo_context_robust(core, tpl.get("cuerpo") or ""):
             tpl = build_semaforo_strong_template(core)
+
+        # Condiciones vehículo determinista (ANTES de velocidad)
+        if _is_condiciones_context_robust(core, tpl.get("cuerpo") or ""):
+            tpl = build_condiciones_vehiculo_strong_template(core)
 
         # Móvil determinista
         if is_movil_context(core, tpl.get("cuerpo") or ""):
             tpl = build_movil_strong_template(core)
 
-        # Velocidad determinista
-        if _is_velocity_context(core, tpl.get("cuerpo") or ""):
+        # Velocidad determinista (solo si no es condiciones)
+        if _is_velocity_context(core, tpl.get("cuerpo") or "") and not _is_condiciones_context_robust(core, tpl.get("cuerpo") or ""):
             asunto_v, cuerpo_v = _velocity_vse1_template(core)
             try:
                 decision = decide_modo_velocidad(core, body=cuerpo_v, capture_mode="UNKNOWN") or decision
@@ -571,7 +635,7 @@ def generate_dgt_for_case(
     # Último punto seguro antes de strict / generar
     velocity_calc_for_audit: Dict[str, Any] = {"ok": False, "reason": "not_computed"}
     try:
-        if tpl and isinstance(tpl, dict) and _is_velocity_context(core, tpl.get("cuerpo") or ""):
+        if tpl and isinstance(tpl, dict) and _is_velocity_context(core, tpl.get("cuerpo") or "") and not _is_condiciones_context_robust(core, tpl.get("cuerpo") or ""):
             velocity_calc_for_audit = _compute_velocity_calc_from_core(core)
     except Exception:
         pass
