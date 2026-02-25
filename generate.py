@@ -22,8 +22,8 @@ from ai.infractions.semaforo import (
 
 # ✅ CV-4 PRO (subtipos Art.12 + salida enriquecida)
 # Ajusta el path si en tu repo el módulo está en otra ruta.
-from ai.infractions.condiciones_vehiculo_cv4 import (
-    build_condiciones_vehiculo_strong_template as build_condiciones_vehiculo_strong_template_cv4,
+from ai.infractions.condiciones_vehiculo import (
+    build_condiciones_vehiculo_strong_template as build_condiciones_vehiculo_strong_template,
 )
 
 from b2_storage import upload_bytes
