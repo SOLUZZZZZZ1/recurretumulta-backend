@@ -153,28 +153,20 @@ def _is_semaforo_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
 
 
 def _is_condiciones_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
-    """
-    Detecta condiciones_vehiculo (art. 12/15) aunque el OCR venga raro.
-    Prioridad antes que velocidad para evitar VSE-1 por números sueltos.
-    """
     core = core or {}
 
     tipo = str(core.get("tipo_infraccion") or "").lower().strip()
     if tipo == "condiciones_vehiculo":
         return True
 
-    # Por artículo detectado
     art = core.get("articulo_infringido_num")
-    apt = core.get("apartado_infringido_num")
     try:
         art_i = int(art) if art is not None else None
     except Exception:
         art_i = None
-
     if art_i in (12, 15):
         return True
 
-    # Texto bruto
     parts: List[str] = []
     for k in ("raw_text_pdf", "raw_text_vision", "raw_text_blob"):
         v = core.get(k)
@@ -203,7 +195,6 @@ def _is_condiciones_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
     if any(s in blob for s in signals):
         return True
 
-    # Art. 12/15 en texto (por si no se extrajo a core)
     if re.search(r"\bart\.?\s*12\b", blob) or re.search(r"\bart[ií]culo\s*12\b", blob):
         return True
     if re.search(r"\bart\.?\s*15\b", blob) or re.search(r"\bart[ií]culo\s*15\b", blob):
@@ -367,6 +358,10 @@ def _velocity_vse1_template(core: Dict[str, Any]) -> Tuple[str, str]:
     organo = (core or {}).get("organo") or (core or {}).get("organismo") or "No consta acreditado."
     hecho = (core or {}).get("hecho_imputado") or "EXCESO DE VELOCIDAD."
 
+    vc = _compute_velocity_calc_from_core(core)
+    if vc.get("ok") and isinstance(vc.get("measured"), int) and isinstance(vc.get("limit"), int):
+        hecho = f"EXCESO DE VELOCIDAD ({vc.get('measured')} km/h; límite {vc.get('limit')} km/h)."
+
     calc = _build_velocity_calc_paragraph(core)
     calc = (calc + "\n") if calc else ""
 
@@ -485,13 +480,17 @@ def _velocity_strict_validate(body: str) -> List[str]:
     return out
 
 
-def _strict_validate_or_raise(conn, case_id: str, core: Dict[str, Any], tpl: Dict[str, str], ai_used: bool) -> None:
-    tipo = (core or {}).get("tipo_infraccion") or ""
+def _strict_validate_or_raise(conn, case_id: str, tpl: Dict[str, str], final_kind: str) -> None:
+    """
+    ✅ FIX: strict de velocidad solo si el documento final ES velocidad.
+    Ya no depende de lo que 'parezca' el core.
+    """
+    if final_kind != "velocidad":
+        return
     body = (tpl or {}).get("cuerpo") or ""
-    if (tipo or "").lower() == "velocidad" or _is_velocity_context(core, body):
-        missing = _velocity_strict_validate(body)
-        if missing:
-            raise HTTPException(status_code=422, detail=f"Velocity Strict no cumplido. Faltan/errores: {missing}.")
+    missing = _velocity_strict_validate(body)
+    if missing:
+        raise HTTPException(status_code=422, detail=f"Velocity Strict no cumplido. Faltan/errores: {missing}.")
 
 
 # ==========================
@@ -533,6 +532,9 @@ def generate_dgt_for_case(
     decision_mode = "unknown"
     decision: Dict[str, Any] = {"mode": "unknown", "reasons": ["not_computed"]}
 
+    # ✅ NUEVO: control de tipo final realmente aplicado
+    final_kind = "generic"
+
     # IA PRIMERO
     if RTM_DGT_GENERATION_MODE != "TEMPLATES_ONLY":
         try:
@@ -546,27 +548,31 @@ def generate_dgt_for_case(
                     asunto = "RECURSO (MODO PRUEBA)"
                     cuerpo = _strip_borrador_prefix_from_body(cuerpo)
 
-                # ✅ SEMÁFORO determinista (robusto)
+                # SEMÁFORO
                 if _is_semaforo_context_robust(core, cuerpo):
                     tpl_s = build_semaforo_strong_template(core)
                     asunto = tpl_s.get("asunto") or asunto
                     cuerpo = tpl_s.get("cuerpo") or cuerpo
+                    final_kind = "semaforo"
 
-                # ✅ CONDICIONES VEHÍCULO determinista (ANTES de velocidad)
-                if _is_condiciones_context_robust(core, cuerpo):
+                # CONDICIONES VEHÍCULO (antes de velocidad)
+                elif _is_condiciones_context_robust(core, cuerpo):
                     tpl_c = build_condiciones_vehiculo_strong_template(core)
                     asunto = tpl_c.get("asunto") or asunto
                     cuerpo = tpl_c.get("cuerpo") or cuerpo
+                    final_kind = "condiciones_vehiculo"
 
-                # ✅ MÓVIL determinista
-                if is_movil_context(core, cuerpo):
+                # MÓVIL
+                elif is_movil_context(core, cuerpo):
                     tpl_m = build_movil_strong_template(core)
                     asunto = tpl_m.get("asunto") or asunto
                     cuerpo = tpl_m.get("cuerpo") or cuerpo
+                    final_kind = "movil"
 
-                # ✅ VELOCIDAD determinista SIEMPRE (al final)
-                if _is_velocity_context(core, cuerpo) and not _is_condiciones_context_robust(core, cuerpo):
+                # VELOCIDAD (último)
+                elif _is_velocity_context(core, cuerpo):
                     asunto, cuerpo = _velocity_vse1_template(core)
+                    final_kind = "velocidad"
                     try:
                         decision = decide_modo_velocidad(core, body=cuerpo, capture_mode="UNKNOWN") or decision
                         decision_mode = (decision.get("mode") or "unknown") if isinstance(decision, dict) else "unknown"
@@ -586,63 +592,35 @@ def generate_dgt_for_case(
     if not tpl:
         if tipo == "reposicion":
             tpl = build_dgt_reposicion_text(core, interesado)
-            filename_base = "recurso_reposicion_dgt"
         else:
             tpl = build_dgt_alegaciones_text(core, interesado)
-            filename_base = "alegaciones_dgt"
 
-        # Semáforo determinista
-        if _is_semaforo_context_robust(core, tpl.get("cuerpo") or ""):
+        cuerpo0 = tpl.get("cuerpo") or ""
+
+        if _is_semaforo_context_robust(core, cuerpo0):
             tpl = build_semaforo_strong_template(core)
-
-        # Condiciones vehículo determinista (ANTES de velocidad)
-        if _is_condiciones_context_robust(core, tpl.get("cuerpo") or ""):
+            final_kind = "semaforo"
+        elif _is_condiciones_context_robust(core, cuerpo0):
             tpl = build_condiciones_vehiculo_strong_template(core)
-
-        # Móvil determinista
-        if is_movil_context(core, tpl.get("cuerpo") or ""):
+            final_kind = "condiciones_vehiculo"
+        elif is_movil_context(core, cuerpo0):
             tpl = build_movil_strong_template(core)
-
-        # Velocidad determinista (solo si no es condiciones)
-        if _is_velocity_context(core, tpl.get("cuerpo") or "") and not _is_condiciones_context_robust(core, tpl.get("cuerpo") or ""):
+            final_kind = "movil"
+        elif _is_velocity_context(core, cuerpo0):
             asunto_v, cuerpo_v = _velocity_vse1_template(core)
+            tpl = {"asunto": asunto_v, "cuerpo": cuerpo_v}
+            final_kind = "velocidad"
             try:
                 decision = decide_modo_velocidad(core, body=cuerpo_v, capture_mode="UNKNOWN") or decision
                 decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
             except Exception:
                 pass
-            cuerpo_v = _inject_bucket_paragraph(cuerpo_v, decision)
-            velocity_calc = _compute_velocity_calc_from_core(core)
-            cuerpo_v = _inject_tramo_error_paragraph(cuerpo_v, velocity_calc)
-            tpl = {"asunto": asunto_v, "cuerpo": cuerpo_v}
+            tpl["cuerpo"] = _inject_bucket_paragraph(tpl["cuerpo"], decision)
+            tpl["cuerpo"] = _inject_tramo_error_paragraph(tpl["cuerpo"], _compute_velocity_calc_from_core(core))
 
-        # auditoría (no rompe)
-        try:
-            decision = decide_modo_velocidad(core, body=(tpl.get("cuerpo") or ""), capture_mode="UNKNOWN") or decision
-            decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
-        except Exception:
-            pass
-    else:
-        filename_base = "recurso_reposicion_dgt" if tipo == "reposicion" else "alegaciones_dgt"
-
-    if tipo == "reposicion":
-        kind_docx = "generated_docx_reposicion"
-        kind_pdf = "generated_pdf_reposicion"
-    else:
-        kind_docx = "generated_docx_alegaciones"
-        kind_pdf = "generated_pdf_alegaciones"
-
-    # Último punto seguro antes de strict / generar
-    velocity_calc_for_audit: Dict[str, Any] = {"ok": False, "reason": "not_computed"}
+    # STRICT (✅ ahora solo si final_kind == velocidad)
     try:
-        if tpl and isinstance(tpl, dict) and _is_velocity_context(core, tpl.get("cuerpo") or "") and not _is_condiciones_context_robust(core, tpl.get("cuerpo") or ""):
-            velocity_calc_for_audit = _compute_velocity_calc_from_core(core)
-    except Exception:
-        pass
-
-    # STRICT (bypass seguro en MODO DIOS)
-    try:
-        _strict_validate_or_raise(conn, case_id, core, tpl, ai_used)
+        _strict_validate_or_raise(conn, case_id, tpl, final_kind=final_kind)
     except HTTPException as e:
         if override_mode:
             try:
@@ -651,7 +629,7 @@ def generate_dgt_for_case(
                         "INSERT INTO events(case_id, type, payload, created_at) "
                         "VALUES (:case_id,'strict_bypassed_override',CAST(:payload AS JSONB),NOW())"
                     ),
-                    {"case_id": case_id, "payload": json.dumps({"detail": str(e.detail)})},
+                    {"case_id": case_id, "payload": json.dumps({"detail": str(e.detail), "final_kind": final_kind})},
                 )
             except Exception:
                 pass
@@ -659,6 +637,9 @@ def generate_dgt_for_case(
             raise
 
     # DOCX/PDF
+    kind_docx = "generated_docx_reposicion" if tipo == "reposicion" else "generated_docx_alegaciones"
+    kind_pdf = "generated_pdf_reposicion" if tipo == "reposicion" else "generated_pdf_alegaciones"
+
     docx_bytes = build_docx(tpl["asunto"], tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
         case_id,
@@ -717,10 +698,10 @@ def generate_dgt_for_case(
                     "ai_error": ai_error,
                     "generation_mode": RTM_DGT_GENERATION_MODE,
                     "override_mode": override_mode,
+                    "final_kind": final_kind,
                     "missing_interested_fields": _missing_interested_fields(interesado),
                     "velocity_decision_mode": decision_mode,
                     "velocity_decision": decision,
-                    "velocity_calc": velocity_calc_for_audit,
                 }
             ),
         },
@@ -732,11 +713,10 @@ def generate_dgt_for_case(
         "ok": True,
         "case_id": case_id,
         "tipo": tipo,
-        "filename_base": ("recurso_reposicion_dgt" if tipo == "reposicion" else "alegaciones_dgt"),
+        "final_kind": final_kind,
         "ai_used": ai_used,
         "ai_error": ai_error,
         "override_mode": override_mode,
-        "velocity_decision_mode": decision_mode,
     }
 
 
