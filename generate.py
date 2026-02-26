@@ -592,7 +592,7 @@ def generate_dgt_for_case(
                     final_kind = "semaforo"
 
                 elif _is_condiciones_context_robust(core, cuerpo):
-                    tpl_c = build_condiciones_vehiculo_strong_template_cv4(core)
+                    tpl_c = build_condiciones_vehiculo_strong_template(core)
                     asunto = tpl_c.get("asunto") or asunto
                     cuerpo = tpl_c.get("cuerpo") or cuerpo
                     final_kind = "condiciones_vehiculo"
