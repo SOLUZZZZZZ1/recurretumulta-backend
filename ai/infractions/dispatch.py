@@ -1,23 +1,24 @@
 """
-RTM — Infractions Dispatcher (determinista) — v2
+RTM — Infractions Dispatcher (determinista) — v3 (todo junto)
 
-Orden (Tráfico):
+Orden:
 1) Semáforo
 2) Móvil
-3) Atención / Conducción negligente (Art. 3.1 / 18)
-4) Condiciones del vehículo (Art. 12 / 15)
-5) Velocidad (solo si señales reales y NO Art.18)
+3) Auriculares (Art.18.2)
+4) Atención/Negligente (Art.3.1 / 18.1)
+5) Condiciones vehículo (Art.12/15)
+6) Velocidad (último; Art.18 bloqueado)
 """
 
 from __future__ import annotations
-
 import re
 from typing import Any, Dict, Optional
 
-from ai.infractions.movil import is_movil_context, build_movil_strong_template
 from ai.infractions.semaforo import build_semaforo_strong_template
-from ai.infractions.condiciones_vehiculo import build_condiciones_vehiculo_strong_template
+from ai.infractions.movil import is_movil_context, build_movil_strong_template
+from ai.infractions.distracciones import is_auriculares_context, build_auriculares_strong_template
 from ai.infractions.atencion import is_atencion_context, build_atencion_strong_template
+from ai.infractions.condiciones_vehiculo import build_condiciones_vehiculo_strong_template
 
 
 def _text(v: Any) -> str:
@@ -38,11 +39,8 @@ def build_raw_blob(core: Dict[str, Any], draft_body: str = "") -> str:
 
 def is_semaforo_context_robust(core: Dict[str, Any], draft_body: str = "") -> bool:
     blob = build_raw_blob(core, draft_body=draft_body)
-
     sema_signals = [
-        "semáforo", "semaforo",
-        "fase roja",
-        "luz roja",
+        "semáforo", "semaforo", "fase roja", "luz roja",
         "cruce en rojo", "cruce con fase roja",
         "t/s roja", "ts roja",
         "señal luminosa roja", "senal luminosa roja",
@@ -52,17 +50,14 @@ def is_semaforo_context_robust(core: Dict[str, Any], draft_body: str = "") -> bo
     ]
     if any(s in blob for s in sema_signals):
         return True
-
     if re.search(r"\bart\.?\s*146\b", blob) or re.search(r"\bart[ií]culo\s*146\b", blob) or re.search(r"\b146\s*[\.,]\s*1\b", blob):
         return True
-
     tipo = str((core or {}).get("tipo_infraccion") or "").lower().strip()
     return tipo == "semaforo"
 
 
 def is_velocity_context(core: Dict[str, Any], draft_body: str = "") -> bool:
     core = core or {}
-
     try:
         art = int(core.get("articulo_infringido_num"))
     except Exception:
@@ -107,8 +102,12 @@ def dispatch_deterministic_template(core: Dict[str, Any], draft_body: str = "") 
     if is_movil_context(core, draft_body or ""):
         return build_movil_strong_template(core)
 
+    if is_auriculares_context(core, draft_body or ""):
+        return build_auriculares_strong_template(core)
+
     if is_atencion_context(core, draft_body or ""):
-        return build_atencion_strong_template(core)
+        # build_atencion_strong_template de atencion_ai_final acepta body=
+        return build_atencion_strong_template(core, body=draft_body or "")
 
     if is_condiciones_vehiculo_context(core, draft_body=draft_body):
         tpl = build_condiciones_vehiculo_strong_template(core)
