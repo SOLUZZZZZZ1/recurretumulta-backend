@@ -66,11 +66,11 @@ Desarrollar con estructura técnica clara y enumerada:
 6) Acreditación de la cadena de custodia del dato y su correspondencia inequívoca con el vehículo denunciado.
 7) Acreditación del límite aplicable y su señalización en el punto exacto.
 
-Si velocity_calc viene informado:
+Si velocity_calc viene informado Y el tipo es VELOCIDAD:
 - Integrar un párrafo técnico breve:
   “A efectos ilustrativos, la aplicación del margen legal podría situar la velocidad corregida en ___ km/h, extremo cuya acreditación corresponde a la Administración.”
 - Si existe discrepancia entre importe/puntos impuestos y los esperados:
-  Introducir “posible error de tramo sancionador” como argumento principal.
+  Introducir “posible error de tramo sancionador” solo si velocity_calc.mismatch == true.
 
 ALEGACIÓN SEGUNDA — DEFECTOS DE MOTIVACIÓN (si procede)
 
@@ -103,7 +103,31 @@ III. SOLICITO
 - Pedir archivo si no consta prueba suficiente o determinación clara de fechas y hechos.
 
 ────────────────────────────────────────
-C) RESTO DE TIPOS
+────────────────────────────────────────
+D) SI EL TIPO ES ART. 18 (ATENCIÓN / DISTRACCIONES / AURICULARES)
+────────────────────────────────────────
+
+ALEGACIÓN PRIMERA — TIPICIDAD Y DESCRIPCIÓN CIRCUNSTANCIADA (ART. 18)
+
+Debe exigir:
+- Conducta concreta observada (qué se hacía exactamente) y por qué encaja en el tipo.
+- Distancia/posición del agente, condiciones de visibilidad y circunstancias del tráfico.
+- Momento exacto y duración aproximada de la conducta.
+- Motivación individualizada que permita contradicción efectiva.
+
+Si el hecho es AURICULARES/CASCOS:
+- Exigir precisión sobre si eran auriculares/cascos conectados a un dispositivo de sonido.
+- Indicar si era uso efectivo durante la conducción (no mera tenencia) y cómo se constató.
+- Si se menciona “oído izquierdo/derecho”, exigir concreción y soporte.
+
+ALEGACIÓN SEGUNDA — PRUEBA COMPLETA / EXPEDIENTE ÍNTEGRO
+- Solicitar denuncia íntegra y soportes (fotografías/vídeo/informe) si existieran.
+- Si no hay soporte objetivo, pedir archivo por insuficiencia probatoria.
+
+III. SOLICITO
+- Pedir archivo por falta de descripción concreta y prueba suficiente.
+
+D) RESTO DE TIPOS
 ────────────────────────────────────────
 
 ALEGACIÓN PRIMERA — INSUFICIENCIA PROBATORIA ESPECÍFICA DEL TIPO
@@ -113,6 +137,7 @@ III. SOLICITO
 
 Regla obligatoria:
 - Si el tipo es VELOCIDAD → el punto 2 debe pedir ARCHIVO.
+- Si el tipo NO es VELOCIDAD → IGNORAR velocity_calc por completo.
 
 1) Que se tengan por formuladas las presentes alegaciones.
 2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de acreditación técnica suficiente.
