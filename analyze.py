@@ -203,7 +203,6 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
                 if limit is None:
                     limit = lo
 
-    # Importes / puntos (estos sí pueden existir aunque no sea velocidad)
     fine_eur = None
     mf = re.search(r"\b(\d{2,4})\s*(?:€|euros)\b", t)
     if mf:
@@ -235,7 +234,6 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
         "puntos_detraccion": points,
         "radar_modelo_hint": radar_model,
     }
-
 
 def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
     t = (text_blob or "").lower()
@@ -270,13 +268,12 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         return ("movil", facts[0], facts)
 
     # Velocidad SOLO si hay contexto real
-if any(k in t for k in ["exceso de velocidad", "radar", "cinemómetro", "cinemometro"]):
-    facts.append("EXCESO DE VELOCIDAD")
-    return ("velocidad", facts[0], facts)
-
-if re.search(r"\bcircular\s+a\s+\d{2,3}\s*km\s*/?\s*h\b", t):
-    facts.append("EXCESO DE VELOCIDAD")
-    return ("velocidad", facts[0], facts)
+    if any(k in t for k in ["exceso de velocidad", "radar", "cinemómetro", "cinemometro"]):
+        facts.append("EXCESO DE VELOCIDAD")
+        return ("velocidad", facts[0], facts)
+    if re.search(r"\bcircular\s+a\s+\d{2,3}\s*km\s*/?\s*h\b", t):
+        facts.append("EXCESO DE VELOCIDAD")
+        return ("velocidad", facts[0], facts)
 
     # Seguro
     if ("lsoa" in t) or (("r.d. legislativo" in t or "rd legislativo" in t) and "8/2004" in t) or ("8/2004" in t and "responsabilidad civil" in t):
@@ -284,7 +281,6 @@ if re.search(r"\bcircular\s+a\s+\d{2,3}\s*km\s*/?\s*h\b", t):
         return ("seguro", facts[0], facts)
 
     return ("otro", "", [])
-
 
 def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
     tipo, hecho, facts = _detect_facts_and_type(text_blob)
