@@ -285,6 +285,23 @@ def _infer_infraction_from_extraction(extraction_core: Dict[str, Any]) -> str:
     return "generic"
 
 
+
+def _infer_infraction_type_with_article_priority(classify: Dict[str, Any], extraction_core: Dict[str, Any]) -> str:
+    """Devuelve el tipo de infracción priorizando tipicidad por artículo/norma.
+    Regla:
+    1) Si _expected_type_from_article() devuelve un tipo => ese gana SIEMPRE.
+    2) Si no hay artículo/norma clara => heurística por facts_phrases / extracción.
+    """
+    expected = _expected_type_from_article(extraction_core or {})
+    if isinstance(expected, str) and expected.strip():
+        return expected.strip().lower()
+
+    inferred = _infer_infraction_type_with_article_priority(classify, extraction_core)
+    inferred = (inferred or "").strip().lower()
+    if inferred in ("", "otro", "unknown"):
+        inferred = "generic"
+    return inferred
+
 def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extraction_core: Dict[str, Any]) -> Dict[str, Any]:
     inferred = _infer_infraction_from_facts_phrases(classify) or _infer_infraction_from_extraction(extraction_core)
     if inferred in ("", "otro", "unknown"):
