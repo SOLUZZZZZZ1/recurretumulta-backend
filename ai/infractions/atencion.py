@@ -1,17 +1,35 @@
 """
-RTM — TRÁFICO — CONDUCCIÓN NEGLIGENTE / ATENCIÓN PERMANENTE (SVL-ATN-2)
+RTM — TRÁFICO — ATENCIÓN / CONDUCCIÓN NEGLIGENTE (SVL-ATN-PRO)
 
-Objetivo:
-- Plantilla determinista "con chicha" para Art. 3.1 RGC (conducción negligente) y casos de Art. 18 (atención/distracciones).
-- Ataca: tipicidad + presunción de inocencia + concreción fáctica + riesgo real + fiabilidad perceptiva + proporcionalidad.
-- No inventa hechos. Usa lenguaje prudente y solicita expediente íntegro.
+Nivel MUY alto:
+- Base determinista robusta (siempre disponible).
+- + Capa IA opcional (si hay OPENAI_API_KEY) para personalizar con "chicha"
+  usando SOLO texto del expediente (raw_text_pdf/raw_text_blob/hecho_imputado),
+  sin inventar hechos.
 
-Salida: {"asunto","cuerpo"} compatible con generate.py/dispatcher.
+Uso:
+- is_atencion_context(core, body="") -> bool
+- build_atencion_strong_template(core, body="") -> {"asunto","cuerpo"}
+
+Configuración:
+- RTM_ATENCION_AI=1  -> activa personalización IA (si hay clave)
+- RTM_ATENCION_AI_MODEL (opcional) -> modelo (por defecto OPENAI_MODEL o gpt-4o)
 """
 
 from __future__ import annotations
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+import os
 import re
+
+# Reutilizamos requests como en openai_text.py
+import requests
+
+
+def _env(name: str) -> str:
+    v = (os.getenv(name) or "").strip()
+    if not v:
+        raise RuntimeError(f"Falta variable de entorno: {name}")
+    return v
 
 
 def _blob(core: Dict[str, Any], body: str = "") -> str:
@@ -23,14 +41,17 @@ def _blob(core: Dict[str, Any], body: str = "") -> str:
             parts.append(v)
     if isinstance(body, str) and body.strip():
         parts.append(body)
-    return " ".join(parts).lower()
+    return " \n".join(parts).strip()
+
+
+def _blob_lower(core: Dict[str, Any], body: str = "") -> str:
+    return _blob(core, body=body).lower()
 
 
 def is_atencion_context(core: Dict[str, Any], body: str = "") -> bool:
     core = core or {}
-    b = _blob(core, body=body)
+    b = _blob_lower(core, body=body)
 
-    # Señal estructural
     tipo = str(core.get("tipo_infraccion") or "").lower().strip()
     if tipo in ("atencion", "atención", "negligente", "conduccion_negligente", "conducción_negligente"):
         return True
@@ -47,15 +68,18 @@ def is_atencion_context(core: Dict[str, Any], body: str = "") -> bool:
         "no mantener la atención permanente", "no mantener la atencion permanente",
         "atención permanente", "atencion permanente",
         "distracción", "distraccion",
-        "conducción descuidada", "conduccion descuidada",
         "creando una situación de riesgo", "creando una situacion de riesgo",
+        "riesgo", "peligro",
     ]
+
     if art_i in (3, 18) and any(s in b for s in signals):
         return True
+
+    # Señales fuertes aunque no haya artículo
     return any(s in b for s in signals)
 
 
-def build_atencion_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
+def _deterministic_body(core: Dict[str, Any], body: str = "") -> Dict[str, str]:
     core = core or {}
     expediente = core.get("expediente_ref") or core.get("numero_expediente") or "No consta acreditado."
     organo = core.get("organo") or core.get("organismo") or "No consta acreditado."
@@ -64,13 +88,41 @@ def build_atencion_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     fecha_hecho = core.get("fecha_infraccion") or core.get("fecha_hecho") or core.get("fecha_documento") or ""
     fecha_line = f" (fecha indicada: {fecha_hecho})" if isinstance(fecha_hecho, str) and fecha_hecho.strip() else ""
 
-    h_lower = str(hecho).lower()
-    tramo_hint = ""
-    if "km" in h_lower:
-        tramo_hint = " Se indica un tramo/seguimiento en la denuncia; se exige su acreditación objetiva y método de determinación."
+    b = _blob_lower(core, body=body)
+
+    # Señales específicas del caso (sin inventar)
+    tramo = None
+    m_km = re.search(r"\b(\d+(?:[\.,]\d+)?)\s*km\b", b)
+    if m_km:
+        tramo = m_km.group(1).replace(",", ".")
+    has_menor = any(x in b for x in ["menor", "dos años", "dos anos", "asiento trasero", "sri", "sistema de retención", "sistema de retencion"])
+    has_bailando = any(x in b for x in ["bail", "palmas", "golpeando", "volante", "tambor", "bailando"])
+
+    tramo_line = ""
+    if tramo:
+        tramo_line = (
+            f"Se afirma un seguimiento/tramo de aproximadamente {tramo} km. "
+            "Se exige indicar el método de determinación del tramo (punto inicial/final, referencias de vía), "
+            "y por qué no se procedió a intervención inmediata si el riesgo era real."
+        )
+
+    menor_line = ""
+    if has_menor:
+        menor_line = (
+            "La mención a la presencia de un menor/ocupante no suple la prueba de la conducta imputada. "
+            "Si se pretende fundamentar o agravar la imputación en esa circunstancia, debe identificarse el encaje normativo específico "
+            "(p. ej., normativa SRI) y la relación causal con el riesgo concreto."
+        )
+
+    conducta_line = ""
+    if has_bailando:
+        conducta_line = (
+            "Si se imputan conductas internas (p. ej. 'bailar', 'tocar palmas', 'golpear el volante'), "
+            "debe describirse con precisión qué se observó (gestos concretos), durante cuánto tiempo, "
+            "y cómo se aseguró la correcta identificación del conductor y la continuidad de la observación."
+        )
 
     asunto = "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE"
-
     cuerpo = (
         "A la atención del órgano competente,\n\n"
         "I. ANTECEDENTES\n"
@@ -78,37 +130,101 @@ def build_atencion_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"2) Identificación expediente: {expediente}\n"
         f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
         "II. ALEGACIONES\n\n"
-        "ALEGACIÓN PRIMERA — PRESUNCIÓN DE INOCENCIA Y CARGA PROBATORIA\n\n"
+        "ALEGACIÓN PRIMERA — PRESUNCIÓN DE INOCENCIA, CARGA PROBATORIA Y MOTIVACIÓN\n\n"
         "En el procedimiento sancionador rige la presunción de inocencia y la carga de la prueba corresponde a la Administración. "
-        "No es suficiente una descripción estereotipada o genérica: la imputación debe apoyarse en hechos concretos, verificables y motivación individualizada.\n\n"
-        "ALEGACIÓN SEGUNDA — TIPICIDAD (ART. 3.1 RGC): EXIGENCIA DE RIESGO CONCRETO Y HECHO CIRCUNSTANCIADO\n\n"
-        "La conducción negligente no se configura por meras valoraciones: exige una conducta concreta y una creación de riesgo real, "
-        "no hipotético. Debe precisarse, como mínimo:\n"
-        "1) Conducta exacta observada (qué se hacía exactamente) y por qué encaja en el tipo.\n"
-        "2) En qué consistió el riesgo concreto (para quién, dónde y cómo), y su relación con la conducta descrita.\n"
-        "3) Circunstancias del tráfico y visibilidad, y por qué impedían/agravaban la supuesta conducta.\n"
-        "4) Motivación individualizada (no fórmulas genéricas) que permita contradicción efectiva.\n"
-        f"{tramo_hint}\n\n"
-        "En ausencia de concreción fáctica suficiente y riesgo objetivable, no puede tenerse por acreditada la infracción.\n\n"
-        "ALEGACIÓN TERCERA — FIABILIDAD DE LA OBSERVACIÓN Y SEGUIMIENTO (SI SE INVOCA)\n\n"
-        "Si la imputación se basa en observación presencial y/o seguimiento, debe detallarse con precisión:\n"
-        "1) Posición del agente y condiciones de observación (distancia, ángulo, iluminación, tráfico, obstáculos).\n"
-        "2) Continuidad de la observación (si se afirma un tramo, cómo se determinó y por qué no se intervino antes).\n"
-        "3) Elementos objetivos de corroboración (anotaciones, testigos, grabación, medios técnicos), si existieran.\n\n"
-        "La falta de estos extremos impide verificar la fiabilidad perceptiva y vulnera el derecho de defensa.\n\n"
-        "ALEGACIÓN CUARTA — EXPEDIENTE ÍNTEGRO, PRECEPTO APLICADO Y MOTIVACIÓN\n\n"
-        "Se solicita copia íntegra del expediente (denuncia/boletín completo, informe ampliatorio si existe, diligencias, propuesta y resolución si existieran), "
-        "con identificación expresa del precepto aplicado (artículo/apartado) y motivación completa de la subsunción.\n\n"
-        "ALEGACIÓN QUINTA — REFERENCIAS ACCESORIAS (p. ej. ocupantes/menor)\n\n"
-        "La eventual mención a ocupantes o a un menor no suple la prueba de la conducta imputada ni convierte por sí misma el hecho en negligencia. "
-        "Si se pretende agravar o fundamentar el tipo en esa circunstancia, debe explicarse la relación causal con el riesgo y el encaje normativo específico.\n\n"
-        "ALEGACIÓN SEXTA — PROPORCIONALIDAD\n\n"
-        "Aun en hipótesis de infracción, procede valorar proporcionalidad y circunstancias concretas. "
-        "Sin acreditación técnica y motivación individualizada, no procede sanción.\n\n"
+        "La imputación debe apoyarse en hechos concretos, verificables y motivación individualizada (no fórmulas estereotipadas).\n\n"
+        "ALEGACIÓN SEGUNDA — TIPICIDAD (ART. 3.1 / ART. 18): RIESGO CONCRETO Y HECHO CIRCUNSTANCIADO\n\n"
+        "La conducción negligente o la falta de atención permanente exigen: (i) conducta concreta; (ii) riesgo real y objetivable; "
+        "y (iii) relación causal entre conducta y riesgo. Debe precisarse, como mínimo:\n"
+        "1) Conducta exacta observada y por qué encaja en el tipo aplicado.\n"
+        "2) Riesgo concreto: para quién, dónde, cómo se manifestó (maniobra evasiva, invasión de carril, frenada brusca, etc.).\n"
+        "3) Circunstancias del tráfico/visibilidad y posición del agente (distancia, ángulo, iluminación, obstáculos).\n"
+        "4) Duración aproximada del hecho y momento exacto de observación.\n\n"
+        f"{(tramo_line + '\n\n') if tramo_line else ''}"
+        f"{(conducta_line + '\n\n') if conducta_line else ''}"
+        "En ausencia de concreción suficiente y riesgo objetivable, no puede tenerse por acreditada la infracción.\n\n"
+        "ALEGACIÓN TERCERA — EXPEDIENTE ÍNTEGRO Y PRUEBA COMPLETA\n\n"
+        "Se solicita la aportación del expediente íntegro (denuncia/boletín completo, informe ampliatorio si existe, diligencias, propuesta y resolución) "
+        "y cualquier soporte objetivo disponible (grabación, fotografías, anotaciones), para posibilitar contradicción efectiva.\n\n"
+        f"{(menor_line + '\n\n') if menor_line else ''}"
         "III. SOLICITO\n"
         "1) Que se tengan por formuladas las presentes alegaciones.\n"
-        "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria, falta de concreción y ausencia de motivación individualizada.\n"
-        "3) Subsidiariamente, que se aporte expediente íntegro y cualquier soporte probatorio completo que permita contradicción efectiva.\n"
+        "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de motivación individualizada.\n"
+        "3) Subsidiariamente, que se aporte expediente íntegro y prueba completa.\n"
     ).strip()
 
     return {"asunto": asunto, "cuerpo": cuerpo}
+
+
+def _ai_enhance(core: Dict[str, Any], base_body: str, body: str = "") -> Optional[str]:
+    # Feature flag
+    if (os.getenv("RTM_ATENCION_AI") or "").strip() not in ("1", "true", "TRUE", "yes", "YES"):
+        return None
+
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return None
+
+    model = (os.getenv("RTM_ATENCION_AI_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4o").strip()
+
+    # Sólo usamos el texto del expediente; recortamos para seguridad
+    blob = _blob(core, body=body)
+    blob = blob[:12000]
+
+    system_text = (
+        "Eres un abogado experto en recursos administrativos de tráfico en España. "
+        "Redactas alegaciones muy técnicas y específicas, pero NUNCA inventas hechos. "
+        "Solo puedes basarte en el texto proporcionado. "
+        "Si un dato no está claro, formula la exigencia probatoria (no afirmes). "
+        "Mantén tono profesional, contundente y verificable."
+    )
+
+    user_text = (
+        "TEXTO DEL EXPEDIENTE (única fuente):\n\n"
+        f"{blob}\n\n"
+        "OBJETIVO: Mejorar el escrito base aportando 'chicha' y precisión.\n"
+        "REGLAS ESTRICTAS:\n"
+        "1) No inventes hechos ni cifras.\n"
+        "2) Si el texto menciona tramo (p.ej. '1,5 km'), exige método de medición y continuidad.\n"
+        "3) Si menciona menor/ocupantes, pide encaje normativo y relación causal, sin suponer.\n"
+        "4) Si describe conductas internas (bailar/palmas/volante), exige concreción (qué, cuándo, cómo) y fiabilidad perceptiva.\n"
+        "5) Añade peticiones de prueba: denuncia íntegra, informe ampliatorio, grabaciones, anotaciones, testigos, croquis, etc.\n\n"
+        "Devuelve SOLO el texto completo del CUERPO final (no asunto), en español, con estructura I/II/III y ALEGACIONES numeradas.\n\n"
+        "ESCRITO BASE A MEJORAR (mantén su estructura, pero mejora):\n\n"
+        f"{base_body}\n"
+    )
+
+    payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": system_text}]},
+            {"role": "user", "content": [{"type": "input_text", "text": user_text}]},
+        ],
+    }
+
+    r = requests.post(
+        "https://api.openai.com/v1/responses",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=60,
+    )
+    if not r.ok:
+        return None
+
+    data = r.json()
+    out_text = ""
+    for item in data.get("output", []):
+        if item.get("type") == "message":
+            for c in item.get("content", []):
+                if c.get("type") == "output_text":
+                    out_text += c.get("text", "")
+    out_text = (out_text or "").strip()
+    return out_text or None
+
+
+def build_atencion_strong_template(core: Dict[str, Any], body: str = "") -> Dict[str, str]:
+    base = _deterministic_body(core, body=body)
+    improved = _ai_enhance(core, base_body=base["cuerpo"], body=body)
+    if isinstance(improved, str) and improved.strip():
+        base["cuerpo"] = improved.strip()
+    return base
