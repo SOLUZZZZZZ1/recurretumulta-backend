@@ -257,12 +257,10 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("USO DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
 
-
-        # Velocidad SOLO si hay contexto real
+    # Velocidad (solo con contexto real; evita falsos positivos por "punto km ...")
     if any(k in t for k in ["exceso de velocidad", "radar", "cinemómetro", "cinemometro"]):
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
-
     if re.search(r"\bcircular\s+a\s+\d{2,3}\s*km\s*/?\s*h\b", t):
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
