@@ -93,97 +93,30 @@ def is_semaforo_context_robust(core: Dict[str, Any], draft_body: str = "") -> bo
 
 def is_velocity_context(core: Dict[str, Any], draft_body: str = "") -> bool:
     core = core or {}
+
+    # 🔒 Guard absoluto: Art. 18 nunca es velocidad
+    try:
+        art = int(core.get("articulo_infringido_num"))
+    except Exception:
+        art = None
+    if art == 18:
+        return False
+
     tipo = str(core.get("tipo_infraccion") or "").lower().strip()
     if tipo == "velocidad":
         return True
-    if core.get("velocidad_medida_kmh") or core.get("velocidad_limite_kmh"):
-        return True
 
     blob = build_raw_blob(core, draft_body=draft_body)
-    return any(k in blob for k in ["km/h", "exceso de velocidad", "radar", "cinemómetro", "cinemometro"])
 
-
-# -------------------------
-# Condiciones del vehículo (Art. 12 / 15)
-# -------------------------
-
-def is_condiciones_vehiculo_context(core: Dict[str, Any], draft_body: str = "") -> bool:
-    """
-    Detector determinista para activar SVL-CV-4.
-    Señales:
-    - Art. 12 / Art. 15
-    - ITV / neumáticos / reformas / alumbrado
-    - deslumbramiento por superficies reflectantes/pulidas
-    """
-    blob = build_raw_blob(core, draft_body=draft_body)
-
-    signals = [
-        # Núcleo
-        "condiciones reglamentarias",
-        "veh r.d. 2822/98", "rd 2822/98", "r.d. 2822/98",
-        "art. 12", "artículo 12", "articulo 12",
-        "art. 15", "artículo 15", "articulo 15",
-
-        # ITV
-        "itv", "inspección técnica", "inspeccion tecnica", "caducad",
-
-        # Neumáticos
-        "neumático", "neumatico", "neumáticos", "neumaticos",
-        "banda de rodadura", "dibujo", "desgastad", "liso",
-
-        # Reformas/mods
-        "reforma", "modificación", "modificacion", "homolog", "no autorizada", "sin autorización", "sin autorizacion",
-
-        # Alumbrado
-        "alumbrado", "señalización óptica", "senalizacion optica", "luz trasera", "luces traseras",
-
-        # Reflectante/deslumbramiento
-        "deslumbr", "reflect", "reflej", "pulid", "como un espejo",
+    velocity_signals = [
+        "exceso de velocidad",
+        "radar",
+        "cinemómetro", "cinemometro",
+        "km/h"
     ]
 
-    if any(s in blob for s in signals):
-        return True
-
-    tipo = str((core or {}).get("tipo_infraccion") or "").lower().strip()
-    if tipo in ["condiciones_vehiculo", "condiciones", "vehiculo", "vehículo"]:
+    # Solo si hay señales reales en texto
+    if any(k in blob for k in velocity_signals):
         return True
 
     return False
-
-
-# -------------------------
-# Dispatcher
-# -------------------------
-
-def dispatch_deterministic_template(core: Dict[str, Any], draft_body: str = "") -> Optional[Dict[str, str]]:
-    """
-    Devuelve {"asunto","cuerpo"} si hay plantilla determinista aplicable.
-    Orden (Tráfico):
-      1) Semáforo robusto
-      2) Móvil
-      3) Condiciones del vehículo (Art. 12 / 15)
-      4) Velocidad (aquí normalmente llamas a tu VSE-1 en generate.py)
-    """
-    core = core or {}
-
-    # 1) SEMÁFORO
-    if is_semaforo_context_robust(core, draft_body=draft_body):
-        return build_semaforo_strong_template(core)
-
-    # 2) MÓVIL
-    if is_movil_context(core, draft_body or ""):
-        return build_movil_strong_template(core)
-
-    # 3) CONDICIONES DEL VEHÍCULO (SVL-CV-4)
-    if is_condiciones_vehiculo_context(core, draft_body=draft_body):
-        tpl = build_condiciones_vehiculo_strong_template(core)
-        # El módulo CV-4 devuelve más campos, pero aquí respetamos la interfaz {"asunto","cuerpo"}.
-        if isinstance(tpl, dict) and tpl.get("asunto") and tpl.get("cuerpo"):
-            return {"asunto": tpl["asunto"], "cuerpo": tpl["cuerpo"]}
-
-    # 4) VELOCIDAD -> en tu sistema lo resuelves en generate.py con VSE-1 determinista fijo
-    # (no devolvemos aquí para no duplicar el VSE-1, pero dejamos el hook)
-    if is_velocity_context(core, draft_body=draft_body):
-        return None
-
-    return None
