@@ -1,14 +1,12 @@
 """
-RTM — Infractions Dispatcher (determinista)
+RTM — Infractions Dispatcher (determinista) — v2
 
-Objetivo:
-- Un único punto para decidir si hay plantilla determinista por tipo.
-- Evitar duplicación de lógica en engine/generate.
-- Detección robusta (especialmente SEMÁFORO con OCR sucio).
-
-Uso típico:
-    tpl = dispatch_deterministic_template(core, draft_body="")
-    if tpl: asunto, cuerpo = tpl["asunto"], tpl["cuerpo"]
+Orden (Tráfico):
+1) Semáforo
+2) Móvil
+3) Atención / Conducción negligente (Art. 3.1 / 18)
+4) Condiciones del vehículo (Art. 12 / 15)
+5) Velocidad (solo si señales reales y NO Art.18)
 """
 
 from __future__ import annotations
@@ -18,27 +16,15 @@ from typing import Any, Dict, Optional
 
 from ai.infractions.movil import is_movil_context, build_movil_strong_template
 from ai.infractions.semaforo import build_semaforo_strong_template
+from ai.infractions.condiciones_vehiculo import build_condiciones_vehiculo_strong_template
+from ai.infractions.atencion import is_atencion_context, build_atencion_strong_template
 
-# ✅ NUEVO: Condiciones del vehículo (SVL-CV-4 PRO)
-# Ajusta el path si en tu repo el módulo está en otra ruta.
-from ai.infractions.condiciones_vehiculo_cv4 import build_condiciones_vehiculo_strong_template
-
-
-# -------------------------
-# Utils
-# -------------------------
 
 def _text(v: Any) -> str:
     return v if isinstance(v, str) else ""
 
 
 def build_raw_blob(core: Dict[str, Any], draft_body: str = "") -> str:
-    """
-    Compone un blob con:
-    - raw_text_pdf/raw_text_vision/raw_text_blob (si existen)
-    - hecho_imputado
-    - cuerpo borrador (si se pasa)
-    """
     core = core or {}
     parts = [
         _text(core.get("raw_text_pdf")),
@@ -50,15 +36,7 @@ def build_raw_blob(core: Dict[str, Any], draft_body: str = "") -> str:
     return " ".join([p for p in parts if p]).lower()
 
 
-# -------------------------
-# Robust semáforo detection
-# -------------------------
-
 def is_semaforo_context_robust(core: Dict[str, Any], draft_body: str = "") -> bool:
-    """
-    Detecta SEMÁFORO incluso con OCR sucio.
-    Prioriza señales directas de rojo / semáforo y el artículo 146.
-    """
     blob = build_raw_blob(core, draft_body=draft_body)
 
     sema_signals = [
@@ -75,26 +53,16 @@ def is_semaforo_context_robust(core: Dict[str, Any], draft_body: str = "") -> bo
     if any(s in blob for s in sema_signals):
         return True
 
-    # Artículo típico
     if re.search(r"\bart\.?\s*146\b", blob) or re.search(r"\bart[ií]culo\s*146\b", blob) or re.search(r"\b146\s*[\.,]\s*1\b", blob):
         return True
 
-    # Si analyze ya lo puso bien
     tipo = str((core or {}).get("tipo_infraccion") or "").lower().strip()
-    if tipo == "semaforo":
-        return True
+    return tipo == "semaforo"
 
-    return False
-
-
-# -------------------------
-# Velocity context (simple)
-# -------------------------
 
 def is_velocity_context(core: Dict[str, Any], draft_body: str = "") -> bool:
     core = core or {}
 
-    # 🔒 Guard absoluto: Art. 18 nunca es velocidad
     try:
         art = int(core.get("articulo_infringido_num"))
     except Exception:
@@ -107,16 +75,47 @@ def is_velocity_context(core: Dict[str, Any], draft_body: str = "") -> bool:
         return True
 
     blob = build_raw_blob(core, draft_body=draft_body)
+    velocity_signals = ["exceso de velocidad", "radar", "cinemómetro", "cinemometro", "km/h"]
+    return any(k in blob for k in velocity_signals)
 
-    velocity_signals = [
-        "exceso de velocidad",
-        "radar",
-        "cinemómetro", "cinemometro",
-        "km/h"
+
+def is_condiciones_vehiculo_context(core: Dict[str, Any], draft_body: str = "") -> bool:
+    blob = build_raw_blob(core, draft_body=draft_body)
+    signals = [
+        "condiciones reglamentarias",
+        "veh r.d. 2822/98", "rd 2822/98", "r.d. 2822/98",
+        "art. 12", "artículo 12", "articulo 12",
+        "art. 15", "artículo 15", "articulo 15",
+        "itv", "inspección técnica", "inspeccion tecnica", "caducad",
+        "neumático", "neumatico", "banda de rodadura", "dibujo", "desgastad", "liso",
+        "reforma", "modificación", "modificacion", "homolog",
+        "alumbrado", "señalización óptica", "senalizacion optica", "luz trasera", "luces traseras",
+        "deslumbr", "reflect", "reflej", "pulid", "como un espejo",
     ]
-
-    # Solo si hay señales reales en texto
-    if any(k in blob for k in velocity_signals):
+    if any(s in blob for s in signals):
         return True
+    tipo = str((core or {}).get("tipo_infraccion") or "").lower().strip()
+    return tipo in ["condiciones_vehiculo", "condiciones", "vehiculo", "vehículo"]
 
-    return False
+
+def dispatch_deterministic_template(core: Dict[str, Any], draft_body: str = "") -> Optional[Dict[str, str]]:
+    core = core or {}
+
+    if is_semaforo_context_robust(core, draft_body=draft_body):
+        return build_semaforo_strong_template(core)
+
+    if is_movil_context(core, draft_body or ""):
+        return build_movil_strong_template(core)
+
+    if is_atencion_context(core, draft_body or ""):
+        return build_atencion_strong_template(core)
+
+    if is_condiciones_vehiculo_context(core, draft_body=draft_body):
+        tpl = build_condiciones_vehiculo_strong_template(core)
+        if isinstance(tpl, dict) and tpl.get("asunto") and tpl.get("cuerpo"):
+            return {"asunto": tpl["asunto"], "cuerpo": tpl["cuerpo"]}
+
+    if is_velocity_context(core, draft_body=draft_body):
+        return None
+
+    return None
