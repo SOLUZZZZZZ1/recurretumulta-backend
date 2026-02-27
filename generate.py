@@ -11,20 +11,15 @@ from database import get_engine
 from ai.expediente_engine import run_expediente_ai
 from ai.velocity_decision import decide_modo_velocidad
 
-from ai.infractions.movil import (
-    is_movil_context,
-    build_movil_strong_template,
-)
+from ai.infractions.semaforo import build_semaforo_strong_template
+from ai.infractions.movil import is_movil_context, build_movil_strong_template
+from ai.infractions.condiciones_vehiculo import build_condiciones_vehiculo_strong_template
 
-from ai.infractions.semaforo import (
-    build_semaforo_strong_template,
-)
+# ✅ NUEVO: auriculares (art.18.2)
+from ai.infractions.distracciones import is_auriculares_context, build_auriculares_strong_template
 
-# ✅ CV-4 PRO (subtipos Art.12 + salida enriquecida)
-# Ajusta el path si en tu repo el módulo está en otra ruta.
-from ai.infractions.condiciones_vehiculo import (
-    build_condiciones_vehiculo_strong_template as build_condiciones_vehiculo_strong_template,
-)
+# ✅ NUEVO: atención / negligente (art.3.1 / 18.1) — con IA opcional (RTM_ATENCION_AI=1)
+from ai.infractions.atencion import is_atencion_context, build_atencion_strong_template
 
 from b2_storage import upload_bytes
 from docx_builder import build_docx
@@ -106,53 +101,59 @@ def _first_alegacion_title(body: str) -> str:
     return ""
 
 
+def _raw_blob(core: Dict[str, Any]) -> str:
+    core = core or {}
+    parts: List[str] = []
+    for k in ("raw_text_pdf", "raw_text_vision", "raw_text_blob", "hecho_imputado"):
+        v = core.get(k)
+        if isinstance(v, str) and v.strip():
+            parts.append(v)
+    return " ".join(parts).lower()
+
+
 # ==========================
 # CONTEXT DETECTORS
 # ==========================
 
 def _is_velocity_context(core: Dict[str, Any], cuerpo: str) -> bool:
-    """✅ BLINDAJE: VSE-1 solo si velocidad es explícita.
-
-    Regla:
-    - True si tipo_infraccion == 'velocidad'
-    - True si hay campos estructurados (velocidad_medida_kmh y velocidad_limite_kmh)
-    - True si el RAW_TEXT del expediente contiene señales claras (radar/km/h/cinemómetro)
-    - ❌ NO usa el 'cuerpo' IA como señal (evita falsos positivos)
+    """
+    Velocidad SOLO si:
+    - NO es Art.18
+    - y hay señales reales de velocidad en RAW (radar/km/h/cinemómetro/exceso)
+    - los campos medida/límite solo cuentan si también hay señales en RAW
     """
     core = core or {}
 
-    # 1) Tipo explícito
+    # Guard Art.18 (móvil/auriculares/atención)
+    art = core.get("articulo_infringido_num")
+    try:
+        art_i = int(art) if art is not None else None
+    except Exception:
+        art_i = None
+    if art_i == 18:
+        return False
+
     tipo = str(core.get("tipo_infraccion") or "").lower().strip()
     if tipo == "velocidad":
         return True
 
-    # 2) Campos estructurados reales
+    blob = _raw_blob(core)
+    velocity_signals = ["exceso de velocidad", "radar", "cinemómetro", "cinemometro", "km/h"]
+    has_raw_signals = any(k in blob for k in velocity_signals)
+
     measured = core.get("velocidad_medida_kmh")
     limit = core.get("velocidad_limite_kmh")
 
+    has_fields = False
     if isinstance(measured, int) and isinstance(limit, int):
+        has_fields = True
+    elif isinstance(measured, str) and measured.strip().isdigit() and isinstance(limit, str) and limit.strip().isdigit():
+        has_fields = True
+
+    if has_fields and has_raw_signals:
         return True
 
-    if isinstance(measured, str) and measured.strip().isdigit() and isinstance(limit, str) and limit.strip().isdigit():
-        return True
-
-    # 3) Señales SOLO en textos RAW del expediente (no en 'cuerpo')
-    parts: List[str] = []
-    for k in ("raw_text_pdf", "raw_text_vision", "raw_text_blob"):
-        v = core.get(k)
-        if isinstance(v, str) and v.strip():
-            parts.append(v)
-
-    blob = " ".join(parts).lower()
-
-    velocity_signals = [
-        "exceso de velocidad",
-        "km/h",
-        "cinemómetro", "cinemometro",
-        "radar",
-        "cinemometro",
-    ]
-    return any(k in blob for k in velocity_signals)
+    return has_raw_signals
 
 
 def _is_semaforo_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
@@ -202,16 +203,7 @@ def _is_condiciones_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
     if art_i in (12, 15):
         return True
 
-    parts: List[str] = []
-    for k in ("raw_text_pdf", "raw_text_vision", "raw_text_blob"):
-        v = core.get(k)
-        if isinstance(v, str) and v.strip():
-            parts.append(v)
-
-    parts.append(str(core.get("hecho_imputado") or ""))
-    parts.append(cuerpo or "")
-
-    blob = " ".join(parts).lower()
+    blob = _raw_blob(core) + "\n" + (cuerpo or "").lower()
 
     signals = [
         "alumbrado",
@@ -226,9 +218,7 @@ def _is_condiciones_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
         "emite luz en forma de destellos",
         "dispositivo obligatorio",
         "modificación no autorizada", "modificacion no autorizada",
-        # ✅ CV-4: reflectante/deslumbramiento
         "deslumbr", "reflect", "reflej", "pulid", "como un espejo",
-        # ✅ CV-4: neumáticos / ITV / reformas
         "itv", "inspección técnica", "inspeccion tecnica", "caducad",
         "neumático", "neumatico", "banda de rodadura", "dibujo", "desgastad", "liso",
         "reforma", "homolog", "proyecto", "certificado",
@@ -245,7 +235,7 @@ def _is_condiciones_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
 
 
 # ==========================
-# VELOCIDAD — VSE-1 DETERMINISTA SIEMPRE (solo si aplica)
+# VELOCIDAD — VSE-1 DETERMINISTA
 # ==========================
 
 def _speed_margin_value(measured: int) -> float:
@@ -296,12 +286,10 @@ def sanitize_imposed_fine(value: Any) -> Optional[int]:
             if not v.isdigit():
                 return None
             value = int(v)
-
         if isinstance(value, (int, float)):
             iv = int(round(float(value)))
         else:
             return None
-
         allowed = {100, 200, 300, 400, 500, 600}
         return iv if iv in allowed else None
     except Exception:
@@ -377,7 +365,6 @@ def _build_velocity_calc_paragraph(core: Dict[str, Any]) -> str:
     margin = vc.get("margin_value")
     corrected = vc.get("corrected")
     exceso = float(corrected) - float(limit)
-
     if exceso <= 0:
         return (
             "A efectos ilustrativos y sin perjuicio de la prueba que corresponde a la Administración, "
@@ -385,7 +372,6 @@ def _build_velocity_calc_paragraph(core: Dict[str, Any]) -> str:
             f"la velocidad corregida se situaría en torno a {corrected:.2f} km/h, lo que la situaría por debajo del límite máximo permitido. "
             "Debe acreditarse documentalmente el margen efectivamente aplicado, la velocidad corregida resultante y su encaje en el tramo sancionador."
         )
-
     return (
         "A efectos ilustrativos y sin perjuicio de la prueba que corresponde a la Administración, "
         f"con un límite de {limit} km/h y una medición de {measured} km/h, aplicando un margen de {margin:.2f} km/h, "
@@ -407,7 +393,6 @@ def _velocity_vse1_template(core: Dict[str, Any]) -> Tuple[str, str]:
     calc = (calc + "\n") if calc else ""
 
     asunto = "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE"
-
     cuerpo = (
         "A la atención del órgano competente,\n\n"
         "I. ANTECEDENTES\n"
@@ -432,7 +417,6 @@ def _velocity_vse1_template(core: Dict[str, Any]) -> Tuple[str, str]:
         "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de acreditación técnica suficiente.\n"
         "3) Subsidiariamente, que se practique prueba y se aporte expediente íntegro.\n"
     ).strip()
-
     return asunto, cuerpo
 
 
@@ -522,7 +506,6 @@ def _velocity_strict_validate(body: str) -> List[str]:
 
 
 def _strict_validate_or_raise(conn, case_id: str, tpl: Dict[str, str], final_kind: str) -> None:
-    """strict de velocidad solo si el documento final ES velocidad."""
     if final_kind != "velocidad":
         return
     body = (tpl or {}).get("cuerpo") or ""
@@ -585,24 +568,42 @@ def generate_dgt_for_case(
                     asunto = "RECURSO (MODO PRUEBA)"
                     cuerpo = _strip_borrador_prefix_from_body(cuerpo)
 
+                # 1) Semáforo
                 if _is_semaforo_context_robust(core, cuerpo):
                     tpl_s = build_semaforo_strong_template(core)
                     asunto = tpl_s.get("asunto") or asunto
                     cuerpo = tpl_s.get("cuerpo") or cuerpo
                     final_kind = "semaforo"
 
-                elif _is_condiciones_context_robust(core, cuerpo):
-                    tpl_c = build_condiciones_vehiculo_strong_template(core)
-                    asunto = tpl_c.get("asunto") or asunto
-                    cuerpo = tpl_c.get("cuerpo") or cuerpo
-                    final_kind = "condiciones_vehiculo"
-
+                # 2) Móvil
                 elif is_movil_context(core, cuerpo):
                     tpl_m = build_movil_strong_template(core)
                     asunto = tpl_m.get("asunto") or asunto
                     cuerpo = tpl_m.get("cuerpo") or cuerpo
                     final_kind = "movil"
 
+                # 3) Auriculares
+                elif is_auriculares_context(core, cuerpo):
+                    tpl_a = build_auriculares_strong_template(core)
+                    asunto = tpl_a.get("asunto") or asunto
+                    cuerpo = tpl_a.get("cuerpo") or cuerpo
+                    final_kind = "auriculares"
+
+                # 4) Atención/Negligente (con IA opcional)
+                elif is_atencion_context(core, cuerpo):
+                    tpl_at = build_atencion_strong_template(core, body=cuerpo)
+                    asunto = tpl_at.get("asunto") or asunto
+                    cuerpo = tpl_at.get("cuerpo") or cuerpo
+                    final_kind = "atencion"
+
+                # 5) Condiciones vehículo
+                elif _is_condiciones_context_robust(core, cuerpo):
+                    tpl_c = build_condiciones_vehiculo_strong_template(core)
+                    asunto = tpl_c.get("asunto") or asunto
+                    cuerpo = tpl_c.get("cuerpo") or cuerpo
+                    final_kind = "condiciones_vehiculo"
+
+                # 6) Velocidad (último)
                 elif _is_velocity_context(core, cuerpo):
                     asunto, cuerpo = _velocity_vse1_template(core)
                     final_kind = "velocidad"
@@ -632,13 +633,19 @@ def generate_dgt_for_case(
         if _is_semaforo_context_robust(core, cuerpo0):
             tpl = build_semaforo_strong_template(core)
             final_kind = "semaforo"
-        elif _is_condiciones_context_robust(core, cuerpo0):
-            tpl_c = build_condiciones_vehiculo_strong_template_cv4(core)
-            tpl = {"asunto": tpl_c.get("asunto") or tpl.get("asunto") or "", "cuerpo": tpl_c.get("cuerpo") or tpl.get("cuerpo") or ""}
-            final_kind = "condiciones_vehiculo"
         elif is_movil_context(core, cuerpo0):
             tpl = build_movil_strong_template(core)
             final_kind = "movil"
+        elif is_auriculares_context(core, cuerpo0):
+            tpl = build_auriculares_strong_template(core)
+            final_kind = "auriculares"
+        elif is_atencion_context(core, cuerpo0):
+            tpl = build_atencion_strong_template(core, body=cuerpo0)
+            final_kind = "atencion"
+        elif _is_condiciones_context_robust(core, cuerpo0):
+            tpl_c = build_condiciones_vehiculo_strong_template(core)
+            tpl = {"asunto": tpl_c.get("asunto") or tpl.get("asunto") or "", "cuerpo": tpl_c.get("cuerpo") or tpl.get("cuerpo") or ""}
+            final_kind = "condiciones_vehiculo"
         elif _is_velocity_context(core, cuerpo0):
             asunto_v, cuerpo_v = _velocity_vse1_template(core)
             tpl = {"asunto": asunto_v, "cuerpo": cuerpo_v}
@@ -669,6 +676,7 @@ def generate_dgt_for_case(
         else:
             raise
 
+    # DOCX/PDF
     kind_docx = "generated_docx_reposicion" if tipo == "reposicion" else "generated_docx_alegaciones"
     kind_pdf = "generated_pdf_reposicion" if tipo == "reposicion" else "generated_pdf_alegaciones"
 
