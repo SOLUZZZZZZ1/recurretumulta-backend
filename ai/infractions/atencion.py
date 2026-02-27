@@ -133,20 +133,23 @@ def _deterministic_body(core: Dict[str, Any], body: str = "") -> Dict[str, str]:
         "ALEGACIÓN PRIMERA — PRESUNCIÓN DE INOCENCIA, CARGA PROBATORIA Y MOTIVACIÓN\n\n"
         "En el procedimiento sancionador rige la presunción de inocencia y la carga de la prueba corresponde a la Administración. "
         "La imputación debe apoyarse en hechos concretos, verificables y motivación individualizada (no fórmulas estereotipadas).\n\n"
-        "ALEGACIÓN SEGUNDA — TIPICIDAD (ART. 3.1 / ART. 18): RIESGO CONCRETO Y HECHO CIRCUNSTANCIADO\n\n"
-        "La conducción negligente o la falta de atención permanente exigen: (i) conducta concreta; (ii) riesgo real y objetivable; "
-        "y (iii) relación causal entre conducta y riesgo. Debe precisarse, como mínimo:\n"
-        "1) Conducta exacta observada y por qué encaja en el tipo aplicado.\n"
-        "2) Riesgo concreto: para quién, dónde, cómo se manifestó (maniobra evasiva, invasión de carril, frenada brusca, etc.).\n"
-        "3) Circunstancias del tráfico/visibilidad y posición del agente (distancia, ángulo, iluminación, obstáculos).\n"
-        "4) Duración aproximada del hecho y momento exacto de observación.\n\n"
-        f"{(tramo_line + '\n\n') if tramo_line else ''}"
-        f"{(conducta_line + '\n\n') if conducta_line else ''}"
-        "En ausencia de concreción suficiente y riesgo objetivable, no puede tenerse por acreditada la infracción.\n\n"
-        "ALEGACIÓN TERCERA — EXPEDIENTE ÍNTEGRO Y PRUEBA COMPLETA\n\n"
-        "Se solicita la aportación del expediente íntegro (denuncia/boletín completo, informe ampliatorio si existe, diligencias, propuesta y resolución) "
-        "y cualquier soporte objetivo disponible (grabación, fotografías, anotaciones), para posibilitar contradicción efectiva.\n\n"
-        f"{(menor_line + '\n\n') if menor_line else ''}"
+        "ALEGACIÓN SEGUNDA — INADECUADA SUBSUNCIÓN EN EL ART. 3.1 RGC\n\n"
+"El art. 3.1 RGC no sanciona conductas meramente llamativas o impropias, sino aquellas que "
+"generen un peligro jurídicamente relevante y objetivable. "
+"No consta acreditación de maniobra evasiva, invasión de carril, frenada brusca ni alteración real "
+"de la circulación. La referencia genérica a 'situación de riesgo' carece de concreción suficiente.\n\n"
+
+"ALEGACIÓN TERCERA — INCOHERENCIA INTERNA DEL RELATO FÁCTICO\n\n"
+"Si se afirma que la conducta se prolongó durante 1,5 km generando riesgo, "
+"debe explicarse por qué no se produjo intervención inmediata. "
+"Una situación de peligro real y continuado no resulta compatible con una tolerancia prolongada "
+"sin actuación preventiva. Esta contradicción afecta a la credibilidad del relato.\n\n"
+
+"ALEGACIÓN CUARTA — ESTÁNDAR PROBATORIO Y VALORACIÓN SUBJETIVA\n\n"
+"La presunción de veracidad del agente no sustituye la exigencia de motivación concreta "
+"ni convierte en infracción cualquier valoración subjetiva. "
+"Sin descripción técnica suficiente de tiempo, modo y circunstancias, "
+"no puede entenderse enervada la presunción de inocencia.\n\n"
         "III. SOLICITO\n"
         "1) Que se tengan por formuladas las presentes alegaciones.\n"
         "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de motivación individualizada.\n"
@@ -250,8 +253,66 @@ def _ai_enhance(core: Dict[str, Any], base_body: str, body: str = "") -> Optiona
 
 
 def build_atencion_strong_template(core: Dict[str, Any], body: str = "") -> Dict[str, str]:
-    base = _deterministic_body(core, body=body)
-    improved = _ai_enhance(core, base_body=base["cuerpo"], body=body)
-    if isinstance(improved, str) and improved.strip():
-        base["cuerpo"] = improved.strip()
-    return base
+    core = core or {}
+
+    expediente = core.get("expediente_ref") or core.get("numero_expediente") or "No consta acreditado."
+    organo = core.get("organo") or core.get("organismo") or "No consta acreditado."
+    hecho = core.get("hecho_imputado") or "CONDUCCIÓN NEGLIGENTE / FALTA DE ATENCIÓN PERMANENTE (ART. 3.1 RGC)."
+
+    fecha_hecho = core.get("fecha_infraccion") or core.get("fecha_hecho") or core.get("fecha_documento") or ""
+    fecha_line = f" (fecha indicada: {fecha_hecho})" if fecha_hecho else ""
+
+    asunto = "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE"
+
+    cuerpo = (
+        "A la atención del órgano competente,\n\n"
+
+        "I. ANTECEDENTES\n"
+        f"1) Órgano: {organo}\n"
+        f"2) Identificación expediente: {expediente}\n"
+        f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
+
+        "II. ALEGACIONES\n\n"
+
+        "ALEGACIÓN PRIMERA — PRESUNCIÓN DE INOCENCIA Y CARGA DE LA PRUEBA\n\n"
+        "En el procedimiento sancionador rige la presunción de inocencia y corresponde a la Administración "
+        "acreditar de forma suficiente y motivada los hechos constitutivos de infracción. "
+        "La mera afirmación genérica o valoración subjetiva no constituye prueba bastante si no se acompaña "
+        "de una descripción circunstanciada y verificable.\n\n"
+
+        "ALEGACIÓN SEGUNDA — TIPICIDAD DEL ART. 3.1 RGC: NECESIDAD DE RIESGO CONCRETO\n\n"
+        "La conducción negligente exige no solo una conducta irregular, sino la generación de un riesgo "
+        "real, específico y objetivable para la seguridad vial. "
+        "No basta la referencia abstracta a una 'situación de riesgo'. "
+        "Debe precisarse:\n"
+        "1) Qué conducta concreta se observó.\n"
+        "2) En qué consistió exactamente el riesgo generado.\n"
+        "3) Para quién o para qué vehículo se produjo dicho riesgo.\n"
+        "4) Qué maniobra o consecuencia objetiva derivó de esa conducta.\n\n"
+        "Sin determinación concreta del riesgo y su relación causal con la conducta, no puede apreciarse "
+        "la subsunción típica en el art. 3.1 RGC.\n\n"
+
+        "ALEGACIÓN TERCERA — CONCRECIÓN FÁCTICA Y MOTIVACIÓN INDIVIDUALIZADA\n\n"
+        "La denuncia debe contener una descripción precisa de tiempo, modo y lugar. "
+        "Si se afirma una conducta mantenida en el tiempo o a lo largo de un tramo, "
+        "debe indicarse el método de observación, la continuidad de la misma y las circunstancias "
+        "objetivas que permitan verificar su fiabilidad.\n\n"
+        "La ausencia de estos elementos impide al interesado ejercer adecuadamente su derecho de defensa.\n\n"
+
+        "ALEGACIÓN CUARTA — INSUFICIENCIA DE LA VALORACIÓN SUBJETIVA\n\n"
+        "La presunción de veracidad del agente se refiere a los hechos percibidos directamente, "
+        "pero no exime del deber de motivación ni convierte en infracción cualquier conducta llamativa "
+        "si no se acredita riesgo efectivo. "
+        "La apreciación subjetiva sin soporte fáctico suficiente no puede enervar la presunción de inocencia.\n\n"
+
+        "ALEGACIÓN QUINTA — SOLICITUD DE EXPEDIENTE ÍNTEGRO\n\n"
+        "Se solicita la remisión del expediente completo, incluyendo denuncia íntegra, informe ampliatorio "
+        "si existiera, y cualquier soporte objetivo que hubiera servido de base a la imputación.\n\n"
+
+        "III. SOLICITO\n"
+        "1) Que se tengan por formuladas las presentes alegaciones.\n"
+        "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de motivación suficiente.\n"
+        "3) Subsidiariamente, que se aporte expediente íntegro con todos los elementos de prueba.\n"
+    )
+
+    return {"asunto": asunto, "cuerpo": cuerpo}
