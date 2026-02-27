@@ -235,11 +235,43 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
         "radar_modelo_hint": radar_model,
     }
 
+
+def _extract_hecho_literal(text_blob: str) -> Optional[str]:
+    """Extrae un HECHO DENUNCIADO/IMPUTADO literal del texto (sin inferir).
+    Devuelve un string corto (máx 600 chars) o None.
+    """
+    if not text_blob:
+        return None
+    t = str(text_blob)
+
+    # Normaliza espacios
+    t_norm = re.sub(r"[\t ]+", " ", t)
+
+    # 1) Bloque 'HECHO DENUNCIADO'
+    m = re.search(r"HECHO\s+DENUNCIADO\s*\n?(.*)", t, flags=re.IGNORECASE | re.DOTALL)
+    if m:
+        after = m.group(1).strip()
+        cut = re.split(r"\n\s*(DATOS\b|MATR[IÍ]CULA\b|MARCA\b|CLASE\b|OBSERVACIONES\b|III\.|II\.|I\.|\Z)", after, flags=re.IGNORECASE)
+        cand = cut[0].strip()
+        cand = re.sub(r"\s+", " ", cand)
+        if cand:
+            return cand[:600]
+
+    # 2) Bloque 'HECHO IMPUTADO:'
+    m2 = re.search(r"HECHO\s+IMPUTADO\s*:\s*(.+)", t_norm, flags=re.IGNORECASE)
+    if m2:
+        cand = m2.group(1).strip()
+        cand = re.sub(r"\s+", " ", cand)
+        if cand:
+            return cand[:600]
+
+    return None
+
 def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
     t = (text_blob or "").lower()
     facts: List[str] = []
 
-    # ✅ SEMÁFORO PRIORIDAD MÁXIMA (OCR sucio)
+    # ✅ SEMÁFORO
     sema_signals = [
         "semáforo", "semaforo",
         "fase roja",
@@ -259,7 +291,7 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
 
-    # Móvil
+    # MÓVIL
     if "utilizando manualmente" in t and any(k in t for k in ["teléfono", "telefono", "móvil", "movil"]):
         facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
@@ -267,7 +299,17 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("USO DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
 
-    # Velocidad SOLO si hay contexto real
+    # AURICULARES
+    if any(k in t for k in ["auricular", "auriculares", "cascos"]) and any(k in t for k in ["reproductor", "reproductores", "receptores", "sonido", "conectad"]):
+        facts.append("USO DE AURICULARES/CASCOS CONECTADOS A SONIDO (ART. 18.2)")
+        return ("auriculares", facts[0], facts)
+
+    # ATENCIÓN / NEGLIGENTE
+    if any(k in t for k in ["conducción negligente", "conduccion negligente", "atención permanente", "atencion permanente", "no mantener la atención", "no mantener la atencion", "libertad de movimientos"]):
+        facts.append("CONDUCCIÓN NEGLIGENTE / FALTA DE ATENCIÓN PERMANENTE (RGC)")
+        return ("atencion", facts[0], facts)
+
+    # VELOCIDAD SOLO si hay contexto real
     if any(k in t for k in ["exceso de velocidad", "radar", "cinemómetro", "cinemometro"]):
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
@@ -275,25 +317,54 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
 
-    # Seguro
+    # SEGURO
     if ("lsoa" in t) or (("r.d. legislativo" in t or "rd legislativo" in t) and "8/2004" in t) or ("8/2004" in t and "responsabilidad civil" in t):
         facts.append("CARENCIA DE SEGURO OBLIGATORIO")
         return ("seguro", facts[0], facts)
 
     return ("otro", "", [])
 
+
 def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
     tipo, hecho, facts = _detect_facts_and_type(text_blob)
     out = dict(extracted_core or {})
-    out["tipo_infraccion"] = tipo
-    out["hecho_imputado"] = hecho or None
-    out["facts_phrases"] = facts
 
+    # Preceptos (artículo/apartado/norma)
     pre = _extract_precepts(text_blob)
+    art_num = pre.get("articulo_num")
+    apt_num = pre.get("apartado_num")
+    norma_hint = pre.get("norma_hint")
+
     out["preceptos_detectados"] = pre.get("preceptos_detectados") or []
-    out["articulo_infringido_num"] = pre.get("articulo_num")
-    out["apartado_infringido_num"] = pre.get("apartado_num")
-    out["norma_hint"] = pre.get("norma_hint")
+    out["articulo_infringido_num"] = art_num
+    out["apartado_infringido_num"] = apt_num
+    out["norma_hint"] = norma_hint
+
+    # Ajuste por artículo si no está tipificado
+    if tipo == "otro":
+        if art_num in (3, 18):
+            tipo = "atencion"
+        elif art_num in (12, 15):
+            tipo = "condiciones_vehiculo"
+
+    out["tipo_infraccion"] = tipo
+
+    # Hecho literal: si no hay hecho corto, extrae literal del documento
+    literal = _extract_hecho_literal(text_blob)
+
+    if hecho:
+        out["hecho_imputado"] = hecho
+    elif literal:
+        out["hecho_imputado"] = literal
+    else:
+        out["hecho_imputado"] = None
+
+    if facts:
+        out["facts_phrases"] = facts
+    elif literal:
+        out["facts_phrases"] = [literal]
+    else:
+        out["facts_phrases"] = []
 
     extra_fields = _extract_speed_and_sanction_fields(text_blob)
     for k, v in (extra_fields or {}).items():
