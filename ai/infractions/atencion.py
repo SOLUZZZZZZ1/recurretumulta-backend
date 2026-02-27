@@ -1,34 +1,33 @@
 """
-RTM — TRÁFICO — ATENCIÓN / CONDUCCIÓN NEGLIGENTE (SVL-ATN-PRO)
+RTM — TRÁFICO — ATENCIÓN / CONDUCCIÓN NEGLIGENTE (SVL-ATN-PRO) — FAIL-SAFE
 
-Nivel MUY alto:
+Nivel muy alto:
 - Base determinista robusta (siempre disponible).
-- + Capa IA opcional (si hay OPENAI_API_KEY) para personalizar con "chicha"
+- + Capa IA opcional (RTM_ATENCION_AI=1) para personalizar con "chicha"
   usando SOLO texto del expediente (raw_text_pdf/raw_text_blob/hecho_imputado),
   sin inventar hechos.
 
-Uso:
-- is_atencion_context(core, body="") -> bool
-- build_atencion_strong_template(core, body="") -> {"asunto","cuerpo"}
-
-Configuración:
-- RTM_ATENCION_AI=1  -> activa personalización IA (si hay clave)
-- RTM_ATENCION_AI_MODEL (opcional) -> modelo (por defecto OPENAI_MODEL o gpt-4o)
+Blindajes:
+- Si OpenAI falla (401/429/timeout/…): NO rompe, vuelve a base determinista.
+- Si OpenAI devuelve negativas tipo "I can't assist..." o similares: se ignora.
+- Sanitiza OPENAI_API_KEY (quita comillas y espacios).
 """
 
 from __future__ import annotations
 from typing import Any, Dict, List, Optional
 import os
 import re
-
-# Reutilizamos requests como en openai_text.py
 import requests
 
 
-def _env(name: str) -> str:
-    v = (os.getenv(name) or "").strip()
-    if not v:
-        raise RuntimeError(f"Falta variable de entorno: {name}")
+# ----------------------------
+# Helpers
+# ----------------------------
+def _sanitize_key(v: str) -> str:
+    v = (v or "").strip()
+    # quita comillas accidentales
+    if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+        v = v[1:-1].strip()
     return v
 
 
@@ -56,7 +55,6 @@ def is_atencion_context(core: Dict[str, Any], body: str = "") -> bool:
     if tipo in ("atencion", "atención", "negligente", "conduccion_negligente", "conducción_negligente"):
         return True
 
-    # Artículo explícito (3 o 18)
     art = core.get("articulo_infringido_num")
     try:
         art_i = int(art) if art is not None else None
@@ -75,10 +73,12 @@ def is_atencion_context(core: Dict[str, Any], body: str = "") -> bool:
     if art_i in (3, 18) and any(s in b for s in signals):
         return True
 
-    # Señales fuertes aunque no haya artículo
     return any(s in b for s in signals)
 
 
+# ----------------------------
+# Determinista con “chicha” por señales reales del hecho
+# ----------------------------
 def _deterministic_body(core: Dict[str, Any], body: str = "") -> Dict[str, str]:
     core = core or {}
     expediente = core.get("expediente_ref") or core.get("numero_expediente") or "No consta acreditado."
@@ -90,7 +90,7 @@ def _deterministic_body(core: Dict[str, Any], body: str = "") -> Dict[str, str]:
 
     b = _blob_lower(core, body=body)
 
-    # Señales específicas del caso (sin inventar)
+    # señales específicas (sin inventar)
     tramo = None
     m_km = re.search(r"\b(\d+(?:[\.,]\d+)?)\s*km\b", b)
     if m_km:
@@ -103,7 +103,7 @@ def _deterministic_body(core: Dict[str, Any], body: str = "") -> Dict[str, str]:
         tramo_line = (
             f"Se afirma un seguimiento/tramo de aproximadamente {tramo} km. "
             "Se exige indicar el método de determinación del tramo (punto inicial/final, referencias de vía), "
-            "y por qué no se procedió a intervención inmediata si el riesgo era real."
+            "si la observación fue continua y por qué no se procedió a intervención inmediata si el riesgo era real."
         )
 
     menor_line = ""
@@ -111,7 +111,7 @@ def _deterministic_body(core: Dict[str, Any], body: str = "") -> Dict[str, str]:
         menor_line = (
             "La mención a la presencia de un menor/ocupante no suple la prueba de la conducta imputada. "
             "Si se pretende fundamentar o agravar la imputación en esa circunstancia, debe identificarse el encaje normativo específico "
-            "(p. ej., normativa SRI) y la relación causal con el riesgo concreto."
+            "(p. ej., normativa SRI) y la relación causal con el riesgo concreto, sin presunciones."
         )
 
     conducta_line = ""
@@ -156,26 +156,41 @@ def _deterministic_body(core: Dict[str, Any], body: str = "") -> Dict[str, str]:
     return {"asunto": asunto, "cuerpo": cuerpo}
 
 
+# ----------------------------
+# IA opcional + fail-safe
+# ----------------------------
+def _looks_like_refusal(text: str) -> bool:
+    t = (text or "").lower()
+    bad = [
+        "i can't assist",
+        "i cannot assist",
+        "i'm sorry",
+        "lo siento",
+        "no puedo ayudar",
+        "no puedo asist",
+        "missing bearer",
+        "invalid_request_error",
+    ]
+    return any(x in t for x in bad)
+
+
 def _ai_enhance(core: Dict[str, Any], base_body: str, body: str = "") -> Optional[str]:
-    # Feature flag
-    if (os.getenv("RTM_ATENCION_AI") or "").strip() not in ("1", "true", "TRUE", "yes", "YES"):
+    if (os.getenv("RTM_ATENCION_AI") or "").strip().lower() not in ("1", "true", "yes"):
         return None
 
-    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    api_key = _sanitize_key(os.getenv("OPENAI_API_KEY") or "")
     if not api_key:
         return None
 
     model = (os.getenv("RTM_ATENCION_AI_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4o").strip()
 
-    # Sólo usamos el texto del expediente; recortamos para seguridad
-    blob = _blob(core, body=body)
-    blob = blob[:12000]
+    blob = _blob(core, body=body)[:12000]
 
     system_text = (
         "Eres un abogado experto en recursos administrativos de tráfico en España. "
         "Redactas alegaciones muy técnicas y específicas, pero NUNCA inventas hechos. "
         "Solo puedes basarte en el texto proporcionado. "
-        "Si un dato no está claro, formula la exigencia probatoria (no afirmes). "
+        "Si un dato no está claro, formula exigencias probatorias (no afirmes). "
         "Mantén tono profesional, contundente y verificable."
     )
 
@@ -183,14 +198,14 @@ def _ai_enhance(core: Dict[str, Any], base_body: str, body: str = "") -> Optiona
         "TEXTO DEL EXPEDIENTE (única fuente):\n\n"
         f"{blob}\n\n"
         "OBJETIVO: Mejorar el escrito base aportando 'chicha' y precisión.\n"
-        "REGLAS ESTRICTAS:\n"
+        "REGLAS:\n"
         "1) No inventes hechos ni cifras.\n"
-        "2) Si el texto menciona tramo (p.ej. '1,5 km'), exige método de medición y continuidad.\n"
-        "3) Si menciona menor/ocupantes, pide encaje normativo y relación causal, sin suponer.\n"
-        "4) Si describe conductas internas (bailar/palmas/volante), exige concreción (qué, cuándo, cómo) y fiabilidad perceptiva.\n"
-        "5) Añade peticiones de prueba: denuncia íntegra, informe ampliatorio, grabaciones, anotaciones, testigos, croquis, etc.\n\n"
-        "Devuelve SOLO el texto completo del CUERPO final (no asunto), en español, con estructura I/II/III y ALEGACIONES numeradas.\n\n"
-        "ESCRITO BASE A MEJORAR (mantén su estructura, pero mejora):\n\n"
+        "2) Si se menciona tramo (p.ej. '1,5 km'), exige método de medición y continuidad.\n"
+        "3) Si se menciona menor/ocupantes, pide encaje normativo y relación causal, sin suponer.\n"
+        "4) Si hay conductas internas (bailar/palmas/volante), exige concreción y fiabilidad perceptiva.\n"
+        "5) Pide prueba: denuncia íntegra, informe ampliatorio, grabaciones, anotaciones, testigos, croquis.\n\n"
+        "Devuelve SOLO el CUERPO final (no asunto), en español, con estructura I/II/III y ALEGACIONES numeradas.\n\n"
+        "ESCRITO BASE A MEJORAR:\n\n"
         f"{base_body}\n"
     )
 
@@ -202,24 +217,36 @@ def _ai_enhance(core: Dict[str, Any], base_body: str, body: str = "") -> Optiona
         ],
     }
 
-    r = requests.post(
-        "https://api.openai.com/v1/responses",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json=payload,
-        timeout=60,
-    )
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=60,
+        )
+    except Exception:
+        return None
+
     if not r.ok:
         return None
 
-    data = r.json()
+    try:
+        data = r.json()
+    except Exception:
+        return None
+
     out_text = ""
     for item in data.get("output", []):
         if item.get("type") == "message":
             for c in item.get("content", []):
                 if c.get("type") == "output_text":
                     out_text += c.get("text", "")
+
     out_text = (out_text or "").strip()
-    return out_text or None
+    if not out_text or _looks_like_refusal(out_text):
+        return None
+
+    return out_text
 
 
 def build_atencion_strong_template(core: Dict[str, Any], body: str = "") -> Dict[str, str]:
