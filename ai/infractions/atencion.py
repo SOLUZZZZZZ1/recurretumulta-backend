@@ -1,17 +1,13 @@
 """
 RTM — TRÁFICO — ATENCIÓN / CONDUCCIÓN NEGLIGENTE
-VERSIÓN PRODUCCIÓN ESTABLE (ULTRA ADMIN V5)
+VERSIÓN ULTRA ADMIN DEFINITIVA (PRODUCCIÓN ESTABLE)
 
 - Sin IA
-- Sin llamadas externas
-- Subtipos automáticos:
-    * Bicicleta / ciclistas
-    * Arcén
-    * Ocupación de carril / paralelo
-    * Exposición a atropello
-    * Menor / SRI
-    * Conductas internas (bailar, palmas, morder uñas)
-- Técnico-administrativo fuerte
+- Subtipos automáticos activados por el texto real
+- Ciclistas reforzado
+- Libertad de movimientos reforzado
+- Tramo reforzado
+- Menor reforzado
 """
 
 from __future__ import annotations
@@ -51,7 +47,7 @@ def _detect_subtypes(text: str) -> Dict[str, Any]:
         "is_bici": any(w in t for w in ["bicicleta", "ciclista", "ciclistas"]),
         "has_arcen": any(w in t for w in ["arcén", "arcen"]),
         "has_carril": any(w in t for w in ["carril", "paralelo", "ocupando"]),
-        "has_atropello": "atropello" in t or "exponi" in t,
+        "has_atropello": any(w in t for w in ["atropello", "exponi"]),
         "has_menor": any(w in t for w in ["menor", "dos años", "dos anos", "sri"]),
         "has_bail": any(w in t for w in ["bail", "palmas", "golpeando", "volante"]),
         "has_morder_unas": any(w in t for w in ["mordía", "mordia", "morder", "uñas", "unas"]),
@@ -90,8 +86,8 @@ def build_atencion_strong_template(core: Dict[str, Any], body: str = "") -> Dict
     organo = core.get("organo") or core.get("organismo") or "No consta acreditado."
     hecho = core.get("hecho_imputado") or "CONDUCCIÓN NEGLIGENTE / FALTA DE ATENCIÓN PERMANENTE."
 
-    texto_completo = _blob(core, body)
-    subs = _detect_subtypes(texto_completo)
+    texto = _blob(core, body)
+    subs = _detect_subtypes(texto)
 
     bloques: List[str] = []
 
@@ -100,45 +96,46 @@ def build_atencion_strong_template(core: Dict[str, Any], body: str = "") -> Dict
         bloques.append(
             f"BLOQUE ESPECÍFICO — TRAMO/SEGUIMIENTO\n\n"
             f"Se afirma un seguimiento de aproximadamente {subs['km_val']} km. "
-            "Debe indicarse el método de determinación del tramo, continuidad de observación "
-            "y motivo de no intervención inmediata si el riesgo era real.\n"
+            "Debe indicarse el punto inicial y final, continuidad de observación y "
+            "explicarse por qué no se produjo intervención inmediata si el riesgo era real.\n"
         )
 
     # -------- CICLISTAS --------
     if subs["is_bici"] or subs["has_arcen"] or subs["has_carril"] or subs["has_atropello"]:
-        bloque_bici = (
+        bloques.append(
             "BLOQUE ESPECÍFICO — CIRCULACIÓN DE CICLISTAS / ARCÉN / OCUPACIÓN DE CARRIL\n\n"
-            "La mera referencia a bicicleta, ocupación de carril o uso del arcén exige encaje normativo concreto.\n"
+            "La mera referencia a circulación en bicicleta o uso del arcén exige encaje normativo concreto.\n\n"
             "Debe acreditarse:\n"
-            "- Practicabilidad real del arcén.\n"
+            "- Practicabilidad real y segura del arcén en ese punto.\n"
             "- Anchura efectiva del carril.\n"
-            "- Intensidad del tráfico en ese momento.\n"
-            "- Maniobra objetiva que evidencie riesgo real.\n\n"
-            "La simple posibilidad teórica de atropello no satisface el estándar exigible para subsumir el hecho en el art. 3.1 RGC.\n"
+            "- Intensidad real del tráfico.\n"
+            "- Distancia respecto a otros vehículos.\n"
+            "- Maniobra concreta que evidencie riesgo objetivo.\n\n"
+            "La simple posibilidad teórica de atropello no constituye riesgo jurídicamente relevante.\n"
         )
-        bloques.append(bloque_bici)
 
     # -------- CONDUCTAS INTERNAS --------
     if subs["has_bail"]:
         bloques.append(
             "BLOQUE ESPECÍFICO — CONDUCTAS INTERNAS (BAILAR / PALMAS / VOLANTE)\n\n"
             "Debe describirse con precisión qué se observó, durante cuánto tiempo "
-            "y cómo afectó objetivamente al control del vehículo.\n"
+            "y cómo afectó objetivamente al control del vehículo. "
+            "La mera apreciación subjetiva sin consecuencia objetiva no basta.\n"
         )
 
     if subs["has_morder_unas"]:
         bloques.append(
             "BLOQUE ESPECÍFICO — LIBERTAD DE MOVIMIENTOS\n\n"
             "No toda acción manual puntual implica pérdida jurídicamente relevante del control del vehículo. "
-            "Debe acreditarse afectación real y no presunción automática.\n"
+            "Debe acreditarse afectación real y objetiva de la conducción.\n"
         )
 
     # -------- MENOR --------
     if subs["has_menor"]:
         bloques.append(
             "BLOQUE ESPECÍFICO — MENOR / SRI\n\n"
-            "La presencia de menor no suple la prueba del riesgo concreto. "
-            "Debe identificarse el encaje normativo específico y relación causal directa.\n"
+            "La presencia de menor no convierte automáticamente el hecho en negligente. "
+            "Debe identificarse infracción específica y relación causal directa con riesgo real.\n"
         )
 
     bloques_texto = "\n\n".join(bloques)
@@ -153,26 +150,12 @@ def build_atencion_strong_template(core: Dict[str, Any], body: str = "") -> Dict
         f"3) Hecho imputado: {hecho}\n\n"
         "II. ALEGACIONES\n\n"
         "ALEGACIÓN PRIMERA — PRESUNCIÓN DE INOCENCIA Y CARGA PROBATORIA\n\n"
-        "Corresponde a la Administración acreditar con precisión los hechos constitutivos de infracción.\n\n"
-        "ALEGACIÓN SEGUNDA — INADECUADA SUBSUNCIÓN EN EL ART. 3.1 RGC\n\n"
-"El art. 3.1 RGC no sanciona cualquier conducta que pueda resultar discutible, sino aquellas "
-"que generen un peligro jurídicamente relevante y objetivable para la seguridad vial.\n\n"
-"En el presente caso, la denuncia describe circulación en bicicleta junto a otros ciclistas, "
-"ocupación parcial del carril derecho y referencia a la existencia de un arcén de aproximadamente dos metros. "
-"Sin embargo, no se concreta:\n"
-"1) La anchura efectiva del carril ni la distancia real respecto a otros vehículos.\n"
-"2) La intensidad del tráfico en ese momento.\n"
-"3) Si el arcén era practicable, continuo y seguro en ese punto concreto.\n"
-"4) Maniobra evasiva, frenada brusca o alteración efectiva de la circulación.\n\n"
-"La mera mención a una posible 'exposición a atropello' constituye una valoración hipotética "
-"si no se identifica vehículo concreto, maniobra específica o consecuencia objetiva derivada de la posición del ciclista.\n\n"
-"Asimismo, la circulación en paralelo o la ocupación parcial del carril, en el contexto de circulación de ciclistas, "
-"no puede calificarse automáticamente como conducción negligente sin acreditación de riesgo real y concreto.\n\n"
-"Sin descripción detallada del peligro efectivo ni acreditación objetiva del mismo, no puede entenderse "
-"cumplido el estándar exigido para la subsunción en el art. 3.1 RGC.\n" "
+        "Corresponde a la Administración acreditar de forma precisa los hechos constitutivos de infracción.\n\n"
+        "ALEGACIÓN SEGUNDA — SUBSUNCIÓN EN EL ART. 3.1 RGC\n\n"
+        "La conducción negligente exige riesgo jurídicamente relevante y objetivable. "
         "La referencia abstracta a 'riesgo' no es suficiente sin concreción fáctica.\n\n"
-        "ALEGACIÓN TERCERA — CONCRECIÓN TEMPORAL Y COHERENCIA\n\n"
-        "Debe precisarse duración, circunstancias de tráfico y posición del agente.\n\n"
+        "ALEGACIÓN TERCERA — CONCRECIÓN Y COHERENCIA\n\n"
+        "Debe precisarse duración, circunstancias de tráfico, posición del agente y consecuencia objetiva.\n\n"
         f"{bloques_texto}\n\n"
         "III. SOLICITO\n"
         "1) Archivo del expediente por insuficiencia probatoria.\n"
