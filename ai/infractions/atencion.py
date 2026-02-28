@@ -223,7 +223,7 @@ def _tpl_att(core: Dict[str, Any]) -> Dict[str, str]:
 
     asunto = "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE"
     cuerpo = (
-        "A la atención del órgano competente,\n\n"
+        "A la atención del órgano competente,\n\n",
         "I. ANTECEDENTES\n"
         f"1) Órgano: {h['organo']}\n"
         f"2) Expediente: {h['expediente']}\n"
