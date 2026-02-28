@@ -194,6 +194,7 @@ def _tpl_att(core: Dict[str, Any]) -> Dict[str, str]:
     blocks: List[str] = []
 
     if is_bici or has_arcen or has_paralelo or has_carril or has_atropello:
+
     lines: List[str] = []
 
     lines.append("BLOQUE ESPECÍFICO — CIRCULACIÓN DE CICLISTAS / ARCÉN / PARALELO / CARRIL")
