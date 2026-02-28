@@ -194,20 +194,54 @@ def _tpl_att(core: Dict[str, Any]) -> Dict[str, str]:
     blocks: List[str] = []
 
     if is_bici or has_arcen or has_paralelo or has_carril or has_atropello:
-        lines: List[str] = []
-        lines.append("BLOQUE ESPECÍFICO — CICLISTAS / ARCÉN / PARALELO / CARRIL")
-        lines.append("")
-        lines.append("La imputación debe concretar el encaje normativo y el riesgo real. No basta una valoración abstracta.")
-        if has_arcen:
-            lines.append("- Si se invoca arcén, debe acreditarse que era practicable, continuo y seguro (estado, obstáculos, continuidad) y por qué se afirma obligación concreta de circular por él.")
-        if has_paralelo:
-            lines.append("- Si se alega circulación en paralelo o 'de a tres', debe precisarse posición exacta, anchura del carril y presencia real de tráfico.")
-        if has_carril:
-            lines.append("- Si se alega ocupación relevante del carril, debe precisarse anchura efectiva, distancia a vehículos y maniobra objetiva (frenada/adelantamiento evasivo/etc.).")
-        if has_atropello:
-            lines.append("- La referencia a 'atropello' es hipotética si no se identifica vehículo concreto, distancia, maniobra y consecuencia objetiva.")
-        lines.append("La mera posibilidad teórica de riesgo no satisface el estándar exigible para la subsunción.")
-        blocks.append("\n".join(lines))
+    lines: List[str] = []
+    lines.append("BLOQUE ESPECÍFICO — CIRCULACIÓN DE CICLISTAS / ARCÉN / PARALELO / CARRIL")
+    lines.append("")
+    lines.append(
+        "La denuncia describe circulación en bicicleta junto a otros ciclistas, "
+        "ocupación parcial del carril derecho y referencia a la existencia de un arcén. "
+        "Sin embargo, la subsunción automática en el art. 18.1 RGC exige una acreditación "
+        "precisa del riesgo real y no meramente hipotético."
+    )
+    lines.append("")
+    lines.append(
+        "1) Uso del arcén:"
+    )
+    lines.append(
+        "   La mera mención a un arcén (incluso con indicación aproximada de anchura) "
+        "   no implica automáticamente obligación de circulación por el mismo. "
+        "   Debe acreditarse que era practicable, continuo y seguro en ese punto concreto "
+        "   (estado, obstáculos, interrupciones, visibilidad) y que su utilización "
+        "   resultaba viable en las circunstancias reales."
+    )
+    lines.append("")
+    lines.append(
+        "2) Circulación en paralelo o 'de a tres':"
+    )
+    lines.append(
+        "   Debe precisarse anchura efectiva del carril, intensidad del tráfico en ese momento, "
+        "   posición exacta de los ciclistas y distancia respecto a otros vehículos. "
+        "   La mera ocupación parcial del carril no constituye por sí misma conducción negligente "
+        "   si no se describe maniobra concreta que evidencie peligro objetivo."
+    )
+    lines.append("")
+    lines.append(
+        "3) Referencia a 'exposición a atropello':"
+    )
+    lines.append(
+        "   La afirmación de exposición a atropello constituye una inferencia hipotética "
+        "   si no se identifica vehículo concreto, maniobra evasiva real, frenada brusca "
+        "   o alteración efectiva de la circulación. "
+        "   El riesgo abstracto o potencial no satisface el estándar exigido para enervar "
+        "   la presunción de inocencia."
+    )
+    lines.append("")
+    lines.append(
+        "En ausencia de descripción circunstanciada del peligro real y objetivable, "
+        "no puede entenderse acreditada la subsunción típica en el art. 18.1 RGC."
+    )
+
+    blocks.append("\n".join(lines))
 
     if has_no_percata or has_conversando:
         blocks.append("\n".join([
