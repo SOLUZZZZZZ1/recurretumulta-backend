@@ -224,11 +224,11 @@ def _tpl_att(core: Dict[str, Any]) -> Dict[str, str]:
     asunto = "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE"
     cuerpo = (
         "A la atención del órgano competente,\n\n",
-        "I. ANTECEDENTES\n"
+        "I. ANTECEDENTES\n",
         f"1) Órgano: {h['organo']}\n"
         f"2) Expediente: {h['expediente']}\n"
         f"3) Hecho imputado: {h['hecho']}\n\n"
-        "II. ALEGACIONES\n\n"
+        "II. ALEGACIONES\n\n",
         "ALEGACIÓN PRIMERA — TIPICIDAD (ART. 18.1): CONDUCTA CONCRETA Y RIESGO OBJETIVABLE\n\n"
         "La falta de atención permanente exige una conducta concreta y un riesgo real, específico y objetivable. "
         "No basta la mera descripción genérica.\n\n"
