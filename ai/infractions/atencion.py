@@ -136,7 +136,7 @@ def is_atencion_context(core: Dict[str, Any], body: str = "") -> bool:
 
 
 # ==========================
-# PLANTILLAS
+# PLANTILLAS (REFORZADAS)
 # ==========================
 
 def _tpl_mov(core: Dict[str, Any]) -> Dict[str, str]:
@@ -155,20 +155,19 @@ def _tpl_mov(core: Dict[str, Any]) -> Dict[str, str]:
         "",
         "ALEGACIÓN PRIMERA — TIPICIDAD: 'LIBERTAD DE MOVIMIENTOS' (ART. 18.1) NO PRESUMIBLE",
         "",
-        "No toda acción manual puntual (p. ej., morderse las uñas, comer, beber, etc.) implica por sí misma una pérdida "
-        "jurídicamente relevante del control del vehículo. Para apreciar infracción debe acreditarse afectación real y verificable "
-        "a la conducción, y no una presunción automática.",
+        "La infracción no puede deducirse automáticamente de una acción aislada (p. ej., morderse las uñas).",
+        "Debe acreditarse una afectación REAL y OBJETIVA al control del vehículo. No basta una presunción.",
         "",
-        "Debe precisarse, como mínimo:",
-        "1) Duración y entidad de la acción.",
-        "2) Cómo afectó al control del vehículo (trayectoria, maniobras, correcciones, etc.).",
-        "3) Circunstancias de tráfico/visibilidad y posición del agente.",
-        "4) Consecuencia objetiva o riesgo concreto derivado (si se alega).",
+        "Para enervar la presunción de inocencia debe constar, al menos:",
+        "1) Duración y entidad de la acción (puntual vs mantenida).",
+        "2) Cómo afectó al control: trayectoria errática, correcciones bruscas, maniobras anómalas.",
+        "3) Circunstancias de tráfico/visibilidad y posición del agente (distancia/ángulo/obstáculos).",
+        "4) Consecuencia objetiva o riesgo concreto derivado de esa acción (si se alega).",
         "",
-        "ALEGACIÓN SEGUNDA — PRUEBA COMPLETA Y MOTIVACIÓN INDIVIDUALIZADA",
+        "ALEGACIÓN SEGUNDA — MOTIVACIÓN INDIVIDUALIZADA Y PRUEBA COMPLETA",
         "",
-        "Se solicita expediente íntegro (denuncia completa, informe ampliatorio si existe) y cualquier soporte objetivo "
-        "(grabación, fotografías, anotaciones) que permita contradicción efectiva.",
+        "Se solicita denuncia íntegra e informe ampliatorio (si existe) con descripción circunstanciada,",
+        "así como cualquier soporte objetivo disponible (grabación, fotografías, anotaciones) para contradicción efectiva.",
         "",
         "III. SOLICITO",
         "1) Que se tengan por formuladas las presentes alegaciones.",
@@ -193,28 +192,52 @@ def _tpl_att(core: Dict[str, Any]) -> Dict[str, str]:
 
     blocks: List[str] = []
 
+    # Bloque fuerte ciclistas/arcén/paralelo/carril/atropello
     if is_bici or has_arcen or has_paralelo or has_carril or has_atropello:
         lines: List[str] = []
-        lines.append("BLOQUE ESPECÍFICO — CICLISTAS / ARCÉN / PARALELO / CARRIL")
+        lines.append("BLOQUE ESPECÍFICO — CICLISTAS / ARCÉN / PARALELO / CARRIL (ENCAJE NORMATIVO + RIESGO REAL)")
         lines.append("")
-        lines.append("La imputación debe concretar el encaje normativo y el riesgo real. No basta una valoración abstracta.")
-        if has_arcen:
-            lines.append("- Si se invoca arcén, debe acreditarse que era practicable, continuo y seguro (estado, obstáculos, continuidad) y por qué se afirma obligación concreta de circular por él.")
-        if has_paralelo:
-            lines.append("- Si se alega circulación en paralelo o 'de a tres', debe precisarse posición exacta, anchura del carril y presencia real de tráfico.")
-        if has_carril:
-            lines.append("- Si se alega ocupación relevante del carril, debe precisarse anchura efectiva, distancia a vehículos y maniobra objetiva (frenada/adelantamiento evasivo/etc.).")
-        if has_atropello:
-            lines.append("- La referencia a 'atropello' es hipotética si no se identifica vehículo concreto, distancia, maniobra y consecuencia objetiva.")
-        lines.append("La mera posibilidad teórica de riesgo no satisface el estándar exigible para la subsunción.")
+        lines.append(
+            "La denuncia alude a circulación en bicicleta junto a otros ciclistas y a una supuesta situación de riesgo. "
+            "Sin embargo, la subsunción en el art. 18.1 exige concreción fáctica y riesgo OBJETIVABLE, no inferencias genéricas."
+        )
+        lines.append("")
+        lines.append("1) Arcén:")
+        lines.append(
+            "   La mera mención a un arcén (incluso con indicación de anchura) no permite presumir obligación automática de circular por él. "
+            "   Debe acreditarse que era practicable, continuo y seguro en ese punto concreto (estado, obstáculos, continuidad, visibilidad) "
+            "   y por qué su uso era viable en las circunstancias reales."
+        )
+        lines.append("")
+        lines.append("2) Paralelo / 'de a tres' / ocupación del carril:")
+        lines.append(
+            "   Debe precisarse anchura efectiva del carril, intensidad del tráfico, posición exacta, distancia respecto a otros vehículos "
+            "   y maniobra concreta que evidencie riesgo (frenada brusca, maniobra evasiva, alteración real de la circulación). "
+            "   Sin esos datos, la imputación es estereotipada."
+        )
+        lines.append("")
+        lines.append("3) 'Exposición a atropello':")
+        lines.append(
+            "   Constituye una valoración hipotética si no se identifica vehículo concreto, maniobra real, distancia y consecuencia objetiva. "
+            "   El riesgo abstracto o potencial no satisface el estándar probatorio exigible."
+        )
+        lines.append("")
+        lines.append(
+            "Sin descripción circunstanciada del peligro real y su relación con una conducta concreta, no procede la subsunción típica."
+        )
         blocks.append("\n".join(lines))
 
+    # Bloque distracción/conversación/no percatarse (fuerte)
     if has_no_percata or has_conversando:
         blocks.append("\n".join([
-            "BLOQUE ESPECÍFICO — DISTRACCIÓN / CONVERSACIÓN",
+            "BLOQUE ESPECÍFICO — DISTRACCIÓN / CONVERSACIÓN / 'NO SE PERCATA'",
             "",
-            "Si se imputa que el conductor 'no se percata' o que iba conversando, debe concretarse qué hechos objetivos permiten esa conclusión "
-            "(momento exacto, duración, señales de conducción anómala) y el riesgo real derivado, evitando presunciones.",
+            "Si se imputa que el conductor 'no se percata' o que iba conversando, debe concretarse el hecho objetivo que lo demuestra:",
+            "- momento exacto y duración aproximada,",
+            "- signos externos observables (trayectoria, maniobras),",
+            "- condiciones de observación y distancia del agente,",
+            "- consecuencia objetiva (riesgo real), no meramente hipotética.",
+            "Sin esa concreción, la conclusión es una inferencia no verificable.",
         ]))
 
     blocks_text = ("\n\n" + "\n\n".join(blocks) + "\n\n") if blocks else ""
@@ -230,9 +253,10 @@ def _tpl_att(core: Dict[str, Any]) -> Dict[str, str]:
         "",
         "II. ALEGACIONES",
         "",
-        "ALEGACIÓN PRIMERA — TIPICIDAD (ART. 18.1): CONDUCTA CONCRETA Y RIESGO OBJETIVABLE",
+        "ALEGACIÓN PRIMERA — TIPICIDAD (ART. 18.1): CONDUCTA CONCRETA + RIESGO OBJETIVABLE",
         "",
-        "La falta de atención permanente exige una conducta concreta y un riesgo real, específico y objetivable. No basta una descripción genérica.",
+        "La falta de atención permanente exige una conducta concreta y un riesgo real, específico y objetivable.",
+        "No basta una descripción genérica ni valoraciones hipotéticas.",
         "",
         "Debe precisarse:",
         "1) Qué conducta exacta se observó y en qué momento.",
