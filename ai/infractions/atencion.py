@@ -286,59 +286,42 @@ def _tpl_att(core: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _tpl_31(core: Dict[str, Any]) -> Dict[str, str]:
-    """
-    Art. 3.1 — fuerte:
-    - conducta llamativa ≠ peligrosa sin consecuencia objetiva
-    - incoherencia interna del tramo/observación
-    - estándar probatorio reforzado cuando hay apreciación conductual subjetiva
-    """
     h = _common_head(core)
     text = _blob_lower(core)
     km = _km_in_text(text)
 
     has_bail = any(w in text for w in ["bail", "palmas", "golpeando", "volante", "tambor"])
-    has_menor = any(w in text for w in ["menor", "dos años", "dos anos", "asiento trasero", "sri"])
-    has_observado = "observado" in text or "observada" in text
+    has_menor = any(w in text for w in ["menor", "dos años", "dos anos", "sri"])
 
     blocks: List[str] = []
 
     if has_bail:
-        blocks.append("\n".join([
-            "BLOQUE ESPECÍFICO — CONDUCTAS INTERNAS",
-            "",
-            "La mera descripción de gestos como 'bailar', 'dar palmas' o 'golpear el volante' no equivale automáticamente a conducción peligrosa.",
-            "Debe acreditarse pérdida objetiva de control del vehículo, alteración de trayectoria o consecuencia real sobre la circulación.",
-        ]))
+        blocks.append(
+            "La descripción de gestos como 'bailar', 'dar palmas' o 'golpear el volante' "
+            "no equivale automáticamente a conducción peligrosa. "
+            "Sin acreditación de pérdida objetiva de control, alteración de trayectoria o maniobra anómala, "
+            "la imputación se basa en una valoración conductual subjetiva."
+        )
 
     if km:
-        blocks.append("\n".join([
-            "BLOQUE ESPECÍFICO — TRAMO/SEGUIMIENTO",
-            "",
-            f"La afirmación de riesgo continuado durante {km} km resulta difícilmente compatible con la ausencia de intervención inmediata.",
-            "Si el peligro era real y persistente, debe motivarse por qué no se produjo actuación preventiva inmediata y cómo se determinó el tramo.",
-            "Esta incoherencia afecta a la credibilidad del relato si no se explica técnica y circunstanciadamente.",
-        ]))
+        blocks.append(
+            f"La afirmación de riesgo continuado durante {km} km resulta difícilmente compatible "
+            "con la ausencia de intervención inmediata. "
+            "Si el peligro era real y persistente, debía producirse actuación preventiva sin dilación. "
+            "Esta incoherencia interna debilita la consistencia del relato fáctico."
+        )
 
     if has_menor:
-        blocks.append("\n".join([
-            "BLOQUE ESPECÍFICO — MENOR",
-            "",
-            "La presencia de un menor no suple la prueba del peligro concreto exigido por el art. 3.1 RGC.",
-            "Si se pretende fundamentar la imputación en esa circunstancia, debe acreditarse relación causal directa con riesgo real y no hipotético,",
-            "e identificarse el encaje normativo específico si se invoca (p. ej., SRI), sin presunciones.",
-        ]))
+        blocks.append(
+            "La mención a la presencia de un menor no sustituye la exigencia de acreditar peligro concreto. "
+            "Si se pretende reforzar la imputación con dicha circunstancia, debe identificarse infracción específica "
+            "y relación causal directa con riesgo real y no meramente hipotético."
+        )
 
-    if has_observado:
-        blocks.append("\n".join([
-            "BLOQUE ESPECÍFICO — FIABILIDAD PERCEPTIVA",
-            "",
-            "Cuando la imputación descansa en apreciaciones conductuales subjetivas, la presunción de veracidad no exonera del deber de motivación reforzada.",
-            "Debe detallarse posición del agente, distancia, visibilidad y continuidad de observación para valorar fiabilidad perceptiva.",
-        ]))
-
-    blocks_text = ("\n\n" + "\n\n".join(blocks) + "\n\n") if blocks else ""
+    blocks_text = "\n\n".join(blocks)
 
     asunto = "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE"
+
     cuerpo = "\n".join([
         "A la atención del órgano competente,",
         "",
@@ -349,15 +332,17 @@ def _tpl_31(core: Dict[str, Any]) -> Dict[str, str]:
         "",
         "II. ALEGACIONES",
         "",
-        "ALEGACIÓN PRIMERA — SUBSUNCIÓN EN ART. 3.1: PELIGRO CONCRETO Y ESTÁNDAR PROBATORIO",
+        "ALEGACIÓN PRIMERA — SUBSUNCIÓN EN ART. 3.1 RGC",
         "",
-        "El art. 3.1 RGC exige un peligro jurídicamente relevante y objetivable.",
-        "No basta una valoración conductual llamativa si no se acredita riesgo efectivo y consecuencia objetiva.",
+        "El art. 3.1 exige un peligro jurídicamente relevante y objetivable. "
+        "No basta una descripción llamativa si no se acredita riesgo efectivo y consecuencia objetiva.",
         "",
-        blocks_text.strip(),
-        "ALEGACIÓN SEGUNDA — PRUEBA COMPLETA Y MOTIVACIÓN INDIVIDUALIZADA",
+        blocks_text,
         "",
-        "Se solicita expediente íntegro y prueba completa. Sin descripción circunstanciada y soporte suficiente, no puede enervarse la presunción de inocencia.",
+        "ALEGACIÓN SEGUNDA — PRUEBA COMPLETA Y MOTIVACIÓN",
+        "",
+        "Se solicita expediente íntegro y soporte probatorio suficiente. "
+        "Sin descripción circunstanciada y acreditación técnica, no puede enervarse la presunción de inocencia.",
         "",
         "III. SOLICITO",
         "1) Archivo por insuficiencia probatoria.",
