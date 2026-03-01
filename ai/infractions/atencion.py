@@ -1,11 +1,11 @@
 """
 RTM — TRÁFICO — ATENCIÓN / CONDUCCIÓN NEGLIGENTE (RGC)
-ULTRA ADMIN v6 — Subtipos por ARTÍCULO + KEYWORDS (SIN IA)
+ULTRA ADMIN v6.1 — Subtipos por ARTÍCULO + KEYWORDS (SIN IA)
 
 Subtipos:
 - ATN-MOV: Libertad de movimientos (Art. 18.1 típico) — acciones manuales (morder uñas, comer, beber…)
 - ATN-ATT: Atención permanente (Art. 18.1 típico) — distracción / no percatarse / conversación / ciclistas / arcén / paralelo
-- ATN-3.1: Conducción negligente (Art. 3.1) — exige riesgo concreto y coherencia interna
+- ATN-3.1: Conducción negligente (Art. 3.1) — exige riesgo concreto y coherencia interna (REFORZADO)
 
 Salida: {"asunto","cuerpo"}
 """
@@ -53,19 +53,23 @@ def _common_head(core: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+def _km_in_text(text: str) -> Optional[str]:
+    t = (text or "").lower()
+    m = re.search(r"\b(\d+(?:[\.,]\d+)?)\s*km\b", t)
+    if not m:
+        return None
+    return m.group(1).replace(",", ".")
+
+
 # ==========================
 # SUBTIPO (artículo + keywords)
 # ==========================
 
 def _detect_subtype(core: Dict[str, Any], body: str = "") -> str:
-    """
-    Devuelve: 'ATN-MOV' | 'ATN-ATT' | 'ATN-3.1' | 'ATN-GEN'
-    """
     text = _blob_lower(core, body=body)
     art = _safe_int(core.get("articulo_infringido_num"))
     apt = _safe_int(core.get("apartado_infringido_num"))
 
-    # Art. 3 => conducción negligente (3.1)
     if art == 3:
         return "ATN-3.1"
 
@@ -83,27 +87,24 @@ def _detect_subtype(core: Dict[str, Any], body: str = "") -> str:
         "atención permanente", "atencion permanente",
         "no se percata", "no se percata que",
         "va conversando", "conversando",
-        "distracc",  # distracción/distraccion
+        "distracc",
         "bicicleta", "ciclista", "ciclistas",
         "arcén", "arcen",
         "en paralelo", "paralelo",
         "carril", "ocupando",
-        "atropello", "exponi",  # exponiéndose
+        "atropello", "exponi",
         "de a tres",
     ]
 
-    # Art. 18.* -> decidir por keywords
     if art == 18:
         if any(k in text for k in mov_keywords):
             return "ATN-MOV"
         if any(k in text for k in att_keywords):
             return "ATN-ATT"
-        # si 18.2 (auriculares) idealmente lo maneja distracciones.py, pero aquí genérico
         if apt == 2:
             return "ATN-GEN"
         return "ATN-GEN"
 
-    # Sin artículo: inferir
     if any(k in text for k in mov_keywords):
         return "ATN-MOV"
     if any(k in text for k in att_keywords):
@@ -136,7 +137,7 @@ def is_atencion_context(core: Dict[str, Any], body: str = "") -> bool:
 
 
 # ==========================
-# PLANTILLAS (REFORZADAS)
+# PLANTILLAS
 # ==========================
 
 def _tpl_mov(core: Dict[str, Any]) -> Dict[str, str]:
@@ -155,24 +156,22 @@ def _tpl_mov(core: Dict[str, Any]) -> Dict[str, str]:
         "",
         "ALEGACIÓN PRIMERA — TIPICIDAD: 'LIBERTAD DE MOVIMIENTOS' (ART. 18.1) NO PRESUMIBLE",
         "",
-        "La infracción no puede deducirse automáticamente de una acción aislada (p. ej., morderse las uñas).",
-        "Debe acreditarse una afectación REAL y OBJETIVA al control del vehículo. No basta una presunción.",
+        "La infracción no puede deducirse automáticamente de una acción aislada.",
+        "Debe acreditarse una afectación REAL y OBJETIVA al control del vehículo.",
         "",
-        "Para enervar la presunción de inocencia debe constar, al menos:",
+        "Debe constar, al menos:",
         "1) Duración y entidad de la acción (puntual vs mantenida).",
         "2) Cómo afectó al control: trayectoria errática, correcciones bruscas, maniobras anómalas.",
-        "3) Circunstancias de tráfico/visibilidad y posición del agente (distancia/ángulo/obstáculos).",
-        "4) Consecuencia objetiva o riesgo concreto derivado de esa acción (si se alega).",
+        "3) Tráfico/visibilidad y posición del agente (distancia/ángulo/obstáculos).",
+        "4) Consecuencia objetiva o riesgo concreto derivado (si se alega).",
         "",
-        "ALEGACIÓN SEGUNDA — MOTIVACIÓN INDIVIDUALIZADA Y PRUEBA COMPLETA",
+        "ALEGACIÓN SEGUNDA — PRUEBA COMPLETA Y MOTIVACIÓN INDIVIDUALIZADA",
         "",
-        "Se solicita denuncia íntegra e informe ampliatorio (si existe) con descripción circunstanciada,",
-        "así como cualquier soporte objetivo disponible (grabación, fotografías, anotaciones) para contradicción efectiva.",
+        "Se solicita denuncia íntegra e informe ampliatorio (si existe) y soporte objetivo (grabación/fotos/anotaciones).",
         "",
         "III. SOLICITO",
-        "1) Que se tengan por formuladas las presentes alegaciones.",
-        "2) Que se acuerde el ARCHIVO por insuficiencia probatoria y falta de motivación concreta.",
-        "3) Subsidiariamente, que se aporte expediente íntegro y prueba completa.",
+        "1) Que se acuerde el ARCHIVO por insuficiencia probatoria y falta de motivación concreta.",
+        "2) Subsidiariamente, que se aporte expediente íntegro y prueba completa.",
     ]).strip()
 
     return {"asunto": asunto, "cuerpo": cuerpo}
@@ -192,52 +191,39 @@ def _tpl_att(core: Dict[str, Any]) -> Dict[str, str]:
 
     blocks: List[str] = []
 
-    # Bloque fuerte ciclistas/arcén/paralelo/carril/atropello
     if is_bici or has_arcen or has_paralelo or has_carril or has_atropello:
         lines: List[str] = []
         lines.append("BLOQUE ESPECÍFICO — CICLISTAS / ARCÉN / PARALELO / CARRIL (ENCAJE NORMATIVO + RIESGO REAL)")
         lines.append("")
         lines.append(
-            "La denuncia alude a circulación en bicicleta junto a otros ciclistas y a una supuesta situación de riesgo. "
-            "Sin embargo, la subsunción en el art. 18.1 exige concreción fáctica y riesgo OBJETIVABLE, no inferencias genéricas."
+            "La subsunción exige concreción fáctica y riesgo OBJETIVABLE, no inferencias genéricas."
         )
         lines.append("")
         lines.append("1) Arcén:")
         lines.append(
-            "   La mera mención a un arcén (incluso con indicación de anchura) no permite presumir obligación automática de circular por él. "
-            "   Debe acreditarse que era practicable, continuo y seguro en ese punto concreto (estado, obstáculos, continuidad, visibilidad) "
-            "   y por qué su uso era viable en las circunstancias reales."
+            "   Debe acreditarse que era practicable, continuo y seguro (estado, obstáculos, continuidad, visibilidad) "
+            "y por qué se afirma obligación concreta de circular por él."
         )
         lines.append("")
         lines.append("2) Paralelo / 'de a tres' / ocupación del carril:")
         lines.append(
-            "   Debe precisarse anchura efectiva del carril, intensidad del tráfico, posición exacta, distancia respecto a otros vehículos "
-            "   y maniobra concreta que evidencie riesgo (frenada brusca, maniobra evasiva, alteración real de la circulación). "
-            "   Sin esos datos, la imputación es estereotipada."
+            "   Debe precisarse anchura del carril, intensidad del tráfico, posición exacta, distancia a vehículos y maniobra objetiva "
+            "(frenada/maniobra evasiva/alteración real de la circulación)."
         )
         lines.append("")
         lines.append("3) 'Exposición a atropello':")
         lines.append(
-            "   Constituye una valoración hipotética si no se identifica vehículo concreto, maniobra real, distancia y consecuencia objetiva. "
-            "   El riesgo abstracto o potencial no satisface el estándar probatorio exigible."
+            "   Es una valoración hipotética si no se identifica vehículo concreto, maniobra real, distancia y consecuencia objetiva."
         )
         lines.append("")
-        lines.append(
-            "Sin descripción circunstanciada del peligro real y su relación con una conducta concreta, no procede la subsunción típica."
-        )
+        lines.append("Sin esos datos, la imputación es estereotipada y no procede subsunción.")
         blocks.append("\n".join(lines))
 
-    # Bloque distracción/conversación/no percatarse (fuerte)
     if has_no_percata or has_conversando:
         blocks.append("\n".join([
             "BLOQUE ESPECÍFICO — DISTRACCIÓN / CONVERSACIÓN / 'NO SE PERCATA'",
             "",
-            "Si se imputa que el conductor 'no se percata' o que iba conversando, debe concretarse el hecho objetivo que lo demuestra:",
-            "- momento exacto y duración aproximada,",
-            "- signos externos observables (trayectoria, maniobras),",
-            "- condiciones de observación y distancia del agente,",
-            "- consecuencia objetiva (riesgo real), no meramente hipotética.",
-            "Sin esa concreción, la conclusión es una inferencia no verificable.",
+            "Debe concretarse hecho objetivo: momento/duración, signos externos observables, condiciones de observación, y consecuencia objetiva.",
         ]))
 
     blocks_text = ("\n\n" + "\n\n".join(blocks) + "\n\n") if blocks else ""
@@ -255,23 +241,18 @@ def _tpl_att(core: Dict[str, Any]) -> Dict[str, str]:
         "",
         "ALEGACIÓN PRIMERA — TIPICIDAD (ART. 18.1): CONDUCTA CONCRETA + RIESGO OBJETIVABLE",
         "",
-        "La falta de atención permanente exige una conducta concreta y un riesgo real, específico y objetivable.",
-        "No basta una descripción genérica ni valoraciones hipotéticas.",
+        "La falta de atención permanente exige conducta concreta y riesgo real, específico y objetivable.",
         "",
-        "Debe precisarse:",
-        "1) Qué conducta exacta se observó y en qué momento.",
-        "2) Circunstancias de tráfico/visibilidad y posición del agente.",
-        "3) Qué riesgo concreto se produjo (consecuencia objetiva), no meramente hipotético.",
+        "Debe precisarse: conducta exacta, momento, tráfico/visibilidad, posición del agente y consecuencia objetiva.",
         "",
         blocks_text.strip(),
         "ALEGACIÓN SEGUNDA — EXPEDIENTE ÍNTEGRO Y PRUEBA COMPLETA",
         "",
-        "Se solicita expediente íntegro y cualquier soporte objetivo (grabación, fotografías, anotaciones, testigos, croquis) para contradicción efectiva.",
+        "Se solicita expediente íntegro y soporte objetivo (grabación/fotos/anotaciones/testigos/croquis) para contradicción efectiva.",
         "",
         "III. SOLICITO",
-        "1) Que se tengan por formuladas las presentes alegaciones.",
-        "2) Que se acuerde el ARCHIVO por insuficiencia probatoria y falta de motivación concreta.",
-        "3) Subsidiariamente, que se aporte expediente íntegro y prueba completa.",
+        "1) Que se acuerde el ARCHIVO por insuficiencia probatoria y falta de motivación concreta.",
+        "2) Subsidiariamente, que se aporte expediente íntegro y prueba completa.",
     ]).strip()
 
     return {"asunto": asunto, "cuerpo": cuerpo}
@@ -279,6 +260,50 @@ def _tpl_att(core: Dict[str, Any]) -> Dict[str, str]:
 
 def _tpl_31(core: Dict[str, Any]) -> Dict[str, str]:
     h = _common_head(core)
+    text = _blob_lower(core)
+    km = _km_in_text(text)
+
+    has_bail = any(w in text for w in ["bail", "palmas", "golpeando", "volante", "tambor"])
+    has_menor = any(w in text for w in ["menor", "dos años", "dos anos", "asiento trasero", "sri"])
+    has_observado = "observado" in text or "observada" in text
+
+    blocks: List[str] = []
+
+    if has_bail:
+        blocks.append("\n".join([
+            "BLOQUE ESPECÍFICO — CONDUCTAS INTERNAS (BAILAR / PALMAS / VOLANTE)",
+            "",
+            "Debe concretarse qué gestos se observaron, durante cuánto tiempo y qué afectación objetiva tuvo en la conducción "
+            "(trayectoria, maniobras, correcciones). No basta una descripción llamativa sin consecuencia objetiva."
+        ]))
+
+    if km:
+        blocks.append("\n".join([
+            "BLOQUE ESPECÍFICO — TRAMO/SEGUIMIENTO",
+            "",
+            f"Se afirma observación durante {km} km. Debe explicarse el método de determinación del tramo, continuidad de observación "
+            "y por qué no se produjo intervención inmediata si el riesgo era real y continuado."
+        ]))
+
+    if has_menor:
+        blocks.append("\n".join([
+            "BLOQUE ESPECÍFICO — MENOR / SRI",
+            "",
+            "La presencia de un menor no sustituye la prueba del peligro concreto exigido por el art. 3.1. "
+            "Si se pretende fundamentar la imputación en esa circunstancia, debe identificarse el encaje normativo específico "
+            "y la relación causal con un riesgo real, no hipotético."
+        ]))
+
+    if has_observado:
+        blocks.append("\n".join([
+            "BLOQUE ESPECÍFICO — FIABILIDAD DE LA OBSERVACIÓN",
+            "",
+            "Debe detallarse posición del agente, distancia, condiciones de visibilidad y continuidad de observación "
+            "para valorar fiabilidad perceptiva."
+        ]))
+
+    blocks_text = ("\n\n" + "\n\n".join(blocks) + "\n\n") if blocks else ""
+
     asunto = "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE"
     cuerpo = "\n".join([
         "A la atención del órgano competente,",
@@ -294,9 +319,10 @@ def _tpl_31(core: Dict[str, Any]) -> Dict[str, str]:
         "",
         "El art. 3.1 RGC exige un peligro jurídicamente relevante y objetivable. Debe concretarse conducta, riesgo y consecuencia objetiva.",
         "",
+        blocks_text.strip(),
         "ALEGACIÓN SEGUNDA — PRUEBA COMPLETA Y MOTIVACIÓN INDIVIDUALIZADA",
         "",
-        "Se solicita expediente íntegro y prueba completa. Sin descripción circunstanciada, no puede enervarse la presunción de inocencia.",
+        "Se solicita expediente íntegro y prueba completa. Sin descripción circunstanciada y soporte suficiente, no puede enervarse la presunción de inocencia.",
         "",
         "III. SOLICITO",
         "1) Archivo por insuficiencia probatoria.",
