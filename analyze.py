@@ -117,7 +117,7 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
             pass
 
     norma_hint: Optional[str] = None
-    if ("r.d. legislativo" in t and "8/2004" in t) or ("rd legislativo" in t and "8/2004" in t) or ("8/2004" in t and "responsabilidad civil" in t):
+    if ("r.d. legislativo" in t and "8/2004" in t) or ("rd legislativo" in t and "8/2004" in t) or ("r d legislativo" in t and "8/2004" in t) or ("8/2004" in t):
         norma_hint = "RDL 8/2004"
         precepts.append("RDL 8/2004")
 
@@ -318,7 +318,7 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         return ("velocidad", facts[0], facts)
 
     # SEGURO
-    if ("lsoa" in t) or (("r.d. legislativo" in t or "rd legislativo" in t) and "8/2004" in t) or ("8/2004" in t and "responsabilidad civil" in t):
+    if ("lsoa" in t) or ("8/2004" in t) or ("seguro obligatorio" in t) or ("vehículo no asegurado" in t) or ("vehiculo no asegurado" in t) or ("fiva" in t):
         facts.append("CARENCIA DE SEGURO OBLIGATORIO")
         return ("seguro", facts[0], facts)
 
