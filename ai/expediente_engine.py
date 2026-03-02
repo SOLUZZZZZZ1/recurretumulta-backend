@@ -157,6 +157,7 @@ ARTICLE_TYPE_MAP = {
         48: "velocidad",
         146: "semaforo",
         18: "atencion",
+        31: "posicion_carril",
         167: "marcas_viales",
         12: "condiciones_vehiculo",
         15: "condiciones_vehiculo",
@@ -296,7 +297,7 @@ def _infer_infraction_type_with_article_priority(classify: Dict[str, Any], extra
     if isinstance(expected, str) and expected.strip():
         return expected.strip().lower()
 
-    inferred = _infer_infraction_type_with_article_priority(classify, extraction_core)
+    inferred = _infer_infraction_from_facts_phrases(classify) or _infer_infraction_from_extraction(extraction_core)
     inferred = (inferred or "").strip().lower()
     if inferred in ("", "otro", "unknown"):
         inferred = "generic"
