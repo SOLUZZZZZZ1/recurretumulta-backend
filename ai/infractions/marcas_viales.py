@@ -1,17 +1,4 @@
-
-"""
-RTM — MARCAS VIALES / LÍNEA CONTINUA / SEÑALIZACIÓN HORIZONTAL (SVL-MV-1) — DEMOLEDOR (Modo B por defecto)
-
-Cobertura inicial:
-- RGC art. 167 (marcas viales) — casos típicos:
-  - "no respetar una marca longitudinal continua"
-  - "línea continua" al adelantar o cambiar de carril
-  - "marca longitudinal continua sin causa justificada"
-
-Determinista, sin OpenAI.
-Modo B (estándar): técnico + jurídicamente contundente.
-Modo C (solo graves): cuando hay puntos o sanción alta.
-"""
+"""ai/infractions/marcas_viales.py — SVL-MV-1 DEMOLEDOR (Modo B; C solo graves)"""
 
 from __future__ import annotations
 from typing import Any, Dict, Optional
@@ -79,8 +66,8 @@ def build_marcas_viales_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         "II. ALEGACIONES\n\n"
         "ALEGACIÓN PRIMERA — ART. 167 RGC: DELIMITACIÓN DEL TRAMO, VISIBILIDAD Y PRUEBA VERIFICABLE\n\n"
         "Para sancionar por no respetar una marca longitudinal continua debe acreditarse, de forma concreta y verificable, "
-        "el rebase/invasión efectiva de la marca en un tramo donde dicha marca estaba correctamente implantada, era visible "
-        "y aplicable a la maniobra imputada.\n\n"
+        "el rebase/invasión efectiva de la marca en un tramo donde la marca estaba correctamente implantada, era visible "
+        "y era aplicable a la maniobra imputada.\n\n"
         "No consta acreditado en el expediente:\n"
         "1) Ubicación exacta (vía, p.k., sentido) y delimitación del tramo con marca continua.\n"
         "2) Configuración de la vía y señalización concurrente (intersecciones, accesos, cambios de rasante/curvas).\n"
@@ -88,9 +75,9 @@ def build_marcas_viales_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         "4) Visibilidad/estado de la marca (desgaste, obras, suciedad, iluminación).\n"
         "5) Medio de constatación y condiciones de observación (posición del agente, distancia, ángulo, tráfico).\n"
         "6) Soporte objetivo (vídeo/secuencia/croquis) para contradicción efectiva.\n\n"
-        "BLOQUE ESPECÍFICO — ADELANTAMIENTO: ENCAJE TÍPICO Y DATOS DE LA MANIOBRA\n\n"
-        "Si se imputa que el rebase ocurrió al adelantar, debe identificarse el vehículo adelantado, distancias, "
-        "momento de inicio/fin y por qué la marca era continua y aplicable en ese punto. Sin esos datos, la imputación es estereotipada.\n\n"
+        "BLOQUE ESPECÍFICO — ADELANTAMIENTO: DATOS DE MANIOBRA Y ENCAJE TÍPICO\n\n"
+        "Si se imputa que el rebase ocurrió al adelantar, debe identificarse el vehículo adelantado, distancias y momento "
+        "de inicio/fin, y por qué la marca era continua y aplicable en ese punto. Sin esos datos, la imputación es estereotipada.\n\n"
         "ALEGACIÓN SEGUNDA — MOTIVACIÓN INDIVIDUALIZADA Y CARGA PROBATORIA\n\n"
         "La carga de la prueba corresponde a la Administración. Sin prueba suficiente y motivación individualizada del encaje típico, "
         "procede el ARCHIVO por insuficiencia probatoria.\n"
