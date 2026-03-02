@@ -117,7 +117,7 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
             pass
 
     norma_hint: Optional[str] = None
-    if ("r.d. legislativo" in t and "8/2004" in t) or ("rd legislativo" in t and "8/2004" in t) or ("r d legislativo" in t and "8/2004" in t) or ("8/2004" in t):
+    if ("r.d. legislativo" in t and "8/2004" in t) or ("rd legislativo" in t and "8/2004" in t) or ("8/2004" in t and "responsabilidad civil" in t):
         norma_hint = "RDL 8/2004"
         precepts.append("RDL 8/2004")
 
@@ -148,60 +148,50 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
     t = (text_blob or "").replace("\n", " ").lower()
     t = re.sub(r"\s+", " ", t).strip()
 
-    # 🔒 Guard: solo extraer velocidad si hay contexto REAL (evita falsos positivos por 'punto km' e importes)
-    velocity_context = (
-        ("exceso de velocidad" in t)
-        or ("radar" in t)
-        or ("cinemómetro" in t)
-        or ("cinemometro" in t)
-        or bool(re.search(r"\bcircular\s+a\s+\d{2,3}\s*km\s*/?\s*h\b", t))
-    )
-
     measured = None
     limit = None
 
-    if velocity_context:
-        ms = re.search(
-            r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,160}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)[^\d]{0,80}(\d{2,3})",
-            t,
-        )
-        if ms:
+    ms = re.search(
+        r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,160}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)[^\d]{0,80}(\d{2,3})",
+        t,
+    )
+    if ms:
+        try:
+            measured = int(ms.group(1))
+            limit = int(ms.group(2))
+        except Exception:
+            measured = None
+            limit = None
+
+    if measured is None:
+        m1 = re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?h\b", t)
+        if m1:
             try:
-                measured = int(ms.group(1))
-                limit = int(ms.group(2))
+                measured = int(m1.group(1))
             except Exception:
                 measured = None
+
+    if limit is None:
+        m2 = re.search(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)\b[^\d]{0,80}(\d{2,3})\b", t)
+        if m2:
+            try:
+                limit = int(m2.group(1))
+            except Exception:
                 limit = None
 
-        if measured is None:
-            m1 = re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?h\b", t)
-            if m1:
-                try:
-                    measured = int(m1.group(1))
-                except Exception:
-                    measured = None
-
-        if limit is None:
-            m2 = re.search(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)\b[^\d]{0,80}(\d{2,3})\b", t)
-            if m2:
-                try:
-                    limit = int(m2.group(1))
-                except Exception:
-                    limit = None
-
-        # ⚠️ Fallback SOLO si hay contexto de velocidad + señal de límite y 2 números distintos
-        if measured is None or limit is None:
-            nums = [int(x) for x in re.findall(r"\b(\d{2,3})\b", t)]
-            nums = [n for n in nums if 10 <= n <= 250]
-            uniq = sorted(set(nums))
-            has_limit_signal = any(k in t for k in ["limitad", "límite", "limite", "velocidad máxima", "velocidad maxima"])
-            if has_limit_signal and len(uniq) >= 2:
-                hi = max(uniq)
-                lo = min(uniq)
-                if measured is None:
-                    measured = hi
-                if limit is None:
-                    limit = lo
+    # Fallback SOLO si hay señal de límite y 2 números distintos
+    if measured is None or limit is None:
+        nums = [int(x) for x in re.findall(r"\b(\d{2,3})\b", t)]
+        nums = [n for n in nums if 10 <= n <= 250]
+        uniq = sorted(set(nums))
+        has_limit_signal = any(k in t for k in ["limitad", "límite", "limite", "velocidad máxima", "velocidad maxima"])
+        if has_limit_signal and len(uniq) >= 2:
+            hi = max(uniq)
+            lo = min(uniq)
+            if measured is None:
+                measured = hi
+            if limit is None:
+                limit = lo
 
     fine_eur = None
     mf = re.search(r"\b(\d{2,4})\s*(?:€|euros)\b", t)
@@ -220,12 +210,11 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
             points = None
 
     radar_model = None
-    if velocity_context:
-        mr = re.search(r"(multaradar\s*[a-z0-9\-]*)", t)
-        if mr:
-            radar_model = mr.group(1).strip()
-        elif "cinem" in t:
-            radar_model = "cinemometro (no especificado)"
+    mr = re.search(r"(multaradar\s*[a-z0-9\-]*)", t)
+    if mr:
+        radar_model = mr.group(1).strip()
+    elif "cinem" in t:
+        radar_model = "cinemometro (no especificado)"
 
     return {
         "velocidad_medida_kmh": measured,
@@ -236,42 +225,11 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
     }
 
 
-def _extract_hecho_literal(text_blob: str) -> Optional[str]:
-    """Extrae un HECHO DENUNCIADO/IMPUTADO literal del texto (sin inferir).
-    Devuelve un string corto (máx 600 chars) o None.
-    """
-    if not text_blob:
-        return None
-    t = str(text_blob)
-
-    # Normaliza espacios
-    t_norm = re.sub(r"[\t ]+", " ", t)
-
-    # 1) Bloque 'HECHO DENUNCIADO'
-    m = re.search(r"HECHO\s+DENUNCIADO\s*\n?(.*)", t, flags=re.IGNORECASE | re.DOTALL)
-    if m:
-        after = m.group(1).strip()
-        cut = re.split(r"\n\s*(DATOS\b|MATR[IÍ]CULA\b|MARCA\b|CLASE\b|OBSERVACIONES\b|III\.|II\.|I\.|\Z)", after, flags=re.IGNORECASE)
-        cand = cut[0].strip()
-        cand = re.sub(r"\s+", " ", cand)
-        if cand:
-            return cand[:600]
-
-    # 2) Bloque 'HECHO IMPUTADO:'
-    m2 = re.search(r"HECHO\s+IMPUTADO\s*:\s*(.+)", t_norm, flags=re.IGNORECASE)
-    if m2:
-        cand = m2.group(1).strip()
-        cand = re.sub(r"\s+", " ", cand)
-        if cand:
-            return cand[:600]
-
-    return None
-
 def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
     t = (text_blob or "").lower()
     facts: List[str] = []
 
-    # ✅ SEMÁFORO
+    # ✅ SEMÁFORO PRIORIDAD MÁXIMA (OCR sucio)
     sema_signals = [
         "semáforo", "semaforo",
         "fase roja",
@@ -291,7 +249,7 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
 
-    # MÓVIL
+    # Móvil
     if "utilizando manualmente" in t and any(k in t for k in ["teléfono", "telefono", "móvil", "movil"]):
         facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
@@ -299,28 +257,26 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
         facts.append("USO DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
 
-    # AURICULARES
-    if any(k in t for k in ["auricular", "auriculares", "cascos"]) and any(k in t for k in ["reproductor", "reproductores", "receptores", "sonido", "conectad"]):
-        facts.append("USO DE AURICULARES/CASCOS CONECTADOS A SONIDO (ART. 18.2)")
-        return ("auriculares", facts[0], facts)
-
-    # ATENCIÓN / NEGLIGENTE
-    if any(k in t for k in ["conducción negligente", "conduccion negligente", "atención permanente", "atencion permanente", "no mantener la atención", "no mantener la atencion", "libertad de movimientos"]):
-        facts.append("CONDUCCIÓN NEGLIGENTE / FALTA DE ATENCIÓN PERMANENTE (RGC)")
-        return ("atencion", facts[0], facts)
-
-    # VELOCIDAD SOLO si hay contexto real
+    # Velocidad
+    if re.search(r"\b(\d{2,3})\s*km\s*/?\s*h\b", t):
+        facts.append("EXCESO DE VELOCIDAD")
+        return ("velocidad", facts[0], facts)
     if any(k in t for k in ["exceso de velocidad", "radar", "cinemómetro", "cinemometro"]):
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
-    if re.search(r"\bcircular\s+a\s+\d{2,3}\s*km\s*/?\s*h\b", t):
-        facts.append("EXCESO DE VELOCIDAD")
-        return ("velocidad", facts[0], facts)
 
-    # SEGURO
-    if ("lsoa" in t) or ("8/2004" in t) or ("seguro obligatorio" in t) or ("vehículo no asegurado" in t) or ("vehiculo no asegurado" in t) or ("fiva" in t):
+    # Seguro
+    if ("lsoa" in t) or (("r.d. legislativo" in t or "rd legislativo" in t) and "8/2004" in t) or ("8/2004" in t and "responsabilidad civil" in t):
         facts.append("CARENCIA DE SEGURO OBLIGATORIO")
-        return ("seguro", facts[0], facts)
+        return ("seguro", facts[0], facts)    # MARCAS VIALES / LÍNEA CONTINUA (ART. 167)
+    if re.search(r"\bart\.??\s*167\b", t) or re.search(r"\bart[ií]culo\s*167\b", t) or re.search(r"\b167\s*[\.,]\s*\d\b", t):
+        facts.append("NO RESPETAR MARCA VIAL (LÍNEA CONTINUA) — ART. 167")
+        return ("marcas_viales", facts[0], facts)
+    if any(k in t for k in ["marca longitudinal continua", "linea continua", "línea continua", "señalización horizontal", "senalizacion horizontal"]):
+        facts.append("NO RESPETAR MARCA VIAL (LÍNEA CONTINUA)")
+        return ("marcas_viales", facts[0], facts)
+
+
 
     return ("otro", "", [])
 
@@ -328,43 +284,15 @@ def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
 def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
     tipo, hecho, facts = _detect_facts_and_type(text_blob)
     out = dict(extracted_core or {})
-
-    # Preceptos (artículo/apartado/norma)
-    pre = _extract_precepts(text_blob)
-    art_num = pre.get("articulo_num")
-    apt_num = pre.get("apartado_num")
-    norma_hint = pre.get("norma_hint")
-
-    out["preceptos_detectados"] = pre.get("preceptos_detectados") or []
-    out["articulo_infringido_num"] = art_num
-    out["apartado_infringido_num"] = apt_num
-    out["norma_hint"] = norma_hint
-
-    # Ajuste por artículo si no está tipificado
-    if tipo == "otro":
-        if art_num in (3, 18):
-            tipo = "atencion"
-        elif art_num in (12, 15):
-            tipo = "condiciones_vehiculo"
-
     out["tipo_infraccion"] = tipo
+    out["hecho_imputado"] = hecho or None
+    out["facts_phrases"] = facts
 
-    # Hecho literal: si no hay hecho corto, extrae literal del documento
-    literal = _extract_hecho_literal(text_blob)
-
-    if hecho:
-        out["hecho_imputado"] = hecho
-    elif literal:
-        out["hecho_imputado"] = literal
-    else:
-        out["hecho_imputado"] = None
-
-    if facts:
-        out["facts_phrases"] = facts
-    elif literal:
-        out["facts_phrases"] = [literal]
-    else:
-        out["facts_phrases"] = []
+    pre = _extract_precepts(text_blob)
+    out["preceptos_detectados"] = pre.get("preceptos_detectados") or []
+    out["articulo_infringido_num"] = pre.get("articulo_num")
+    out["apartado_infringido_num"] = pre.get("apartado_num")
+    out["norma_hint"] = pre.get("norma_hint")
 
     extra_fields = _extract_speed_and_sanction_fields(text_blob)
     for k, v in (extra_fields or {}).items():
