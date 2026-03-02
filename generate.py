@@ -20,6 +20,8 @@ from ai.infractions.distracciones import is_auriculares_context, build_auricular
 
 # ✅ NUEVO: atención / negligente (art.3.1 / 18.1) — con IA opcional (RTM_ATENCION_AI=1)
 from ai.infractions.atencion import is_atencion_context, build_atencion_strong_template
+from ai.infractions.seguro import is_seguro_context, build_seguro_strong_template
+from ai.infractions.marcas_viales import is_marcas_viales_context, build_marcas_viales_strong_template
 
 from b2_storage import upload_bytes
 from docx_builder import build_docx
@@ -109,6 +111,61 @@ def _raw_blob(core: Dict[str, Any]) -> str:
         if isinstance(v, str) and v.strip():
             parts.append(v)
     return " ".join(parts).lower()
+
+
+# ==========================
+# TIPICIDAD HARD LOCK
+# ==========================
+def _norma_key_from_hint(core: Dict[str, Any]) -> str:
+    h = str((core or {}).get("norma_hint") or "").upper()
+    if "RDL 8/2004" in h or "8/2004" in h or "LSOA" in h:
+        return "RDL 8/2004"
+    if "RGC" in h or "REGLAMENTO GENERAL DE CIRCUL" in h or "CIR" in h:
+        return "RGC"
+    return ""
+
+
+def _expected_kind_from_article(core: Dict[str, Any]) -> Optional[str]:
+    """Tipo esperado por tipicidad (norma + artículo).
+    Regla: si está claro, MANDA SIEMPRE (no se negocia con detectores semánticos ni texto IA).
+    """
+    core = core or {}
+    norma = _norma_key_from_hint(core)
+    art = core.get("articulo_infringido_num")
+    try:
+        art_i = int(art) if art is not None and str(art).strip().isdigit() else None
+    except Exception:
+        art_i = None
+    if not norma or art_i is None:
+        return None
+
+    if norma == "RGC":
+        if art_i == 48:
+            return "velocidad"
+        if art_i == 146:
+            return "semaforo"
+        if art_i in (12, 15):
+            return "condiciones_vehiculo"
+        if art_i == 18:
+            # El módulo decide internamente si es móvil/auriculares/atención según hecho
+            return "atencion"
+        if art_i == 167:
+            return "marcas_viales"
+    if norma == "RDL 8/2004":
+        if art_i == 2:
+            return "seguro"
+    return None
+
+
+def _apply_hard_lock_kind(core: Dict[str, Any]) -> Optional[str]:
+    expected = _expected_kind_from_article(core or {})
+    if expected:
+        try:
+            core["tipo_infraccion"] = expected
+            core["routing_lock"] = True
+        except Exception:
+            pass
+    return expected
 
 
 # ==========================
@@ -553,8 +610,59 @@ def generate_dgt_for_case(
                     asunto = "RECURSO (MODO PRUEBA)"
                     cuerpo = _strip_borrador_prefix_from_body(cuerpo)
 
+
+                # 🔒 TIPICIDAD HARD LOCK (antes de cualquier detector)
+                _hard_locked = False
+                locked_kind = _apply_hard_lock_kind(core)
+                if locked_kind == "velocidad":
+                    asunto, cuerpo = _velocity_vse1_template(core)
+                    final_kind = "velocidad"
+                    try:
+                        decision = decide_modo_velocidad(core, body=cuerpo, capture_mode="UNKNOWN") or decision
+                        decision_mode = (decision.get("mode") or "unknown") if isinstance(decision, dict) else "unknown"
+                    except Exception:
+                        pass
+                    cuerpo = _inject_bucket_paragraph(cuerpo, decision)
+                    cuerpo = _inject_tramo_error_paragraph(cuerpo, _compute_velocity_calc_from_core(core))
+                    tpl = {"asunto": asunto, "cuerpo": cuerpo}
+                    ai_used = True
+                    _hard_locked = True
+                elif locked_kind == "semaforo":
+                    tpl_s = build_semaforo_strong_template(core)
+                    asunto = tpl_s.get("asunto") or asunto
+                    cuerpo = tpl_s.get("cuerpo") or cuerpo
+                    final_kind = "semaforo"
+                    tpl = {"asunto": asunto, "cuerpo": cuerpo}
+                    ai_used = True
+                    _hard_locked = True
+                elif locked_kind == "condiciones_vehiculo":
+                    tpl_c = build_condiciones_vehiculo_strong_template(core)
+                    asunto = tpl_c.get("asunto") or asunto
+                    cuerpo = tpl_c.get("cuerpo") or cuerpo
+                    final_kind = "condiciones_vehiculo"
+                    tpl = {"asunto": asunto, "cuerpo": cuerpo}
+                    ai_used = True
+                    _hard_locked = True
+                elif locked_kind == "seguro":
+                    tpl_seg = build_seguro_strong_template(core)
+                    asunto = tpl_seg.get("asunto") or asunto
+                    cuerpo = tpl_seg.get("cuerpo") or cuerpo
+                    final_kind = "seguro"
+                    tpl = {"asunto": asunto, "cuerpo": cuerpo}
+                    ai_used = True
+                    _hard_locked = True
+                elif locked_kind == "marcas_viales":
+                    tpl_mv = build_marcas_viales_strong_template(core)
+                    asunto = tpl_mv.get("asunto") or asunto
+                    cuerpo = tpl_mv.get("cuerpo") or cuerpo
+                    final_kind = "marcas_viales"
+                    tpl = {"asunto": asunto, "cuerpo": cuerpo}
+                    ai_used = True
+                    _hard_locked = True
+
                 # 1) Semáforo
-                if _is_semaforo_context_robust(core, cuerpo):
+                if not _hard_locked:
+                    if _is_semaforo_context_robust(core, cuerpo):
                     tpl_s = build_semaforo_strong_template(core)
                     asunto = tpl_s.get("asunto") or asunto
                     cuerpo = tpl_s.get("cuerpo") or cuerpo
@@ -600,12 +708,7 @@ def generate_dgt_for_case(
                     cuerpo = _inject_bucket_paragraph(cuerpo, decision)
                     cuerpo = _inject_tramo_error_paragraph(cuerpo, _compute_velocity_calc_from_core(core))
 
-                elif locked_kind == "marcas_viales":
-        tpl_mv = build_marcas_viales_strong_template(core)
-        asunto = tpl_mv.get("asunto") or asunto
-        cuerpo = tpl_mv.get("cuerpo") or cuerpo
-        final_kind = "marcas_viales"
-    tpl = {"asunto": asunto, "cuerpo": cuerpo}
+                tpl = {"asunto": asunto, "cuerpo": cuerpo}
                 ai_used = True
         except Exception as e:
             ai_error = str(e)
@@ -620,12 +723,52 @@ def generate_dgt_for_case(
 
         cuerpo0 = tpl.get("cuerpo") or ""
 
+        # 🔒 TIPICIDAD HARD LOCK (fallback templates)
+        _hard_locked2 = False
+        locked_kind = _apply_hard_lock_kind(core)
+        if locked_kind == "velocidad":
+            asunto_v, cuerpo_v = _velocity_vse1_template(core)
+            tpl = {"asunto": asunto_v, "cuerpo": cuerpo_v}
+            final_kind = "velocidad"
+            try:
+                decision = decide_modo_velocidad(core, body=cuerpo_v, capture_mode="UNKNOWN") or decision
+                decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
+            except Exception:
+                pass
+            tpl["cuerpo"] = _inject_bucket_paragraph(tpl["cuerpo"], decision)
+            tpl["cuerpo"] = _inject_tramo_error_paragraph(tpl["cuerpo"], _compute_velocity_calc_from_core(core))
+            _hard_locked2 = True
+        elif locked_kind == "semaforo":
+            tpl = build_semaforo_strong_template(core)
+            final_kind = "semaforo"
+            _hard_locked2 = True
+        elif locked_kind == "condiciones_vehiculo":
+            tpl = build_condiciones_vehiculo_strong_template(core)
+            final_kind = "condiciones_vehiculo"
+            _hard_locked2 = True
+        elif locked_kind == "seguro":
+            tpl = build_seguro_strong_template(core)
+            final_kind = "seguro"
+            _hard_locked2 = True
+        elif locked_kind == "marcas_viales":
+            tpl = build_marcas_viales_strong_template(core)
+            final_kind = "marcas_viales"
+            _hard_locked2 = True
+        
+        if not _hard_locked2:
+
         if _is_semaforo_context_robust(core, cuerpo0):
             tpl = build_semaforo_strong_template(core)
             final_kind = "semaforo"
         elif is_movil_context(core, cuerpo0):
             tpl = build_movil_strong_template(core)
             final_kind = "movil"
+        elif is_marcas_viales_context(core, _raw_blob(core)):
+            tpl = build_marcas_viales_strong_template(core)
+            final_kind = "marcas_viales"
+        elif is_seguro_context(core, _raw_blob(core)):
+            tpl = build_seguro_strong_template(core)
+            final_kind = "seguro"
         elif is_auriculares_context(core, cuerpo0):
             tpl = build_auriculares_strong_template(core)
             final_kind = "auriculares"
