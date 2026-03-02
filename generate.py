@@ -116,44 +116,29 @@ def _raw_blob(core: Dict[str, Any]) -> str:
 # ==========================
 
 def _is_velocity_context(core: Dict[str, Any], cuerpo: str) -> bool:
-    """
-    Velocidad SOLO si:
-    - NO es Art.18
-    - y hay señales reales de velocidad en RAW (radar/km/h/cinemómetro/exceso)
-    - los campos medida/límite solo cuentan si también hay señales en RAW
+    """✅ Velocidad SOLO si es explícita.
+
+    Regla:
+    - True si tipo_infraccion == 'velocidad'
+    - True si hay campos estructurados reales (velocidad_medida_kmh y velocidad_limite_kmh)
+    - ❌ NO usa el 'cuerpo' (texto IA/plantilla) como señal (evita falsos positivos)
     """
     core = core or {}
-
-    # Guard Art.18 (móvil/auriculares/atención)
-    art = core.get("articulo_infringido_num")
-    try:
-        art_i = int(art) if art is not None else None
-    except Exception:
-        art_i = None
-    if art_i == 18:
-        return False
 
     tipo = str(core.get("tipo_infraccion") or "").lower().strip()
     if tipo == "velocidad":
         return True
 
-    blob = _raw_blob(core)
-    velocity_signals = ["exceso de velocidad", "radar", "cinemómetro", "cinemometro", "km/h"]
-    has_raw_signals = any(k in blob for k in velocity_signals)
-
     measured = core.get("velocidad_medida_kmh")
     limit = core.get("velocidad_limite_kmh")
 
-    has_fields = False
-    if isinstance(measured, int) and isinstance(limit, int):
-        has_fields = True
-    elif isinstance(measured, str) and measured.strip().isdigit() and isinstance(limit, str) and limit.strip().isdigit():
-        has_fields = True
-
-    if has_fields and has_raw_signals:
+    if isinstance(measured, (int, float)) and isinstance(limit, (int, float)):
         return True
 
-    return has_raw_signals
+    if isinstance(measured, str) and measured.strip().isdigit() and isinstance(limit, str) and limit.strip().isdigit():
+        return True
+
+    return False
 
 
 def _is_semaforo_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
