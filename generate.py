@@ -663,153 +663,153 @@ def generate_dgt_for_case(
                 # 1) Semáforo
                 if not _hard_locked:
                     if _is_semaforo_context_robust(core, cuerpo):
-                    tpl_s = build_semaforo_strong_template(core)
-                    asunto = tpl_s.get("asunto") or asunto
-                    cuerpo = tpl_s.get("cuerpo") or cuerpo
-                    final_kind = "semaforo"
+                        tpl_s = build_semaforo_strong_template(core)
+                        asunto = tpl_s.get("asunto") or asunto
+                        cuerpo = tpl_s.get("cuerpo") or cuerpo
+                        final_kind = "semaforo"
 
-                # 2) Móvil
-                elif is_movil_context(core, cuerpo):
-                    tpl_m = build_movil_strong_template(core)
-                    asunto = tpl_m.get("asunto") or asunto
-                    cuerpo = tpl_m.get("cuerpo") or cuerpo
-                    final_kind = "movil"
+                    # 2) Móvil
+                    elif is_movil_context(core, cuerpo):
+                        tpl_m = build_movil_strong_template(core)
+                        asunto = tpl_m.get("asunto") or asunto
+                        cuerpo = tpl_m.get("cuerpo") or cuerpo
+                        final_kind = "movil"
 
-                # 3) Auriculares
-                elif is_auriculares_context(core, cuerpo):
-                    tpl_a = build_auriculares_strong_template(core)
-                    asunto = tpl_a.get("asunto") or asunto
-                    cuerpo = tpl_a.get("cuerpo") or cuerpo
-                    final_kind = "auriculares"
+                    # 3) Auriculares
+                    elif is_auriculares_context(core, cuerpo):
+                        tpl_a = build_auriculares_strong_template(core)
+                        asunto = tpl_a.get("asunto") or asunto
+                        cuerpo = tpl_a.get("cuerpo") or cuerpo
+                        final_kind = "auriculares"
 
-                # 4) Atención/Negligente (con IA opcional)
-                elif is_atencion_context(core, cuerpo):
-                    tpl_at = build_atencion_strong_template(core, body=cuerpo)
-                    asunto = tpl_at.get("asunto") or asunto
-                    cuerpo = tpl_at.get("cuerpo") or cuerpo
-                    final_kind = "atencion"
+                    # 4) Atención/Negligente (con IA opcional)
+                    elif is_atencion_context(core, cuerpo):
+                        tpl_at = build_atencion_strong_template(core, body=cuerpo)
+                        asunto = tpl_at.get("asunto") or asunto
+                        cuerpo = tpl_at.get("cuerpo") or cuerpo
+                        final_kind = "atencion"
 
-                # 5) Condiciones vehículo
-                elif _is_condiciones_context_robust(core, cuerpo):
-                    tpl_c = build_condiciones_vehiculo_strong_template(core)
-                    asunto = tpl_c.get("asunto") or asunto
-                    cuerpo = tpl_c.get("cuerpo") or cuerpo
-                    final_kind = "condiciones_vehiculo"
+                    # 5) Condiciones vehículo
+                    elif _is_condiciones_context_robust(core, cuerpo):
+                        tpl_c = build_condiciones_vehiculo_strong_template(core)
+                        asunto = tpl_c.get("asunto") or asunto
+                        cuerpo = tpl_c.get("cuerpo") or cuerpo
+                        final_kind = "condiciones_vehiculo"
 
-                # 6) Velocidad (último)
-                elif _is_velocity_context(core, cuerpo):
-                    asunto, cuerpo = _velocity_vse1_template(core)
-                    final_kind = "velocidad"
-                    try:
+                    # 6) Velocidad (último)
+                    elif _is_velocity_context(core, cuerpo):
+                        asunto, cuerpo = _velocity_vse1_template(core)
+                        final_kind = "velocidad"
+                        try:
                         decision = decide_modo_velocidad(core, body=cuerpo, capture_mode="UNKNOWN") or decision
                         decision_mode = (decision.get("mode") or "unknown") if isinstance(decision, dict) else "unknown"
-                    except Exception:
+                        except Exception:
                         pass
-                    cuerpo = _inject_bucket_paragraph(cuerpo, decision)
-                    cuerpo = _inject_tramo_error_paragraph(cuerpo, _compute_velocity_calc_from_core(core))
+                        cuerpo = _inject_bucket_paragraph(cuerpo, decision)
+                        cuerpo = _inject_tramo_error_paragraph(cuerpo, _compute_velocity_calc_from_core(core))
 
-                tpl = {"asunto": asunto, "cuerpo": cuerpo}
-                ai_used = True
-        except Exception as e:
-            ai_error = str(e)
-            tpl = None
+                        tpl = {"asunto": asunto, "cuerpo": cuerpo}
+                        ai_used = True
+                        except Exception as e:
+                        ai_error = str(e)
+                        tpl = None
 
-    # FALLBACK A PLANTILLAS
-    if not tpl:
-        if tipo == "reposicion":
-            tpl = build_dgt_reposicion_text(core, interesado)
-        else:
-            tpl = build_dgt_alegaciones_text(core, interesado)
+                    # FALLBACK A PLANTILLAS
+                    if not tpl:
+                    if tipo == "reposicion":
+                        tpl = build_dgt_reposicion_text(core, interesado)
+                        else:
+                        tpl = build_dgt_alegaciones_text(core, interesado)
 
-        cuerpo0 = tpl.get("cuerpo") or ""
+                        cuerpo0 = tpl.get("cuerpo") or ""
 
-        # 🔒 TIPICIDAD HARD LOCK (fallback templates)
+                    # 🔒 TIPICIDAD HARD LOCK (fallback templates)
         _hard_locked2 = False
         locked_kind = _apply_hard_lock_kind(core)
-        if locked_kind == "velocidad":
-            asunto_v, cuerpo_v = _velocity_vse1_template(core)
-            tpl = {"asunto": asunto_v, "cuerpo": cuerpo_v}
-            final_kind = "velocidad"
-            try:
-                decision = decide_modo_velocidad(core, body=cuerpo_v, capture_mode="UNKNOWN") or decision
-                decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
-            except Exception:
-                pass
-            tpl["cuerpo"] = _inject_bucket_paragraph(tpl["cuerpo"], decision)
-            tpl["cuerpo"] = _inject_tramo_error_paragraph(tpl["cuerpo"], _compute_velocity_calc_from_core(core))
-            _hard_locked2 = True
-        elif locked_kind == "semaforo":
-            tpl = build_semaforo_strong_template(core)
-            final_kind = "semaforo"
-            _hard_locked2 = True
-        elif locked_kind == "condiciones_vehiculo":
-            tpl = build_condiciones_vehiculo_strong_template(core)
-            final_kind = "condiciones_vehiculo"
-            _hard_locked2 = True
-        elif locked_kind == "seguro":
-            tpl = build_seguro_strong_template(core)
-            final_kind = "seguro"
-            _hard_locked2 = True
-        elif locked_kind == "marcas_viales":
-            tpl = build_marcas_viales_strong_template(core)
-            final_kind = "marcas_viales"
-            _hard_locked2 = True
+                    if locked_kind == "velocidad":
+                        asunto_v, cuerpo_v = _velocity_vse1_template(core)
+                        tpl = {"asunto": asunto_v, "cuerpo": cuerpo_v}
+                        final_kind = "velocidad"
+                        try:
+                        decision = decide_modo_velocidad(core, body=cuerpo_v, capture_mode="UNKNOWN") or decision
+                        decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
+                        except Exception:
+                        pass
+                        tpl["cuerpo"] = _inject_bucket_paragraph(tpl["cuerpo"], decision)
+                        tpl["cuerpo"] = _inject_tramo_error_paragraph(tpl["cuerpo"], _compute_velocity_calc_from_core(core))
+                        _hard_locked2 = True
+                    elif locked_kind == "semaforo":
+                        tpl = build_semaforo_strong_template(core)
+                        final_kind = "semaforo"
+                        _hard_locked2 = True
+                    elif locked_kind == "condiciones_vehiculo":
+                        tpl = build_condiciones_vehiculo_strong_template(core)
+                        final_kind = "condiciones_vehiculo"
+                        _hard_locked2 = True
+                    elif locked_kind == "seguro":
+                        tpl = build_seguro_strong_template(core)
+                        final_kind = "seguro"
+                        _hard_locked2 = True
+                    elif locked_kind == "marcas_viales":
+                        tpl = build_marcas_viales_strong_template(core)
+                        final_kind = "marcas_viales"
+                        _hard_locked2 = True
         
-        if not _hard_locked2:
+                    if not _hard_locked2:
 
-        if _is_semaforo_context_robust(core, cuerpo0):
-            tpl = build_semaforo_strong_template(core)
-            final_kind = "semaforo"
-        elif is_movil_context(core, cuerpo0):
-            tpl = build_movil_strong_template(core)
-            final_kind = "movil"
-        elif is_marcas_viales_context(core, _raw_blob(core)):
-            tpl = build_marcas_viales_strong_template(core)
-            final_kind = "marcas_viales"
-        elif is_seguro_context(core, _raw_blob(core)):
-            tpl = build_seguro_strong_template(core)
-            final_kind = "seguro"
-        elif is_auriculares_context(core, cuerpo0):
-            tpl = build_auriculares_strong_template(core)
-            final_kind = "auriculares"
-        elif is_atencion_context(core, cuerpo0):
-            tpl = build_atencion_strong_template(core, body=cuerpo0)
-            final_kind = "atencion"
-        elif _is_condiciones_context_robust(core, cuerpo0):
-            tpl_c = build_condiciones_vehiculo_strong_template(core)
-            tpl = {"asunto": tpl_c.get("asunto") or tpl.get("asunto") or "", "cuerpo": tpl_c.get("cuerpo") or tpl.get("cuerpo") or ""}
-            final_kind = "condiciones_vehiculo"
-        elif _is_velocity_context(core, cuerpo0):
-            asunto_v, cuerpo_v = _velocity_vse1_template(core)
-            tpl = {"asunto": asunto_v, "cuerpo": cuerpo_v}
-            final_kind = "velocidad"
-            try:
-                decision = decide_modo_velocidad(core, body=cuerpo_v, capture_mode="UNKNOWN") or decision
-                decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
-            except Exception:
-                pass
-            tpl["cuerpo"] = _inject_bucket_paragraph(tpl["cuerpo"], decision)
-            tpl["cuerpo"] = _inject_tramo_error_paragraph(tpl["cuerpo"], _compute_velocity_calc_from_core(core))
+                    if _is_semaforo_context_robust(core, cuerpo0):
+                        tpl = build_semaforo_strong_template(core)
+                        final_kind = "semaforo"
+                    elif is_movil_context(core, cuerpo0):
+                        tpl = build_movil_strong_template(core)
+                        final_kind = "movil"
+                    elif is_marcas_viales_context(core, _raw_blob(core)):
+                        tpl = build_marcas_viales_strong_template(core)
+                        final_kind = "marcas_viales"
+                    elif is_seguro_context(core, _raw_blob(core)):
+                        tpl = build_seguro_strong_template(core)
+                        final_kind = "seguro"
+                    elif is_auriculares_context(core, cuerpo0):
+                        tpl = build_auriculares_strong_template(core)
+                        final_kind = "auriculares"
+                    elif is_atencion_context(core, cuerpo0):
+                        tpl = build_atencion_strong_template(core, body=cuerpo0)
+                        final_kind = "atencion"
+                    elif _is_condiciones_context_robust(core, cuerpo0):
+                        tpl_c = build_condiciones_vehiculo_strong_template(core)
+                        tpl = {"asunto": tpl_c.get("asunto") or tpl.get("asunto") or "", "cuerpo": tpl_c.get("cuerpo") or tpl.get("cuerpo") or ""}
+                        final_kind = "condiciones_vehiculo"
+                    elif _is_velocity_context(core, cuerpo0):
+                        asunto_v, cuerpo_v = _velocity_vse1_template(core)
+                        tpl = {"asunto": asunto_v, "cuerpo": cuerpo_v}
+                        final_kind = "velocidad"
+                        try:
+                        decision = decide_modo_velocidad(core, body=cuerpo_v, capture_mode="UNKNOWN") or decision
+                        decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
+                        except Exception:
+                        pass
+                        tpl["cuerpo"] = _inject_bucket_paragraph(tpl["cuerpo"], decision)
+                        tpl["cuerpo"] = _inject_tramo_error_paragraph(tpl["cuerpo"], _compute_velocity_calc_from_core(core))
 
-    # STRICT (solo si final_kind == velocidad)
+                    # STRICT (solo si final_kind == velocidad)
     try:
         _strict_validate_or_raise(conn, case_id, tpl, final_kind=final_kind)
     except HTTPException as e:
-        if override_mode:
-            try:
-                conn.execute(
-                    text(
+                    if override_mode:
+                        try:
+                        conn.execute(
+                        text(
                         "INSERT INTO events(case_id, type, payload, created_at) "
                         "VALUES (:case_id,'strict_bypassed_override',CAST(:payload AS JSONB),NOW())"
-                    ),
-                    {"case_id": case_id, "payload": json.dumps({"detail": str(e.detail), "final_kind": final_kind})},
-                )
-            except Exception:
-                pass
-        else:
-            raise
+                        ),
+                        {"case_id": case_id, "payload": json.dumps({"detail": str(e.detail), "final_kind": final_kind})},
+                        )
+                        except Exception:
+                        pass
+                        else:
+                        raise
 
-    # DOCX/PDF
+                    # DOCX/PDF
     kind_docx = "generated_docx_reposicion" if tipo == "reposicion" else "generated_docx_alegaciones"
     kind_pdf = "generated_pdf_reposicion" if tipo == "reposicion" else "generated_pdf_alegaciones"
 
