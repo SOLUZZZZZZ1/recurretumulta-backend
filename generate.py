@@ -32,55 +32,6 @@ RTM_DGT_GENERATION_MODE = (os.getenv("RTM_DGT_GENERATION_MODE") or "AI_FIRST").s
 
 
 # ==========================
-# TIPICIDAD (hard routing)
-# ==========================
-# Regla: si norma+artículo permiten tipificar, ese tipo gana SIEMPRE (la IA nunca decide el módulo).
-ARTICLE_TYPE_MAP_HARD = {
-    "RGC": {
-        48: "velocidad",
-        146: "semaforo",
-        18: "atencion",
-        12: "condiciones_vehiculo",
-        15: "condiciones_vehiculo",
-    },
-    "RDL 8/2004": {
-        2: "seguro",
-    },
-}
-
-
-def _norma_key_from_hint(core: Dict[str, Any]) -> str:
-    hint = (core or {}).get("norma_hint") or ""
-    h = str(hint).upper()
-    if "RDL 8/2004" in h or "8/2004" in h:
-        return "RDL 8/2004"
-    if "RGC" in h or "REGLAMENTO GENERAL DE CIRCUL" in h:
-        return "RGC"
-    return ""
-
-
-def _get_article_num(core: Dict[str, Any]) -> Optional[int]:
-    art = (core or {}).get("articulo_infringido_num")
-    if isinstance(art, int):
-        return art
-    if isinstance(art, str) and art.strip().isdigit():
-        try:
-            return int(art.strip())
-        except Exception:
-            return None
-    return None
-
-
-def _expected_type_from_article(core: Dict[str, Any]) -> Optional[str]:
-    norma_key = _norma_key_from_hint(core or {})
-    art = _get_article_num(core or {})
-    if not norma_key or art is None:
-        return None
-    return (ARTICLE_TYPE_MAP_HARD.get(norma_key) or {}).get(art)
-
-
-
-# ==========================
 # HELPERS
 # ==========================
 
@@ -200,6 +151,7 @@ def _is_semaforo_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
             parts.append(v)
 
     parts.append(str(core.get("hecho_imputado") or ""))
+    parts.append(cuerpo or "")
 
     blob = " ".join(parts).lower()
 
@@ -236,7 +188,7 @@ def _is_condiciones_context_robust(core: Dict[str, Any], cuerpo: str) -> bool:
     if art_i in (12, 15):
         return True
 
-    blob = _raw_blob(core)
+    blob = _raw_blob(core) + "\n" + (cuerpo or "").lower()
 
     signals = [
         "alumbrado",
@@ -570,16 +522,6 @@ def generate_dgt_for_case(
     wrapper = extracted_json if isinstance(extracted_json, dict) else json.loads(extracted_json)
     core = (wrapper.get("extracted") or {}) if isinstance(wrapper, dict) else {}
 
-
-
-    # 🔒 Tipicidad hard lock (norma+artículo) — evita que el texto IA desvíe el módulo
-    expected = _expected_type_from_article(core or {})
-    if isinstance(expected, str) and expected.strip():
-        core["tipo_infraccion"] = expected.strip().lower()
-        core["routing_lock"] = True
-    else:
-        core["routing_lock"] = False
-
     interesado_db = _load_interested_data_from_cases(conn, case_id)
     interesado = _merge_interesado(interesado or {}, interesado_db)
 
@@ -611,14 +553,43 @@ def generate_dgt_for_case(
                     asunto = "RECURSO (MODO PRUEBA)"
                     cuerpo = _strip_borrador_prefix_from_body(cuerpo)
 
-                locked = bool((core or {}).get("routing_lock"))
-                locked_kind = str((core or {}).get("tipo_infraccion") or "").lower().strip() if locked else ""
+                # 1) Semáforo
+                if _is_semaforo_context_robust(core, cuerpo):
+                    tpl_s = build_semaforo_strong_template(core)
+                    asunto = tpl_s.get("asunto") or asunto
+                    cuerpo = tpl_s.get("cuerpo") or cuerpo
+                    final_kind = "semaforo"
 
-                def _lock_allows(kind: str) -> bool:
-                    return (not locked) or (locked_kind == (kind or "").lower().strip())
+                # 2) Móvil
+                elif is_movil_context(core, cuerpo):
+                    tpl_m = build_movil_strong_template(core)
+                    asunto = tpl_m.get("asunto") or asunto
+                    cuerpo = tpl_m.get("cuerpo") or cuerpo
+                    final_kind = "movil"
 
-                # 1) Velocidad (PRIORIDAD) — determinista VSE-1
-                if _lock_allows("velocidad") and _is_velocity_context(core, cuerpo):
+                # 3) Auriculares
+                elif is_auriculares_context(core, cuerpo):
+                    tpl_a = build_auriculares_strong_template(core)
+                    asunto = tpl_a.get("asunto") or asunto
+                    cuerpo = tpl_a.get("cuerpo") or cuerpo
+                    final_kind = "auriculares"
+
+                # 4) Atención/Negligente (con IA opcional)
+                elif is_atencion_context(core, cuerpo):
+                    tpl_at = build_atencion_strong_template(core, body=cuerpo)
+                    asunto = tpl_at.get("asunto") or asunto
+                    cuerpo = tpl_at.get("cuerpo") or cuerpo
+                    final_kind = "atencion"
+
+                # 5) Condiciones vehículo
+                elif _is_condiciones_context_robust(core, cuerpo):
+                    tpl_c = build_condiciones_vehiculo_strong_template(core)
+                    asunto = tpl_c.get("asunto") or asunto
+                    cuerpo = tpl_c.get("cuerpo") or cuerpo
+                    final_kind = "condiciones_vehiculo"
+
+                # 6) Velocidad (último)
+                elif _is_velocity_context(core, cuerpo):
                     asunto, cuerpo = _velocity_vse1_template(core)
                     final_kind = "velocidad"
                     try:
@@ -628,41 +599,6 @@ def generate_dgt_for_case(
                         pass
                     cuerpo = _inject_bucket_paragraph(cuerpo, decision)
                     cuerpo = _inject_tramo_error_paragraph(cuerpo, _compute_velocity_calc_from_core(core))
-
-                # 2) Semáforo
-                elif _lock_allows("semaforo") and _is_semaforo_context_robust(core, cuerpo):
-                    tpl_s = build_semaforo_strong_template(core)
-                    asunto = tpl_s.get("asunto") or asunto
-                    cuerpo = tpl_s.get("cuerpo") or cuerpo
-                    final_kind = "semaforo"
-
-                # 3) Móvil
-                elif _lock_allows("movil") and is_movil_context(core, cuerpo):
-                    tpl_m = build_movil_strong_template(core)
-                    asunto = tpl_m.get("asunto") or asunto
-                    cuerpo = tpl_m.get("cuerpo") or cuerpo
-                    final_kind = "movil"
-
-                # 4) Auriculares
-                elif _lock_allows("auriculares") and is_auriculares_context(core, cuerpo):
-                    tpl_a = build_auriculares_strong_template(core)
-                    asunto = tpl_a.get("asunto") or asunto
-                    cuerpo = tpl_a.get("cuerpo") or cuerpo
-                    final_kind = "auriculares"
-
-                # 5) Atención/Negligente (con IA opcional)
-                elif _lock_allows("atencion") and is_atencion_context(core, cuerpo):
-                    tpl_at = build_atencion_strong_template(core, body=cuerpo)
-                    asunto = tpl_at.get("asunto") or asunto
-                    cuerpo = tpl_at.get("cuerpo") or cuerpo
-                    final_kind = "atencion"
-
-                # 6) Condiciones vehículo
-                elif _lock_allows("condiciones_vehiculo") and _is_condiciones_context_robust(core, cuerpo):
-                    tpl_c = build_condiciones_vehiculo_strong_template(core)
-                    asunto = tpl_c.get("asunto") or asunto
-                    cuerpo = tpl_c.get("cuerpo") or cuerpo
-                    final_kind = "condiciones_vehiculo"
 
                 tpl = {"asunto": asunto, "cuerpo": cuerpo}
                 ai_used = True
@@ -679,14 +615,23 @@ def generate_dgt_for_case(
 
         cuerpo0 = tpl.get("cuerpo") or ""
 
-        locked = bool((core or {}).get("routing_lock"))
-        locked_kind = str((core or {}).get("tipo_infraccion") or "").lower().strip() if locked else ""
-
-        def _lock_allows(kind: str) -> bool:
-            return (not locked) or (locked_kind == (kind or "").lower().strip())
-
-        # 1) Velocidad (PRIORIDAD)
-        if _lock_allows("velocidad") and _is_velocity_context(core, cuerpo0):
+        if _is_semaforo_context_robust(core, cuerpo0):
+            tpl = build_semaforo_strong_template(core)
+            final_kind = "semaforo"
+        elif is_movil_context(core, cuerpo0):
+            tpl = build_movil_strong_template(core)
+            final_kind = "movil"
+        elif is_auriculares_context(core, cuerpo0):
+            tpl = build_auriculares_strong_template(core)
+            final_kind = "auriculares"
+        elif is_atencion_context(core, cuerpo0):
+            tpl = build_atencion_strong_template(core, body=cuerpo0)
+            final_kind = "atencion"
+        elif _is_condiciones_context_robust(core, cuerpo0):
+            tpl_c = build_condiciones_vehiculo_strong_template(core)
+            tpl = {"asunto": tpl_c.get("asunto") or tpl.get("asunto") or "", "cuerpo": tpl_c.get("cuerpo") or tpl.get("cuerpo") or ""}
+            final_kind = "condiciones_vehiculo"
+        elif _is_velocity_context(core, cuerpo0):
             asunto_v, cuerpo_v = _velocity_vse1_template(core)
             tpl = {"asunto": asunto_v, "cuerpo": cuerpo_v}
             final_kind = "velocidad"
@@ -697,23 +642,6 @@ def generate_dgt_for_case(
                 pass
             tpl["cuerpo"] = _inject_bucket_paragraph(tpl["cuerpo"], decision)
             tpl["cuerpo"] = _inject_tramo_error_paragraph(tpl["cuerpo"], _compute_velocity_calc_from_core(core))
-
-        elif _lock_allows("semaforo") and _is_semaforo_context_robust(core, cuerpo0):
-            tpl = build_semaforo_strong_template(core)
-            final_kind = "semaforo"
-        elif _lock_allows("movil") and is_movil_context(core, cuerpo0):
-            tpl = build_movil_strong_template(core)
-            final_kind = "movil"
-        elif _lock_allows("auriculares") and is_auriculares_context(core, cuerpo0):
-            tpl = build_auriculares_strong_template(core)
-            final_kind = "auriculares"
-        elif _lock_allows("atencion") and is_atencion_context(core, cuerpo0):
-            tpl = build_atencion_strong_template(core, body=cuerpo0)
-            final_kind = "atencion"
-        elif _lock_allows("condiciones_vehiculo") and _is_condiciones_context_robust(core, cuerpo0):
-            tpl_c = build_condiciones_vehiculo_strong_template(core)
-            tpl = {"asunto": tpl_c.get("asunto") or tpl.get("asunto") or "", "cuerpo": tpl_c.get("cuerpo") or tpl.get("cuerpo") or ""}
-            final_kind = "condiciones_vehiculo"
 
     # STRICT (solo si final_kind == velocidad)
     try:
