@@ -21,6 +21,9 @@ from ai.infractions.distracciones import is_auriculares_context, build_auricular
 # ✅ NUEVO: atención / negligente (art.3.1 / 18.1) — con IA opcional (RTM_ATENCION_AI=1)
 from ai.infractions.atencion import is_atencion_context, build_atencion_strong_template
 from ai.infractions.marcas_viales import is_marcas_viales_context, build_marcas_viales_strong_template
+from ai.infractions.municipal_semaforo import build_municipal_semaforo_template
+from ai.infractions.municipal_sentido_contrario import build_municipal_sentido_contrario_template
+from ai.infractions.municipal_generic import build_municipal_generic_template
 from ai.infractions.seguro import is_seguro_context, build_seguro_strong_template
 
 from b2_storage import upload_bytes
@@ -565,6 +568,14 @@ def generate_dgt_for_case(
     wrapper = extracted_json if isinstance(extracted_json, dict) else json.loads(extracted_json)
     core = (wrapper.get("extracted") or {}) if isinstance(wrapper, dict) else {}
 
+    authority = str(core.get("authority") or "").lower().strip()
+    org_hint = str(core.get("organo") or core.get("organismo") or "").lower()
+    if not authority:
+        authority = "ayuntamiento" if "ayuntamiento" in org_hint else "trafico_dgt"
+        core.setdefault("authority", authority)
+    is_municipal = authority.startswith("ayuntamiento")
+
+
     interesado_db = _load_interested_data_from_cases(conn, case_id)
     interesado = _merge_interesado(interesado or {}, interesado_db)
 
@@ -681,8 +692,27 @@ def generate_dgt_for_case(
                     asunto = "RECURSO (MODO PRUEBA)"
                     cuerpo = _strip_borrador_prefix_from_body(cuerpo)
 
-                # 1) Tipicidad hard lock
-                locked = _expected_kind_from_article(core)
+                # 0) Municipal dispatch (separado de DGT)
+                if is_municipal:
+                    blobm = (str(core.get('raw_text_blob') or '') + '\n' + str(cuerpo or '')).lower()
+                    if 'semaforo' in blobm or 'luz roja' in blobm or 'fase roja' in blobm:
+                        tpl = _dispatch('municipal_semaforo', asunto, cuerpo)
+                    elif 'sentido contrario' in blobm:
+                        tpl = _dispatch('municipal_sentido_contrario', asunto, cuerpo)
+                    else:
+                        tpl = _dispatch('municipal_generic', asunto, cuerpo)
+                else:
+                    # 1) Tipicidad hard lock
+                    if is_municipal:
+            blobm = (str(core.get('raw_text_blob') or '') + '\n' + str(cuerpo0 or '')).lower()
+            if 'semaforo' in blobm or 'luz roja' in blobm or 'fase roja' in blobm:
+                tpl = _dispatch('municipal_semaforo', asunto0, cuerpo0)
+            elif 'sentido contrario' in blobm:
+                tpl = _dispatch('municipal_sentido_contrario', asunto0, cuerpo0)
+            else:
+                tpl = _dispatch('municipal_generic', asunto0, cuerpo0)
+        else:
+            locked = _expected_kind_from_article(core)
                 if locked == "cluster_18":
                     # decide dentro del cluster 18
                     if is_movil_context(core, cuerpo):

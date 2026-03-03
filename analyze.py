@@ -148,65 +148,51 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
     t = (text_blob or "").replace("\n", " ").lower()
     t = re.sub(r"\s+", " ", t).strip()
 
-    # 🔒 Guard: solo extraer velocidad si hay contexto REAL
-    velocity_context = (
-        ("exceso de velocidad" in t)
-        or ("radar" in t)
-        or ("cinemómetro" in t)
-        or ("cinemometro" in t)
-        or ("km/h" in t)  # señal fuerte, evita confundir importes/fechas
-        or bool(re.search(r"\bcircular\s+a\s+\d{2,3}\s*km\s*/?\s*h\b", t))
-    )
-
     measured = None
     limit = None
 
-    if velocity_context:
-        ms = re.search(
-            r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,160}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)[^\d]{0,80}(\d{2,3})",
-            t,
-        )
-        if ms:
+    ms = re.search(
+        r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,160}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)[^\d]{0,80}(\d{2,3})",
+        t,
+    )
+    if ms:
+        try:
+            measured = int(ms.group(1))
+            limit = int(ms.group(2))
+        except Exception:
+            measured = None
+            limit = None
+
+    if measured is None:
+        m1 = re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?h\b", t)
+        if m1:
             try:
-                measured = int(ms.group(1))
-                limit = int(ms.group(2))
+                measured = int(m1.group(1))
             except Exception:
                 measured = None
+
+    if limit is None:
+        m2 = re.search(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)\b[^\d]{0,80}(\d{2,3})\b", t)
+        if m2:
+            try:
+                limit = int(m2.group(1))
+            except Exception:
                 limit = None
 
-        if measured is None:
-            m1 = re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?h\b", t)
-            if m1:
-                try:
-                    measured = int(m1.group(1))
-                except Exception:
-                    measured = None
+    # Fallback SOLO si hay señal de límite y 2 números distintos
+    if measured is None or limit is None:
+        nums = [int(x) for x in re.findall(r"\b(\d{2,3})\b", t)]
+        nums = [n for n in nums if 10 <= n <= 250]
+        uniq = sorted(set(nums))
+        has_limit_signal = any(k in t for k in ["limitad", "límite", "limite", "velocidad máxima", "velocidad maxima"])
+        if has_limit_signal and len(uniq) >= 2:
+            hi = max(uniq)
+            lo = min(uniq)
+            if measured is None:
+                measured = hi
+            if limit is None:
+                limit = lo
 
-        if limit is None:
-            m2 = re.search(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite|velocidad\s+m[aá]xima|velocidad\s+maxima)\b[^\d]{0,80}(\d{2,3})\b", t)
-            if m2:
-                try:
-                    limit = int(m2.group(1))
-                except Exception:
-                    limit = None
-
-        # ⚠️ Fallback SOLO si hay km/h en el texto y hay señal de límite de velocidad (no "fecha límite")
-        if measured is None or limit is None:
-            if "km/h" in t:
-                t_no_deadlines = re.sub(r"fecha\s*l[ií]mite[^\d]{0,40}\d{1,2}/\d{1,2}/\d{2,4}", "", t)
-                has_limit_signal = any(k in t_no_deadlines for k in ["limitad", "límite", "limite", "velocidad máxima", "velocidad maxima"])
-                nums = [int(x) for x in re.findall(r"\b(\d{2,3})\b", t_no_deadlines)]
-                nums = [n for n in nums if 10 <= n <= 250]
-                uniq = sorted(set(nums))
-                if has_limit_signal and len(uniq) >= 2:
-                    hi = max(uniq)
-                    lo = min(uniq)
-                    if measured is None:
-                        measured = hi
-                    if limit is None:
-                        limit = lo
-
-    # Multa (€) — ojo: puede confundirse con velocidades, por eso NO lo usamos para inferir velocidad
     fine_eur = None
     mf = re.search(r"\b(\d{2,4})\s*(?:€|euros)\b", t)
     if mf:
@@ -224,12 +210,11 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
             points = None
 
     radar_model = None
-    if velocity_context:
-        mr = re.search(r"(multaradar\s*[a-z0-9\-]*)", t)
-        if mr:
-            radar_model = mr.group(1).strip()
-        elif "cinem" in t:
-            radar_model = "cinemometro (no especificado)"
+    mr = re.search(r"(multaradar\s*[a-z0-9\-]*)", t)
+    if mr:
+        radar_model = mr.group(1).strip()
+    elif "cinem" in t:
+        radar_model = "cinemometro (no especificado)"
 
     return {
         "velocidad_medida_kmh": measured,
@@ -403,6 +388,16 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
 
             blob = _flatten_text(extracted_core, text_content=text_content)
             extracted_core = _enrich_with_triage(extracted_core, blob)
+            # Authority hint
+            try:
+                rb = str(extracted_core.get('raw_text_blob') or '').lower()
+                org = str(extracted_core.get('organo') or extracted_core.get('organismo') or '').lower()
+                if 'ayuntamiento' in rb or 'ayuntamiento' in org:
+                    extracted_core['authority'] = 'ayuntamiento'
+                else:
+                    extracted_core.setdefault('authority', 'trafico_dgt')
+            except Exception:
+                extracted_core.setdefault('authority', 'trafico_dgt')
 
             wrapper = {
                 "filename": file.filename,
