@@ -1,24 +1,47 @@
-"""
-RTM — SEMÁFORO STRONG MODULE (SVL-SEM-3)
+"""RTM — SEMÁFORO (SVL-SEM-4) — DEMOLEDOR 9.5/10 (Enfoque operativo)
 
-Nivel quirúrgico máximo.
-
-Exige:
-- Fase roja activa exacta
-- Rebase de línea de detención
-- Secuencia completa sin recortes
-- Sincronización y certificación del sistema
-- Diferenciación fase roja vs ámbar
-- Motivación individualizada
-- Archivo
+Modo B por defecto (maximiza archivo real).
+Modo C solo graves (puntos/sanción alta).
+Compatibilidad: build_semaforo_strong_template(core)
 """
 
 from __future__ import annotations
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
+import re
+
+
+def _get_int(v: Any) -> Optional[int]:
+    try:
+        if v is None:
+            return None
+        if isinstance(v, int):
+            return v
+        if isinstance(v, float):
+            return int(round(v))
+        s = str(v).strip()
+        if not s:
+            return None
+        s = s.replace("€", "").replace(".", "").replace(",", "").strip()
+        return int(s) if s.isdigit() else None
+    except Exception:
+        return None
+
+
+def _is_grave(core: Dict[str, Any]) -> bool:
+    core = core or {}
+    fine = _get_int(core.get("sancion_importe_eur") or core.get("importe") or core.get("importe_total_multa"))
+    pts = _get_int(core.get("puntos_detraccion") or core.get("puntos") or 0) or 0
+    if pts and pts > 0:
+        return True
+    if fine is not None and fine >= 500:
+        return True
+    g = str(core.get("gravedad") or "").lower().strip()
+    return g in ("grave", "muy grave", "critico", "crítico")
 
 
 def build_semaforo_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     core = core or {}
+    modo_c = _is_grave(core)
 
     expediente = core.get("expediente_ref") or core.get("numero_expediente") or "No consta acreditado."
     organo = core.get("organo") or core.get("organismo") or "No consta acreditado."
@@ -36,36 +59,57 @@ def build_semaforo_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"2) Identificación expediente: {expediente}\n"
         f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
         "II. ALEGACIONES\n\n"
-
-        "ALEGACIÓN PRIMERA — ACREDITACIÓN DE FASE ROJA ACTIVA Y REBASE EFECTIVO\n\n"
-        "Para sancionar por no respetar la luz roja no intermitente de un semáforo "
-        "debe acreditarse de forma objetiva, técnica y verificable:\n"
-        "1) Que existía fase roja activa en el instante exacto del supuesto rebase.\n"
-        "2) Que el vehículo rebasó completamente la línea de detención con la fase roja ya activa.\n"
+        "ALEGACIÓN PRIMERA — ELEMENTO OBJETIVO: FASE ROJA ACTIVA Y REBASE EFECTIVO\n\n"
+        "Para sancionar por no respetar la luz roja no intermitente debe acreditarse de forma objetiva y verificable:\n"
+        "1) Que existía FASE ROJA ACTIVA en el instante exacto del supuesto rebase.\n"
+        "2) Que el vehículo rebasó efectivamente la LÍNEA DE DETENCIÓN con la fase roja ya activa.\n"
         "3) Que no se trataba de fase ámbar o transición del ciclo semafórico.\n"
-        "4) Identificación inequívoca del vehículo y correspondencia temporal exacta.\n\n"
-
-        "No consta acreditación suficiente de dichos extremos, "
-        "por lo que no puede tenerse por probado el hecho infractor.\n\n"
-
-        "ALEGACIÓN SEGUNDA — SECUENCIA ÍNTEGRA, SIN RECORTES Y SINCRONIZACIÓN DEL SISTEMA\n\n"
-        "En caso de captación automática, debe aportarse:\n"
-        "1) Secuencia completa de imágenes o vídeo sin recortes.\n"
-        "2) Certificación del sistema de captación y su homologación.\n"
-        "3) Sincronización horaria del dispositivo con el ciclo semafórico.\n"
-        "4) Identificación del cruce y configuración del ciclo en el instante exacto.\n\n"
-
-        "En caso de observación por agente, debe detallarse posición, visibilidad y circunstancias "
-        "que permitan verificar que el rebase se produjo con fase roja activa.\n\n"
-
+        "4) Identificación inequívoca del vehículo y correspondencia temporal exacta del registro.\n\n"
+        "No consta acreditación suficiente de dichos extremos con soporte verificable, por lo que no puede tenerse por probado el hecho infractor.\n\n"
+        "ALEGACIÓN SEGUNDA — SECUENCIA ÍNTEGRA, SIN RECORTES, Y SINCRONIZACIÓN HORARIA\n\n"
+        "En captación automática, no basta un fotograma aislado o recortado. Se requiere secuencia completa (mínimo dos/tres imágenes o vídeo) "
+        "que permita verificar fase roja efectiva, posición del vehículo respecto de la línea de detención y cronometría.\n\n"
+        "Debe aportarse también documentación técnica del sistema (homologación/certificación del dispositivo y del conjunto semáforo-captación), "
+        "y acreditación de sincronización horaria y correcto funcionamiento en la fecha del hecho.\n\n"
+        "En observación por agente, debe detallarse posición, distancia, ángulo, visibilidad y circunstancias que permitan verificar que el rebase se produjo con fase roja activa (no ámbar).\n\n"
         "ALEGACIÓN TERCERA — MOTIVACIÓN INDIVIDUALIZADA\n\n"
-        "La resolución debe contener motivación individualizada y no fórmulas estereotipadas, "
-        "especificando instante exacto, ciclo del semáforo y rebase de la línea de detención.\n\n"
+        "La resolución debe contener motivación individualizada, evitando fórmulas estereotipadas, identificando instante exacto, ciclo del semáforo, rebase de la línea de detención y soporte probatorio aportado.\n"
+    )
 
-        "III. SOLICITO\n"
+    if modo_c:
+        cuerpo += (
+            "\nALEGACIÓN ADICIONAL (MODO C — GRAVEDAD): EXIGENCIA REFORZADA DE PRUEBA\n\n"
+            "Cuando la sanción incorpora pérdida de puntos o especial gravedad, la exigencia de prueba verificable y motivación es máxima. "
+            "En ausencia de secuencia íntegra, sincronización y acreditación técnica del sistema, procede el archivo y, en su caso, la anulación por falta de motivación suficiente.\n"
+        )
+
+    cuerpo += (
+        "\nIII. SOLICITO\n"
         "1) Que se tengan por formuladas las presentes alegaciones.\n"
         "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria.\n"
-        "3) Subsidiariamente, que se aporte expediente íntegro y prueba técnica completa.\n"
-    ).strip()
+        "3) Subsidiariamente, que se aporte expediente íntegro y prueba completa (secuencia íntegra sin recortes, homologación/certificación, sincronización horaria y motivación detallada).\n"
+    )
 
-    return {"asunto": asunto, "cuerpo": cuerpo}
+    return {"asunto": asunto, "cuerpo": cuerpo.strip()}
+
+
+def strict_missing(body: str) -> List[str]:
+    b = (body or "").lower()
+    missing: List[str] = []
+    if "fase roja" not in b and "roja activa" not in b:
+        missing.append("fase_roja")
+    if "secuencia" not in b:
+        missing.append("secuencia")
+    if "sincron" not in b:
+        missing.append("sincronizacion")
+    if "línea de detención" not in b and "linea de detencion" not in b:
+        missing.append("linea_detencion")
+    if "archivo" not in b:
+        missing.append("archivo")
+    out=[]
+    seen=set()
+    for x in missing:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
