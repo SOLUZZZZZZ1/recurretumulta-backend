@@ -1,10 +1,6 @@
-"""RTM — ATENCIÓN / CONDUCCIÓN NEGLIGENTE (ART. 3.1 / 18.1 RGC) — DEMOLEDOR ADAPTATIVO
+"""RTM — ATENCIÓN (ART. 3.1 / 18.1) — GUARD anti-condiciones_vehiculo
 
-- NO inventa hechos: bloques de 'ciclistas/arcén/paralelo' y 'distancia/km' solo aparecen si el boletín los menciona.
-- Detector ampliado (bailando/palmas/volante/tambor, etc).
-Determinista. Sin OpenAI.
-
-Compatibilidad: is_atencion_context(core, body=""), build_atencion_strong_template(core, body="")
+Evita secuestrar multas técnicas del vehículo (alumbrado/ITV/neumáticos/reformas).
 """
 
 from __future__ import annotations
@@ -12,35 +8,48 @@ from typing import Any, Dict, List
 import re
 
 
-def is_atencion_context(core: Dict[str, Any], body: str = "") -> bool:
-    core = core or {}
-    tipo = str(core.get("tipo_infraccion") or "").lower().strip()
-    if tipo in ("atencion", "negligente", "conduccion_negligente", "conducción negligente"):
-        return True
-
-    hecho = str(core.get("hecho_imputado") or "")
-    raw = str(core.get("raw_text_blob") or "")
-    b = ((body or "") + "\n" + hecho + "\n" + raw).lower()
-
-    signals = [
-        "no mantener la atención", "no mantener la atencion", "atención permanente", "atencion permanente",
-        "conducción negligente", "conduccion negligente", "conducir de forma negligente",
-        "situacion de riesgo", "situación de riesgo", "riesgo y peligro", "peligro para",
-        "art. 3.1", "art 3.1", "artículo 3", "articulo 3",
-        "art. 18.1", "art 18.1", "artículo 18", "articulo 18",
-        "bailando", "palmas", "tocando las palmas", "dar palmas",
-        "golpeando", "volante", "tambor", "como si fuera un tambor",
-        "no se percata", "conversando", "distracción", "distraccion",
-        "ciclist", "biciclet", "arcén", "arcen", "paralelo", "de a tres", "ocupando",
-        "interceptad", "tramo",
-    ]
-    return any(s in b for s in signals)
-
-
 def _blob(core: Dict[str, Any], body: str) -> str:
     hecho = str(core.get("hecho_imputado") or "")
     raw = str(core.get("raw_text_blob") or "")
     return ((body or "") + "\n" + hecho + "\n" + raw).lower()
+
+
+def is_atencion_context(core: Dict[str, Any], body: str = "") -> bool:
+    core = core or {}
+    b = _blob(core, body)
+
+    cond_signals = [
+        "condiciones reglamentarias",
+        "dispositivos de alumbrado",
+        "señalización óptica", "senalizacion optica",
+        "rd 2822/98", "2822/98",
+        "anexo ii", "anexo i",
+        "itv",
+        "neumático", "neumatico", "banda de rodadura",
+        "destello", "destellos", "luz roja",
+        "reflect", "reflej", "pulid", "como un espejo", "deslumbr",
+        "reforma", "homolog", "proyecto", "certificado",
+    ]
+    if any(s in b for s in cond_signals):
+        return False
+
+    tipo = str(core.get("tipo_infraccion") or "").lower().strip()
+    if tipo in ("atencion", "negligente", "conduccion_negligente", "conducción negligente"):
+        return True
+
+    signals = [
+        "no mantener la atención", "no mantener la atencion",
+        "atención permanente", "atencion permanente",
+        "conducción negligente", "conduccion negligente", "conducir de forma negligente",
+        "distracción", "distraccion",
+        "no se percata", "conversando",
+        "art. 3.1", "art 3.1", "artículo 3", "articulo 3",
+        "art. 18.1", "art 18.1", "artículo 18", "articulo 18",
+        "bailando", "palmas", "golpeando", "volante", "tambor",
+        "ciclist", "biciclet", "arcén", "arcen", "paralelo", "de a tres", "ocupando",
+        "interceptad", "tramo",
+    ]
+    return any(s in b for s in signals)
 
 
 def _has_distance(b: str) -> bool:
@@ -50,7 +59,6 @@ def _has_distance(b: str) -> bool:
         return True
     if "hasta ser intercept" in b or "interceptad" in b:
         return True
-    # 'tramo de X' (sin km explícito) también cuenta
     if "tramo" in b and re.search(r"\b\d+(?:[\.,]\d+)?\b", b):
         return True
     return False
@@ -82,8 +90,7 @@ def build_atencion_strong_template(core: Dict[str, Any], body: str = "") -> Dict
         f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
         "II. ALEGACIONES\n\n"
         "ALEGACIÓN PRIMERA — ELEMENTO OBJETIVO: RIESGO REAL Y OBJETIVABLE (ART. 3.1 / 18.1)\n\n"
-        "El tipo sancionador exige acreditar una conducta concreta que genere un RIESGO REAL, específico y objetivable. "
-        "No basta una descripción llamativa ni valoraciones subjetivas.\n\n"
+        "El tipo sancionador exige acreditar una conducta concreta que genere un RIESGO REAL, específico y objetivable. No basta una descripción llamativa ni valoraciones subjetivas.\n\n"
         "No consta acreditado en el expediente:\n"
         "1) Maniobra específica (trayectoria anómala, invasión de carril, aproximación peligrosa, frenada o maniobra evasiva de terceros, etc.).\n"
         "2) Distancia real respecto de otros vehículos/usuarios y circunstancias del tráfico en ese instante.\n"
@@ -94,16 +101,13 @@ def build_atencion_strong_template(core: Dict[str, Any], body: str = "") -> Dict
     if _has_ciclistas(b):
         parts.append(
             "\nBLOQUE ESPECÍFICO — CICLISTAS / ARCÉN / PARALELO (SOLO SI CONSTA EN BOLETÍN)\n\n"
-            "Si se alude a ciclistas/bicicletas, circulación en paralelo o uso de arcén, la imputación debe concretar: "
-            "anchura efectiva del carril, intensidad de tráfico, posición exacta, distancias y maniobra concreta que evidencie riesgo real. "
-            "Sin esos datos, la imputación es estereotipada.\n"
+            "Si se alude a ciclistas/bicicletas, circulación en paralelo o uso de arcén, la imputación debe concretar: anchura efectiva del carril, intensidad de tráfico, posición exacta, distancias y maniobra concreta que evidencie riesgo real. Sin esos datos, la imputación es estereotipada.\n"
         )
 
     if _has_distance(b):
         parts.append(
             "\nALEGACIÓN SEGUNDA — DISTANCIA/DURACIÓN ALEGADA (SOLO SI CONSTA EN BOLETÍN)\n\n"
-            "Cuando se afirma una distancia o duración concreta, debe acreditarse punto inicial y final exactos, medio de medición "
-            "y continuidad real de observación, así como por qué no hubo actuación preventiva inmediata si el peligro era real.\n"
+            "Cuando se afirma una distancia o duración concreta, debe acreditarse punto inicial y final exactos, medio de medición y continuidad real de observación, así como por qué no hubo actuación preventiva inmediata si el peligro era real.\n"
         )
 
     parts.append(
