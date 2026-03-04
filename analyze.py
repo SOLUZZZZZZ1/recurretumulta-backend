@@ -238,86 +238,90 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
         "puntos_detraccion": points,
         "radar_modelo_hint": radar_model,
     }
-
-
 def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
     t = (text_blob or "").lower()
     facts: List[str] = []
 
-    # 1) SEMÁFORO (prioridad alta)
+    # 1️⃣ SEMÁFORO (prioridad máxima)
     sema_signals = [
-        "semáforo", "semaforo",
+        "semáforo","semaforo",
         "fase roja",
-        "cruce en rojo", "cruce con fase roja",
-        "luz roja del semáforo", "luz roja del semaforo",
-        "no respetar la luz roja", "no respeta la luz roja",
-        "t/s roja", "ts roja",
-        "señal luminosa roja", "senal luminosa roja",
-        "línea de detención", "linea de detencion",
-        "rebase la linea de detencion", "rebasar la linea de detencion",
+        "cruce en rojo","cruce con fase roja",
+        "luz roja del semáforo","luz roja del semaforo",
+        "no respetar la luz roja","no respeta la luz roja",
+        "línea de detención","linea de detencion",
     ]
-    if any(s in t for s in sema_signals) or re.search(r"\bart\.?\s*146\b", t) or re.search(r"\bart[ií]culo\s*146\b", t):
+    if any(s in t for s in sema_signals) or re.search(r"\bart\.?\s*146\b", t):
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
 
-    # 2) CONDICIONES DEL VEHÍCULO (art. 12/15; RGV 2822/98)
+    # 2️⃣ CONDICIONES DEL VEHÍCULO
     cond_signals = [
-        "dispositivos de alumbrado",
-        "señalización óptica", "senalizacion optica",
-        "alumbrado",
-        "anexo ii", "anexo i",
-        "reglamento general de vehículos", "reglamento general de vehiculos",
-        "rd 2822/98", "2822/98",
         "condiciones reglamentarias",
-        "itv", "inspección técnica", "inspeccion tecnica", "caducad",
-        "neumático", "neumatico", "banda de rodadura", "dibujo", "desgastad", "liso",
-        "luz roja", "destellos", "emite luz", "intermit",
-        "reflect", "reflej", "pulid", "como un espejo", "deslumbr",
-        "reforma", "homolog", "proyecto", "certificado",
+        "dispositivos de alumbrado",
+        "señalización óptica","senalizacion optica",
+        "alumbrado",
+        "anexo ii","anexo i",
+        "rd 2822/98",
+        "itv","inspección técnica","inspeccion tecnica",
+        "neumático","neumatico",
+        "banda de rodadura","dibujo",
+        "luz roja","destello","destellos",
+        "reflect","reflej","deslumbr",
+        "reforma","homolog",
     ]
-    if any(s in t for s in cond_signals) or re.search(r"\bart\.?\s*(12|15)\b", t) or re.search(r"\bart[ií]culo\s*(12|15)\b", t):
+    if any(s in t for s in cond_signals) or re.search(r"\bart\.?\s*(12|15)\b", t):
         facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
         return ("condiciones_vehiculo", facts[0], facts)
 
-    # 3) AURICULARES (art. 18.2)
-    aur_signals = ["auricular", "auriculares", "cascos", "reproductores", "receptores", "sonido", "conectad", "porta auricular"]
-    if any(s in t for s in aur_signals) and (re.search(r"\b18\s*[\.,]\s*2\b", t) or "18.2" in t):
-        facts.append("USO DE AURICULARES/CASCOS CONECTADOS A SONIDO (ART. 18.2)")
+    # 3️⃣ AURICULARES
+    aur_signals = [
+        "auricular","auriculares",
+        "cascos","reproductores",
+        "receptores","sonido",
+        "porta auricular"
+    ]
+    if any(s in t for s in aur_signals) and ("18.2" in t or re.search(r"\b18[,\.]\s*2\b", t)):
+        facts.append("USO DE AURICULARES/CASCOS CONECTADOS")
         return ("auriculares", facts[0], facts)
 
-    # 4) MÓVIL (uso manual)
-    if "utilizando manualmente" in t and any(k in t for k in ["teléfono", "telefono", "móvil", "movil"]):
-        facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
-        return ("movil", facts[0], facts)
-    if any(k in t for k in ["teléfono móvil", "telefono movil", "móvil", "movil"]) and any(k in t for k in ["manual", "en la mano", "manipul"]):
+    # 4️⃣ MÓVIL
+    if "utilizando manualmente" in t and any(k in t for k in ["teléfono","telefono","móvil","movil"]):
         facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
 
-    # 5) ATENCIÓN / NEGLIGENTE (3.1 / 18.1)
+    if any(k in t for k in ["teléfono móvil","telefono movil","móvil","movil"]) and any(k in t for k in ["manual","en la mano","manipul"]):
+        facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
+        return ("movil", facts[0], facts)
+
+    # 5️⃣ ATENCIÓN / NEGLIGENTE
     at_signals = [
-        "no mantener la atención", "no mantener la atencion",
-        "atención permanente", "atencion permanente",
-        "conducción negligente", "conduccion negligente",
-        "conducir de forma negligente",
-        "libertad de movimientos",
-        "distracción", "distraccion",
+        "no mantener la atención",
+        "no mantener la atencion",
+        "atención permanente",
+        "conducción negligente",
+        "conduccion negligente",
+        "distracción","distraccion",
     ]
-    if any(s in t for s in at_signals) or re.search(r"\b3\s*[\.,]\s*1\b", t) or re.search(r"\b18\s*[\.,]\s*1\b", t):
-        facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN (RGC)")
+    if any(s in t for s in at_signals) or re.search(r"\b3[,\.]\s*1\b", t):
+        facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN")
         return ("atencion", facts[0], facts)
 
-    # 6) MARCAS VIALES (167)
-    if re.search(r"\bart\.?\s*167\b", t) or re.search(r"\bart[ií]culo\s*167\b", t) or "línea continua" in t or "linea continua" in t or "marca longitudinal continua" in t:
-        facts.append("NO RESPETAR MARCA VIAL (LÍNEA CONTINUA) — ART. 167")
+    # 6️⃣ MARCAS VIALES
+    if "línea continua" in t or "linea continua" in t or re.search(r"\bart\.?\s*167\b", t):
+        facts.append("NO RESPETAR MARCA VIAL")
         return ("marcas_viales", facts[0], facts)
 
-    # 7) SEGURO
-    if ("lsoa" in t) or ("8/2004" in t) or ("seguro obligatorio" in t) or ("vehículo no asegurado" in t) or ("vehiculo no asegurado" in t) or ("fiva" in t):
+    # 7️⃣ SEGURO
+    if "seguro obligatorio" in t or "vehículo no asegurado" in t or "vehiculo no asegurado" in t or "fiva" in t:
         facts.append("CARENCIA DE SEGURO OBLIGATORIO")
         return ("seguro", facts[0], facts)
 
-    # 8) VELOCIDAD (precisión extrema)
-    velocity_context = ("km/h" in t) and any(k in t for k in ["velocidad", "radar", "cinemómetro", "cinemometro", "exceso de velocidad"])
+    # 8️⃣ VELOCIDAD
+    velocity_context = (
+        "km/h" in t and
+        any(k in t for k in ["velocidad","radar","cinemómetro","cinemometro","exceso de velocidad"])
+    )
     if velocity_context:
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
