@@ -20,8 +20,6 @@ from ai.infractions.distracciones import is_auriculares_context, build_auricular
 
 # ✅ NUEVO: atención / negligente (art.3.1 / 18.1) — con IA opcional (RTM_ATENCION_AI=1)
 from ai.infractions.atencion import is_atencion_context, build_atencion_strong_template
-from ai.infractions.marcas_viales import is_marcas_viales_context, build_marcas_viales_strong_template
-from ai.infractions.seguro import is_seguro_context, build_seguro_strong_template
 
 from b2_storage import upload_bytes
 from docx_builder import build_docx
@@ -111,32 +109,94 @@ def _raw_blob(core: Dict[str, Any]) -> str:
         if isinstance(v, str) and v.strip():
             parts.append(v)
     return " ".join(parts).lower()
-
-
 def _extract_hecho_literal(core: Dict[str, Any]) -> str:
+    """Extrae un resumen literal (una sola cita) del boletín, priorizando lo relevante.
+    No inventa: solo recorta/une fragmentos existentes del raw_text_blob.
+    """
     core = core or {}
     blob = core.get("raw_text_blob")
     if not isinstance(blob, str) or not blob.strip():
         return ""
-    b = blob
+
+    b = blob.replace("\r", "\n")
     low = b.lower()
+
+    # Candidatos: texto tras 'hecho imputado:' (hasta 3 líneas); si no, todo el blob
+    candidates = []
     for key in ("hecho imputado:", "hecho_imputado:", "hecho denunciado:", "hecho_denunciado:", "hecho:"):
         idx = low.find(key)
         if idx != -1:
             tail = b[idx + len(key):]
-            line = tail.splitlines()[0] if tail.splitlines() else tail
-            line = line.strip(" :.-\t")
-            line = re.sub(r"\s+", " ", line).strip()
-            if 10 <= len(line) <= 500:
-                return line
-    mm = re.search(r"([A-ZÁÉÍÓÚÑ0-9 ,;:\-]{40,300})", b)
-    if mm:
-        line = re.sub(r"\s+", " ", mm.group(1)).strip()
-        return line[:500]
-    return ""
+            lines = [ln.strip() for ln in tail.splitlines() if ln.strip()]
+            if lines:
+                candidates.append(" ".join(lines[:3]))
+    if not candidates:
+        candidates = [b]
+
+    # Palabras clave (conducta + circunstancias)
+    kw = [
+        "bail", "palm", "golpe", "volante", "tambor",
+        "menor", "niñ", "bebe", "bebé", "dos años", "2 años",
+        "sill", "isofix", "sri",
+        "intercept", "tramo", "km", "kilómetro", "kilometro",
+        "luz roja", "destell", "señalización", "senalizacion", "alumbrado",
+        "línea continua", "linea continua", "semaforo", "semáforo",
+        "auricular", "auriculares", "cascos",
+        "telefono", "teléfono", "movil", "móvil",
+    ]
+
+    best = ""
+    best_score = -1
+    for cand in candidates:
+        c = re.sub(r"\s+", " ", cand).strip()
+        c_low = c.lower()
+        score = 0
+        for w in kw:
+            if w in c_low:
+                score += 3
+        if len(c) >= 80:
+            score += 2
+        if "hasta ser intercept" in c_low:
+            score += 4
+        if re.search(r"\b\d+(?:[\.,]\d+)?\s*km\b", c_low):
+            score += 4
+        if "menor" in c_low:
+            score += 3
+        # penaliza códigos genéricos tipo 5A/5B
+        if re.match(r"^\s*5[ab]\b", c_low):
+            score -= 4
+        if score > best_score:
+            best_score = score
+            best = c
+
+    if not best:
+        return ""
+
+    # Elegir segmentos relevantes y unirlos en una sola cita
+    segs = re.split(r"[\.;\n]+", best)
+    segs = [re.sub(r"\s+", " ", s).strip() for s in segs if s and s.strip()]
+
+    picked = []
+    for s in segs:
+        s_low = s.lower()
+        if any(w in s_low for w in kw):
+            picked.append(s)
+
+    if not picked:
+        picked = segs[:2]
+
+    out = " / ".join(picked)
+    out = re.sub(r"\s+", " ", out).strip()
+
+    if len(out) > 320:
+        out = out[:320]
+        out = out.rsplit(" ", 1)[0].strip() + "…"
+
+    return out.strip(" :-\t")
 
 
 def _inject_hecho_literal(cuerpo: str, core: Dict[str, Any]) -> str:
+    """Inserta el extracto literal del boletín justo después de '3) Hecho imputado:' (si existe)."""
     if not cuerpo:
         return cuerpo
     literal = _extract_hecho_literal(core)
@@ -144,56 +204,16 @@ def _inject_hecho_literal(cuerpo: str, core: Dict[str, Any]) -> str:
         return cuerpo
     if literal.lower() in cuerpo.lower():
         return cuerpo
+
     lines = cuerpo.splitlines()
-    out=[]
-    inserted=False
+    out = []
+    inserted = False
     for line in lines:
         out.append(line)
         if (not inserted) and re.match(r"\s*3\)\s*Hecho imputado\s*:", line, flags=re.IGNORECASE):
             out.append(f"   Extracto literal del boletín: “{literal}”")
-            inserted=True
+            inserted = True
     return "\n".join(out)
-
-
-# ==========================
-# TIPICIDAD HARD LOCK (estable)
-# ==========================
-def _norma_key_from_hint(core: Dict[str, Any]) -> str:
-    h = str((core or {}).get("norma_hint") or "").upper()
-    if "RDL 8/2004" in h or "8/2004" in h or "LSOA" in h:
-        return "RDL 8/2004"
-    if "RGC" in h or "REGLAMENTO GENERAL DE CIRCUL" in h or "CIR" in h:
-        return "RGC"
-    return ""
-
-
-def _expected_kind_from_article(core: Dict[str, Any]) -> Optional[str]:
-    core = core or {}
-    norma = _norma_key_from_hint(core)
-    art = core.get("articulo_infringido_num")
-    try:
-        art_i = int(art) if art is not None and str(art).strip().isdigit() else None
-    except Exception:
-        art_i = None
-    if not norma or art_i is None:
-        return None
-
-    if norma == "RGC":
-        if art_i == 48:
-            return "velocidad"
-        if art_i == 146:
-            return "semaforo"
-        if art_i in (12, 15):
-            return "condiciones_vehiculo"
-        if art_i == 167:
-            return "marcas_viales"
-        # art. 18 se resuelve por subdetectores (móvil/auriculares/atención)
-        if art_i == 18:
-            return "cluster_18"
-    if norma == "RDL 8/2004":
-        if art_i == 2:
-            return "seguro"
-    return None
 
 
 # ==========================
@@ -619,98 +639,13 @@ def generate_dgt_for_case(
     tpl: Optional[Dict[str, str]] = None
     ai_used = False
     ai_error: Optional[str] = None
-    final_kind = "generic"
 
     decision_mode = "unknown"
     decision: Dict[str, Any] = {"mode": "unknown", "reasons": ["not_computed"]}
 
-    # --------------------------
-    # Dispatch helpers (planos, sin indentación frágil)
-    # --------------------------
-    def _dispatch(kind: str, asunto_seed: str = "", cuerpo_seed: str = "") -> Dict[str, str]:
-        nonlocal final_kind, decision_mode, decision
+    final_kind = "generic"
 
-        kind = (kind or "").strip().lower()
-
-        if kind == "velocidad":
-            asunto_v, cuerpo_v = _velocity_vse1_template(core)
-            final_kind = "velocidad"
-            try:
-                decision = decide_modo_velocidad(core, body=cuerpo_v, capture_mode="UNKNOWN") or decision
-                decision_mode = (decision.get("mode") or "unknown") if isinstance(decision, dict) else "unknown"
-            except Exception:
-                pass
-            cuerpo_v = _inject_bucket_paragraph(cuerpo_v, decision)
-            cuerpo_v = _inject_tramo_error_paragraph(cuerpo_v, _compute_velocity_calc_from_core(core))
-            return {"asunto": asunto_v, "cuerpo": cuerpo_v}
-
-        if kind == "semaforo":
-            final_kind = "semaforo"
-            return build_semaforo_strong_template(core)
-
-        if kind == "movil":
-            final_kind = "movil"
-            return build_movil_strong_template(core)
-
-        if kind == "auriculares":
-            final_kind = "auriculares"
-            return build_auriculares_strong_template(core)
-
-        if kind == "atencion":
-            final_kind = "atencion"
-            return build_atencion_strong_template(core, body=cuerpo_seed or "")
-
-        if kind == "condiciones_vehiculo":
-            final_kind = "condiciones_vehiculo"
-            return build_condiciones_vehiculo_strong_template(core)
-
-        if kind == "seguro":
-            final_kind = "seguro"
-            return build_seguro_strong_template(core)
-
-        if kind == "marcas_viales":
-            final_kind = "marcas_viales"
-            return build_marcas_viales_strong_template(core)
-
-        final_kind = "generic"
-        return {"asunto": asunto_seed or "ALEGACIONES — SOLICITA REVISIÓN DEL EXPEDIENTE", "cuerpo": cuerpo_seed or ""}
-
-    def _dispatch_from_detectors(asunto_seed: str, cuerpo_seed: str) -> Dict[str, str]:
-        # Orden quirúrgico, pero SOLO si no hay hard-lock claro
-        if _is_velocity_context(core, cuerpo_seed):
-            return _dispatch("velocidad", asunto_seed, cuerpo_seed)
-
-        if _is_semaforo_context_robust(core, cuerpo_seed):
-            return _dispatch("semaforo", asunto_seed, cuerpo_seed)
-
-        if is_movil_context(core, cuerpo_seed):
-            return _dispatch("movil", asunto_seed, cuerpo_seed)
-
-        if is_auriculares_context(core, cuerpo_seed):
-            return _dispatch("auriculares", asunto_seed, cuerpo_seed)
-
-        if is_marcas_viales_context(core, _raw_blob(core)):
-            return _dispatch("marcas_viales", asunto_seed, cuerpo_seed)
-
-        if is_seguro_context(core, _raw_blob(core)):
-            return _dispatch("seguro", asunto_seed, cuerpo_seed)
-
-        if is_atencion_context(core, cuerpo_seed):
-            return _dispatch("atencion", asunto_seed, cuerpo_seed)
-
-        if _is_condiciones_context_robust(core, cuerpo_seed):
-            return _dispatch("condiciones_vehiculo", asunto_seed, cuerpo_seed)
-
-        final_kind_local = str(core.get("tipo_infraccion") or "").lower().strip()
-        # fallback por tipo_infraccion si viene limpio
-        if final_kind_local in ("semaforo", "movil", "auriculares", "atencion", "condiciones_vehiculo", "seguro", "marcas_viales", "velocidad"):
-            return _dispatch(final_kind_local, asunto_seed, cuerpo_seed)
-
-        return {"asunto": asunto_seed, "cuerpo": cuerpo_seed}
-
-    # --------------------------
-    # IA primero (si procede)
-    # --------------------------
+    # IA PRIMERO
     if RTM_DGT_GENERATION_MODE != "TEMPLATES_ONLY":
         try:
             ai_result = run_expediente_ai(case_id)
@@ -723,31 +658,60 @@ def generate_dgt_for_case(
                     asunto = "RECURSO (MODO PRUEBA)"
                     cuerpo = _strip_borrador_prefix_from_body(cuerpo)
 
-                # 1) Tipicidad hard lock
-                locked = _expected_kind_from_article(core)
-                if locked == "cluster_18":
-                    # decide dentro del cluster 18
-                    if is_movil_context(core, cuerpo):
-                        tpl = _dispatch("movil", asunto, cuerpo)
-                    elif is_auriculares_context(core, cuerpo):
-                        tpl = _dispatch("auriculares", asunto, cuerpo)
-                    else:
-                        tpl = _dispatch("atencion", asunto, cuerpo)
-                elif locked:
-                    tpl = _dispatch(locked, asunto, cuerpo)
-                else:
-                    # 2) Detectores
-                    tpl = _dispatch_from_detectors(asunto, cuerpo)
+                # 1) Semáforo
+                if _is_semaforo_context_robust(core, cuerpo):
+                    tpl_s = build_semaforo_strong_template(core)
+                    asunto = tpl_s.get("asunto") or asunto
+                    cuerpo = tpl_s.get("cuerpo") or cuerpo
+                    final_kind = "semaforo"
 
+                # 2) Móvil
+                elif is_movil_context(core, cuerpo):
+                    tpl_m = build_movil_strong_template(core)
+                    asunto = tpl_m.get("asunto") or asunto
+                    cuerpo = tpl_m.get("cuerpo") or cuerpo
+                    final_kind = "movil"
+
+                # 3) Auriculares
+                elif is_auriculares_context(core, cuerpo):
+                    tpl_a = build_auriculares_strong_template(core)
+                    asunto = tpl_a.get("asunto") or asunto
+                    cuerpo = tpl_a.get("cuerpo") or cuerpo
+                    final_kind = "auriculares"
+
+                # 4) Atención/Negligente (con IA opcional)
+                elif is_atencion_context(core, cuerpo):
+                    tpl_at = build_atencion_strong_template(core, body=cuerpo)
+                    asunto = tpl_at.get("asunto") or asunto
+                    cuerpo = tpl_at.get("cuerpo") or cuerpo
+                    final_kind = "atencion"
+
+                # 5) Condiciones vehículo
+                elif _is_condiciones_context_robust(core, cuerpo):
+                    tpl_c = build_condiciones_vehiculo_strong_template(core)
+                    asunto = tpl_c.get("asunto") or asunto
+                    cuerpo = tpl_c.get("cuerpo") or cuerpo
+                    final_kind = "condiciones_vehiculo"
+
+                # 6) Velocidad (último)
+                elif _is_velocity_context(core, cuerpo):
+                    asunto, cuerpo = _velocity_vse1_template(core)
+                    final_kind = "velocidad"
+                    try:
+                        decision = decide_modo_velocidad(core, body=cuerpo, capture_mode="UNKNOWN") or decision
+                        decision_mode = (decision.get("mode") or "unknown") if isinstance(decision, dict) else "unknown"
+                    except Exception:
+                        pass
+                    cuerpo = _inject_bucket_paragraph(cuerpo, decision)
+                    cuerpo = _inject_tramo_error_paragraph(cuerpo, _compute_velocity_calc_from_core(core))
+
+                tpl = {"asunto": asunto, "cuerpo": cuerpo}
                 ai_used = True
-
         except Exception as e:
             ai_error = str(e)
             tpl = None
 
-    # --------------------------
-    # Fallback a plantillas deterministas
-    # --------------------------
+    # FALLBACK A PLANTILLAS
     if not tpl:
         if tipo == "reposicion":
             tpl = build_dgt_reposicion_text(core, interesado)
@@ -755,22 +719,36 @@ def generate_dgt_for_case(
             tpl = build_dgt_alegaciones_text(core, interesado)
 
         cuerpo0 = tpl.get("cuerpo") or ""
-        asunto0 = tpl.get("asunto") or ""
 
-        locked = _expected_kind_from_article(core)
-        if locked == "cluster_18":
-            if is_movil_context(core, cuerpo0):
-                tpl = _dispatch("movil", asunto0, cuerpo0)
-            elif is_auriculares_context(core, cuerpo0):
-                tpl = _dispatch("auriculares", asunto0, cuerpo0)
-            else:
-                tpl = _dispatch("atencion", asunto0, cuerpo0)
-        elif locked:
-            tpl = _dispatch(locked, asunto0, cuerpo0)
-        else:
-            tpl = _dispatch_from_detectors(asunto0, cuerpo0)
+        if _is_semaforo_context_robust(core, cuerpo0):
+            tpl = build_semaforo_strong_template(core)
+            final_kind = "semaforo"
+        elif is_movil_context(core, cuerpo0):
+            tpl = build_movil_strong_template(core)
+            final_kind = "movil"
+        elif is_auriculares_context(core, cuerpo0):
+            tpl = build_auriculares_strong_template(core)
+            final_kind = "auriculares"
+        elif is_atencion_context(core, cuerpo0):
+            tpl = build_atencion_strong_template(core, body=cuerpo0)
+            final_kind = "atencion"
+        elif _is_condiciones_context_robust(core, cuerpo0):
+            tpl_c = build_condiciones_vehiculo_strong_template(core)
+            tpl = {"asunto": tpl_c.get("asunto") or tpl.get("asunto") or "", "cuerpo": tpl_c.get("cuerpo") or tpl.get("cuerpo") or ""}
+            final_kind = "condiciones_vehiculo"
+        elif _is_velocity_context(core, cuerpo0):
+            asunto_v, cuerpo_v = _velocity_vse1_template(core)
+            tpl = {"asunto": asunto_v, "cuerpo": cuerpo_v}
+            final_kind = "velocidad"
+            try:
+                decision = decide_modo_velocidad(core, body=cuerpo_v, capture_mode="UNKNOWN") or decision
+                decision_mode = (decision.get("mode") or decision_mode) if isinstance(decision, dict) else decision_mode
+            except Exception:
+                pass
+            tpl["cuerpo"] = _inject_bucket_paragraph(tpl["cuerpo"], decision)
+            tpl["cuerpo"] = _inject_tramo_error_paragraph(tpl["cuerpo"], _compute_velocity_calc_from_core(core))
 
-    # STRICT (solo velocidad)
+    # STRICT (solo si final_kind == velocidad)
     try:
         _strict_validate_or_raise(conn, case_id, tpl, final_kind=final_kind)
     except HTTPException as e:
@@ -788,7 +766,7 @@ def generate_dgt_for_case(
         else:
             raise
 
-    # DOCX/PDF persist
+    # DOCX/PDF
     kind_docx = "generated_docx_reposicion" if tipo == "reposicion" else "generated_docx_alegaciones"
     kind_pdf = "generated_pdf_reposicion" if tipo == "reposicion" else "generated_pdf_alegaciones"
 
