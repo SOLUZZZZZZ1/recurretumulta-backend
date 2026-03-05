@@ -110,10 +110,10 @@ def _raw_blob(core: Dict[str, Any]) -> str:
             parts.append(v)
     return " ".join(parts).lower()
 def _extract_hecho_literal(core: Dict[str, Any]) -> str:
-    """Extrae un extracto literal del boletín priorizando la DESCRIPCIÓN REAL del agente.
-    Arregla el caso DGT 'HECHO DENUNCIADO 5B ...' evitando quedarse con el código.
-    - Ignora códigos 5A/5B/5C genéricos y metadatos (importe, fecha límite, lugar, puntos).
-    - Prioriza conducta (bailando/palmas/volante/tambor), menor, interceptado/km.
+    """Extrae un EXTRACTO LITERAL (una sola cita) del relato del agente.
+    - No se queda con '5A/5B/5C...' ni metadatos (importe/fecha/lugar).
+    - Prioriza conducta real (bailando/palmas/volante/tambor), menor, km/interceptado, etc.
+    - Si hay varias líneas relevantes, las concatena (sin inventar).
     """
     core = core or {}
     blob = core.get("raw_text_blob")
@@ -129,9 +129,10 @@ def _extract_hecho_literal(core: Dict[str, Any]) -> str:
         "sill", "isofix", "sri",
         "intercept", "tramo", "km", "kilómetro", "kilometro",
         "observado por agente", "observado por el agente",
+        "tocando", "golpeando", "asiento trasero", "trasero",
     ]
 
-    # Recortar desde HECHO DENUNCIADO si existe (para ir directo al relato)
+    # recortar desde HECHO DENUNCIADO/IMPUTADO si existe
     start_idx = -1
     for a in ("hecho denunciado", "hecho imputado", "hecho:"):
         i = low.find(a)
@@ -145,8 +146,6 @@ def _extract_hecho_literal(core: Dict[str, Any]) -> str:
     clean = []
     for ln in lines:
         l_low = ln.lower()
-
-        # Quitar metadatos típicos del boletín
         if any(x in l_low for x in [
             "importe multa", "importe con reducción", "importe con reduccion",
             "fecha límite", "fecha limite",
@@ -154,55 +153,39 @@ def _extract_hecho_literal(core: Dict[str, Any]) -> str:
             "punto km", "dirección a", "direccion a",
         ]):
             continue
-
-        # Si empieza por 5A/5B/5C y NO contiene conducta/circunstancias, ignorar
         if re.match(r"^\s*5[abc]\b", l_low) and not any(k in l_low for k in kw):
             continue
-
         clean.append(ln)
 
-    # Elegir la mejor línea por score
-    best = ""
-    best_score = -1
+    if not clean:
+        return ""
+
+    picked = []
     for ln in clean:
         l_low = ln.lower()
-        score = 0
-        for k in kw:
-            if k in l_low:
-                score += 4
-        if re.search(r"\b\d+(?:[\.,]\d+)?\s*km\b", l_low):
-            score += 4
-        if "intercept" in l_low:
-            score += 4
-        if "menor" in l_low:
-            score += 4
-        # penalizar la frase genérica sin detalles
-        if "conducir de forma negligente" in l_low and score < 8:
-            score -= 3
-        if score > best_score:
-            best_score = score
-            best = ln
+        if any(k in l_low for k in kw):
+            picked.append(ln)
 
-    # Si no hay línea con detalles, unir 2-3 líneas que sí contengan keywords
-    if best_score < 4:
-        picked = []
+    if not picked:
+        picked = clean[:2]
+
+    out = " / ".join(picked)
+    out = re.sub(r"\s+", " ", out).strip()
+
+    out_low = out.lower()
+    has_conducta = any(k in out_low for k in ["bail", "palm", "golpe", "volante", "tambor"])
+    if ("viaja" in out_low) and (not has_conducta):
         for ln in clean:
             l_low = ln.lower()
-            if any(k in l_low for k in kw):
-                picked.append(ln)
-            if len(picked) >= 3:
-                break
-        if picked:
-            best = " / ".join(picked)
-        elif clean:
-            best = " / ".join(clean[:2])
-        else:
-            return ""
+            if any(k in l_low for k in ["bail", "palm", "golpe", "volante", "tambor"]):
+                if ln.lower() not in out_low:
+                    out = (out + " / " + ln).strip()
+                    break
 
-    out = re.sub(r"\s+", " ", best).strip()
-    if len(out) > 320:
-        out = out[:320]
+    if len(out) > 380:
+        out = out[:380]
         out = out.rsplit(" ", 1)[0].strip() + "…"
+
     return out.strip(" :-\t")
 
 def _inject_hecho_literal(cuerpo: str, core: Dict[str, Any]) -> str:

@@ -2,93 +2,64 @@ import json
 import os
 from typing import Any, Dict
 
-import requests
+from openai import OpenAI
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
-def _env(name: str) -> str:
-    v = (os.getenv(name) or "").strip()
-    if not v:
-        raise RuntimeError(f"Falta variable de entorno: {name}")
-    return v
+SYSTEM_PROMPT = """
+Eres un asistente que extrae información estructurada de denuncias administrativas de tráfico en España.
+
+Devuelve SIEMPRE un JSON válido con los siguientes campos.
+
+Si un dato no aparece claramente en el documento, devuelve null.
+
+Campos:
+
+organismo: organismo que emite la denuncia
+expediente_ref: número o referencia del expediente
+importe: importe de la sanción en euros
+fecha_notificacion: fecha de notificación si aparece
+fecha_documento: fecha del documento
+tipo_sancion: tipo de sanción si se menciona
+pone_fin_via_administrativa: true/false si aparece
+plazo_recurso_sugerido: plazo de recurso si aparece
+
+hecho_denunciado_literal:
+EXTRACTO literal del relato del agente describiendo la conducta.
+Debe contener la descripción concreta (por ejemplo: "bailando en el interior del vehículo tocando las palmas...").
+Si no existe relato claro, devolver null.
+
+observaciones: cualquier otro dato relevante.
+"""
 
 
 def extract_from_text(text: str) -> Dict[str, Any]:
-    """
-    Extracción desde TEXTO (PDF/DOCX) usando OpenAI Responses API.
-    Devuelve un JSON estructurado.
-    """
-    api_key = _env("OPENAI_API_KEY")
-    model = os.getenv("OPENAI_MODEL", "gpt-4o")
 
-    system_text = (
-        "Eres un asistente experto en sanciones administrativas en España. "
-        "Analizas textos de multas y extraes datos clave para preparar recursos administrativos."
-    )
+    prompt = f"""
+Analiza el siguiente documento de denuncia administrativa y extrae los campos solicitados.
 
-    user_text = (
-        "Analiza el siguiente texto de una sanción administrativa y devuelve EXCLUSIVAMENTE "
-        "un objeto JSON válido con estas claves EXACTAS:\n\n"
-        "{\n"
-        '  "organismo": string|null,\n'
-        '  "expediente_ref": string|null,\n'
-        '  "importe": number|null,\n'
-        '  "fecha_notificacion": string|null,\n'
-        '  "fecha_documento": string|null,\n'
-        '  "tipo_sancion": string|null,\n'
-        '  "pone_fin_via_administrativa": boolean|null,\n'
-        '  "plazo_recurso_sugerido": string|null,\n'
-        '  "observaciones": string\n'
-        "}\n\n"
-        "Texto del documento:\n\n"
-        f"{text[:12000]}"
-    )
+Documento:
 
-    payload = {
-        "model": model,
-        "input": [
-            {
-                "role": "system",
-                "content": [
-                    {"type": "input_text", "text": system_text}
-                ],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": user_text}
-                ],
-            },
+{text}
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
         ],
-        "text": {
-            "format": {
-                "type": "json_object"
-            }
-        }
-    }
-
-    r = requests.post(
-        "https://api.openai.com/v1/responses",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json=payload,
-        timeout=60,
+        response_format={"type": "json_object"},
     )
-
-    if not r.ok:
-        raise RuntimeError(f"OpenAI error {r.status_code}: {r.text[:500]}")
-
-    data = r.json()
-
-    output_text = ""
-    for item in data.get("output", []):
-        if item.get("type") == "message":
-            for c in item.get("content", []):
-                if c.get("type") == "output_text":
-                    output_text += c.get("text", "")
-
-    if not output_text.strip():
-        raise RuntimeError("OpenAI no devolvió contenido.")
 
     try:
-        return json.loads(output_text)
-    except Exception as e:
-        raise RuntimeError(f"JSON inválido devuelto por OpenAI: {e}. Texto: {output_text[:400]}")
+        data = json.loads(response.choices[0].message.content)
+    except Exception:
+        data = {}
+
+    if not isinstance(data, dict):
+        data = {}
+
+    return data
