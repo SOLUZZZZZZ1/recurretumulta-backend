@@ -148,65 +148,75 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
     t = (text_blob or "").replace("\n", " ").lower()
     t = re.sub(r"\s+", " ", t).strip()
 
-    # 🔒 Guard: solo extraer velocidad si hay contexto REAL
+    # 🔒 Guard: solo extraer velocidad si hay contexto REAL (evita importes/fechas)
     velocity_context = (
-        ("exceso de velocidad" in t)
-        or ("radar" in t)
+        ("radar" in t)
         or ("cinemómetro" in t)
         or ("cinemometro" in t)
-        or ("km/h" in t)  # señal fuerte, evita confundir importes/fechas
+        or ("km/h" in t)
+        or ("exceso de velocidad" in t)
         or bool(re.search(r"\bcircular\s+a\s+\d{2,3}\s*km\s*/?\s*h\b", t))
     )
 
     measured = None
     limit = None
+    conflict = False
+    candidates_all: List[int] = []
 
     if velocity_context:
-        ms = re.search(
-            r"circular\s+a\s+(\d{2,3})\s*km\s*/?h[\s\S]{0,160}?(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite)[^\d]{0,80}(\d{2,3})",
-            t,
-        )
-        if ms:
+        # 1) Extraer TODOS los números que aparecen como km/h (robusto a OCR)
+        for mm in re.finditer(r"\b(\d{2,3})\s*km\s*/?\s*h\b", t):
             try:
-                measured = int(ms.group(1))
-                limit = int(ms.group(2))
+                candidates_all.append(int(mm.group(1)))
             except Exception:
-                measured = None
-                limit = None
+                pass
 
-        if measured is None:
-            m1 = re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?h\b", t)
-            if m1:
-                try:
-                    measured = int(m1.group(1))
-                except Exception:
-                    measured = None
+        # 2) Detectar límite por frases fuertes (evita 'fecha límite')
+        t_no_deadlines = re.sub(r"fecha\s*l[ií]mite[^\d]{0,40}\d{1,2}/\d{1,2}/\d{2,4}", "", t)
+        limit_candidates: List[int] = []
+        for mm in re.finditer(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite|velocidad\s+m[aá]xima|velocidad\s+maxima)\b[^\d]{0,80}(\d{2,3})\b", t_no_deadlines):
+            try:
+                limit_candidates.append(int(mm.group(1)))
+            except Exception:
+                pass
+        for mm in re.finditer(r"\blimitad[ao]a?\s+a\s+(\d{2,3})\s*km\s*/?\s*h\b", t_no_deadlines):
+            try:
+                limit_candidates.append(int(mm.group(1)))
+            except Exception:
+                pass
+        if limit_candidates:
+            lc = [x for x in limit_candidates if 10 <= x <= 200]
+            limit = sorted(set(lc))[0] if lc else min(limit_candidates)
 
-        if limit is None:
-            m2 = re.search(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite|velocidad\s+m[aá]xima|velocidad\s+maxima)\b[^\d]{0,80}(\d{2,3})\b", t)
-            if m2:
-                try:
-                    limit = int(m2.group(1))
-                except Exception:
-                    limit = None
+        # 3) Detectar medida por frases "circular a X km/h"
+        measured_candidates: List[int] = []
+        for mm in re.finditer(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?\s*h\b", t):
+            try:
+                measured_candidates.append(int(mm.group(1)))
+            except Exception:
+                pass
+        if not measured_candidates and candidates_all:
+            measured_candidates = candidates_all[:]
 
-        # ⚠️ Fallback SOLO si hay km/h en el texto y hay señal de límite de velocidad (no "fecha límite")
-        if measured is None or limit is None:
-            if "km/h" in t:
-                t_no_deadlines = re.sub(r"fecha\s*l[ií]mite[^\d]{0,40}\d{1,2}/\d{1,2}/\d{2,4}", "", t)
-                has_limit_signal = any(k in t_no_deadlines for k in ["limitad", "límite", "limite", "velocidad máxima", "velocidad maxima"])
-                nums = [int(x) for x in re.findall(r"\b(\d{2,3})\b", t_no_deadlines)]
-                nums = [n for n in nums if 10 <= n <= 250]
-                uniq = sorted(set(nums))
-                if has_limit_signal and len(uniq) >= 2:
-                    hi = max(uniq)
-                    lo = min(uniq)
-                    if measured is None:
-                        measured = hi
-                    if limit is None:
-                        limit = lo
+        measured_candidates = [x for x in measured_candidates if 10 <= x <= 250]
+        candidates_all = [x for x in candidates_all if 10 <= x <= 250]
 
-    # Multa (€) — ojo: puede confundirse con velocidades, por eso NO lo usamos para inferir velocidad
+        # 4) Elegir medida consistente con límite si existe
+        if measured_candidates:
+            if limit is not None:
+                above = [x for x in measured_candidates if x >= (limit + 5)]
+                measured = max(above) if above else max(measured_candidates)
+            else:
+                measured = max(measured_candidates)
+
+        # 5) Conflictos OCR típicos
+        uniq = sorted(set(measured_candidates))
+        if len(uniq) >= 2 and (max(uniq) - min(uniq)) >= 20:
+            conflict = True
+        if measured is not None and limit is not None and abs(measured - limit) <= 3:
+            conflict = True
+
+    # Multa (€) — no usar para inferir velocidad
     fine_eur = None
     mf = re.search(r"\b(\d{2,4})\s*(?:€|euros)\b", t)
     if mf:
@@ -231,100 +241,64 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
         elif "cinem" in t:
             radar_model = "cinemometro (no especificado)"
 
-    return {
+    out = {
         "velocidad_medida_kmh": measured,
         "velocidad_limite_kmh": limit,
         "sancion_importe_eur": fine_eur,
         "puntos_detraccion": points,
         "radar_modelo_hint": radar_model,
     }
+    if velocity_context and candidates_all:
+        out["velocidad_kmh_candidatos"] = sorted(set(candidates_all))
+    if velocity_context and conflict:
+        out["velocidad_conflicto_detectado"] = True
+
+    return out
 
 
 def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
     t = (text_blob or "").lower()
     facts: List[str] = []
 
-    # 1) SEMÁFORO (prioridad máxima)
+    # ✅ SEMÁFORO PRIORIDAD MÁXIMA (OCR sucio)
     sema_signals = [
-        "semáforo","semaforo",
+        "semáforo", "semaforo",
         "fase roja",
-        "cruce en rojo","cruce con fase roja",
-        "luz roja del semáforo","luz roja del semaforo",
-        "no respetar la luz roja","no respeta la luz roja",
-        "línea de detención","linea de detencion",
-        "rebase la linea de detencion","rebasar la linea de detencion",
-        "señal luminosa roja","senal luminosa roja",
+        "cruce en rojo", "cruce con fase roja",
+        "luz roja del semáforo", "luz roja del semaforo",
+        "no respetar la luz roja",
+        "t/s roja", "ts roja",
+        "señal luminosa roja", "senal luminosa roja",
+        "línea de detención", "linea de detencion",
+        "no respeta la luz roja", "no respeta luz roja",
     ]
-    if any(s in t for s in sema_signals) or re.search(r"\bart\.?\s*146\b", t) or re.search(r"\bart[ií]culo\s*146\b", t):
+    if any(s in t for s in sema_signals):
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
 
-    # 2) VELOCIDAD (prioridad alta)
-    if ("km/h" in t) or ("cinemómetro" in t) or ("cinemometro" in t) or ("radar" in t):
+    if re.search(r"\bart\.?\s*146\b", t) or re.search(r"\bart[ií]culo\s*146\b", t) or re.search(r"\b146\s*[\.,]\s*1\b", t):
+        facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
+        return ("semaforo", facts[0], facts)
+
+    # Móvil
+    if "utilizando manualmente" in t and any(k in t for k in ["teléfono", "telefono", "móvil", "movil"]):
+        facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
+        return ("movil", facts[0], facts)
+    if any(k in t for k in ["teléfono móvil", "telefono movil", "uso del teléfono", "uso del telefono"]):
+        facts.append("USO DEL TELÉFONO MÓVIL")
+        return ("movil", facts[0], facts)
+    # Velocidad (precisión extrema)
+    velocity_context = (
+        ("km/h" in t)
+        and any(k in t for k in ["velocidad", "radar", "cinemómetro", "cinemometro", "exceso de velocidad"])
+    )
+    if velocity_context:
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
 
-    # 3) CONDICIONES DEL VEHÍCULO (evitar 'antena homologada' del radar)
-    if ("cinemómetro" in t) or ("cinemometro" in t) or ("radar" in t):
-        pass
-    else:
-        cond_signals = [
-            "condiciones reglamentarias",
-            "dispositivos de alumbrado",
-            "señalización óptica","senalizacion optica",
-            "alumbrado",
-            "anexo ii","anexo i",
-            "reglamento general de vehículos","reglamento general de vehiculos",
-            "rd 2822/98","2822/98",
-            "itv","inspección técnica","inspeccion tecnica","caducad",
-            "neumático","neumatico","banda de rodadura","dibujo","desgastad","liso",
-            "luz roja","destello","destellos","emite luz","intermit",
-            "reflect","reflej","pulid","como un espejo","deslumbr",
-            "reforma","homolog","proyecto","certificado",
-        ]
-        if any(s in t for s in cond_signals) or re.search(r"\bart\.?\s*(12|15)\b", t) or re.search(r"\bart[ií]culo\s*(12|15)\b", t):
-            facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
-            return ("condiciones_vehiculo", facts[0], facts)
 
-    # 4) AURICULARES (18.2)
-    aur_signals = [
-        "auricular","auriculares","cascos",
-        "reproductores","receptores","sonido",
-        "conectad","porta auricular","oído","oido"
-    ]
-    if any(s in t for s in aur_signals) and ("18.2" in t or re.search(r"\b18[,\.]\s*2\b", t)):
-        facts.append("CONDUCIR UTILIZANDO CASCOS O AURICULARES CONECTADOS A SONIDO (ART. 18.2)")
-        return ("auriculares", facts[0], facts)
-
-    # 5) MÓVIL (uso manual)
-    if "utilizando manualmente" in t and any(k in t for k in ["teléfono","telefono","móvil","movil"]):
-        facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
-        return ("movil", facts[0], facts)
-    if any(k in t for k in ["teléfono móvil","telefono movil","móvil","movil"]) and any(k in t for k in ["manual","en la mano","manipul"]):
-        facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
-        return ("movil", facts[0], facts)
-
-    # 6) ATENCIÓN / NEGLIGENTE (3.1 / 18.1)
-    at_signals = [
-        "no mantener la atención","no mantener la atencion",
-        "atención permanente","atencion permanente",
-        "conducción negligente","conduccion negligente",
-        "conducir de forma negligente",
-        "distracción","distraccion",
-        "bail","palm","golpe","volante","tambor",
-        "menor","niñ","bebe","bebé","dos años","2 años",
-    ]
-    if any(s in t for s in at_signals) or re.search(r"\b3[,\.]\s*1\b", t) or re.search(r"\b18[,\.]\s*1\b", t):
-        facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN (RGC)")
-        return ("atencion", facts[0], facts)
-
-    # 7) MARCAS VIALES (167)
-    if re.search(r"\bart\.?\s*167\b", t) or re.search(r"\bart[ií]culo\s*167\b", t) or "línea continua" in t or "linea continua" in t or "marca longitudinal continua" in t:
-        facts.append("NO RESPETAR MARCA VIAL (LÍNEA CONTINUA) — ART. 167")
-        return ("marcas_viales", facts[0], facts)
-
-    # 8) SEGURO
-    if ("lsoa" in t) or ("8/2004" in t) or ("seguro obligatorio" in t) or ("vehículo no asegurado" in t) or ("vehiculo no asegurado" in t) or ("fiva" in t):
+    # Seguro
+    if ("lsoa" in t) or (("r.d. legislativo" in t or "rd legislativo" in t) and "8/2004" in t) or ("8/2004" in t and "responsabilidad civil" in t):
         facts.append("CARENCIA DE SEGURO OBLIGATORIO")
         return ("seguro", facts[0], facts)
 
