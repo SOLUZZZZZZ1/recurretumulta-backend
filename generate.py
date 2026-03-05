@@ -110,8 +110,10 @@ def _raw_blob(core: Dict[str, Any]) -> str:
             parts.append(v)
     return " ".join(parts).lower()
 def _extract_hecho_literal(core: Dict[str, Any]) -> str:
-    """Extrae un resumen literal (una sola cita) del boletín, priorizando lo relevante.
-    No inventa: solo recorta/une fragmentos existentes del raw_text_blob.
+    """Extrae un extracto literal del boletín priorizando la DESCRIPCIÓN REAL del agente.
+    Arregla el caso DGT 'HECHO DENUNCIADO 5B ...' evitando quedarse con el código.
+    - Ignora códigos 5A/5B/5C genéricos y metadatos (importe, fecha límite, lugar, puntos).
+    - Prioriza conducta (bailando/palmas/volante/tambor), menor, interceptado/km.
     """
     core = core or {}
     blob = core.get("raw_text_blob")
@@ -121,79 +123,87 @@ def _extract_hecho_literal(core: Dict[str, Any]) -> str:
     b = blob.replace("\r", "\n")
     low = b.lower()
 
-    # Candidatos: texto tras 'hecho imputado:' (hasta 3 líneas); si no, todo el blob
-    candidates = []
-    for key in ("hecho imputado:", "hecho_imputado:", "hecho denunciado:", "hecho_denunciado:", "hecho:"):
-        idx = low.find(key)
-        if idx != -1:
-            tail = b[idx + len(key):]
-            lines = [ln.strip() for ln in tail.splitlines() if ln.strip()]
-            if lines:
-                candidates.append(" ".join(lines[:3]))
-    if not candidates:
-        candidates = [b]
-
-    # Palabras clave (conducta + circunstancias)
     kw = [
         "bail", "palm", "golpe", "volante", "tambor",
         "menor", "niñ", "bebe", "bebé", "dos años", "2 años",
         "sill", "isofix", "sri",
         "intercept", "tramo", "km", "kilómetro", "kilometro",
-        "luz roja", "destell", "señalización", "senalizacion", "alumbrado",
-        "línea continua", "linea continua", "semaforo", "semáforo",
-        "auricular", "auriculares", "cascos",
-        "telefono", "teléfono", "movil", "móvil",
+        "observado por agente", "observado por el agente",
     ]
 
+    # Recortar desde HECHO DENUNCIADO si existe (para ir directo al relato)
+    start_idx = -1
+    for a in ("hecho denunciado", "hecho imputado", "hecho:"):
+        i = low.find(a)
+        if i != -1:
+            start_idx = i
+            break
+    tail = b[start_idx:] if start_idx != -1 else b
+
+    lines = [re.sub(r"\s+", " ", ln).strip() for ln in tail.splitlines() if ln and ln.strip()]
+
+    clean = []
+    for ln in lines:
+        l_low = ln.lower()
+
+        # Quitar metadatos típicos del boletín
+        if any(x in l_low for x in [
+            "importe multa", "importe con reducción", "importe con reduccion",
+            "fecha límite", "fecha limite",
+            "lugar de denuncia", "puntos a detraer",
+            "punto km", "dirección a", "direccion a",
+        ]):
+            continue
+
+        # Si empieza por 5A/5B/5C y NO contiene conducta/circunstancias, ignorar
+        if re.match(r"^\s*5[abc]\b", l_low) and not any(k in l_low for k in kw):
+            continue
+
+        clean.append(ln)
+
+    # Elegir la mejor línea por score
     best = ""
     best_score = -1
-    for cand in candidates:
-        c = re.sub(r"\s+", " ", cand).strip()
-        c_low = c.lower()
+    for ln in clean:
+        l_low = ln.lower()
         score = 0
-        for w in kw:
-            if w in c_low:
-                score += 3
-        if len(c) >= 80:
-            score += 2
-        if "hasta ser intercept" in c_low:
+        for k in kw:
+            if k in l_low:
+                score += 4
+        if re.search(r"\b\d+(?:[\.,]\d+)?\s*km\b", l_low):
             score += 4
-        if re.search(r"\b\d+(?:[\.,]\d+)?\s*km\b", c_low):
+        if "intercept" in l_low:
             score += 4
-        if "menor" in c_low:
-            score += 3
-        # penaliza códigos genéricos tipo 5A/5B
-        if re.match(r"^\s*5[ab]\b", c_low):
-            score -= 4
+        if "menor" in l_low:
+            score += 4
+        # penalizar la frase genérica sin detalles
+        if "conducir de forma negligente" in l_low and score < 8:
+            score -= 3
         if score > best_score:
             best_score = score
-            best = c
+            best = ln
 
-    if not best:
-        return ""
+    # Si no hay línea con detalles, unir 2-3 líneas que sí contengan keywords
+    if best_score < 4:
+        picked = []
+        for ln in clean:
+            l_low = ln.lower()
+            if any(k in l_low for k in kw):
+                picked.append(ln)
+            if len(picked) >= 3:
+                break
+        if picked:
+            best = " / ".join(picked)
+        elif clean:
+            best = " / ".join(clean[:2])
+        else:
+            return ""
 
-    # Elegir segmentos relevantes y unirlos en una sola cita
-    segs = re.split(r"[\.;\n]+", best)
-    segs = [re.sub(r"\s+", " ", s).strip() for s in segs if s and s.strip()]
-
-    picked = []
-    for s in segs:
-        s_low = s.lower()
-        if any(w in s_low for w in kw):
-            picked.append(s)
-
-    if not picked:
-        picked = segs[:2]
-
-    out = " / ".join(picked)
-    out = re.sub(r"\s+", " ", out).strip()
-
+    out = re.sub(r"\s+", " ", best).strip()
     if len(out) > 320:
         out = out[:320]
         out = out.rsplit(" ", 1)[0].strip() + "…"
-
     return out.strip(" :-\t")
-
 
 def _inject_hecho_literal(cuerpo: str, core: Dict[str, Any]) -> str:
     """Inserta el extracto literal del boletín justo después de '3) Hecho imputado:' (si existe)."""
