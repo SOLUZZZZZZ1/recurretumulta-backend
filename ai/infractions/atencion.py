@@ -1,6 +1,11 @@
-"""RTM — ATENCIÓN (ART. 3.1 / 18.1) — GUARD anti-condiciones_vehiculo
+"""RTM — ATENCIÓN / CONDUCCIÓN NEGLIGENTE (ART. 3.1 / 18.1 RGC) — DEMOLEDOR 'CASE-AWARE'
 
-Evita secuestrar multas técnicas del vehículo (alumbrado/ITV/neumáticos/reformas).
+Objetivo:
+- NO genérico: desmonta el relato concreto del boletín.
+- Se activa por palabras del hecho: km/interceptado, palmas/volante/tambor, menor/niño.
+- Mantiene compatibilidad: is_atencion_context(core, body=""), build_atencion_strong_template(core, body="")
+
+Determinista. Sin OpenAI.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ def is_atencion_context(core: Dict[str, Any], body: str = "") -> bool:
     core = core or {}
     b = _blob(core, body)
 
+    # Guard anti-condiciones_vehiculo (evita secuestro de alumbrado/ITV/etc.)
     cond_signals = [
         "condiciones reglamentarias",
         "dispositivos de alumbrado",
@@ -45,9 +51,14 @@ def is_atencion_context(core: Dict[str, Any], body: str = "") -> bool:
         "no se percata", "conversando",
         "art. 3.1", "art 3.1", "artículo 3", "articulo 3",
         "art. 18.1", "art 18.1", "artículo 18", "articulo 18",
-        "bailando", "palmas", "golpeando", "volante", "tambor",
+        # patrones conductuales
+        "bail", "palm", "golpe", "volante", "tambor",
+        # ciclistas
         "ciclist", "biciclet", "arcén", "arcen", "paralelo", "de a tres", "ocupando",
-        "interceptad", "tramo",
+        # distancia/interceptación
+        "intercept", "tramo", "km", "kilómetro", "kilometro",
+        # menor
+        "menor", "niñ", "bebe", "bebé", "dos años", "2 años", "asiento trasero",
     ]
     return any(s in b for s in signals)
 
@@ -57,15 +68,23 @@ def _has_distance(b: str) -> bool:
         return True
     if "kilómetro" in b or "kilometro" in b:
         return True
-    if "hasta ser intercept" in b or "interceptad" in b:
+    if "intercept" in b:
         return True
     if "tramo" in b and re.search(r"\b\d+(?:[\.,]\d+)?\b", b):
         return True
     return False
 
 
+def _has_conducta_interior(b: str) -> bool:
+    return any(k in b for k in ["bail", "palm", "golpe", "volante", "tambor"]) or ("interior del veh" in b)
+
+
+def _has_menor(b: str) -> bool:
+    return any(k in b for k in ["menor", "niñ", "bebe", "bebé", "dos años", "2 años", "asiento trasero"]) 
+
+
 def _has_ciclistas(b: str) -> bool:
-    return any(k in b for k in ["ciclist", "biciclet", "arcén", "arcen", "paralelo", "de a tres", "ocupando"])
+    return any(k in b for k in ["ciclist", "biciclet", "arcén", "arcen", "paralelo", "de a tres", "ocupando"]) 
 
 
 def build_atencion_strong_template(core: Dict[str, Any], body: str = "") -> Dict[str, str]:
@@ -90,7 +109,8 @@ def build_atencion_strong_template(core: Dict[str, Any], body: str = "") -> Dict
         f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
         "II. ALEGACIONES\n\n"
         "ALEGACIÓN PRIMERA — ELEMENTO OBJETIVO: RIESGO REAL Y OBJETIVABLE (ART. 3.1 / 18.1)\n\n"
-        "El tipo sancionador exige acreditar una conducta concreta que genere un RIESGO REAL, específico y objetivable. No basta una descripción llamativa ni valoraciones subjetivas.\n\n"
+        "El tipo sancionador exige acreditar una conducta concreta que genere un RIESGO REAL, específico y objetivable. "
+        "No basta una descripción llamativa ni valoraciones subjetivas.\n\n"
         "No consta acreditado en el expediente:\n"
         "1) Maniobra específica (trayectoria anómala, invasión de carril, aproximación peligrosa, frenada o maniobra evasiva de terceros, etc.).\n"
         "2) Distancia real respecto de otros vehículos/usuarios y circunstancias del tráfico en ese instante.\n"
@@ -98,16 +118,37 @@ def build_atencion_strong_template(core: Dict[str, Any], body: str = "") -> Dict
         "4) Consecuencia objetiva del riesgo (hecho verificable), no meramente hipotética.\n"
     )
 
+    # 🔥 Bloques específicos (desmontan el relato)
+    if _has_distance(b):
+        parts.append(
+            "\nBLOQUE DEMOLEDOR — CONTRADICCIÓN DE INTERVENCIÓN TARDÍA (KM / INTERCEPTACIÓN)\n\n"
+            "Si la denuncia afirma seguimiento durante un tramo (p.ej. kilómetros) hasta la interceptación, debe acreditarse cómo se midió la distancia, "
+            "desde qué punto a qué punto y que la observación fue continua.\n"
+            "Además, si el peligro era real e inminente, debe explicarse por qué no se intervino de forma inmediata desde el primer momento, "
+            "pues permitir la continuidad de la marcha durante un tramo prolongado es difícilmente compatible con un riesgo grave y actual.\n"
+        )
+
+    if _has_conducta_interior(b):
+        parts.append(
+            "\nBLOQUE DEMOLEDOR — OBSERVACIÓN DEL INTERIOR DEL VEHÍCULO (PALMAS / VOLANTE / CONDUCTA)\n\n"
+            "La denuncia describe conductas realizadas dentro del habitáculo (p. ej. tocar las palmas, golpear el volante, etc.). "
+            "Debe precisarse desde qué posición se realizó la observación (detrás/lateral/en paralelo), a qué distancia, durante cuánto tiempo y con qué visibilidad real.\n"
+            "Sin estos datos, la afirmación constituye una inferencia no verificable y no permite valorar fiabilidad perceptiva ni contradicción efectiva.\n"
+        )
+
+    if _has_menor(b):
+        parts.append(
+            "\nBLOQUE DEMOLEDOR — MENOR EN ASIENTO TRASERO (OBSERVACIÓN + SRI)\n\n"
+            "La mención a un menor en el asiento trasero exige concretar cuándo y cómo se observó (durante la marcha o tras la detención). "
+            "Asimismo, debe aclararse si el menor se encontraba en un sistema de retención infantil homologado (SRI/ISOFIX) correctamente instalado.\n"
+            "Sin esos extremos, la referencia al menor no acredita por sí misma riesgo real ni refuerza la tipicidad del art. 3.1.\n"
+        )
+
     if _has_ciclistas(b):
         parts.append(
             "\nBLOQUE ESPECÍFICO — CICLISTAS / ARCÉN / PARALELO (SOLO SI CONSTA EN BOLETÍN)\n\n"
-            "Si se alude a ciclistas/bicicletas, circulación en paralelo o uso de arcén, la imputación debe concretar: anchura efectiva del carril, intensidad de tráfico, posición exacta, distancias y maniobra concreta que evidencie riesgo real. Sin esos datos, la imputación es estereotipada.\n"
-        )
-
-    if _has_distance(b):
-        parts.append(
-            "\nALEGACIÓN SEGUNDA — DISTANCIA/DURACIÓN ALEGADA (SOLO SI CONSTA EN BOLETÍN)\n\n"
-            "Cuando se afirma una distancia o duración concreta, debe acreditarse punto inicial y final exactos, medio de medición y continuidad real de observación, así como por qué no hubo actuación preventiva inmediata si el peligro era real.\n"
+            "Si se alude a ciclistas/bicicletas, circulación en paralelo o uso de arcén, la imputación debe concretar: anchura efectiva del carril, "
+            "intensidad de tráfico, posición exacta, distancias y maniobra concreta que evidencie riesgo real. Sin esos datos, la imputación es estereotipada.\n"
         )
 
     parts.append(
