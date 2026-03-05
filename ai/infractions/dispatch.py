@@ -3,11 +3,11 @@ RTM — Infractions Dispatcher (determinista) — v3 (todo junto)
 
 Orden:
 1) Semáforo
-2) Móvil
-3) Auriculares (Art.18.2)
-4) Atención/Negligente (Art.3.1 / 18.1)
-5) Condiciones vehículo (Art.12/15)
-6) Velocidad (último; Art.18 bloqueado)
+2) Velocidad (hard-lock)
+3) Móvil
+4) Auriculares (Art.18.2)
+5) Atención/Negligente (Art.3.1 / 18.1)
+6) Condiciones vehículo (Art.12/15)
 """
 
 from __future__ import annotations
@@ -74,8 +74,10 @@ def is_velocity_context(core: Dict[str, Any], draft_body: str = "") -> bool:
     return any(k in blob for k in velocity_signals)
 
 
-def is_condiciones_vehiculo_context(core: Dict[str, Any], draft_body: str = "") -> bool:
-    blob = build_raw_blob(core, draft_body=draft_body)
+\1# 🔒 Guard anti-velocidad: evita confundir 'antena homologada' del cinemómetro con homologación del vehículo.
+\1if is_velocity_context(core, draft_body=draft_body):
+\1    return False
+\1blob = build_raw_blob(core, draft_body=draft_body)
     signals = [
         "condiciones reglamentarias",
         "veh r.d. 2822/98", "rd 2822/98", "r.d. 2822/98",
@@ -96,26 +98,31 @@ def is_condiciones_vehiculo_context(core: Dict[str, Any], draft_body: str = "") 
 def dispatch_deterministic_template(core: Dict[str, Any], draft_body: str = "") -> Optional[Dict[str, str]]:
     core = core or {}
 
+    # 1) Semáforo
     if is_semaforo_context_robust(core, draft_body=draft_body):
         return build_semaforo_strong_template(core)
 
+    # 2) Velocidad (hard-lock): si es velocidad, devolvemos None para que generate.py use su pipeline específico de velocidad
     if is_velocity_context(core, draft_body=draft_body):
         return None
 
+    # 3) Móvil
     if is_movil_context(core, draft_body or ""):
         return build_movil_strong_template(core)
 
+    # 4) Auriculares
     if is_auriculares_context(core, draft_body or ""):
         return build_auriculares_strong_template(core)
 
+    # 5) Atención / negligente
     if is_atencion_context(core, draft_body or ""):
-        # build_atencion_strong_template de atencion_ai_final acepta body=
         return build_atencion_strong_template(core, body=draft_body or "")
 
+    # 6) Condiciones del vehículo (solo si NO es velocidad)
     if is_condiciones_vehiculo_context(core, draft_body=draft_body):
         tpl = build_condiciones_vehiculo_strong_template(core)
         if isinstance(tpl, dict) and tpl.get("asunto") and tpl.get("cuerpo"):
             return {"asunto": tpl["asunto"], "cuerpo": tpl["cuerpo"]}
 
-    
+    return None
     return None
