@@ -99,6 +99,9 @@ def dispatch_deterministic_template(core: Dict[str, Any], draft_body: str = "") 
     if is_semaforo_context_robust(core, draft_body=draft_body):
         return build_semaforo_strong_template(core)
 
+    if is_velocity_context(core, draft_body=draft_body):
+        return None
+
     if is_movil_context(core, draft_body or ""):
         return build_movil_strong_template(core)
 
@@ -114,7 +117,5 @@ def dispatch_deterministic_template(core: Dict[str, Any], draft_body: str = "") 
         if isinstance(tpl, dict) and tpl.get("asunto") and tpl.get("cuerpo"):
             return {"asunto": tpl["asunto"], "cuerpo": tpl["cuerpo"]}
 
-    if is_velocity_context(core, draft_body=draft_body):
-        return None
-
+    
     return None
