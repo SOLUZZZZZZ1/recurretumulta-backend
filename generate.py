@@ -557,6 +557,7 @@ def _build_template_from_type(core: Dict[str, Any], ai_result: Optional[Dict[str
     """
     Regla principal:
     - manda analyze.py (tipo_infraccion + jurisdiccion)
+    - si el tipo viene raro o vacío, hacemos SOLO un hard-lock mínimo por señales fuertes
     - la IA NO decide la familia
     """
     core = core or {}
@@ -566,18 +567,39 @@ def _build_template_from_type(core: Dict[str, Any], ai_result: Optional[Dict[str
     municipal = _is_municipal(core)
     capture_mode = _infer_capture_mode(core, ai_result=ai_result)
 
+    blob = _raw_blob(core)
     decision: Dict[str, Any] = {"mode": "unknown", "reasons": []}
+
+    # HARD-LOCKS mínimos y seguros
+    sema_signals = [
+        "semaforo",
+        "fase roja",
+        "luz roja",
+        "luz roja no intermitente",
+        "no respeta la fase roja",
+        "no respetar la fase roja",
+        "no respeta la luz roja",
+        "linea de detencion",
+        "rebase la linea de detencion",
+        "articulo 146",
+        "art. 146",
+    ]
+    speed_signals = ["km/h", "radar", "cinemometro", "exceso de velocidad"]
+
+    if tipo not in ("semaforo", "velocidad", "movil", "auriculares", "seguro", "itv", "marcas_viales", "carril", "condiciones_vehiculo", "atencion"):
+        if any(s in blob for s in sema_signals):
+            tipo = "semaforo"
+        elif any(s in blob for s in speed_signals):
+            tipo = "velocidad"
 
     # 1) MUNICIPAL — prioridad por jurisdicción
     if municipal:
         if tipo == "semaforo":
             return build_municipal_semaforo_template(core), "municipal_semaforo", decision
 
-        blob = _raw_blob(core)
         if any(s in blob for s in ["sentido contrario", "direccion prohibida", "dirección prohibida", "circulacion en sentido contrario", "circulación en sentido contrario"]):
             return build_municipal_sentido_contrario_template(core), "municipal_sentido_contrario", decision
 
-        # Si es municipal y no hay módulo específico, no dejamos a la IA inventar:
         return build_municipal_generic_template(core), "municipal_generic", decision
 
     # 2) VELOCIDAD
@@ -627,7 +649,7 @@ def _build_template_from_type(core: Dict[str, Any], ai_result: Optional[Dict[str
     if tipo == "atencion" or tipo == "negligente" or is_atencion_context(core, ""):
         return build_atencion_strong_template(core, body=""), "atencion", decision
 
-    # 12) FALLBACK determinista DGT / genérico
+    # 12) FALLBACK
     tpl = build_generic_body(core)
     return tpl, "generic", decision
 
