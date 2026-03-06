@@ -18,7 +18,7 @@ from ai.infractions.condiciones_vehiculo import build_condiciones_vehiculo_stron
 # ✅ NUEVO: auriculares (art.18.2)
 from ai.infractions.distracciones import is_auriculares_context, build_auriculares_strong_template
 
-# ✅ NUEVO: atención / negligente (art.3.1 / 18.1) — con IA opcional (RTM_ATENCION_AI=1)
+# ✅ NUEVO: atención / negligente (art.3.1 / 18.1)
 from ai.infractions.atencion import is_atencion_context, build_atencion_strong_template
 
 from b2_storage import upload_bytes
@@ -109,6 +109,8 @@ def _raw_blob(core: Dict[str, Any]) -> str:
         if isinstance(v, str) and v.strip():
             parts.append(v)
     return " ".join(parts).lower()
+
+
 def _extract_hecho_literal(core: Dict[str, Any]) -> str:
     """Extrae un EXTRACTO LITERAL (una sola cita) del relato del agente.
     - No se queda con '5A/5B/5C...' ni metadatos (importe/fecha/lugar).
@@ -132,7 +134,6 @@ def _extract_hecho_literal(core: Dict[str, Any]) -> str:
         "tocando", "golpeando", "asiento trasero", "trasero",
     ]
 
-    # recortar desde HECHO DENUNCIADO/IMPUTADO si existe
     start_idx = -1
     for a in ("hecho denunciado", "hecho imputado", "hecho:"):
         i = low.find(a)
@@ -188,8 +189,8 @@ def _extract_hecho_literal(core: Dict[str, Any]) -> str:
 
     return out.strip(" :-\t")
 
+
 def _inject_hecho_literal(cuerpo: str, core: Dict[str, Any]) -> str:
-    """Inserta el extracto literal del boletín justo después de '3) Hecho imputado:' (si existe)."""
     if not cuerpo:
         return cuerpo
     literal = _extract_hecho_literal(core)
@@ -214,13 +215,6 @@ def _inject_hecho_literal(cuerpo: str, core: Dict[str, Any]) -> str:
 # ==========================
 
 def _is_velocity_context(core: Dict[str, Any], cuerpo: str) -> bool:
-    """✅ Velocidad SOLO si es explícita.
-
-    Regla:
-    - True si tipo_infraccion == 'velocidad'
-    - True si hay campos estructurados reales (velocidad_medida_kmh y velocidad_limite_kmh)
-    - ❌ NO usa el 'cuerpo' (texto IA/plantilla) como señal (evita falsos positivos)
-    """
     core = core or {}
 
     tipo = str(core.get("tipo_infraccion") or "").lower().strip()
@@ -658,35 +652,7 @@ def generate_dgt_for_case(
                     cuerpo = tpl_s.get("cuerpo") or cuerpo
                     final_kind = "semaforo"
 
-                # 2) Móvil
-                elif is_movil_context(core, cuerpo):
-                    tpl_m = build_movil_strong_template(core)
-                    asunto = tpl_m.get("asunto") or asunto
-                    cuerpo = tpl_m.get("cuerpo") or cuerpo
-                    final_kind = "movil"
-
-                # 3) Auriculares
-                elif is_auriculares_context(core, cuerpo):
-                    tpl_a = build_auriculares_strong_template(core)
-                    asunto = tpl_a.get("asunto") or asunto
-                    cuerpo = tpl_a.get("cuerpo") or cuerpo
-                    final_kind = "auriculares"
-
-                # 4) Atención/Negligente (con IA opcional)
-                elif is_atencion_context(core, cuerpo):
-                    tpl_at = build_atencion_strong_template(core, body=cuerpo)
-                    asunto = tpl_at.get("asunto") or asunto
-                    cuerpo = tpl_at.get("cuerpo") or cuerpo
-                    final_kind = "atencion"
-
-                # 5) Condiciones vehículo
-                elif _is_condiciones_context_robust(core, cuerpo):
-                    tpl_c = build_condiciones_vehiculo_strong_template(core)
-                    asunto = tpl_c.get("asunto") or asunto
-                    cuerpo = tpl_c.get("cuerpo") or cuerpo
-                    final_kind = "condiciones_vehiculo"
-
-                # 6) Velocidad (último)
+                # 2) Velocidad (PRIORIDAD / HARD-LOCK)
                 elif _is_velocity_context(core, cuerpo):
                     asunto, cuerpo = _velocity_vse1_template(core)
                     final_kind = "velocidad"
@@ -697,6 +663,34 @@ def generate_dgt_for_case(
                         pass
                     cuerpo = _inject_bucket_paragraph(cuerpo, decision)
                     cuerpo = _inject_tramo_error_paragraph(cuerpo, _compute_velocity_calc_from_core(core))
+
+                # 3) Móvil
+                elif is_movil_context(core, cuerpo):
+                    tpl_m = build_movil_strong_template(core)
+                    asunto = tpl_m.get("asunto") or asunto
+                    cuerpo = tpl_m.get("cuerpo") or cuerpo
+                    final_kind = "movil"
+
+                # 4) Auriculares
+                elif is_auriculares_context(core, cuerpo):
+                    tpl_a = build_auriculares_strong_template(core)
+                    asunto = tpl_a.get("asunto") or asunto
+                    cuerpo = tpl_a.get("cuerpo") or cuerpo
+                    final_kind = "auriculares"
+
+                # 5) Atención/Negligente
+                elif is_atencion_context(core, cuerpo):
+                    tpl_at = build_atencion_strong_template(core, body=cuerpo)
+                    asunto = tpl_at.get("asunto") or asunto
+                    cuerpo = tpl_at.get("cuerpo") or cuerpo
+                    final_kind = "atencion"
+
+                # 6) Condiciones vehículo
+                elif _is_condiciones_context_robust(core, cuerpo):
+                    tpl_c = build_condiciones_vehiculo_strong_template(core)
+                    asunto = tpl_c.get("asunto") or asunto
+                    cuerpo = tpl_c.get("cuerpo") or cuerpo
+                    final_kind = "condiciones_vehiculo"
 
                 tpl = {"asunto": asunto, "cuerpo": cuerpo}
                 ai_used = True
@@ -716,19 +710,6 @@ def generate_dgt_for_case(
         if _is_semaforo_context_robust(core, cuerpo0):
             tpl = build_semaforo_strong_template(core)
             final_kind = "semaforo"
-        elif is_movil_context(core, cuerpo0):
-            tpl = build_movil_strong_template(core)
-            final_kind = "movil"
-        elif is_auriculares_context(core, cuerpo0):
-            tpl = build_auriculares_strong_template(core)
-            final_kind = "auriculares"
-        elif is_atencion_context(core, cuerpo0):
-            tpl = build_atencion_strong_template(core, body=cuerpo0)
-            final_kind = "atencion"
-        elif _is_condiciones_context_robust(core, cuerpo0):
-            tpl_c = build_condiciones_vehiculo_strong_template(core)
-            tpl = {"asunto": tpl_c.get("asunto") or tpl.get("asunto") or "", "cuerpo": tpl_c.get("cuerpo") or tpl.get("cuerpo") or ""}
-            final_kind = "condiciones_vehiculo"
         elif _is_velocity_context(core, cuerpo0):
             asunto_v, cuerpo_v = _velocity_vse1_template(core)
             tpl = {"asunto": asunto_v, "cuerpo": cuerpo_v}
@@ -740,8 +721,23 @@ def generate_dgt_for_case(
                 pass
             tpl["cuerpo"] = _inject_bucket_paragraph(tpl["cuerpo"], decision)
             tpl["cuerpo"] = _inject_tramo_error_paragraph(tpl["cuerpo"], _compute_velocity_calc_from_core(core))
+        elif is_movil_context(core, cuerpo0):
+            tpl = build_movil_strong_template(core)
+            final_kind = "movil"
+        elif is_auriculares_context(core, cuerpo0):
+            tpl = build_auriculares_strong_template(core)
+            final_kind = "auriculares"
+        elif is_atencion_context(core, cuerpo0):
+            tpl = build_atencion_strong_template(core, body=cuerpo0)
+            final_kind = "atencion"
+        elif _is_condiciones_context_robust(core, cuerpo0):
+            tpl_c = build_condiciones_vehiculo_strong_template(core)
+            tpl = {
+                "asunto": tpl_c.get("asunto") or tpl.get("asunto") or "",
+                "cuerpo": tpl_c.get("cuerpo") or tpl.get("cuerpo") or "",
+            }
+            final_kind = "condiciones_vehiculo"
 
-    # STRICT (solo si final_kind == velocidad)
     try:
         _strict_validate_or_raise(conn, case_id, tpl, final_kind=final_kind)
     except HTTPException as e:
@@ -759,7 +755,6 @@ def generate_dgt_for_case(
         else:
             raise
 
-    # DOCX/PDF
     kind_docx = "generated_docx_reposicion" if tipo == "reposicion" else "generated_docx_alegaciones"
     kind_pdf = "generated_pdf_reposicion" if tipo == "reposicion" else "generated_pdf_alegaciones"
 
