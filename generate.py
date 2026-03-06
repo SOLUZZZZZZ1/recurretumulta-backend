@@ -17,6 +17,7 @@ from ai.infractions.condiciones_vehiculo import build_condiciones_vehiculo_stron
 from ai.infractions.distracciones import is_auriculares_context, build_auriculares_strong_template
 from ai.infractions.atencion import is_atencion_context, build_atencion_strong_template
 from ai.infractions.generic import build_generic_body
+from ai.infractions.helpers import extract_hecho_literal, build_extra_attack_paragraphs
 
 # Opcionales: no deben romper arranque si faltan en producción
 try:
