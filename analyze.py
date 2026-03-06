@@ -30,26 +30,80 @@ def _sha256_bytes(data: bytes) -> str:
     return h.hexdigest()
 
 
+def _safe_str(v: Any) -> str:
+    if v is None:
+        return ""
+    try:
+        return str(v)
+    except Exception:
+        return ""
+
+
 def _flatten_text(extracted_core: Dict[str, Any], text_content: str = "") -> str:
+    """
+    Construye un blob textual amplio y útil para triage.
+    Incluye tanto campos estructurados como OCR / literales.
+    """
     parts: List[str] = []
+
     if isinstance(extracted_core, dict):
+        preferred_keys = [
+            "organismo",
+            "expediente_ref",
+            "tipo_sancion",
+            "hecho_denunciado_literal",
+            "hecho_imputado",
+            "observaciones",
+            "vision_raw_text",
+            "raw_text_pdf",
+            "raw_text_vision",
+        ]
+
+        used = set()
+
+        for k in preferred_keys:
+            if k in extracted_core:
+                v = extracted_core.get(k)
+                if v is None:
+                    continue
+                if isinstance(v, (str, int, float, bool)):
+                    sv = _safe_str(v).strip()
+                    if sv:
+                        parts.append(f"{k}: {sv}")
+                else:
+                    try:
+                        sv = str(v).strip()
+                        if sv:
+                            parts.append(f"{k}: {sv}")
+                    except Exception:
+                        pass
+                used.add(k)
+
         for k, v in extracted_core.items():
-            if v is None:
+            if k in used or v is None:
                 continue
             if isinstance(v, (str, int, float, bool)):
-                parts.append(f"{k}: {v}")
+                sv = _safe_str(v).strip()
+                if sv:
+                    parts.append(f"{k}: {sv}")
             else:
                 try:
-                    parts.append(f"{k}: {str(v)}")
+                    sv = str(v).strip()
+                    if sv:
+                        parts.append(f"{k}: {sv}")
                 except Exception:
                     pass
+
     if text_content:
         parts.append(text_content)
+
     return "\n".join(parts)
 
 
 def _merge_extracted(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[str, Any]:
-    """Conserva valores no vacíos de primary y rellena con secondary."""
+    """
+    Conserva valores no vacíos de primary y rellena con secondary.
+    """
     primary = primary or {}
     secondary = secondary or {}
     out = dict(secondary)
@@ -59,24 +113,23 @@ def _merge_extracted(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict
     return out
 
 
-def _needs_speed_retry(core: Dict[str, Any]) -> bool:
-    """True si parece velocidad pero faltan medida/límite."""
-    if not isinstance(core, dict):
-        return True
-    tipo = (core.get("tipo_infraccion") or "").lower().strip()
-    measured = core.get("velocidad_medida_kmh")
-    limit = core.get("velocidad_limite_kmh")
-    if tipo == "velocidad":
-        return not (isinstance(measured, (int, float)) and isinstance(limit, (int, float)))
-    blob = json.dumps(core, ensure_ascii=False).lower()
-    signals = any(s in blob for s in ["km/h", "cinemomet", "radar", "exceso de velocidad"])
-    if signals:
-        return not (isinstance(measured, (int, float)) and isinstance(limit, (int, float)))
-    return False
+def _normalize_for_matching(text: str) -> str:
+    t = (text or "").lower()
+    t = t.replace("\r", "\n")
+    t = t.replace("semáforo", "semaforo")
+    t = t.replace("señal", "senal")
+    t = t.replace("línea", "linea")
+    t = t.replace("teléfono", "telefono")
+    t = t.replace("móvil", "movil")
+    t = t.replace("cinemómetro", "cinemometro")
+    t = t.replace("inspección", "inspeccion")
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"\n+", "\n", t)
+    return t.strip()
 
 
 def _extract_precepts(text_blob: str) -> Dict[str, Any]:
-    t = (text_blob or "").lower()
+    t = _normalize_for_matching(text_blob)
 
     precepts: List[str] = []
     art_num: Optional[int] = None
@@ -117,7 +170,12 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
             pass
 
     norma_hint: Optional[str] = None
-    if ("r.d. legislativo" in t and "8/2004" in t) or ("rd legislativo" in t and "8/2004" in t) or ("8/2004" in t and "responsabilidad civil" in t):
+
+    if (
+        ("r.d. legislativo" in t and "8/2004" in t)
+        or ("rd legislativo" in t and "8/2004" in t)
+        or ("8/2004" in t and "responsabilidad civil" in t)
+    ):
         norma_hint = "RDL 8/2004"
         precepts.append("RDL 8/2004")
 
@@ -145,17 +203,18 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
 
 
 def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
-    t = (text_blob or "").replace("\n", " ").lower()
+    t = _normalize_for_matching(text_blob).replace("\n", " ")
     t = re.sub(r"\s+", " ", t).strip()
 
-    # 🔒 Guard: solo extraer velocidad si hay contexto REAL (evita importes/fechas)
+    # Guard robusto: solo extraer velocidad si hay contexto real
     velocity_context = (
         ("radar" in t)
-        or ("cinemómetro" in t)
         or ("cinemometro" in t)
         or ("km/h" in t)
         or ("exceso de velocidad" in t)
         or bool(re.search(r"\bcircular\s+a\s+\d{2,3}\s*km\s*/?\s*h\b", t))
+        or bool(re.search(r"\bvelocidad\s+medida\b", t))
+        or bool(re.search(r"\bvelocidad\s+maxima\b", t))
     )
 
     measured = None
@@ -164,44 +223,47 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
     candidates_all: List[int] = []
 
     if velocity_context:
-        # 1) Extraer TODOS los números que aparecen como km/h (robusto a OCR)
         for mm in re.finditer(r"\b(\d{2,3})\s*km\s*/?\s*h\b", t):
             try:
                 candidates_all.append(int(mm.group(1)))
             except Exception:
                 pass
 
-        # 2) Detectar límite por frases fuertes (evita 'fecha límite')
         t_no_deadlines = re.sub(r"fecha\s*l[ií]mite[^\d]{0,40}\d{1,2}/\d{1,2}/\d{2,4}", "", t)
+
         limit_candidates: List[int] = []
-        for mm in re.finditer(r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite|velocidad\s+m[aá]xima|velocidad\s+maxima)\b[^\d]{0,80}(\d{2,3})\b", t_no_deadlines):
+        for mm in re.finditer(
+            r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite|velocidad\s+m[aá]xima|velocidad\s+maxima)\b[^\d]{0,80}(\d{2,3})\b",
+            t_no_deadlines,
+        ):
             try:
                 limit_candidates.append(int(mm.group(1)))
             except Exception:
                 pass
+
         for mm in re.finditer(r"\blimitad[ao]a?\s+a\s+(\d{2,3})\s*km\s*/?\s*h\b", t_no_deadlines):
             try:
                 limit_candidates.append(int(mm.group(1)))
             except Exception:
                 pass
+
         if limit_candidates:
             lc = [x for x in limit_candidates if 10 <= x <= 200]
             limit = sorted(set(lc))[0] if lc else min(limit_candidates)
 
-        # 3) Detectar medida por frases "circular a X km/h"
         measured_candidates: List[int] = []
         for mm in re.finditer(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?\s*h\b", t):
             try:
                 measured_candidates.append(int(mm.group(1)))
             except Exception:
                 pass
+
         if not measured_candidates and candidates_all:
             measured_candidates = candidates_all[:]
 
         measured_candidates = [x for x in measured_candidates if 10 <= x <= 250]
         candidates_all = [x for x in candidates_all if 10 <= x <= 250]
 
-        # 4) Elegir medida consistente con límite si existe
         if measured_candidates:
             if limit is not None:
                 above = [x for x in measured_candidates if x >= (limit + 5)]
@@ -209,14 +271,12 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
             else:
                 measured = max(measured_candidates)
 
-        # 5) Conflictos OCR típicos
         uniq = sorted(set(measured_candidates))
         if len(uniq) >= 2 and (max(uniq) - min(uniq)) >= 20:
             conflict = True
         if measured is not None and limit is not None and abs(measured - limit) <= 3:
             conflict = True
 
-    # Multa (€) — no usar para inferir velocidad
     fine_eur = None
     mf = re.search(r"\b(\d{2,4})\s*(?:€|euros)\b", t)
     if mf:
@@ -248,80 +308,275 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
         "puntos_detraccion": points,
         "radar_modelo_hint": radar_model,
     }
+
     if velocity_context and candidates_all:
         out["velocidad_kmh_candidatos"] = sorted(set(candidates_all))
+
     if velocity_context and conflict:
         out["velocidad_conflicto_detectado"] = True
 
     return out
 
 
-def _detect_facts_and_type(text_blob: str) -> Tuple[str, str, List[str]]:
-    t = (text_blob or "").lower()
+def _extract_jurisdiction(text_blob: str, core: Optional[Dict[str, Any]] = None) -> str:
+    core = core or {}
+    organismo = _normalize_for_matching(_safe_str(core.get("organismo")))
+    t = _normalize_for_matching(text_blob)
+
+    blob = f"{organismo}\n{t}"
+
+    municipal_signals = [
+        "ayuntamiento",
+        "ajuntament",
+        "ajuntament de",
+        "concejalia de trafico",
+        "policia local",
+        "guardia urbana",
+    ]
+    estatal_signals = [
+        "dgt",
+        "direccion general de trafico",
+        "jefatura provincial de trafico",
+        "trafico",
+        "guardia civil",
+    ]
+
+    if any(s in blob for s in municipal_signals):
+        return "municipal"
+
+    if any(s in blob for s in estatal_signals):
+        return "estatal"
+
+    return "desconocida"
+
+
+def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None) -> Tuple[str, str, List[str]]:
+    """
+    Devuelve (tipo_infraccion, hecho_imputado_canonico, facts_phrases)
+    """
+    core = core or {}
+    t = _normalize_for_matching(text_blob)
     facts: List[str] = []
 
-    # ✅ SEMÁFORO PRIORIDAD MÁXIMA (OCR sucio)
+    hecho_literal = _normalize_for_matching(_safe_str(core.get("hecho_denunciado_literal")))
+    organismo = _normalize_for_matching(_safe_str(core.get("organismo")))
+    tipo_sancion = _normalize_for_matching(_safe_str(core.get("tipo_sancion")))
+
+    combined = "\n".join([x for x in [t, hecho_literal, organismo, tipo_sancion] if x]).strip()
+
+    # --------------------------
+    # 1) SEMÁFORO — prioridad máxima real
+    # --------------------------
     sema_signals = [
-        "semáforo", "semaforo",
+        "semaforo",
         "fase roja",
-        "cruce en rojo", "cruce con fase roja",
-        "luz roja del semáforo", "luz roja del semaforo",
+        "cruce en rojo",
+        "cruce con fase roja",
+        "luz roja del semaforo",
         "no respetar la luz roja",
-        "t/s roja", "ts roja",
-        "señal luminosa roja", "senal luminosa roja",
-        "línea de detención", "linea de detencion",
-        "no respeta la luz roja", "no respeta luz roja",
+        "no respeta la luz roja",
+        "no respeta luz roja",
+        "no respeta la fase roja",
+        "no respetar la fase roja",
+        "señal luminosa roja",
+        "senal luminosa roja",
+        "linea de detencion",
+        "rebase la linea de detencion",
+        "rebasar la linea de detencion",
+        "ts roja",
+        "t/s roja",
     ]
-    if any(s in t for s in sema_signals):
+
+    if any(s in combined for s in sema_signals):
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
 
-    if re.search(r"\bart\.?\s*146\b", t) or re.search(r"\bart[ií]culo\s*146\b", t) or re.search(r"\b146\s*[\.,]\s*1\b", t):
+    if re.search(r"\bart\.?\s*146\b", combined) or re.search(r"\bart[ií]culo\s*146\b", combined) or re.search(r"\b146\s*[\.,]\s*1\b", combined):
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
 
-    # Móvil
-    if "utilizando manualmente" in t and any(k in t for k in ["teléfono", "telefono", "móvil", "movil"]):
+    # --------------------------
+    # 2) MÓVIL
+    # --------------------------
+    if "utilizando manualmente" in combined and any(k in combined for k in ["telefono", "movil"]):
         facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
-    if any(k in t for k in ["teléfono móvil", "telefono movil", "uso del teléfono", "uso del telefono"]):
+
+    if any(k in combined for k in ["telefono movil", "uso del telefono", "uso manual del movil", "uso manual del telefono"]):
         facts.append("USO DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
-    # Velocidad (precisión extrema)
+
+    # --------------------------
+    # 3) AURICULARES
+    # --------------------------
+    aur_signals = [
+        "auricular",
+        "auriculares",
+        "cascos conectados",
+        "cascos o auriculares",
+        "reproductores de sonido",
+        "aparatos receptores",
+        "aparatos reproductores",
+    ]
+    if any(s in combined for s in aur_signals):
+        facts.append("USO DE AURICULARES O CASCOS CONECTADOS")
+        return ("auriculares", facts[0], facts)
+
+    # --------------------------
+    # 4) VELOCIDAD
+    # --------------------------
     velocity_context = (
-        ("km/h" in t)
-        and any(k in t for k in ["velocidad", "radar", "cinemómetro", "cinemometro", "exceso de velocidad"])
+        ("km/h" in combined)
+        and any(k in combined for k in ["velocidad", "radar", "cinemometro", "exceso de velocidad", "limitada a", "velocidad maxima"])
     )
+
     if velocity_context:
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
 
-
-    # Seguro
-    if ("lsoa" in t) or (("r.d. legislativo" in t or "rd legislativo" in t) and "8/2004" in t) or ("8/2004" in t and "responsabilidad civil" in t):
+    # --------------------------
+    # 5) SEGURO
+    # --------------------------
+    if (
+        ("lsoa" in combined)
+        or (("r.d. legislativo" in combined or "rd legislativo" in combined) and "8/2004" in combined)
+        or ("8/2004" in combined and "responsabilidad civil" in combined)
+        or any(s in combined for s in ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "vehículo no asegurado"])
+    ):
         facts.append("CARENCIA DE SEGURO OBLIGATORIO")
         return ("seguro", facts[0], facts)
+
+    # --------------------------
+    # 6) ITV
+    # --------------------------
+    if any(s in combined for s in ["itv", "inspeccion tecnica", "inspeccion tecnica de vehiculos", "caducidad de itv", "itv caducada"]):
+        facts.append("ITV NO VIGENTE / INSPECCIÓN TÉCNICA CADUCADA")
+        return ("itv", facts[0], facts)
+
+    # --------------------------
+    # 7) MARCAS VIALES
+    # --------------------------
+    if any(s in combined for s in ["linea continua", "marca longitudinal continua", "senalizacion horizontal", "marca vial"]):
+        facts.append("NO RESPETAR MARCA VIAL")
+        return ("marcas_viales", facts[0], facts)
+
+    # --------------------------
+    # 8) CARRIL / POSICIÓN EN VÍA
+    # --------------------------
+    if any(s in combined for s in ["carril distinto del situado mas a la derecha", "posicion en la via", "posición en la vía", "articulo 31", "art. 31"]):
+        facts.append("POSICIÓN INCORRECTA EN LA VÍA / USO INDEBIDO DEL CARRIL")
+        return ("carril", facts[0], facts)
+
+    # --------------------------
+    # 9) CONDICIONES VEHÍCULO
+    # --------------------------
+    cond_signals = [
+        "condiciones reglamentarias",
+        "alumbrado",
+        "senalizacion optica",
+        "señalización óptica",
+        "neumatico",
+        "neumático",
+        "reforma",
+        "homolog",
+        "luz trasera",
+        "deslumbr",
+        "reflect",
+        "pulido",
+    ]
+    if any(s in combined for s in cond_signals):
+        facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
+        return ("condiciones_vehiculo", facts[0], facts)
+
+    # --------------------------
+    # 10) ATENCIÓN / NEGLIGENTE
+    # --------------------------
+    at_signals = [
+        "no mantener la atencion",
+        "atencion permanente",
+        "conduccion negligente",
+        "conducción negligente",
+        "distraccion",
+        "distracción",
+        "bail",
+        "palm",
+        "golpe",
+        "volante",
+        "tambor",
+        "menor",
+        "bebe",
+        "bebé",
+        "intercept",
+        "tramo",
+    ]
+    if any(s in combined for s in at_signals):
+        facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN")
+        return ("atencion", facts[0], facts)
 
     return ("otro", "", [])
 
 
 def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
-    tipo, hecho, facts = _detect_facts_and_type(text_blob)
     out = dict(extracted_core or {})
+
+    tipo, hecho, facts = _detect_facts_and_type(text_blob, extracted_core)
     out["tipo_infraccion"] = tipo
     out["hecho_imputado"] = hecho or None
     out["facts_phrases"] = facts
+    out["jurisdiccion"] = _extract_jurisdiction(text_blob, extracted_core)
 
     pre = _extract_precepts(text_blob)
     out["preceptos_detectados"] = pre.get("preceptos_detectados") or []
     out["articulo_infringido_num"] = pre.get("articulo_num")
     out["apartado_infringido_num"] = pre.get("apartado_num")
-    out["norma_hint"] = pre.get("norma_hint")
+
+    if not out.get("norma_hint"):
+        out["norma_hint"] = pre.get("norma_hint")
+    else:
+        out["norma_hint"] = out.get("norma_hint")
 
     extra_fields = _extract_speed_and_sanction_fields(text_blob)
     for k, v in (extra_fields or {}).items():
         if v is not None:
             out[k] = v
+
+    return out
+
+
+def _needs_speed_retry(core: Dict[str, Any]) -> bool:
+    """
+    True si parece velocidad pero faltan medida/límite.
+    """
+    if not isinstance(core, dict):
+        return True
+
+    tipo = (core.get("tipo_infraccion") or "").lower().strip()
+    measured = core.get("velocidad_medida_kmh")
+    limit = core.get("velocidad_limite_kmh")
+
+    if tipo == "velocidad":
+        return not (isinstance(measured, (int, float)) and isinstance(limit, (int, float)))
+
+    blob = json.dumps(core, ensure_ascii=False).lower()
+    signals = any(s in blob for s in ["km/h", "cinemomet", "radar", "exceso de velocidad"])
+    if signals:
+        return not (isinstance(measured, (int, float)) and isinstance(limit, (int, float)))
+
+    return False
+
+
+def _ensure_raw_fields(core: Dict[str, Any], text_content: str = "") -> Dict[str, Any]:
+    out = dict(core or {})
+
+    if text_content and not out.get("raw_text_pdf"):
+        out["raw_text_pdf"] = text_content
+
+    vision_raw = out.get("vision_raw_text")
+    if isinstance(vision_raw, str) and vision_raw.strip() and not out.get("raw_text_vision"):
+        out["raw_text_vision"] = vision_raw.strip()
+
+    if not out.get("raw_text_blob"):
+        out["raw_text_blob"] = _flatten_text(out, text_content=text_content)
 
     return out
 
@@ -349,8 +604,18 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             b2_bucket, b2_key = upload_original(str(case_id), content, file.filename, mime)
 
             conn.execute(
-                text("INSERT INTO documents (case_id, kind, b2_bucket, b2_key, sha256, mime, size_bytes, created_at) VALUES (:case_id, 'original', :b2_bucket, :b2_key, :sha256, :mime, :size_bytes, NOW())"),
-                {"case_id": case_id, "b2_bucket": b2_bucket, "b2_key": b2_key, "sha256": sha256, "mime": mime, "size_bytes": size_bytes},
+                text(
+                    "INSERT INTO documents (case_id, kind, b2_bucket, b2_key, sha256, mime, size_bytes, created_at) "
+                    "VALUES (:case_id, 'original', :b2_bucket, :b2_key, :sha256, :mime, :size_bytes, NOW())"
+                ),
+                {
+                    "case_id": case_id,
+                    "b2_bucket": b2_bucket,
+                    "b2_key": b2_key,
+                    "sha256": sha256,
+                    "mime": mime,
+                    "size_bytes": size_bytes,
+                },
             )
 
             model_used = "mock"
@@ -360,12 +625,9 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
 
             if mime.startswith("image/"):
                 extracted_core = extract_from_image_bytes(content, mime, file.filename)
+                extracted_core = _ensure_raw_fields(extracted_core, text_content="")
                 model_used = "openai_vision"
                 confidence = 0.7
-                try:
-                    extracted_core["raw_text_blob"] = _flatten_text(extracted_core, text_content="")
-                except Exception:
-                    pass
 
             elif mime == "application/pdf":
                 text_content = extract_text_from_pdf_bytes(content)
@@ -374,30 +636,26 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                 extracted_vision: Dict[str, Any] = {}
 
                 if has_enough_text(text_content):
-                    extracted_text = extract_from_text(text_content)
+                    extracted_text = extract_from_text(text_content) or {}
+                    extracted_text = _ensure_raw_fields(extracted_text, text_content=text_content)
                     model_used = "openai_text"
                     confidence = 0.8
                 else:
-                    extracted_text = {}
                     model_used = "openai_vision"
                     confidence = 0.6
 
-                extracted_vision = extract_from_image_bytes(content, mime, file.filename)
+                # Siempre hacemos visión también para PDFs, porque ayuda mucho con boletines escaneados
+                extracted_vision = extract_from_image_bytes(content, mime, file.filename) or {}
+                extracted_vision = _ensure_raw_fields(extracted_vision, text_content="")
 
                 blob_text = _flatten_text(extracted_text, text_content=text_content) if extracted_text else (text_content or "")
                 triaged_text = _enrich_with_triage(extracted_text or {}, blob_text)
 
-                blob_vision = _flatten_text(extracted_vision, text_content="") if extracted_vision else ""
+                blob_vision = _flatten_text(extracted_vision, text_content="")
                 triaged_vision = _enrich_with_triage(extracted_vision or {}, blob_vision)
 
                 extracted_core = _merge_extracted(triaged_text, triaged_vision)
-
-                if text_content:
-                    extracted_core["raw_text_pdf"] = text_content
-                if blob_vision:
-                    extracted_core["raw_text_vision"] = blob_vision
-
-                extracted_core["raw_text_blob"] = _flatten_text(extracted_core, text_content=text_content)
+                extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
 
                 if extracted_text and not _needs_speed_retry(extracted_core):
                     model_used = "openai_text"
@@ -409,17 +667,22 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             elif mime in DOCX_MIMES:
                 text_content = extract_text_from_docx_bytes(content)
                 if has_enough_text(text_content):
-                    extracted_core = extract_from_text(text_content)
+                    extracted_core = extract_from_text(text_content) or {}
+                    extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
                     model_used = "openai_text"
                     confidence = 0.8
                 else:
-                    extracted_core = {"observaciones": "DOCX sin texto suficiente."}
+                    extracted_core = {
+                        "observaciones": "DOCX sin texto suficiente.",
+                        "raw_text_pdf": text_content or "",
+                    }
 
             else:
                 extracted_core = {"observaciones": "Tipo de archivo no soportado."}
 
             blob = _flatten_text(extracted_core, text_content=text_content)
             extracted_core = _enrich_with_triage(extracted_core, blob)
+            extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
 
             wrapper = {
                 "filename": file.filename,
@@ -431,18 +694,47 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             }
 
             conn.execute(
-                text("INSERT INTO extractions (case_id, extracted_json, confidence, model, created_at) VALUES (:case_id, CAST(:json AS JSONB), :confidence, :model, NOW())"),
-                {"case_id": case_id, "json": json.dumps(wrapper, ensure_ascii=False), "confidence": confidence, "model": model_used},
+                text(
+                    "INSERT INTO extractions (case_id, extracted_json, confidence, model, created_at) "
+                    "VALUES (:case_id, CAST(:json AS JSONB), :confidence, :model, NOW())"
+                ),
+                {
+                    "case_id": case_id,
+                    "json": json.dumps(wrapper, ensure_ascii=False),
+                    "confidence": confidence,
+                    "model": model_used,
+                },
             )
 
             conn.execute(
-                text("INSERT INTO events(case_id, type, payload, created_at) VALUES (:case_id, 'analyze_ok', CAST(:payload AS JSONB), NOW())"),
-                {"case_id": case_id, "payload": json.dumps({"model": model_used, "confidence": confidence})},
+                text(
+                    "INSERT INTO events(case_id, type, payload, created_at) "
+                    "VALUES (:case_id, 'analyze_ok', CAST(:payload AS JSONB), NOW())"
+                ),
+                {
+                    "case_id": case_id,
+                    "payload": json.dumps(
+                        {
+                            "model": model_used,
+                            "confidence": confidence,
+                            "tipo_infraccion": extracted_core.get("tipo_infraccion"),
+                            "jurisdiccion": extracted_core.get("jurisdiccion"),
+                        }
+                    ),
+                },
             )
 
-            conn.execute(text("UPDATE cases SET status='analyzed', updated_at=NOW() WHERE id=:case_id"), {"case_id": case_id})
+            conn.execute(
+                text("UPDATE cases SET status='analyzed', updated_at=NOW() WHERE id=:case_id"),
+                {"case_id": case_id},
+            )
 
-        return {"ok": True, "message": "Análisis completo generado.", "case_id": str(case_id), "extracted": wrapper}
+        return {
+            "ok": True,
+            "message": "Análisis completo generado.",
+            "case_id": str(case_id),
+            "extracted": wrapper,
+        }
 
     except HTTPException:
         raise
