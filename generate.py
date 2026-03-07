@@ -16,8 +16,59 @@ from ai.infractions.movil import is_movil_context, build_movil_strong_template
 from ai.infractions.condiciones_vehiculo import build_condiciones_vehiculo_strong_template
 from ai.infractions.distracciones import is_auriculares_context, build_auriculares_strong_template
 from ai.infractions.atencion import is_atencion_context, build_atencion_strong_template
-from ai.infractions.marcas_viales import is_marcas_viales_context, build_marcas_viales_strong_template
-from ai.infractions.seguro import is_seguro_context, build_seguro_strong_template
+from ai.infractions.generic import build_generic_body
+from ai.infractions.helpers import extract_hecho_literal, build_extra_attack_paragraphs
+
+# Opcionales: no deben romper arranque si faltan en producción
+try:
+    from ai.infractions.seguro import is_seguro_context, build_seguro_strong_template
+except Exception:
+    def is_seguro_context(core: Dict[str, Any], body: str = "") -> bool:
+        return False
+    def build_seguro_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
+        return build_generic_body(core)
+
+try:
+    from ai.infractions.itv import is_itv_context, build_itv_strong_template
+except Exception:
+    def is_itv_context(core: Dict[str, Any], body: str = "") -> bool:
+        return False
+    def build_itv_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
+        return build_generic_body(core)
+
+try:
+    from ai.infractions.marcas_viales import is_marcas_viales_context, build_marcas_viales_strong_template
+except Exception:
+    def is_marcas_viales_context(core: Dict[str, Any], body: str = "") -> bool:
+        return False
+    def build_marcas_viales_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
+        return build_generic_body(core)
+
+try:
+    from ai.infractions.carril import is_carril_context, build_carril_strong_template
+except Exception:
+    def is_carril_context(core: Dict[str, Any], body: str = "") -> bool:
+        return False
+    def build_carril_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
+        return build_generic_body(core)
+
+try:
+    from ai.infractions.municipal_semaforo import build_municipal_semaforo_template
+except Exception:
+    def build_municipal_semaforo_template(core: Dict[str, Any]) -> Dict[str, str]:
+        return build_generic_body(core)
+
+try:
+    from ai.infractions.municipal_sentido_contrario import build_municipal_sentido_contrario_template
+except Exception:
+    def build_municipal_sentido_contrario_template(core: Dict[str, Any]) -> Dict[str, str]:
+        return build_generic_body(core)
+
+try:
+    from ai.infractions.municipal_generic import build_municipal_generic_template
+except Exception:
+    def build_municipal_generic_template(core: Dict[str, Any]) -> Dict[str, str]:
+        return build_generic_body(core)
 
 from b2_storage import upload_bytes
 from docx_builder import build_docx
@@ -99,26 +150,35 @@ def _first_alegacion_title(body: str) -> str:
     return ""
 
 
+def _normalize(s: Any) -> str:
+    t = str(s or "").lower().strip()
+    t = t.replace("semáforo", "semaforo")
+    t = t.replace("teléfono", "telefono")
+    t = t.replace("móvil", "movil")
+    t = t.replace("línea", "linea")
+    t = t.replace("inspección", "inspeccion")
+    t = t.replace("señalización", "senalizacion")
+    t = t.replace("vehículo", "vehiculo")
+    t = t.replace("años", "anos")
+    return t
+
+
 def _raw_blob(core: Dict[str, Any]) -> str:
     core = core or {}
     parts: List[str] = []
-    for k in ("raw_text_pdf", "raw_text_vision", "raw_text_blob", "hecho_imputado", "hecho_denunciado_literal"):
+    for k in (
+        "raw_text_pdf",
+        "raw_text_vision",
+        "raw_text_blob",
+        "hecho_imputado",
+        "hecho_denunciado_literal",
+        "observaciones",
+        "organismo",
+    ):
         v = core.get(k)
         if isinstance(v, str) and v.strip():
             parts.append(v)
     return " ".join(parts).lower()
-
-
-def _normalize_text(s: Any) -> str:
-    t = str(s or "").lower().strip()
-    t = t.replace("semáforo", "semaforo")
-    t = t.replace("línea", "linea")
-    t = t.replace("vehículo", "vehiculo")
-    t = t.replace("móvil", "movil")
-    t = t.replace("teléfono", "telefono")
-    t = t.replace("años", "anos")
-    t = re.sub(r"\s+", " ", t)
-    return t.strip()
 
 
 def _clean_literal_text(text: str) -> str:
@@ -131,13 +191,14 @@ def _clean_literal_text(text: str) -> str:
     t = re.sub(r"^\s*hecho imputado\s*[:\-]?\s*", "", t, flags=re.IGNORECASE)
     t = re.sub(r"^\s*[\(\[]?\s*5[abc]\s*[\)\]]?\s*", "", t, flags=re.IGNORECASE)
 
-    t = re.sub(r"\s*/\s*", " / ", t)
+    t = re.sub(r"\s+/\s+", " / ", t)
     t = re.sub(r"\s+", " ", t).strip(" :-\t")
+
     return t
 
 
 def _is_probably_admin_line(line: str) -> bool:
-    l = _normalize_text(line)
+    l = _normalize(line)
     admin_signals = [
         "importe multa",
         "importe con reduccion",
@@ -155,7 +216,6 @@ def _is_probably_admin_line(line: str) -> bool:
         "organo",
         "expediente",
         "fecha documento",
-        "fecha notificacion",
         "hora",
         "via ",
         "punto km",
@@ -164,18 +224,12 @@ def _is_probably_admin_line(line: str) -> bool:
         "boletin",
         "agente denunciante",
         "observaciones internas",
-        "bonificacion",
-        "reduccion",
-        "entidad",
-        "fecha decreto",
-        "fecha caducidad",
-        "importe para ingresar",
     ]
     return any(s in l for s in admin_signals)
 
 
 def _looks_like_narrative_line(line: str) -> bool:
-    l = _normalize_text(line)
+    l = _normalize(line)
     signals = [
         "conducir",
         "circular",
@@ -197,22 +251,16 @@ def _looks_like_narrative_line(line: str) -> bool:
         "sin mantener",
         "atencion permanente",
         "atencion",
+        "vehiculo reseñado",
         "vehiculo resenado",
-        "observado por agentes",
         "observado por agente",
         "interceptado",
         "menor de",
         "ciclistas",
         "arcen",
+        "arcén",
         "en paralelo",
         "conversando",
-        "al realizar una maniobra",
-        "tasa de alcohol",
-        "alcohol",
-        "carril adyacente",
-        "libertad de movimientos",
-        "mordia las",
-        "mordia las unas",
     ]
     return any(k in l for k in signals)
 
@@ -225,8 +273,6 @@ def _extract_literal_from_blob(raw_text: str) -> str:
     text = re.sub(r"[ \t]+", " ", text)
 
     match = re.search(r"hecho denunciado\s*[:\-]?\s*", text, flags=re.IGNORECASE)
-    if not match:
-        match = re.search(r"hecho que se notifica\s*[:\-]?\s*", text, flags=re.IGNORECASE)
     if not match:
         match = re.search(r"hecho imputado\s*[:\-]?\s*", text, flags=re.IGNORECASE)
     if not match:
@@ -244,12 +290,14 @@ def _extract_literal_from_blob(raw_text: str) -> str:
     started = False
 
     for ln in lines:
+        low = _normalize(ln)
+
         if _is_probably_admin_line(ln):
             if started:
                 break
             continue
 
-        if re.match(r"^\s*5[abc]\b", _normalize_text(ln)):
+        if re.match(r"^\s*5[abc]\b", low):
             started = True
             cleaned = re.sub(r"^\s*5[abc]\s*", "", ln, flags=re.IGNORECASE).strip()
             if cleaned:
@@ -264,7 +312,7 @@ def _extract_literal_from_blob(raw_text: str) -> str:
 
         collected.append(ln)
 
-        if len(" ".join(collected)) > 700:
+        if len(" ".join(collected)) > 600:
             break
 
     if not collected:
@@ -273,30 +321,41 @@ def _extract_literal_from_blob(raw_text: str) -> str:
     out = " / ".join(collected)
     out = _clean_literal_text(out)
 
-    if len(out) < 30:
-        return ""
+    if len(out) < 40:
+        lines2: List[str] = []
+        for ln in lines:
+            if _is_probably_admin_line(ln):
+                if lines2:
+                    break
+                continue
+            lines2.append(ln)
+            if len(" ".join(lines2)) > 600:
+                break
+        out2 = _clean_literal_text(" / ".join(lines2))
+        if len(out2) > len(out):
+            out = out2
 
-    if len(out) > 650:
-        out = out[:650].rsplit(" ", 1)[0].strip() + "…"
+    if len(out) > 550:
+        out = out[:550].rsplit(" ", 1)[0].strip() + "…"
 
     return out.strip()
 
 
-def _extract_hecho_literal_robust(core: Dict[str, Any]) -> str:
+def _extract_hecho_literal(core: Dict[str, Any]) -> str:
     core = core or {}
 
     for key in ("hecho_denunciado_literal",):
         val = core.get(key)
         if isinstance(val, str) and val.strip():
             cleaned = _clean_literal_text(val)
-            if len(cleaned) >= 20:
+            if len(cleaned) >= 25:
                 return cleaned
 
     for key in ("raw_text_pdf", "raw_text_vision", "raw_text_blob"):
         val = core.get(key)
         if isinstance(val, str) and val.strip():
             extracted = _extract_literal_from_blob(val)
-            if extracted:
+            if extracted and len(extracted) >= 25:
                 return extracted
 
     hecho = core.get("hecho_imputado")
@@ -312,11 +371,11 @@ def _inject_hecho_literal(cuerpo: str, core: Dict[str, Any]) -> str:
     if not cuerpo:
         return cuerpo
 
-    literal = core.get("hecho_denunciado_literal") or _extract_hecho_literal_robust(core)
+    literal = _extract_hecho_literal(core)
     if not literal:
         return cuerpo
 
-    if str(literal).lower() in cuerpo.lower():
+    if literal.lower() in cuerpo.lower():
         return cuerpo
 
     lines = cuerpo.splitlines()
@@ -325,8 +384,8 @@ def _inject_hecho_literal(cuerpo: str, core: Dict[str, Any]) -> str:
 
     for line in lines:
         out.append(line)
-        if (not inserted) and re.match(r"\s*3[\)\.]?\s*Hecho imputado\s*:", line, flags=re.IGNORECASE):
-            out.append(f"Extracto literal del boletín: “{literal}”")
+        if (not inserted) and re.match(r"\s*3\)\s*Hecho imputado\s*:", line, flags=re.IGNORECASE):
+            out.append(f"   Extracto literal del boletín: “{literal}”")
             inserted = True
 
     if not inserted:
@@ -343,108 +402,63 @@ def _inject_hecho_literal(cuerpo: str, core: Dict[str, Any]) -> str:
     return "\n".join(out)
 
 
-def _augment_atencion_body(body: str, core: Dict[str, Any]) -> str:
-    if not body:
-        return body
-    bnorm = _normalize_text(body)
-    literal = _extract_hecho_literal_robust(core)
-    lnorm = _normalize_text(literal)
+def _infer_capture_mode(core: Dict[str, Any], ai_result: Optional[Dict[str, Any]] = None) -> str:
+    ai_result = ai_result or {}
+    cm = str(ai_result.get("capture_mode") or "").upper().strip()
+    if cm in ("AUTO", "AGENT", "UNKNOWN"):
+        return cm
 
-    extras: List[str] = []
+    blob = _raw_blob(core)
+    auto_signals = [
+        "camara", "cámara", "fotograma", "secuencia", "captacion automatica",
+        "captación automática", "sistema automatico", "sistema automático",
+        "video", "vídeo",
+    ]
+    agent_signals = [
+        "agente", "policia", "policía", "guardia civil", "denunciante",
+        "observo", "observó", "presencial", "in situ",
+    ]
+    auto_score = sum(1 for s in auto_signals if s in blob)
+    agent_score = sum(1 for s in agent_signals if s in blob)
 
-    if not any(k in bnorm for k in ["intervención tardía", "intervencion tardia"]):
-        if any(k in lnorm for k in ["1.5 km", "1,5 km", "tramo", "hasta ser interceptado", "observado por agentes"]):
-            extras.append(
-                "ALEGACIÓN COMPLEMENTARIA — INTERVENCIÓN TARDÍA DEL AGENTE\n"
-                "La propia denuncia afirma que la conducta fue observada durante un tramo antes de proceder a la interceptación del vehículo. "
-                "Si existiera realmente un peligro inmediato y grave para la circulación, resultaría lógico que la intervención se produjera de forma prácticamente instantánea. "
-                "La continuación de la marcha durante una distancia apreciable resulta difícilmente compatible con la existencia de un riesgo real e inminente."
-            )
-
-    if not any(k in bnorm for k in ["interior del vehículo", "interior del vehiculo", "condiciones de observación", "condiciones de observacion"]):
-        if any(k in lnorm for k in ["bailando", "tocando las palmas", "golpeando", "volante", "tambor", "mordia", "libertad de movimientos"]):
-            extras.append(
-                "ALEGACIÓN COMPLEMENTARIA — OBSERVACIÓN DEL INTERIOR DEL VEHÍCULO\n"
-                "La denuncia describe conductas realizadas dentro del habitáculo del vehículo, pero no precisa desde qué posición se realizó la observación, "
-                "a qué distancia, durante cuánto tiempo, ni con qué condiciones de visibilidad. Sin esos extremos no puede valorarse con seriedad la fiabilidad de la percepción atribuida al agente."
-            )
-
-    if not any(k in bnorm for k in ["presencia del menor", "menor en el vehículo", "menor en el vehiculo"]):
-        if any(k in lnorm for k in ["menor de", "menor en asiento trasero", "menor de dos anos", "menor de dos años"]):
-            extras.append(
-                "ALEGACIÓN COMPLEMENTARIA — MENOR EN EL VEHÍCULO\n"
-                "La mención a la presencia de un menor en el asiento trasero no basta por sí sola para integrar la infracción denunciada. "
-                "No se concreta en qué momento se observó al menor, si la observación se produjo durante la marcha o tras la detención, ni si utilizaba sistema de retención infantil homologado. "
-                "Sin esa concreción, dicha referencia no acredita por sí misma una situación objetiva de peligro."
-            )
-
-    if not extras:
-        return body
-
-    mm = re.search(r"^III\.\s*SOLICITO\b", body, flags=re.IGNORECASE | re.MULTILINE)
-    extra_txt = "\n\n".join(extras).strip()
-    if not mm:
-        return body.rstrip() + "\n\n" + extra_txt
-    return body[:mm.start()].rstrip() + "\n\n" + extra_txt + "\n\n" + body[mm.start():].lstrip()
+    if auto_score >= 2 and auto_score >= agent_score + 1:
+        return "AUTO"
+    if agent_score >= 2 and agent_score >= auto_score + 1:
+        return "AGENT"
+    return "UNKNOWN"
 
 
-def _augment_semaforo_body(body: str, core: Dict[str, Any]) -> str:
-    if not body:
-        return body
-    bnorm = _normalize_text(body)
-
-    extras: List[str] = []
-
-    if "linea de detencion" not in bnorm:
-        extras.append(
-            "ALEGACIÓN COMPLEMENTARIA — LÍNEA DE DETENCIÓN Y MOMENTO DEL REBASE\n"
-            "La infracción por semáforo en fase roja exige acreditar que el vehículo rebasó efectivamente la línea de detención cuando la fase roja estaba ya activada. "
-            "No basta una referencia genérica al semáforo; debe concretarse la posición del vehículo respecto de la línea de detención en el instante relevante."
-        )
-
-    if "secuencia" not in bnorm and "fotogram" not in bnorm and "fotograf" not in bnorm:
-        extras.append(
-            "ALEGACIÓN COMPLEMENTARIA — SECUENCIA PROBATORIA COMPLETA\n"
-            "Debe aportarse la secuencia completa de captación, ya sea mediante fotografías, fotogramas o grabación, que permita verificar de forma objetiva el instante del supuesto rebase y la fase semafórica concurrente."
-        )
-
-    if "sincronizacion" not in bnorm and "sincronización" not in bnorm:
-        extras.append(
-            "ALEGACIÓN COMPLEMENTARIA — SINCRONIZACIÓN Y DATOS TÉCNICOS DEL SISTEMA\n"
-            "Si la denuncia se apoya en un sistema automático de captación, debe acreditarse su correcto funcionamiento, la sincronización horaria, la identificación del cruce, el carril afectado y el semáforo concreto aplicable al vehículo denunciado."
-        )
-
-    if not extras:
-        return body
-
-    mm = re.search(r"^III\.\s*SOLICITO\b", body, flags=re.IGNORECASE | re.MULTILINE)
-    extra_txt = "\n\n".join(extras).strip()
-    if not mm:
-        return body.rstrip() + "\n\n" + extra_txt
-    return body[:mm.start()].rstrip() + "\n\n" + extra_txt + "\n\n" + body[mm.start():].lstrip()
-
-
-# ==========================
-# TIPICIDAD HARD LOCK (estable)
-# ==========================
-
-def _is_velocity_context(core: Dict[str, Any], cuerpo: str) -> bool:
-    core = core or {}
-
-    tipo = str(core.get("tipo_infraccion") or "").lower().strip()
-    if tipo == "velocidad":
+def _is_municipal(core: Dict[str, Any]) -> bool:
+    jurisd = _normalize(core.get("jurisdiccion"))
+    if jurisd == "municipal":
         return True
 
-    measured = core.get("velocidad_medida_kmh")
-    limit = core.get("velocidad_limite_kmh")
+    organismo = _normalize(core.get("organismo"))
+    blob = _raw_blob(core)
 
-    if isinstance(measured, (int, float)) and isinstance(limit, (int, float)):
-        return True
+    municipal_signals = [
+        "ayuntamiento",
+        "ajuntament",
+        "policia local",
+        "guardia urbana",
+        "concejalia de trafico",
+    ]
+    return any(s in organismo or s in blob for s in municipal_signals)
 
-    if isinstance(measured, str) and measured.strip().isdigit() and isinstance(limit, str) and limit.strip().isdigit():
-        return True
 
-    return False
+def _clean_tipo(tipo: Any) -> str:
+    t = _normalize(tipo)
+    aliases = {
+        "conduccion negligente": "atencion",
+        "conducción negligente": "atencion",
+        "negligente": "atencion",
+        "condiciones": "condiciones_vehiculo",
+        "vehiculo": "condiciones_vehiculo",
+        "vehículo": "condiciones_vehiculo",
+        "art_18_2": "auriculares",
+        "18.2": "auriculares",
+    }
+    return aliases.get(t, t)
 
 
 # ==========================
@@ -459,17 +473,17 @@ def _speed_margin_value(measured: int) -> float:
 
 def _dgt_speed_sanction_table() -> Dict[int, list]:
     return {
-        20: [(21,40,100,0,'100€ sin puntos'), (41,50,300,2,'300€ 2 puntos'), (51,60,400,4,'400€ 4 puntos'), (61,70,500,6,'500€ 6 puntos'), (71,999,600,6,'600€ 6 puntos')],
-        30: [(31,50,100,0,'100€ sin puntos'), (51,60,300,2,'300€ 2 puntos'), (61,70,400,4,'400€ 4 puntos'), (71,80,500,6,'500€ 6 puntos'), (81,999,600,6,'600€ 6 puntos')],
-        40: [(41,60,100,0,'100€ sin puntos'), (61,70,300,2,'300€ 2 puntos'), (71,80,400,4,'400€ 4 puntos'), (81,90,500,6,'500€ 6 puntos'), (91,999,600,6,'600€ 6 puntos')],
-        50: [(51,70,100,0,'100€ sin puntos'), (71,80,300,2,'300€ 2 puntos'), (81,90,400,4,'400€ 4 puntos'), (91,100,500,6,'500€ 6 puntos'), (121,999,600,6,'600€ 6 puntos')],
-        60: [(61,90,100,0,'100€ sin puntos'), (91,110,300,2,'300€ 2 puntos'), (111,120,400,4,'400€ 4 puntos'), (121,130,500,6,'500€ 6 puntos'), (131,999,600,6,'600€ 6 puntos')],
-        70: [(71,100,100,0,'100€ sin puntos'), (101,120,300,2,'300€ 2 puntos'), (121,130,400,4,'400€ 4 puntos'), (131,140,500,6,'500€ 6 puntos'), (141,999,600,6,'600€ 6 puntos')],
-        80: [(81,110,100,0,'100€ sin puntos'), (111,130,300,2,'300€ 2 puntos'), (131,140,400,4,'400€ 4 puntos'), (141,150,500,6,'500€ 6 puntos'), (151,999,600,6,'600€ 6 puntos')],
-        90: [(91,120,100,0,'100€ sin puntos'), (121,140,300,2,'300€ 2 puntos'), (141,150,400,4,'400€ 4 puntos'), (151,160,500,6,'500€ 6 puntos'), (161,999,600,6,'600€ 6 puntos')],
-        100:[(101,130,100,0,'100€ sin puntos'), (131,150,300,2,'300€ 2 puntos'), (151,160,400,4,'400€ 4 puntos'), (161,170,500,6,'500€ 6 puntos'), (171,999,600,6,'600€ 6 puntos')],
-        110:[(111,140,100,0,'100€ sin puntos'), (141,160,300,2,'300€ 2 puntos'), (161,170,400,4,'400€ 4 puntos'), (171,180,500,6,'500€ 6 puntos'), (181,999,600,6,'600€ 6 puntos')],
-        120:[(121,150,100,0,'100€ sin puntos'), (151,170,300,2,'300€ 2 puntos'), (171,180,400,4,'400€ 4 puntos'), (181,190,500,6,'500€ 6 puntos'), (191,999,600,6,'600€ 6 puntos')],
+        20: [(21, 40, 100, 0, '100€ sin puntos'), (41, 50, 300, 2, '300€ 2 puntos'), (51, 60, 400, 4, '400€ 4 puntos'), (61, 70, 500, 6, '500€ 6 puntos'), (71, 999, 600, 6, '600€ 6 puntos')],
+        30: [(31, 50, 100, 0, '100€ sin puntos'), (51, 60, 300, 2, '300€ 2 puntos'), (61, 70, 400, 4, '400€ 4 puntos'), (71, 80, 500, 6, '500€ 6 puntos'), (81, 999, 600, 6, '600€ 6 puntos')],
+        40: [(41, 60, 100, 0, '100€ sin puntos'), (61, 70, 300, 2, '300€ 2 puntos'), (71, 80, 400, 4, '400€ 4 puntos'), (81, 90, 500, 6, '500€ 6 puntos'), (91, 999, 600, 6, '600€ 6 puntos')],
+        50: [(51, 70, 100, 0, '100€ sin puntos'), (71, 80, 300, 2, '300€ 2 puntos'), (81, 90, 400, 4, '400€ 4 puntos'), (91, 100, 500, 6, '500€ 6 puntos'), (121, 999, 600, 6, '600€ 6 puntos')],
+        60: [(61, 90, 100, 0, '100€ sin puntos'), (91, 110, 300, 2, '300€ 2 puntos'), (111, 120, 400, 4, '400€ 4 puntos'), (121, 130, 500, 6, '500€ 6 puntos'), (131, 999, 600, 6, '600€ 6 puntos')],
+        70: [(71, 100, 100, 0, '100€ sin puntos'), (101, 120, 300, 2, '300€ 2 puntos'), (121, 130, 400, 4, '400€ 4 puntos'), (131, 140, 500, 6, '500€ 6 puntos'), (141, 999, 600, 6, '600€ 6 puntos')],
+        80: [(81, 110, 100, 0, '100€ sin puntos'), (111, 130, 300, 2, '300€ 2 puntos'), (131, 140, 400, 4, '400€ 4 puntos'), (141, 150, 500, 6, '500€ 6 puntos'), (151, 999, 600, 6, '600€ 6 puntos')],
+        90: [(91, 120, 100, 0, '100€ sin puntos'), (121, 140, 300, 2, '300€ 2 puntos'), (141, 150, 400, 4, '400€ 4 puntos'), (151, 160, 500, 6, '500€ 6 puntos'), (161, 999, 600, 6, '600€ 6 puntos')],
+        100: [(101, 130, 100, 0, '100€ sin puntos'), (131, 150, 300, 2, '300€ 2 puntos'), (151, 160, 400, 4, '400€ 4 puntos'), (161, 170, 500, 6, '500€ 6 puntos'), (171, 999, 600, 6, '600€ 6 puntos')],
+        110: [(111, 140, 100, 0, '100€ sin puntos'), (141, 160, 300, 2, '300€ 2 puntos'), (161, 170, 400, 4, '400€ 4 puntos'), (171, 180, 500, 6, '500€ 6 puntos'), (181, 999, 600, 6, '600€ 6 puntos')],
+        120: [(121, 150, 100, 0, '100€ sin puntos'), (151, 170, 300, 2, '300€ 2 puntos'), (171, 180, 400, 4, '400€ 4 puntos'), (181, 190, 500, 6, '500€ 6 puntos'), (191, 999, 600, 6, '600€ 6 puntos')],
     }
 
 
@@ -531,10 +545,12 @@ def _compute_velocity_calc_from_core(core: Dict[str, Any]) -> Dict[str, Any]:
     try:
         measured = core.get("velocidad_medida_kmh")
         limit = core.get("velocidad_limite_kmh")
+
         if isinstance(measured, str) and measured.strip().isdigit():
             measured = int(measured.strip())
         if isinstance(limit, str) and limit.strip().isdigit():
             limit = int(limit.strip())
+
         if not isinstance(measured, int) or not isinstance(limit, int):
             return {"ok": False, "reason": "missing_measured_or_limit"}
 
@@ -578,6 +594,7 @@ def _build_velocity_calc_paragraph(core: Dict[str, Any]) -> str:
     margin = vc.get("margin_value")
     corrected = vc.get("corrected")
     exceso = float(corrected) - float(limit)
+
     if exceso <= 0:
         return (
             "A efectos ilustrativos y sin perjuicio de la prueba que corresponde a la Administración, "
@@ -585,6 +602,7 @@ def _build_velocity_calc_paragraph(core: Dict[str, Any]) -> str:
             f"la velocidad corregida se situaría en torno a {corrected:.2f} km/h, lo que la situaría por debajo del límite máximo permitido. "
             "Debe acreditarse documentalmente el margen efectivamente aplicado, la velocidad corregida resultante y su encaje en el tramo sancionador."
         )
+
     return (
         "A efectos ilustrativos y sin perjuicio de la prueba que corresponde a la Administración, "
         f"con un límite de {limit} km/h y una medición de {measured} km/h, aplicando un margen de {margin:.2f} km/h, "
@@ -639,21 +657,22 @@ def _inject_tramo_error_paragraph(body: str, velocity_calc: Dict[str, Any]) -> s
             return body
         if not body or not isinstance(velocity_calc, dict) or not velocity_calc.get("ok") or not velocity_calc.get("mismatch"):
             return body
-        imposed = (velocity_calc.get("imposed") or {})
-        if not isinstance(imposed.get("fine"), int):
-            return body
 
+        imposed = (velocity_calc.get("imposed") or {})
         exp = velocity_calc.get("expected") or {}
-        imp = imposed
         if exp.get("fine") is None and exp.get("points") is None:
             return body
 
         parts = []
         parts.append("De forma adicional, se aprecia posible error de tramo sancionador.")
-        if isinstance(imp.get("fine"), int) and isinstance(exp.get("fine"), int) and imp.get("fine") != exp.get("fine"):
-            parts.append(f"Consta un importe impuesto de {imp.get('fine')}€, mientras que, atendida la velocidad corregida, el tramo orientativo podría corresponder a {exp.get('fine')}€.")
-        if isinstance(imp.get("points"), int) and isinstance(exp.get("points"), int) and imp.get("points") != exp.get("points"):
-            parts.append(f"Asímismo, constan {imp.get('points')} puntos, cuando el tramo orientativo podría implicar {exp.get('points')} puntos.")
+        if isinstance(imposed.get("fine"), int) and isinstance(exp.get("fine"), int) and imposed.get("fine") != exp.get("fine"):
+            parts.append(
+                f"Consta un importe impuesto de {imposed.get('fine')}€, mientras que, atendida la velocidad corregida, el tramo orientativo podría corresponder a {exp.get('fine')}€."
+            )
+        if isinstance(imposed.get("points"), int) and isinstance(exp.get("points"), int) and imposed.get("points") != exp.get("points"):
+            parts.append(
+                f"Asímismo, constan {imposed.get('points')} puntos, cuando el tramo orientativo podría implicar {exp.get('points')} puntos."
+            )
         if exp.get("band"):
             parts.append(f"Banda orientativa considerada: {exp.get('band')}.")
         parts.append("En todo caso, corresponde a la Administración acreditar margen aplicado, velocidad corregida y banda/tramo aplicado, con motivación técnica verificable.")
@@ -709,13 +728,7 @@ def _velocity_strict_validate(body: str) -> List[str]:
     if not any(k in b for k in ["cinemómetro", "cinemometro", "radar"]):
         missing.append("cinemometro")
 
-    seen = set()
-    out: List[str] = []
-    for x in missing:
-        if x not in seen:
-            seen.add(x)
-            out.append(x)
-    return out
+    return list(dict.fromkeys(missing))
 
 
 def _strict_validate_or_raise(conn, case_id: str, tpl: Dict[str, str], final_kind: str) -> None:
@@ -728,83 +741,102 @@ def _strict_validate_or_raise(conn, case_id: str, tpl: Dict[str, str], final_kin
 
 
 # ==========================
-# ROUTING (sin nonlocal, estable)
+# ROUTING DETERMINISTA
 # ==========================
 
-def _dispatch_kind(kind: str, core: Dict[str, Any], asunto_seed: str = "", cuerpo_seed: str = "") -> Tuple[Dict[str, str], str, str, Dict[str, Any]]:
-    kind = (kind or "").strip().lower()
-    decision_mode = "unknown"
-    decision: Dict[str, Any] = {"mode": "unknown", "reasons": ["not_computed"]}
+def _build_template_from_type(core: Dict[str, Any], ai_result: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, str], str, Dict[str, Any]]:
+    core = core or {}
+    ai_result = ai_result or {}
 
-    if kind == "velocidad":
-        asunto_v, cuerpo_v = _velocity_vse1_template(core)
+    tipo = _clean_tipo(core.get("tipo_infraccion"))
+    municipal = _is_municipal(core)
+    capture_mode = _infer_capture_mode(core, ai_result=ai_result)
+
+    blob = _raw_blob(core)
+    decision: Dict[str, Any] = {"mode": "unknown", "reasons": []}
+
+    sema_signals = [
+        "semaforo",
+        "fase roja",
+        "luz roja",
+        "luz roja no intermitente",
+        "no respeta la fase roja",
+        "no respetar la fase roja",
+        "no respeta la luz roja",
+        "linea de detencion",
+        "rebase la linea de detencion",
+        "articulo 146",
+        "art. 146",
+    ]
+    speed_signals = ["km/h", "radar", "cinemometro", "exceso de velocidad"]
+
+    known_types = {
+        "semaforo",
+        "velocidad",
+        "movil",
+        "auriculares",
+        "seguro",
+        "itv",
+        "marcas_viales",
+        "carril",
+        "condiciones_vehiculo",
+        "atencion",
+    }
+
+    if tipo not in known_types:
+        if any(s in blob for s in sema_signals):
+            tipo = "semaforo"
+        elif any(s in blob for s in speed_signals):
+            tipo = "velocidad"
+
+    if municipal:
+        if tipo == "semaforo":
+            return build_municipal_semaforo_template(core), "municipal_semaforo", decision
+
+        if any(s in blob for s in ["sentido contrario", "direccion prohibida", "dirección prohibida", "circulacion en sentido contrario", "circulación en sentido contrario"]):
+            return build_municipal_sentido_contrario_template(core), "municipal_sentido_contrario", decision
+
+        return build_municipal_generic_template(core), "municipal_generic", decision
+
+    if tipo == "velocidad":
+        asunto, cuerpo = _velocity_vse1_template(core)
         try:
-            decision = decide_modo_velocidad(core, body=cuerpo_v, capture_mode="UNKNOWN") or decision
-            decision_mode = (decision.get("mode") or "unknown") if isinstance(decision, dict) else "unknown"
+            decision = decide_modo_velocidad(core, body=cuerpo, capture_mode=capture_mode) or decision
         except Exception:
             pass
-        cuerpo_v = _inject_bucket_paragraph(cuerpo_v, decision)
-        cuerpo_v = _inject_tramo_error_paragraph(cuerpo_v, _compute_velocity_calc_from_core(core))
-        return {"asunto": asunto_v, "cuerpo": cuerpo_v}, "velocidad", decision_mode, decision
+        cuerpo = _inject_bucket_paragraph(cuerpo, decision)
+        cuerpo = _inject_tramo_error_paragraph(cuerpo, _compute_velocity_calc_from_core(core))
+        return {"asunto": asunto, "cuerpo": cuerpo}, "velocidad", decision
 
-    if kind == "semaforo":
-        tpl = build_semaforo_strong_template(core)
-        tpl["cuerpo"] = _augment_semaforo_body(tpl.get("cuerpo") or "", core)
-        return tpl, "semaforo", decision_mode, decision
+    if tipo == "semaforo":
+        return build_semaforo_strong_template(core), "semaforo", decision
 
-    if kind == "movil":
-        return build_movil_strong_template(core), "movil", decision_mode, decision
+    if tipo == "movil" or is_movil_context(core, ""):
+        return build_movil_strong_template(core, capture_mode=capture_mode), "movil", decision
 
-    if kind == "auriculares":
-        return build_auriculares_strong_template(core), "auriculares", decision_mode, decision
+    if tipo == "auriculares" or is_auriculares_context(core, ""):
+        return build_auriculares_strong_template(core), "auriculares", decision
 
-    if kind == "atencion":
-        tpl = build_atencion_strong_template(core, body=cuerpo_seed or "")
-        tpl["cuerpo"] = _augment_atencion_body(tpl.get("cuerpo") or "", core)
-        return tpl, "atencion", decision_mode, decision
+    if tipo == "seguro" or is_seguro_context(core, ""):
+        return build_seguro_strong_template(core), "seguro", decision
 
-    if kind == "condiciones_vehiculo":
-        return build_condiciones_vehiculo_strong_template(core), "condiciones_vehiculo", decision_mode, decision
+    if tipo == "itv" or is_itv_context(core, ""):
+        return build_itv_strong_template(core), "itv", decision
 
-    if kind == "seguro":
-        return build_seguro_strong_template(core), "seguro", decision_mode, decision
+    if tipo == "marcas_viales" or is_marcas_viales_context(core, ""):
+        return build_marcas_viales_strong_template(core), "marcas_viales", decision
 
-    if kind == "marcas_viales":
-        return build_marcas_viales_strong_template(core), "marcas_viales", decision_mode, decision
+    if tipo == "carril" or is_carril_context(core, ""):
+        return build_carril_strong_template(core), "carril", decision
 
-    return {"asunto": asunto_seed or "ALEGACIONES — SOLICITA REVISIÓN DEL EXPEDIENTE", "cuerpo": cuerpo_seed or ""}, "generic", decision_mode, decision
+    if tipo == "condiciones_vehiculo":
+        return build_condiciones_vehiculo_strong_template(core), "condiciones_vehiculo", decision
 
+    if tipo == "atencion" or tipo == "negligente" or is_atencion_context(core, ""):
+        return build_atencion_strong_template(core, body=""), "atencion", decision
 
-def _dispatch_from_detectors(core: Dict[str, Any], asunto_seed: str, cuerpo_seed: str) -> Tuple[Dict[str, str], str, str, Dict[str, Any]]:
-    if _is_velocity_context(core, cuerpo_seed):
-        return _dispatch_kind("velocidad", core, asunto_seed, cuerpo_seed)
-
-    if _is_semaforo_context_robust(core, cuerpo_seed):
-        return _dispatch_kind("semaforo", core, asunto_seed, cuerpo_seed)
-
-    if is_movil_context(core, cuerpo_seed):
-        return _dispatch_kind("movil", core, asunto_seed, cuerpo_seed)
-
-    if is_auriculares_context(core, cuerpo_seed):
-        return _dispatch_kind("auriculares", core, asunto_seed, cuerpo_seed)
-
-    if is_marcas_viales_context(core, _raw_blob(core)):
-        return _dispatch_kind("marcas_viales", core, asunto_seed, cuerpo_seed)
-
-    if is_seguro_context(core, _raw_blob(core)):
-        return _dispatch_kind("seguro", core, asunto_seed, cuerpo_seed)
-
-    if is_atencion_context(core, cuerpo_seed):
-        return _dispatch_kind("atencion", core, asunto_seed, cuerpo_seed)
-
-    if _is_condiciones_context_robust(core, cuerpo_seed):
-        return _dispatch_kind("condiciones_vehiculo", core, asunto_seed, cuerpo_seed)
-
-    final_kind_local = str(core.get("tipo_infraccion") or "").lower().strip()
-    if final_kind_local in ("semaforo", "movil", "auriculares", "atencion", "condiciones_vehiculo", "seguro", "marcas_viales", "velocidad"):
-        return _dispatch_kind(final_kind_local, core, asunto_seed, cuerpo_seed)
-
-    return {"asunto": asunto_seed, "cuerpo": cuerpo_seed}, "generic", "unknown", {"mode": "unknown", "reasons": ["not_computed"]}
+    tpl = build_generic_body(core)
+    return tpl, "generic", decision
 
 
 # ==========================
@@ -830,10 +862,6 @@ def generate_dgt_for_case(
     wrapper = extracted_json if isinstance(extracted_json, dict) else json.loads(extracted_json)
     core = (wrapper.get("extracted") or {}) if isinstance(wrapper, dict) else {}
 
-    literal = _extract_hecho_literal_robust(core)
-    if literal and not core.get("hecho_denunciado_literal"):
-        core["hecho_denunciado_literal"] = literal
-
     interesado_db = _load_interested_data_from_cases(conn, case_id)
     interesado = _merge_interesado(interesado or {}, interesado_db)
 
@@ -843,65 +871,33 @@ def generate_dgt_for_case(
     if not tipo:
         tipo = "reposicion" if core.get("pone_fin_via_administrativa") is True else "alegaciones"
 
-    tpl: Optional[Dict[str, str]] = None
     ai_used = False
     ai_error: Optional[str] = None
-    final_kind = "generic"
-    decision_mode = "unknown"
-    decision: Dict[str, Any] = {"mode": "unknown", "reasons": ["not_computed"]}
+    ai_result: Optional[Dict[str, Any]] = None
 
     if RTM_DGT_GENERATION_MODE != "TEMPLATES_ONLY":
         try:
             ai_result = run_expediente_ai(case_id)
-            draft = (ai_result or {}).get("draft") or {}
-            asunto = (draft.get("asunto") or "").strip()
-            cuerpo = (draft.get("cuerpo") or "").strip()
-
-            if asunto and cuerpo:
-                if override_mode:
-                    asunto = "RECURSO (MODO PRUEBA)"
-                    cuerpo = _strip_borrador_prefix_from_body(cuerpo)
-
-                locked = _expected_kind_from_article(core)
-                if locked == "cluster_18":
-                    if is_movil_context(core, cuerpo):
-                        tpl, final_kind, decision_mode, decision = _dispatch_kind("movil", core, asunto, cuerpo)
-                    elif is_auriculares_context(core, cuerpo):
-                        tpl, final_kind, decision_mode, decision = _dispatch_kind("auriculares", core, asunto, cuerpo)
-                    else:
-                        tpl, final_kind, decision_mode, decision = _dispatch_kind("atencion", core, asunto, cuerpo)
-                elif locked:
-                    tpl, final_kind, decision_mode, decision = _dispatch_kind(locked, core, asunto, cuerpo)
-                else:
-                    tpl, final_kind, decision_mode, decision = _dispatch_from_detectors(core, asunto, cuerpo)
-
-                ai_used = True
-
+            ai_used = True
         except Exception as e:
             ai_error = str(e)
-            tpl = None
+            ai_result = None
 
-    if not tpl:
+    tpl, final_kind, decision = _build_template_from_type(core, ai_result=ai_result)
+
+    if not tpl or not tpl.get("asunto") or not tpl.get("cuerpo"):
         if tipo == "reposicion":
             tpl = build_dgt_reposicion_text(core, interesado)
         else:
             tpl = build_dgt_alegaciones_text(core, interesado)
+        if not tpl or not tpl.get("asunto") or not tpl.get("cuerpo"):
+            tpl = build_generic_body(core)
+        final_kind = "generic"
 
-        cuerpo0 = tpl.get("cuerpo") or ""
-        asunto0 = tpl.get("asunto") or ""
-
-        locked = None
-        if locked == "cluster_18":
-            if is_movil_context(core, cuerpo0):
-                tpl, final_kind, decision_mode, decision = _dispatch_kind("movil", core, asunto0, cuerpo0)
-            elif is_auriculares_context(core, cuerpo0):
-                tpl, final_kind, decision_mode, decision = _dispatch_kind("auriculares", core, asunto0, cuerpo0)
-            else:
-                tpl, final_kind, decision_mode, decision = _dispatch_kind("atencion", core, asunto0, cuerpo0)
-        elif locked:
-            tpl, final_kind, decision_mode, decision = _dispatch_kind(locked, core, asunto0, cuerpo0)
-        else:
-            tpl, final_kind, decision_mode, decision = _dispatch_from_detectors(core, asunto0, cuerpo0)
+    if override_mode:
+        tpl["cuerpo"] = _strip_borrador_prefix_from_body(tpl.get("cuerpo") or "")
+        if final_kind == "generic" and tpl.get("asunto"):
+            tpl["asunto"] = "RECURSO (MODO PRUEBA)"
 
     try:
         _strict_validate_or_raise(conn, case_id, tpl, final_kind=final_kind)
@@ -984,8 +980,10 @@ def generate_dgt_for_case(
                     "generation_mode": RTM_DGT_GENERATION_MODE,
                     "override_mode": override_mode,
                     "final_kind": final_kind,
+                    "tipo_infraccion_source": core.get("tipo_infraccion"),
+                    "jurisdiccion_source": core.get("jurisdiccion"),
                     "missing_interested_fields": _missing_interested_fields(interesado),
-                    "velocity_decision_mode": decision_mode,
+                    "velocity_decision_mode": (decision or {}).get("mode"),
                     "velocity_decision": decision,
                 }
             ),
