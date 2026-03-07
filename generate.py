@@ -371,7 +371,7 @@ def _inject_hecho_literal(cuerpo: str, core: Dict[str, Any]) -> str:
     if not cuerpo:
         return cuerpo
 
-    literal = _extract_hecho_literal(core)
+    literal = extract_hecho_literal(core)
     if not literal:
         return cuerpo
 
@@ -402,6 +402,62 @@ def _inject_hecho_literal(cuerpo: str, core: Dict[str, Any]) -> str:
     return "\n".join(out)
 
 
+def _inject_extra_attack_paragraphs(cuerpo: str, core: Dict[str, Any]) -> str:
+    """
+    Segunda pasada:
+    - usa helpers.py de verdad
+    - refuerza semáforo
+    - añade párrafos específicos sin tocar módulos que ya funcionan
+    """
+    if not cuerpo:
+        return cuerpo
+
+    literal = extract_hecho_literal(core)
+    tipo_actual = _normalize(core.get("tipo_infraccion"))
+
+    literal_norm = _normalize(literal)
+    sema_signals = [
+        "luz roja",
+        "fase roja",
+        "roja no intermitente",
+        "linea de detencion",
+        "semáforo",
+        "semaforo",
+    ]
+
+    if any(s in literal_norm for s in [_normalize(x) for x in sema_signals]):
+        core["tipo_infraccion"] = "semaforo"
+        tipo_actual = "semaforo"
+
+    paragraphs = build_extra_attack_paragraphs(literal, core.get("tipo_infraccion")) or []
+
+    if tipo_actual == "semaforo":
+        sema_specific = [
+            "Para sancionar por no respetar la luz roja de un semáforo debe acreditarse que el vehículo rebasó la línea de detención cuando la fase roja estaba ya activada, extremo que requiere prueba objetiva y verificable.",
+            "Debe aportarse la secuencia completa de captación (fotografías o vídeo) que permita comprobar la posición del vehículo respecto de la línea de detención y el momento exacto de activación de la fase roja.",
+            "Asimismo, resulta necesario acreditar la sincronización horaria del sistema de captación y la identificación precisa del cruce, carril y semáforo aplicable en el momento de los hechos.",
+            "En ausencia de estos elementos objetivos, la imputación no permite verificar el rebase efectivo en fase roja ni enerva la presunción de inocencia.",
+        ]
+        for p in sema_specific:
+            if p.lower() not in cuerpo.lower():
+                paragraphs.append(p)
+
+    dedup: List[str] = []
+    seen = set()
+    for p in paragraphs:
+        key = re.sub(r"\s+", " ", (p or "").strip().lower())
+        if key and key not in seen and key not in re.sub(r"\s+", " ", cuerpo.lower()):
+            dedup.append(p.strip())
+            seen.add(key)
+
+    if not dedup:
+        return cuerpo
+
+    mm = re.search(r"^III\.\s*SOLICITO\b", cuerpo, flags=re.IGNORECASE | re.MULTILINE)
+    extra = "\n\n".join(dedup).strip()
+    if not mm:
+        return cuerpo.rstrip() + "\n\n" + extra
+    return cuerpo[:mm.start()].rstrip() + "\n\n" + extra + "\n\n" + cuerpo[mm.start():].lstrip()
 def _infer_capture_mode(core: Dict[str, Any], ai_result: Optional[Dict[str, Any]] = None) -> str:
     ai_result = ai_result or {}
     cm = str(ai_result.get("capture_mode") or "").upper().strip()
@@ -920,6 +976,8 @@ def generate_dgt_for_case(
     kind_pdf = "generated_pdf_reposicion" if tipo == "reposicion" else "generated_pdf_alegaciones"
 
     tpl["cuerpo"] = _inject_hecho_literal(tpl.get("cuerpo") or "", core)
+    tpl["cuerpo"] = _inject_extra_attack_paragraphs(tpl.get("cuerpo") or "", core)
+    tpl["cuerpo"] = _inject_extra_attack_paragraphs(tpl.get("cuerpo") or "", core)
 
     docx_bytes = build_docx(tpl["asunto"], tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
