@@ -14,6 +14,7 @@ from ai.velocity_decision import decide_modo_velocidad
 from ai.infractions.semaforo import build_semaforo_strong_template
 from ai.infractions.movil import is_movil_context, build_movil_strong_template
 from ai.infractions.condiciones_vehiculo import build_condiciones_vehiculo_strong_template
+from ai.infractions.helpers import extract_hecho_literal, build_extra_attack_paragraphs
 
 # ✅ NUEVO: auriculares (art.18.2)
 from ai.infractions.distracciones import is_auriculares_context, build_auriculares_strong_template
@@ -565,16 +566,15 @@ def generate_dgt_for_case(
     wrapper = extracted_json if isinstance(extracted_json, dict) else json.loads(extracted_json)
     core = (wrapper.get("extracted") or {}) if isinstance(wrapper, dict) else {}
 
-    # Congelar una sola vez el hecho literal/base del expediente
-    literal = extract_hecho_literal(core)
-    if literal and not core.get("hecho_denunciado_literal"):
-        core["hecho_denunciado_literal"] = literal
+    # Congelar el hecho literal y el tipo desde analyze
+literal = extract_hecho_literal(core)
 
-    interesado_db = _load_interested_data_from_cases(conn, case_id)
-    interesado = _merge_interesado(interesado or {}, interesado_db)
+if literal and not core.get("hecho_denunciado_literal"):
+    core["hecho_denunciado_literal"] = literal
 
-    flags = _load_case_flags(conn, case_id)
-    override_mode = bool(flags.get("test_mode")) and bool(flags.get("override_deadlines"))
+# No permitir que generate cambie el tipo decidido por analyze
+if core.get("tipo_infraccion"):
+    core["tipo_infraccion"] = core["tipo_infraccion"]
 
     if not tipo:
         tipo = "reposicion" if core.get("pone_fin_via_administrativa") is True else "alegaciones"
