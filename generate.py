@@ -890,7 +890,7 @@ def generate_dgt_for_case(
         cuerpo0 = tpl.get("cuerpo") or ""
         asunto0 = tpl.get("asunto") or ""
 
-        locked = _expected_kind_from_article(core)
+        locked = None
         if locked == "cluster_18":
             if is_movil_context(core, cuerpo0):
                 tpl, final_kind, decision_mode, decision = _dispatch_kind("movil", core, asunto0, cuerpo0)
