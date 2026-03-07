@@ -14,7 +14,6 @@ from ai.velocity_decision import decide_modo_velocidad
 from ai.infractions.semaforo import build_semaforo_strong_template
 from ai.infractions.movil import is_movil_context, build_movil_strong_template
 from ai.infractions.condiciones_vehiculo import build_condiciones_vehiculo_strong_template
-from ai.infractions.helpers import extract_hecho_literal, build_extra_attack_paragraphs
 
 # ✅ NUEVO: auriculares (art.18.2)
 from ai.infractions.distracciones import is_auriculares_context, build_auriculares_strong_template
@@ -544,6 +543,82 @@ def _strict_validate_or_raise(conn, case_id: str, tpl: Dict[str, str], final_kin
 
 
 # ==========================
+# ROUTING (sin nonlocal, estable)
+# ==========================
+
+def _dispatch_kind(kind: str, core: Dict[str, Any], asunto_seed: str = "", cuerpo_seed: str = "") -> Tuple[Dict[str, str], str, str, Dict[str, Any]]:
+    kind = (kind or "").strip().lower()
+    decision_mode = "unknown"
+    decision: Dict[str, Any] = {"mode": "unknown", "reasons": ["not_computed"]}
+
+    if kind == "velocidad":
+        asunto_v, cuerpo_v = _velocity_vse1_template(core)
+        try:
+            decision = decide_modo_velocidad(core, body=cuerpo_v, capture_mode="UNKNOWN") or decision
+            decision_mode = (decision.get("mode") or "unknown") if isinstance(decision, dict) else "unknown"
+        except Exception:
+            pass
+        cuerpo_v = _inject_bucket_paragraph(cuerpo_v, decision)
+        cuerpo_v = _inject_tramo_error_paragraph(cuerpo_v, _compute_velocity_calc_from_core(core))
+        return {"asunto": asunto_v, "cuerpo": cuerpo_v}, "velocidad", decision_mode, decision
+
+    if kind == "semaforo":
+        return build_semaforo_strong_template(core), "semaforo", decision_mode, decision
+
+    if kind == "movil":
+        return build_movil_strong_template(core), "movil", decision_mode, decision
+
+    if kind == "auriculares":
+        return build_auriculares_strong_template(core), "auriculares", decision_mode, decision
+
+    if kind == "atencion":
+        return build_atencion_strong_template(core, body=cuerpo_seed or ""), "atencion", decision_mode, decision
+
+    if kind == "condiciones_vehiculo":
+        return build_condiciones_vehiculo_strong_template(core), "condiciones_vehiculo", decision_mode, decision
+
+    if kind == "seguro":
+        return build_seguro_strong_template(core), "seguro", decision_mode, decision
+
+    if kind == "marcas_viales":
+        return build_marcas_viales_strong_template(core), "marcas_viales", decision_mode, decision
+
+    return {"asunto": asunto_seed or "ALEGACIONES — SOLICITA REVISIÓN DEL EXPEDIENTE", "cuerpo": cuerpo_seed or ""}, "generic", decision_mode, decision
+
+
+def _dispatch_from_detectors(core: Dict[str, Any], asunto_seed: str, cuerpo_seed: str) -> Tuple[Dict[str, str], str, str, Dict[str, Any]]:
+    if _is_velocity_context(core, cuerpo_seed):
+        return _dispatch_kind("velocidad", core, asunto_seed, cuerpo_seed)
+
+    if _is_semaforo_context_robust(core, cuerpo_seed):
+        return _dispatch_kind("semaforo", core, asunto_seed, cuerpo_seed)
+
+    if is_movil_context(core, cuerpo_seed):
+        return _dispatch_kind("movil", core, asunto_seed, cuerpo_seed)
+
+    if is_auriculares_context(core, cuerpo_seed):
+        return _dispatch_kind("auriculares", core, asunto_seed, cuerpo_seed)
+
+    if is_marcas_viales_context(core, _raw_blob(core)):
+        return _dispatch_kind("marcas_viales", core, asunto_seed, cuerpo_seed)
+
+    if is_seguro_context(core, _raw_blob(core)):
+        return _dispatch_kind("seguro", core, asunto_seed, cuerpo_seed)
+
+    if is_atencion_context(core, cuerpo_seed):
+        return _dispatch_kind("atencion", core, asunto_seed, cuerpo_seed)
+
+    if _is_condiciones_context_robust(core, cuerpo_seed):
+        return _dispatch_kind("condiciones_vehiculo", core, asunto_seed, cuerpo_seed)
+
+    final_kind_local = str(core.get("tipo_infraccion") or "").lower().strip()
+    if final_kind_local in ("semaforo", "movil", "auriculares", "atencion", "condiciones_vehiculo", "seguro", "marcas_viales", "velocidad"):
+        return _dispatch_kind(final_kind_local, core, asunto_seed, cuerpo_seed)
+
+    return {"asunto": asunto_seed, "cuerpo": cuerpo_seed}, "generic", "unknown", {"mode": "unknown", "reasons": ["not_computed"]}
+
+
+# ==========================
 # FUNCIÓN PRINCIPAL
 # ==========================
 
@@ -566,15 +641,11 @@ def generate_dgt_for_case(
     wrapper = extracted_json if isinstance(extracted_json, dict) else json.loads(extracted_json)
     core = (wrapper.get("extracted") or {}) if isinstance(wrapper, dict) else {}
 
-    # Congelar el hecho literal y el tipo desde analyze
-literal = extract_hecho_literal(core)
+    interesado_db = _load_interested_data_from_cases(conn, case_id)
+    interesado = _merge_interesado(interesado or {}, interesado_db)
 
-if literal and not core.get("hecho_denunciado_literal"):
-    core["hecho_denunciado_literal"] = literal
-
-# No permitir que generate cambie el tipo decidido por analyze
-if core.get("tipo_infraccion"):
-    core["tipo_infraccion"] = core["tipo_infraccion"]
+    flags = _load_case_flags(conn, case_id)
+    override_mode = bool(flags.get("test_mode")) and bool(flags.get("override_deadlines"))
 
     if not tipo:
         tipo = "reposicion" if core.get("pone_fin_via_administrativa") is True else "alegaciones"
@@ -586,90 +657,6 @@ if core.get("tipo_infraccion"):
 
     decision_mode = "unknown"
     decision: Dict[str, Any] = {"mode": "unknown", "reasons": ["not_computed"]}
-
-    # --------------------------
-    # Dispatch helpers (planos, sin indentación frágil)
-    # --------------------------
-    def _dispatch(kind: str, asunto_seed: str = "", cuerpo_seed: str = "") -> Dict[str, str]:
-        nonlocal final_kind, decision_mode, decision
-
-        kind = (kind or "").strip().lower()
-
-        if kind == "velocidad":
-            asunto_v, cuerpo_v = _velocity_vse1_template(core)
-            final_kind = "velocidad"
-            try:
-                decision = decide_modo_velocidad(core, body=cuerpo_v, capture_mode="UNKNOWN") or decision
-                decision_mode = (decision.get("mode") or "unknown") if isinstance(decision, dict) else "unknown"
-            except Exception:
-                pass
-            cuerpo_v = _inject_bucket_paragraph(cuerpo_v, decision)
-            cuerpo_v = _inject_tramo_error_paragraph(cuerpo_v, _compute_velocity_calc_from_core(core))
-            return {"asunto": asunto_v, "cuerpo": cuerpo_v}
-
-        if kind == "semaforo":
-            final_kind = "semaforo"
-            return build_semaforo_strong_template(core)
-
-        if kind == "movil":
-            final_kind = "movil"
-            return build_movil_strong_template(core)
-
-        if kind == "auriculares":
-            final_kind = "auriculares"
-            return build_auriculares_strong_template(core)
-
-        if kind == "atencion":
-            final_kind = "atencion"
-            return build_atencion_strong_template(core, body=cuerpo_seed or "")
-
-        if kind == "condiciones_vehiculo":
-            final_kind = "condiciones_vehiculo"
-            return build_condiciones_vehiculo_strong_template(core)
-
-        if kind == "seguro":
-            final_kind = "seguro"
-            return build_seguro_strong_template(core)
-
-        if kind == "marcas_viales":
-            final_kind = "marcas_viales"
-            return build_marcas_viales_strong_template(core)
-
-        final_kind = "generic"
-        return {"asunto": asunto_seed or "ALEGACIONES — SOLICITA REVISIÓN DEL EXPEDIENTE", "cuerpo": cuerpo_seed or ""}
-
-    def _dispatch_from_detectors(asunto_seed: str, cuerpo_seed: str) -> Dict[str, str]:
-        # Orden quirúrgico, pero SOLO si no hay hard-lock claro
-        if _is_velocity_context(core, cuerpo_seed):
-            return _dispatch("velocidad", asunto_seed, cuerpo_seed)
-
-        if _is_semaforo_context_robust(core, cuerpo_seed):
-            return _dispatch("semaforo", asunto_seed, cuerpo_seed)
-
-        if is_movil_context(core, cuerpo_seed):
-            return _dispatch("movil", asunto_seed, cuerpo_seed)
-
-        if is_auriculares_context(core, cuerpo_seed):
-            return _dispatch("auriculares", asunto_seed, cuerpo_seed)
-
-        if is_marcas_viales_context(core, _raw_blob(core)):
-            return _dispatch("marcas_viales", asunto_seed, cuerpo_seed)
-
-        if is_seguro_context(core, _raw_blob(core)):
-            return _dispatch("seguro", asunto_seed, cuerpo_seed)
-
-        if is_atencion_context(core, cuerpo_seed):
-            return _dispatch("atencion", asunto_seed, cuerpo_seed)
-
-        if _is_condiciones_context_robust(core, cuerpo_seed):
-            return _dispatch("condiciones_vehiculo", asunto_seed, cuerpo_seed)
-
-        final_kind_local = str(core.get("tipo_infraccion") or "").lower().strip()
-        # fallback por tipo_infraccion si viene limpio
-        if final_kind_local in ("semaforo", "movil", "auriculares", "atencion", "condiciones_vehiculo", "seguro", "marcas_viales", "velocidad"):
-            return _dispatch(final_kind_local, asunto_seed, cuerpo_seed)
-
-        return {"asunto": asunto_seed, "cuerpo": cuerpo_seed}
 
     # --------------------------
     # IA primero (si procede)
@@ -691,16 +678,16 @@ if core.get("tipo_infraccion"):
                 if locked == "cluster_18":
                     # decide dentro del cluster 18
                     if is_movil_context(core, cuerpo):
-                        tpl = _dispatch("movil", asunto, cuerpo)
+                        tpl, final_kind, decision_mode, decision = _dispatch_kind("movil", core, asunto, cuerpo)
                     elif is_auriculares_context(core, cuerpo):
-                        tpl = _dispatch("auriculares", asunto, cuerpo)
+                        tpl, final_kind, decision_mode, decision = _dispatch_kind("auriculares", core, asunto, cuerpo)
                     else:
-                        tpl = _dispatch("atencion", asunto, cuerpo)
+                        tpl, final_kind, decision_mode, decision = _dispatch_kind("atencion", core, asunto, cuerpo)
                 elif locked:
-                    tpl = _dispatch(locked, asunto, cuerpo)
+                    tpl, final_kind, decision_mode, decision = _dispatch_kind(locked, core, asunto, cuerpo)
                 else:
                     # 2) Detectores
-                    tpl = _dispatch_from_detectors(asunto, cuerpo)
+                    tpl, final_kind, decision_mode, decision = _dispatch_from_detectors(core, asunto, cuerpo)
 
                 ai_used = True
 
@@ -723,15 +710,15 @@ if core.get("tipo_infraccion"):
         locked = _expected_kind_from_article(core)
         if locked == "cluster_18":
             if is_movil_context(core, cuerpo0):
-                tpl = _dispatch("movil", asunto0, cuerpo0)
+                tpl, final_kind, decision_mode, decision = _dispatch_kind("movil", core, asunto0, cuerpo0)
             elif is_auriculares_context(core, cuerpo0):
-                tpl = _dispatch("auriculares", asunto0, cuerpo0)
+                tpl, final_kind, decision_mode, decision = _dispatch_kind("auriculares", core, asunto0, cuerpo0)
             else:
-                tpl = _dispatch("atencion", asunto0, cuerpo0)
+                tpl, final_kind, decision_mode, decision = _dispatch_kind("atencion", core, asunto0, cuerpo0)
         elif locked:
-            tpl = _dispatch(locked, asunto0, cuerpo0)
+            tpl, final_kind, decision_mode, decision = _dispatch_kind(locked, core, asunto0, cuerpo0)
         else:
-            tpl = _dispatch_from_detectors(asunto0, cuerpo0)
+            tpl, final_kind, decision_mode, decision = _dispatch_from_detectors(core, asunto0, cuerpo0)
 
     # STRICT (solo velocidad)
     try:
