@@ -475,58 +475,63 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
     candidates_all: List[int] = []
 
     if velocity_context:
+        # 1) Todos los candidatos km/h
         for mm in re.finditer(r"\b(\d{2,3})\s*km\s*/?\s*h\b", t):
             try:
-                candidates_all.append(int(mm.group(1)))
+                n = int(mm.group(1))
+                if 10 <= n <= 250:
+                    candidates_all.append(n)
             except Exception:
                 pass
 
+        # 2) Prioridad máxima: patrón narrativo fuerte del hecho
+        strong_measured: List[int] = []
+        for mm in re.finditer(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?\s*h\b", t):
+            try:
+                n = int(mm.group(1))
+                if 10 <= n <= 250:
+                    strong_measured.append(n)
+            except Exception:
+                pass
+
+        if strong_measured:
+            measured = max(strong_measured)
+
+        # 3) Extraer límite con patrones fuertes
         t_no_deadlines = re.sub(r"fecha\s*l[ií]mite[^\d]{0,40}\d{1,2}/\d{1,2}/\d{2,4}", "", t)
 
         limit_candidates: List[int] = []
         for mm in re.finditer(
-            r"\b(?:limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite|velocidad\s+m[aá]xima|velocidad\s+maxima)\b[^\d]{0,80}(\d{2,3})\b",
+            r"\b(?:teniendo\s+limitada\s+la\s+velocidad\s+a|limitad[ao]a?|limitada\s+la\s+velocidad|l[ií]mite|limite|velocidad\s+m[aá]xima|velocidad\s+maxima)\b[^\d]{0,80}(\d{2,3})\b",
             t_no_deadlines,
         ):
             try:
-                limit_candidates.append(int(mm.group(1)))
-            except Exception:
-                pass
-
-        for mm in re.finditer(r"\blimitad[ao]a?\s+a\s+(\d{2,3})\s*km\s*/?\s*h\b", t_no_deadlines):
-            try:
-                limit_candidates.append(int(mm.group(1)))
+                n = int(mm.group(1))
+                if 10 <= n <= 200:
+                    limit_candidates.append(n)
             except Exception:
                 pass
 
         if limit_candidates:
-            lc = [x for x in limit_candidates if 10 <= x <= 200]
-            limit = sorted(set(lc))[0] if lc else min(limit_candidates)
+            limit = sorted(set(limit_candidates))[0]
 
-        measured_candidates: List[int] = []
-        for mm in re.finditer(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?\s*h\b", t):
-            try:
-                measured_candidates.append(int(mm.group(1)))
-            except Exception:
-                pass
-
-        if not measured_candidates and candidates_all:
-            measured_candidates = candidates_all[:]
-
-        measured_candidates = [x for x in measured_candidates if 10 <= x <= 250]
-        candidates_all = [x for x in candidates_all if 10 <= x <= 250]
-
-        if measured_candidates:
+        # 4) Fallback si no hubo patrón narrativo fuerte
+        if measured is None and candidates_all:
             if limit is not None:
-                above = [x for x in measured_candidates if x >= (limit + 5)]
-                measured = max(above) if above else max(measured_candidates)
+                above = [x for x in candidates_all if x >= (limit + 5)]
+                measured = max(above) if above else max(candidates_all)
             else:
-                measured = max(measured_candidates)
+                measured = max(candidates_all)
 
-        uniq = sorted(set(measured_candidates))
-        if len(uniq) >= 2 and (max(uniq) - min(uniq)) >= 20:
-            conflict = True
-        if measured is not None and limit is not None and abs(measured - limit) <= 3:
+        # 5) Detección de conflicto
+        uniq = sorted(set(candidates_all))
+        if len(uniq) >= 2:
+            if (max(uniq) - min(uniq)) >= 15:
+                conflict = True
+            if strong_measured and any(x != measured for x in uniq):
+                conflict = True
+
+        if measured is not None and limit is not None and measured <= limit:
             conflict = True
 
     fine_eur = None
