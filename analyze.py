@@ -40,10 +40,6 @@ def _safe_str(v: Any) -> str:
 
 
 def _flatten_text(extracted_core: Dict[str, Any], text_content: str = "") -> str:
-    """
-    Construye un blob textual amplio y útil para triage.
-    Incluye tanto campos estructurados como OCR / literales.
-    """
     parts: List[str] = []
 
     if isinstance(extracted_core, dict):
@@ -52,6 +48,7 @@ def _flatten_text(extracted_core: Dict[str, Any], text_content: str = "") -> str
             "expediente_ref",
             "tipo_sancion",
             "hecho_denunciado_literal",
+            "hecho_denunciado_resumido",
             "hecho_imputado",
             "observaciones",
             "vision_raw_text",
@@ -66,33 +63,17 @@ def _flatten_text(extracted_core: Dict[str, Any], text_content: str = "") -> str
                 v = extracted_core.get(k)
                 if v is None:
                     continue
-                if isinstance(v, (str, int, float, bool)):
-                    sv = _safe_str(v).strip()
-                    if sv:
-                        parts.append(f"{k}: {sv}")
-                else:
-                    try:
-                        sv = str(v).strip()
-                        if sv:
-                            parts.append(f"{k}: {sv}")
-                    except Exception:
-                        pass
+                sv = _safe_str(v).strip()
+                if sv:
+                    parts.append(f"{k}: {sv}")
                 used.add(k)
 
         for k, v in extracted_core.items():
             if k in used or v is None:
                 continue
-            if isinstance(v, (str, int, float, bool)):
-                sv = _safe_str(v).strip()
-                if sv:
-                    parts.append(f"{k}: {sv}")
-            else:
-                try:
-                    sv = str(v).strip()
-                    if sv:
-                        parts.append(f"{k}: {sv}")
-                except Exception:
-                    pass
+            sv = _safe_str(v).strip()
+            if sv:
+                parts.append(f"{k}: {sv}")
 
     if text_content:
         parts.append(text_content)
@@ -101,9 +82,6 @@ def _flatten_text(extracted_core: Dict[str, Any], text_content: str = "") -> str
 
 
 def _merge_extracted(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Conserva valores no vacíos de primary y rellena con secondary.
-    """
     primary = primary or {}
     secondary = secondary or {}
     out = dict(secondary)
@@ -123,117 +101,68 @@ def _normalize_for_matching(text: str) -> str:
     t = t.replace("móvil", "movil")
     t = t.replace("cinemómetro", "cinemometro")
     t = t.replace("inspección", "inspeccion")
+    t = t.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").replace("ü", "u").replace("ñ", "n")
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n+", "\n", t)
     return t.strip()
 
 
-ADMIN_FIELDS = [
+_HECHO_HEADERS = [
+    "hecho denunciado",
+    "hecho que se notifica",
+    "hecho imputado",
+    "hecho infringido",
+    "hecho infractor",
+]
+
+_STOP_LINE_SIGNALS = [
+    "datos vehiculo",
+    "datos del vehiculo",
+    "datos del interesado",
+    "datos del conductor",
+    "identificacion de la multa",
+    "identificacion multa",
     "importe multa",
     "importe con reduccion",
-    "importe con reducción",
-    "fecha limite",
-    "fecha límite",
-    "lugar de denuncia",
     "puntos a detraer",
-    "matricula",
-    "matrícula",
-    "marca y modelo",
-    "marca",
-    "modelo",
-    "clase vehiculo",
-    "clase vehículo",
-    "datos del vehic",
+    "fecha limite",
+    "motivo de no notificacion",
+    "fecha y firma",
+    "lugar de pago",
+    "fecha decreto",
     "domicilio",
     "provincia",
     "codigo postal",
-    "código postal",
-    "identificacion de la multa",
-    "identificación de la multa",
-    "organo",
-    "órgano",
-    "expediente",
-    "fecha documento",
-    "hora",
-    "via ",
-    "vía ",
-    "punto km",
-    "sentido",
-    "titular",
     "boletin",
-    "boletín",
     "agente denunciante",
-    "observaciones internas",
-    "jefatura",
-    "fecha caducidad documento",
-    "lugar de pago",
-    "referenciado cobro",
-    "total principal",
-    "bonificacion",
-    "bonificación",
-    "importe para ingresar",
-    "motivo de no notificacion",
-    "motivo de no notificación",
+    "telefono de informacion",
+    "telefono de atencion",
+    "fax",
+    "correo ordinario",
+    "correo certificado",
+    "remitir el presente",
+    "impreso relleno",
+    "precepto infringido",
+    "lugar de denuncia",
+    "ejemplar para el infractor",
 ]
 
-NARRATIVE_SIGNALS = [
-    "conducir",
-    "circular",
-    "circulando",
-    "circulaba",
-    "no respetar",
-    "no respeta",
-    "utilizando",
-    "bailando",
-    "tocando",
-    "golpeando",
-    "auricular",
-    "auriculares",
-    "cascos",
-    "luz roja",
-    "fase roja",
-    "marca longitudinal",
-    "adelantamiento",
-    "sin mantener",
-    "atencion permanente",
-    "atención permanente",
-    "vehiculo resenado",
-    "vehículo reseñado",
-    "observado por agente",
-    "interceptado",
-    "interceptación",
-    "interceptacion",
-    "menor de",
-    "ciclistas",
-    "arcen",
-    "arcén",
-    "en paralelo",
-    "conversando",
-    "telefono movil",
-    "teléfono móvil",
-    "telefono",
-    "teléfono",
-    "movil",
-    "móvil",
-    "itv",
-    "seguro obligatorio",
-    "alumbrado",
-    "senalizacion optica",
-    "señalización óptica",
-    "linea continua",
-    "línea continua",
-    "linea de detencion",
-    "línea de detención",
-    "uso manual",
-    "radar",
-    "cinemometro",
-    "cinemómetro",
-    "velocidad",
-    "km/h",
-    "cruce con fase roja",
-    "semaforo en rojo",
-    "semáforo en rojo",
-    "cruce con luz roja",
+_ADMIN_KV_PREFIXES = [
+    "organismo:",
+    "expediente_ref:",
+    "tipo_sancion:",
+    "observaciones:",
+    "vision_raw_text:",
+    "raw_text_pdf:",
+    "raw_text_vision:",
+    "raw_text_blob:",
+    "hecho_imputado:",
+    "hecho_denunciado_literal:",
+    "hecho_denunciado_resumido:",
+    "fecha_documento:",
+    "fecha_notificacion:",
+    "importe:",
+    "jurisdiccion:",
 ]
 
 
@@ -243,51 +172,75 @@ def _clean_literal_text(text: str) -> str:
     t = re.sub(r"\n{2,}", "\n", t)
     t = t.strip()
 
-    t = re.sub(r"^\s*hecho denunciado\s*[:\-]?\s*", "", t, flags=re.IGNORECASE)
-    t = re.sub(r"^\s*hecho imputado\s*[:\-]?\s*", "", t, flags=re.IGNORECASE)
-    t = re.sub(r"^\s*hecho que se notifica\s*[:\-]?\s*", "", t, flags=re.IGNORECASE)
-    t = re.sub(r"^\s*hecho infringido\s*[:\-]?\s*", "", t, flags=re.IGNORECASE)
+    t = re.sub(
+        r"^\s*(hecho denunciado|hecho que se notifica|hecho imputado|hecho infringido|hecho infractor)\s*[:\-]?\s*",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    )
     t = re.sub(r"^\s*5[abc]\s*", "", t, flags=re.IGNORECASE)
-
-    t = re.sub(r"\s+/\s+", " / ", t)
+    t = re.sub(r'^\s*[\"\'“”]+|[\"\'“”]+\s*$', "", t)
     t = re.sub(r"\s+", " ", t).strip(" :-\t")
-    return t
+    t = re.sub(r"^(movil|m[oó]vil)\s+", "", t, flags=re.IGNORECASE)
+    return t.strip()
 
 
-def _is_probably_admin_line(line: str) -> bool:
+def _is_admin_line(line: str) -> bool:
     l = _normalize_for_matching(line)
-    return any(x in l for x in ADMIN_FIELDS)
+    if any(l.startswith(p) for p in _ADMIN_KV_PREFIXES):
+        return True
+    if any(s in l for s in _STOP_LINE_SIGNALS):
+        return True
+    if re.match(r"^\s*\d+\.\s+", l):
+        return any(k in l for k in ["datos", "fecha", "importe", "pago", "firma", "telefono", "correo"])
+    return False
 
 
 def _looks_like_narrative_line(line: str) -> bool:
     l = _normalize_for_matching(line)
-    return any(k in l for k in NARRATIVE_SIGNALS)
+    narrative_signals = [
+        "conducir", "circular", "circulando", "circulaba", "cruce", "fase roja", "luz roja",
+        "semaforo", "utilizando", "telefono", "movil", "auricular", "auriculares", "cascos",
+        "bail", "palm", "golpe", "volante", "negligente", "atencion", "distraccion", "km/h",
+        "velocidad", "cinemometro", "radar", "marca longitudinal", "linea continua", "itv",
+        "seguro obligatorio", "alumbrado", "destellos", "porta auricular", "oido izquierdo",
+        "oido derecho", "mordia las unas", "mordia las uñas", "libertad de movimientos",
+        "sentido contrario", "direccion prohibida",
+    ]
+    if any(s in l for s in narrative_signals):
+        return True
+    if re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+\d{2,3}\s*km", l):
+        return True
+    return False
 
 
-def _extract_literal_from_blob(raw_text: str) -> str:
+def _extract_hecho_denunciado_literal_from_text(raw_text: str) -> str:
     if not isinstance(raw_text, str) or not raw_text.strip():
         return ""
 
     original_text = raw_text.replace("\r", "\n")
     normalized_text = _normalize_for_matching(original_text)
 
-    patterns = [
-        r"hecho denunciado\s*[:\-]?\s*",
-        r"hecho imputado\s*[:\-]?\s*",
-        r"hecho que se notifica\s*[:\-]?\s*",
-        r"hecho infringido\s*[:\-]?\s*",
-    ]
-    m = None
-    for pat in patterns:
-        m = re.search(pat, normalized_text, flags=re.IGNORECASE)
+    start_idx = None
+    for h in _HECHO_HEADERS:
+        m = re.search(rf"{re.escape(h)}\s*[:\-]?\s*", normalized_text, flags=re.IGNORECASE)
         if m:
+            start_idx = m.end()
             break
 
-    if not m:
-        return ""
+    tail = ""
+    if start_idx is not None:
+        tail = original_text[start_idx:].strip()
+    else:
+        lines_fb = [ln.strip() for ln in original_text.split("\n") if ln.strip()]
+        start_pos = None
+        for i, ln in enumerate(lines_fb):
+            if _looks_like_narrative_line(ln):
+                start_pos = i
+                break
+        if start_pos is not None:
+            tail = "\n".join(lines_fb[start_pos:]).strip()
 
-    start = m.end()
-    tail = original_text[start:].strip()
     if not tail:
         return ""
 
@@ -299,14 +252,14 @@ def _extract_literal_from_blob(raw_text: str) -> str:
     started = False
 
     for ln in lines:
-        low = _normalize_for_matching(ln)
-
-        if _is_probably_admin_line(ln):
+        if _is_admin_line(ln):
             if started:
                 break
             continue
 
-        if re.match(r"^\s*5[abc]\b", low):
+        norm = _normalize_for_matching(ln)
+
+        if re.match(r"^\s*5[abc]\b", norm):
             started = True
             cleaned = re.sub(r"^\s*5[abc]\s*", "", ln, flags=re.IGNORECASE).strip()
             if cleaned:
@@ -322,27 +275,37 @@ def _extract_literal_from_blob(raw_text: str) -> str:
         else:
             collected.append(ln)
 
-        if len(" ".join(collected)) > 900:
+        if len(" ".join(collected)) > 1000:
             break
 
-    if not collected:
-        return ""
+    out = _clean_literal_text(" ".join(collected))
 
-    out = _clean_literal_text(" / ".join(collected))
-
-    if len(out) < 35:
-        second_pass: List[str] = []
+    if len(out) < 25:
+        second: List[str] = []
         for ln in lines:
-            if _is_probably_admin_line(ln):
-                if second_pass:
+            if _is_admin_line(ln):
+                if second:
                     break
                 continue
-            second_pass.append(ln)
-            if len(" ".join(second_pass)) > 900:
+            second.append(ln)
+            if len(" ".join(second)) > 1000:
                 break
-        out2 = _clean_literal_text(" / ".join(second_pass))
+        out2 = _clean_literal_text(" ".join(second))
         if len(out2) > len(out):
             out = out2
+
+    for kv in _ADMIN_KV_PREFIXES:
+        pos = out.lower().find(kv)
+        if pos > 0:
+            out = out[:pos].strip()
+
+    admin_poison = [
+        "fax", "correo ordinario", "telefono de informacion", "teléfono de información",
+        "telefono de atencion", "teléfono de atención", "remitir el presente", "impreso relleno",
+    ]
+    low_out = out.lower()
+    if any(s in low_out for s in admin_poison):
+        return ""
 
     if len(out) > 700:
         out = out[:700].rsplit(" ", 1)[0].strip() + "…"
@@ -350,55 +313,71 @@ def _extract_literal_from_blob(raw_text: str) -> str:
     return out.strip()
 
 
-def _build_hecho_resumido(literal: str, tipo: str = "", fallback: str = "") -> str:
-    lit = _clean_literal_text(literal or "")
-    if not lit:
-        fb = _clean_literal_text(fallback or "")
-        return fb[:280].strip() if fb else ""
+def _build_hecho_denunciado_resumido(literal: str, tipo_infraccion: str = "") -> str:
+    text = _clean_literal_text(literal)
+    if not text:
+        return ""
 
-    resumen = lit
+    tipo = _normalize_for_matching(tipo_infraccion)
 
-    # limpiar basura residual frecuente
-    stop_patterns = [
-        r"\borganismo\s*:",
-        r"\bexpediente_ref\s*:",
-        r"\btipo_sancion\s*:",
-        r"\bobservaciones\s*:",
-        r"\bvision_raw_text\s*:",
-        r"\braw_text_vision\s*:",
-        r"\braw_text_blob\s*:",
-        r"\btotal principal\s*:",
-        r"\bimporte\s*:",
-        r"\bfecha documento\s*:",
-        r"\bfecha notificacion\s*:",
+    if tipo == "velocidad":
+        norm = _normalize_for_matching(text)
+        m1 = re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km", norm)
+        m2 = re.search(r"\b(?:limitad[ao]a?|limite|velocidad maxima|velocidad max)\b[^\d]{0,40}(\d{2,3})", norm)
+        measured = m1.group(1) if m1 else None
+        limit = m2.group(1) if m2 else None
+        radar = ""
+        if "multanova" in norm:
+            radar = " detectado mediante cinemometro Multanova"
+        elif "cinemometro" in norm or "radar" in norm:
+            radar = " detectado mediante cinemometro/radar"
+        if measured and limit:
+            return f"Circular a {measured} km/h teniendo limitada la velocidad a {limit} km/h{radar}."
+
+    if tipo == "semaforo":
+        norm = _normalize_for_matching(text)
+        if "fase roja" in norm or "luz roja" in norm or "semaforo" in norm:
+            return "Cruce o rebase con fase roja del semaforo, segun consta en el boletin."
+
+    if tipo == "movil":
+        return "Presunto uso manual del telefono movil durante la conduccion, segun consta en el boletin."
+
+    if tipo == "auriculares":
+        return "Presunto uso de auriculares o cascos conectados durante la conduccion, segun consta en el boletin."
+
+    if tipo == "atencion":
+        short = text[:320].rsplit(" ", 1)[0].strip() if len(text) > 320 else text
+        return short.rstrip(".") + "."
+
+    short = text[:240].rsplit(" ", 1)[0].strip() if len(text) > 240 else text
+    return short.rstrip(".") + "."
+
+
+def _extract_preferred_hecho_fields(text_blob: str, core: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    core = core or {}
+
+    literal_sources = [
+        _safe_str(core.get("hecho_denunciado_literal")),
+        _safe_str(core.get("vision_raw_text")),
+        _safe_str(core.get("raw_text_pdf")),
+        _safe_str(core.get("raw_text_vision")),
+        _safe_str(core.get("raw_text_blob")),
+        _safe_str(text_blob),
     ]
-    lowered = _normalize_for_matching(resumen)
-    cut_positions = []
-    for pat in stop_patterns:
-        m = re.search(pat, lowered, flags=re.IGNORECASE)
-        if m:
-            cut_positions.append(m.start())
-    if cut_positions:
-        resumen = resumen[: min(cut_positions)].strip(" .;,-")
 
-    resumen = re.sub(r"^\s*5[abc]\s*", "", resumen, flags=re.IGNORECASE).strip()
+    literal = ""
+    for src in literal_sources:
+        literal = _extract_hecho_denunciado_literal_from_text(src)
+        if literal and len(literal) >= 20:
+            break
 
-    if len(resumen) <= 280:
-        return resumen
+    tipo_hint = _safe_str(core.get("tipo_infraccion"))
+    resumido = _build_hecho_denunciado_resumido(literal, tipo_hint) if literal else ""
 
-    # recorte semántico suave
-    pieces = [p.strip(" .;,-") for p in re.split(r"[./;]+", resumen) if p.strip()]
-    if pieces:
-        acc = ""
-        for p in pieces:
-            candidate = (acc + ". " + p).strip(". ").strip()
-            if len(candidate) > 280:
-                break
-            acc = candidate
-        if acc:
-            return acc + "."
-
-    return resumen[:280].rsplit(" ", 1)[0].strip() + "…"
+    return {
+        "hecho_denunciado_literal": literal or None,
+        "hecho_denunciado_resumido": resumido or None,
+    }
 
 
 def _extract_precepts(text_blob: str) -> Dict[str, Any]:
@@ -453,7 +432,7 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
         precepts.append("RDL 8/2004")
 
     if "reglamento general de circul" in t or "rgc" in t:
-        precepts.append("Reglamento General de Circulación")
+        precepts.append("Reglamento General de Circulacion")
 
     if "lsoa" in t:
         norma_hint = norma_hint or "LSOA"
@@ -479,13 +458,13 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
     t = _normalize_for_matching(text_blob).replace("\n", " ")
     t = re.sub(r"\s+", " ", t).strip()
 
-    # Guard robusto: solo extraer velocidad si hay contexto real
     velocity_context = (
         ("radar" in t)
         or ("cinemometro" in t)
         or ("km/h" in t)
         or ("exceso de velocidad" in t)
         or bool(re.search(r"\bcircular\s+a\s+\d{2,3}\s*km\s*/?\s*h\b", t))
+        or bool(re.search(r"\bcirculaba\s+a\s+\d{2,3}\s*km\s*/?\s*h\b", t))
         or bool(re.search(r"\bvelocidad\s+medida\b", t))
         or bool(re.search(r"\bvelocidad\s+maxima\b", t))
     )
@@ -568,9 +547,12 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
 
     radar_model = None
     if velocity_context:
-        mr = re.search(r"(multaradar\s*[a-z0-9\-]*)", t)
+        mr = re.search(r"(multanova\s*[a-z0-9\-]*)", t)
         if mr:
             radar_model = mr.group(1).strip()
+        elif "multaradar" in t:
+            mr2 = re.search(r"(multaradar\s*[a-z0-9\-]*)", t)
+            radar_model = mr2.group(1).strip() if mr2 else "multaradar"
         elif "cinem" in t:
             radar_model = "cinemometro (no especificado)"
 
@@ -601,7 +583,6 @@ def _extract_jurisdiction(text_blob: str, core: Optional[Dict[str, Any]] = None)
     municipal_signals = [
         "ayuntamiento",
         "ajuntament",
-        "ajuntament de",
         "concejalia de trafico",
         "policia local",
         "guardia urbana",
@@ -610,8 +591,8 @@ def _extract_jurisdiction(text_blob: str, core: Optional[Dict[str, Any]] = None)
         "dgt",
         "direccion general de trafico",
         "jefatura provincial de trafico",
-        "trafico",
         "guardia civil",
+        "ministerio del interior",
     ]
 
     if any(s in blob for s in municipal_signals):
@@ -624,42 +605,24 @@ def _extract_jurisdiction(text_blob: str, core: Optional[Dict[str, Any]] = None)
 
 
 def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None) -> Tuple[str, str, List[str]]:
-    """
-    Devuelve (tipo_infraccion, hecho_imputado_canonico, facts_phrases)
-    """
     core = core or {}
     t = _normalize_for_matching(text_blob)
     facts: List[str] = []
 
     hecho_literal = _normalize_for_matching(_safe_str(core.get("hecho_denunciado_literal")))
+    hecho_resumido = _normalize_for_matching(_safe_str(core.get("hecho_denunciado_resumido")))
     organismo = _normalize_for_matching(_safe_str(core.get("organismo")))
     tipo_sancion = _normalize_for_matching(_safe_str(core.get("tipo_sancion")))
 
-    combined = "\n".join([x for x in [t, hecho_literal, organismo, tipo_sancion] if x]).strip()
+    combined = "\n".join([x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]).strip()
 
-    # --------------------------
-    # 1) SEMÁFORO — prioridad máxima real
-    # --------------------------
     sema_signals = [
-        "semaforo",
-        "fase roja",
-        "cruce en rojo",
-        "cruce con fase roja",
-        "luz roja del semaforo",
-        "no respetar la luz roja",
-        "no respeta la luz roja",
-        "no respeta luz roja",
-        "no respeta la fase roja",
-        "no respetar la fase roja",
-        "señal luminosa roja",
-        "senal luminosa roja",
-        "linea de detencion",
-        "rebase la linea de detencion",
-        "rebasar la linea de detencion",
-        "ts roja",
-        "t/s roja",
+        "semaforo", "fase roja", "cruce en rojo", "cruce con fase roja", "luz roja del semaforo",
+        "no respetar la luz roja", "no respeta la luz roja", "no respeta luz roja",
+        "no respeta la fase roja", "no respetar la fase roja", "senal luminosa roja",
+        "linea de detencion", "rebase la linea de detencion", "rebasar la linea de detencion",
+        "ts roja", "t/s roja",
     ]
-
     if any(s in combined for s in sema_signals):
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
@@ -668,9 +631,6 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
 
-    # --------------------------
-    # 2) MÓVIL
-    # --------------------------
     if "utilizando manualmente" in combined and any(k in combined for k in ["telefono", "movil"]):
         facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
@@ -679,37 +639,22 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("USO DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
 
-    # --------------------------
-    # 3) AURICULARES
-    # --------------------------
     aur_signals = [
-        "auricular",
-        "auriculares",
-        "cascos conectados",
-        "cascos o auriculares",
-        "reproductores de sonido",
-        "aparatos receptores",
-        "aparatos reproductores",
+        "auricular", "auriculares", "cascos conectados", "cascos o auriculares",
+        "reproductores de sonido", "aparatos receptores", "aparatos reproductores", "porta auricular",
     ]
     if any(s in combined for s in aur_signals):
         facts.append("USO DE AURICULARES O CASCOS CONECTADOS")
         return ("auriculares", facts[0], facts)
 
-    # --------------------------
-    # 4) VELOCIDAD
-    # --------------------------
     velocity_context = (
         ("km/h" in combined)
-        and any(k in combined for k in ["velocidad", "radar", "cinemometro", "exceso de velocidad", "limitada a", "velocidad maxima"])
+        and any(k in combined for k in ["velocidad", "radar", "cinemometro", "exceso de velocidad", "limitada a", "velocidad maxima", "circular a", "circulaba a"])
     )
-
     if velocity_context:
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
 
-    # --------------------------
-    # 5) SEGURO
-    # --------------------------
     if (
         ("lsoa" in combined)
         or (("r.d. legislativo" in combined or "rd legislativo" in combined) and "8/2004" in combined)
@@ -719,68 +664,30 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("CARENCIA DE SEGURO OBLIGATORIO")
         return ("seguro", facts[0], facts)
 
-    # --------------------------
-    # 6) ITV
-    # --------------------------
     if any(s in combined for s in ["itv", "inspeccion tecnica", "inspeccion tecnica de vehiculos", "caducidad de itv", "itv caducada"]):
         facts.append("ITV NO VIGENTE / INSPECCIÓN TÉCNICA CADUCADA")
         return ("itv", facts[0], facts)
 
-    # --------------------------
-    # 7) MARCAS VIALES
-    # --------------------------
     if any(s in combined for s in ["linea continua", "marca longitudinal continua", "senalizacion horizontal", "marca vial"]):
         facts.append("NO RESPETAR MARCA VIAL")
         return ("marcas_viales", facts[0], facts)
 
-    # --------------------------
-    # 8) CARRIL / POSICIÓN EN VÍA
-    # --------------------------
-    if any(s in combined for s in ["carril distinto del situado mas a la derecha", "posicion en la via", "posición en la vía", "articulo 31", "art. 31"]):
+    if any(s in combined for s in ["carril distinto del situado mas a la derecha", "posicion en la via", "articulo 31", "art. 31"]):
         facts.append("POSICIÓN INCORRECTA EN LA VÍA / USO INDEBIDO DEL CARRIL")
         return ("carril", facts[0], facts)
 
-    # --------------------------
-    # 9) CONDICIONES VEHÍCULO
-    # --------------------------
     cond_signals = [
-        "condiciones reglamentarias",
-        "alumbrado",
-        "senalizacion optica",
-        "señalización óptica",
-        "neumatico",
-        "neumático",
-        "reforma",
-        "homolog",
-        "luz trasera",
-        "deslumbr",
-        "reflect",
-        "pulido",
+        "condiciones reglamentarias", "alumbrado", "senalizacion optica", "neumatico",
+        "reforma", "homolog", "luz trasera", "deslumbr", "reflect", "pulido", "espejo", "destellos",
     ]
     if any(s in combined for s in cond_signals):
         facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
         return ("condiciones_vehiculo", facts[0], facts)
 
-    # --------------------------
-    # 10) ATENCIÓN / NEGLIGENTE
-    # --------------------------
     at_signals = [
-        "no mantener la atencion",
-        "atencion permanente",
-        "conduccion negligente",
-        "conducción negligente",
-        "distraccion",
-        "distracción",
-        "bail",
-        "palm",
-        "golpe",
-        "volante",
-        "tambor",
-        "menor",
-        "bebe",
-        "bebé",
-        "intercept",
-        "tramo",
+        "no mantener la atencion", "atencion permanente", "conduccion negligente", "distraccion",
+        "bail", "palm", "golpe", "volante", "tambor", "menor", "bebe", "intercept",
+        "mordia las unas", "libertad de movimientos",
     ]
     if any(s in combined for s in at_signals):
         facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN")
@@ -792,24 +699,16 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
 def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
     out = dict(extracted_core or {})
 
-    tipo, hecho, facts = _detect_facts_and_type(text_blob, extracted_core)
+    hecho_fields = _extract_preferred_hecho_fields(text_blob, out)
+    for k, v in hecho_fields.items():
+        if v:
+            out[k] = v
+
+    tipo, hecho, facts = _detect_facts_and_type(text_blob, out)
     out["tipo_infraccion"] = tipo
     out["hecho_imputado"] = hecho or None
     out["facts_phrases"] = facts
-    out["jurisdiccion"] = _extract_jurisdiction(text_blob, extracted_core)
-
-    existing_literal = _safe_str(out.get("hecho_denunciado_literal")).strip()
-    extracted_literal = existing_literal or _extract_literal_from_blob(text_blob)
-    if extracted_literal:
-        out["hecho_denunciado_literal"] = extracted_literal
-
-    resumen = _build_hecho_resumido(
-        extracted_literal or "",
-        tipo=tipo,
-        fallback=_safe_str(out.get("hecho_imputado") or hecho or ""),
-    )
-    if resumen:
-        out["hecho_denunciado_resumido"] = resumen
+    out["jurisdiccion"] = _extract_jurisdiction(text_blob, out)
 
     pre = _extract_precepts(text_blob)
     out["preceptos_detectados"] = pre.get("preceptos_detectados") or []
@@ -826,13 +725,14 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
         if v is not None:
             out[k] = v
 
+    literal = _safe_str(out.get("hecho_denunciado_literal"))
+    if literal and not out.get("hecho_denunciado_resumido"):
+        out["hecho_denunciado_resumido"] = _build_hecho_denunciado_resumido(literal, out.get("tipo_infraccion") or "")
+
     return out
 
 
 def _needs_speed_retry(core: Dict[str, Any]) -> bool:
-    """
-    True si parece velocidad pero faltan medida/límite.
-    """
     if not isinstance(core, dict):
         return True
 
@@ -930,7 +830,6 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                     model_used = "openai_vision"
                     confidence = 0.6
 
-                # Siempre hacemos visión también para PDFs, porque ayuda mucho con boletines escaneados
                 extracted_vision = extract_from_image_bytes(content, mime, file.filename) or {}
                 extracted_vision = _ensure_raw_fields(extracted_vision, text_content="")
 
