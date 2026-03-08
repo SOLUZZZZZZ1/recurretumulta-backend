@@ -610,103 +610,212 @@ def _extract_jurisdiction(text_blob: str, core: Optional[Dict[str, Any]] = None)
 
 
 def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None) -> Tuple[str, str, List[str]]:
+    """
+    Devuelve:
+      (tipo_infraccion, hecho_imputado_canonico, facts_phrases)
+
+    Orden anti-cruces:
+      1) condiciones_vehiculo
+      2) auriculares
+      3) movil
+      4) semaforo
+      5) velocidad
+      6) seguro
+      7) itv
+      8) marcas_viales
+      9) carril
+      10) atencion
+      11) otro
+    """
     core = core or {}
-    t = _normalize_for_matching(text_blob)
     facts: List[str] = []
 
+    t = _normalize_for_matching(text_blob)
     hecho_literal = _normalize_for_matching(_safe_str(core.get("hecho_denunciado_literal")))
     hecho_resumido = _normalize_for_matching(_safe_str(core.get("hecho_denunciado_resumido")))
     organismo = _normalize_for_matching(_safe_str(core.get("organismo")))
     tipo_sancion = _normalize_for_matching(_safe_str(core.get("tipo_sancion")))
 
-    combined = "\n".join([x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]).strip()
+    combined = "
+".join([x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]).strip()
 
-    sema_signals = [
-        "semaforo", "fase roja", "cruce en rojo", "cruce con fase roja", "luz roja del semaforo",
-        "no respetar la luz roja", "no respeta la luz roja", "no respeta luz roja",
-        "no respeta la fase roja", "no respetar la fase roja", "senal luminosa roja",
-        "linea de detencion", "rebase la linea de detencion", "rebasar la linea de detencion",
-        "rebase de la linea de detencion", "rebaso la linea de detencion",
-        "semaforo en rojo", "luz roja", "fase semaforica roja", "fase semafórica roja",
-        "cruce fase roja", "paso en rojo", "paso con rojo",
-        "ts roja", "t/s roja",
-    ]
-    if any(s in combined for s in sema_signals):
-        facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
-        return ("semaforo", facts[0], facts)
-
-    # Regla combinada muy útil para municipales con OCR roto
-    if ("roja" in combined and "cruce" in combined) or ("roja" in combined and "detencion" in combined):
-        facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
-        return ("semaforo", facts[0], facts)
-
-    if re.search(r"\bart\.?\s*146\b", combined) or re.search(r"\bart[ií]culo\s*146\b", combined) or re.search(r"\b146\s*[\.,]\s*1\b", combined):
-        facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
-        return ("semaforo", facts[0], facts)
-
-    if "utilizando manualmente" in combined and any(k in combined for k in ["telefono", "movil"]):
-        facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
-        return ("movil", facts[0], facts)
-
-    if any(k in combined for k in ["telefono movil", "uso del telefono", "uso manual del movil", "uso manual del telefono"]):
-        facts.append("USO DEL TELÉFONO MÓVIL")
-        return ("movil", facts[0], facts)
-
-    aur_signals = [
-        "auricular", "auriculares", "cascos conectados", "cascos o auriculares",
-        "reproductores de sonido", "aparatos receptores", "aparatos reproductores", "porta auricular",
-    ]
-    if any(s in combined for s in aur_signals):
-        facts.append("USO DE AURICULARES O CASCOS CONECTADOS")
-        return ("auriculares", facts[0], facts)
+    vehicle_light_context = any(
+        s in combined
+        for s in [
+            "alumbrado",
+            "senalizacion optica",
+            "senalizacion",
+            "luz trasera",
+            "parte trasera",
+            "destellos",
+            "anexo i",
+            "reglamentacion del anexo",
+            "dispositivos de alumbrado",
+            "dispositivos de senalizacion",
+            "no cumplan las exigencias",
+        ]
+    )
 
     velocity_context = (
         ("km/h" in combined)
-        and any(k in combined for k in ["velocidad", "radar", "cinemometro", "exceso de velocidad", "limitada a", "velocidad maxima", "circular a", "circulaba a"])
+        and any(
+            s in combined
+            for s in [
+                "velocidad",
+                "radar",
+                "cinemometro",
+                "exceso de velocidad",
+                "limitada a",
+                "siendo limitada la velocidad a",
+                "teniendo limitada la velocidad a",
+                "velocidad maxima",
+                "velocidad registrada",
+                "velocidad fotografica",
+                "superar el limite de velocidad",
+                "circular a",
+                "circulaba a",
+            ]
+        )
     )
+
+    auriculares_context = any(
+        s in combined
+        for s in [
+            "auricular",
+            "auriculares",
+            "cascos conectados",
+            "cascos o auriculares",
+            "reproductores de sonido",
+            "aparatos receptores",
+            "aparatos reproductores",
+            "porta auricular",
+            "oido izquierdo",
+            "oido derecho",
+        ]
+    )
+
+    movil_context = any(
+        s in combined
+        for s in [
+            "telefono movil",
+            "uso manual del movil",
+            "uso manual del telefono",
+            "utilizando manualmente",
+            "sujetando con la mano el dispositivo",
+            "manipulando el movil",
+            "interactuando con la pantalla",
+        ]
+    )
+
+    semaforo_context = any(
+        s in combined
+        for s in [
+            "semaforo",
+            "fase roja",
+            "luz roja del semaforo",
+            "cruce con fase roja",
+            "cruce en rojo",
+            "senal luminosa roja",
+            "linea de detencion",
+            "rebase la linea de detencion",
+            "rebasar la linea de detencion",
+            "semaforo en rojo",
+            "paso en rojo",
+            "articulo 146",
+            "art. 146",
+        ]
+    ) or (("roja" in combined and "cruce" in combined) or ("roja" in combined and "detencion" in combined))
+
+    # 1) CONDICIONES DEL VEHÍCULO — antes que semáforo
+    if vehicle_light_context:
+        facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
+        return ("condiciones_vehiculo", facts[0], facts)
+
+    # 2) AURICULARES — antes que móvil
+    if auriculares_context:
+        facts.append("USO DE AURICULARES O CASCOS CONECTADOS")
+        return ("auriculares", facts[0], facts)
+
+    # 3) MÓVIL
+    if movil_context:
+        facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
+        return ("movil", facts[0], facts)
+
+    # 4) SEMÁFORO — nunca si hay contexto de velocidad o alumbrado
+    if semaforo_context and not velocity_context and not vehicle_light_context:
+        facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
+        return ("semaforo", facts[0], facts)
+
+    # 5) VELOCIDAD
     if velocity_context:
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
 
+    # 6) SEGURO
     if (
         ("lsoa" in combined)
         or (("r.d. legislativo" in combined or "rd legislativo" in combined) and "8/2004" in combined)
         or ("8/2004" in combined and "responsabilidad civil" in combined)
-        or any(s in combined for s in ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "vehículo no asegurado"])
+        or any(s in combined for s in ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "vehiculo carece de seguro"])
     ):
         facts.append("CARENCIA DE SEGURO OBLIGATORIO")
         return ("seguro", facts[0], facts)
 
-    if any(s in combined for s in ["itv", "inspeccion tecnica", "inspeccion tecnica de vehiculos", "caducidad de itv", "itv caducada"]):
+    # 7) ITV
+    if any(s in combined for s in ["itv", "inspeccion tecnica", "inspeccion tecnica de vehiculos", "itv caducada", "caducidad de itv"]):
         facts.append("ITV NO VIGENTE / INSPECCIÓN TÉCNICA CADUCADA")
         return ("itv", facts[0], facts)
 
-    if any(s in combined for s in ["linea continua", "marca longitudinal continua", "senalizacion horizontal", "marca vial"]):
+    # 8) MARCAS VIALES
+    if any(
+        s in combined
+        for s in [
+            "linea continua",
+            "marca longitudinal continua",
+            "marca vial",
+            "senalizacion horizontal",
+            "no respetar una marca longitudinal continua",
+            "adelantamiento",
+            "articulo 167",
+            "art. 167",
+        ]
+    ):
         facts.append("NO RESPETAR MARCA VIAL")
         return ("marcas_viales", facts[0], facts)
 
+    # 9) CARRIL / POSICIÓN EN VÍA
     if any(s in combined for s in ["carril distinto del situado mas a la derecha", "posicion en la via", "articulo 31", "art. 31"]):
         facts.append("POSICIÓN INCORRECTA EN LA VÍA / USO INDEBIDO DEL CARRIL")
         return ("carril", facts[0], facts)
 
-    cond_signals = [
-        "condiciones reglamentarias", "alumbrado", "senalizacion optica", "neumatico",
-        "reforma", "homolog", "luz trasera", "deslumbr", "reflect", "pulido", "espejo", "destellos",
-    ]
-    if any(s in combined for s in cond_signals):
-        facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
-        return ("condiciones_vehiculo", facts[0], facts)
-
-    at_signals = [
-        "no mantener la atencion", "atencion permanente", "conduccion negligente", "distraccion",
-        "bail", "palm", "golpe", "volante", "tambor", "menor", "bebe", "intercept",
-        "mordia las unas", "libertad de movimientos",
-    ]
-    if any(s in combined for s in at_signals):
+    # 10) ATENCIÓN / CONDUCCIÓN NEGLIGENTE
+    if any(
+        s in combined
+        for s in [
+            "no mantener la atencion",
+            "atencion permanente",
+            "conduccion negligente",
+            "distraccion",
+            "bail",
+            "palm",
+            "golpe",
+            "volante",
+            "tambor",
+            "menor",
+            "bebe",
+            "intercept",
+            "mordia las unas",
+            "libertad de movimientos",
+            "ciclistas",
+            "circular de a tres",
+            "conversando con ellos",
+        ]
+    ):
         facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN")
         return ("atencion", facts[0], facts)
 
     return ("otro", "", [])
+
 
 
 def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
