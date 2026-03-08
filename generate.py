@@ -32,10 +32,6 @@ from pdf_builder import build_pdf
 router = APIRouter(tags=["generate"])
 
 
-# ======================================================
-# LIMPIEZA / PRIORIDAD DEL RELATO
-# ======================================================
-
 _ADMIN_PREFIXES = [
     "organismo:",
     "expediente_ref:",
@@ -70,7 +66,6 @@ def _safe_str(v: Any) -> str:
 def _clean_hecho_text(text: str) -> str:
     if not text:
         return ""
-
     t = text.replace("\r", " ").replace("\n", " ")
     low = t.lower()
 
@@ -94,9 +89,10 @@ def _clean_hecho_text(text: str) -> str:
         " teléfono de información",
         " telefono de atencion",
         " teléfono de atención",
-        " motivo de no notificacion",
-        " motivo de no notificación",
-        " lugar de pago",
+        " fax",
+        " correo ordinario",
+        " remitir el presente",
+        " impreso relleno",
         " total principal",
         " precepto infringido",
     ]
@@ -150,27 +146,12 @@ def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
 
         if any(
             x in low for x in [
-                "datos vehiculo",
-                "datos vehículo",
-                "importe",
-                "bonificacion",
-                "reduccion",
-                "fecha limite",
-                "fecha límite",
-                "puntos",
-                "entidad",
-                "matricula",
-                "marca:",
-                "modelo",
-                "domicilio",
-                "boletin",
-                "boletín",
-                "telefono de informacion",
-                "teléfono de información",
-                "telefono de atencion",
-                "teléfono de atención",
-                "motivo de no notificacion",
-                "motivo de no notificación",
+                "datos vehiculo", "datos vehículo", "importe", "bonificacion", "reduccion",
+                "fecha limite", "fecha límite", "puntos", "entidad", "matricula", "marca:",
+                "modelo", "domicilio", "boletin", "boletín", "telefono de informacion",
+                "teléfono de información", "telefono de atencion", "teléfono de atención",
+                "fax", "correo ordinario", "remitir el presente", "impreso relleno",
+                "motivo de no notificacion", "motivo de no notificación",
             ]
         ):
             if started:
@@ -180,28 +161,10 @@ def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
         if not started:
             if any(
                 s in low for s in [
-                    "circular a",
-                    "circulaba a",
-                    "conducir",
-                    "cruce",
-                    "fase roja",
-                    "luz roja",
-                    "utilizando",
-                    "auricular",
-                    "auriculares",
-                    "cascos",
-                    "bail",
-                    "palmas",
-                    "volante",
-                    "km/h",
-                    "velocidad",
-                    "linea continua",
-                    "línea continua",
-                    "itv",
-                    "seguro",
-                    "alumbrado",
-                    "mordia las unas",
-                    "mordía las uñas",
+                    "circular a", "circulaba a", "conducir", "cruce", "fase roja", "luz roja",
+                    "semaforo", "utilizando", "auricular", "auriculares", "cascos", "bail",
+                    "palmas", "volante", "km/h", "velocidad", "linea continua", "línea continua",
+                    "itv", "seguro", "alumbrado", "detencion", "detención"
                 ]
             ):
                 started = True
@@ -213,49 +176,6 @@ def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
             break
 
     return _clean_hecho_text(" ".join(collected))
-
-
-# ======================================================
-# TIPO / JURISDICCIÓN
-# ======================================================
-
-def resolve_infraction_type(core: Dict[str, Any]) -> str:
-    # REGLA MAESTRA: ANALYZE MANDA
-    tipo = _safe_str(core.get("tipo_infraccion")).lower().strip()
-    if tipo and tipo not in ("otro", "unknown", "desconocido", "generic"):
-        return tipo
-
-    blob = json.dumps(core, ensure_ascii=False).lower()
-
-    # semáforo antes que velocidad
-    if any(s in blob for s in ["semaforo", "semáforo", "fase roja", "luz roja", "linea de detencion", "línea de detención", "cruce con fase roja"]):
-        return "semaforo"
-
-    if any(s in blob for s in ["km/h", "radar", "cinemometro", "cinemómetro", "exceso de velocidad"]):
-        return "velocidad"
-
-    if any(s in blob for s in ["telefono movil", "teléfono móvil", "uso manual", "movil", "móvil", "telefono", "teléfono"]):
-        return "movil"
-
-    if any(s in blob for s in ["auricular", "auriculares", "cascos conectados", "reproductores de sonido", "porta auricular"]):
-        return "auriculares"
-
-    if any(s in blob for s in ["itv", "inspeccion tecnica", "inspección técnica"]):
-        return "itv"
-
-    if any(s in blob for s in ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "vehículo no asegurado", "fiva", "8/2004"]):
-        return "seguro"
-
-    if any(s in blob for s in ["linea continua", "línea continua", "marca longitudinal continua", "marca vial"]):
-        return "marcas_viales"
-
-    if any(s in blob for s in ["atencion permanente", "atención permanente", "conduccion negligente", "conducción negligente", "distraccion", "distracción", "mordia las unas", "mordía las uñas"]):
-        return "atencion"
-
-    if any(s in blob for s in ["condiciones reglamentarias", "alumbrado", "senalizacion optica", "señalización óptica", "homolog", "neumatico", "neumático", "reflect", "espejo"]):
-        return "condiciones_vehiculo"
-
-    return "generic"
 
 
 def resolve_jurisdiction(core: Dict[str, Any]) -> str:
@@ -271,9 +191,67 @@ def resolve_jurisdiction(core: Dict[str, Any]) -> str:
     return "desconocida"
 
 
-# ======================================================
-# FORMATO
-# ======================================================
+def _looks_like_semaforo(core: Dict[str, Any]) -> bool:
+    blob = json.dumps(core, ensure_ascii=False).lower()
+    blob = blob.replace("semáforo", "semaforo").replace("línea", "linea")
+
+    sema_signals = [
+        "semaforo",
+        "fase roja",
+        "luz roja",
+        "cruce en rojo",
+        "cruce con fase roja",
+        "señal luminosa roja",
+        "senal luminosa roja",
+        "linea de detencion",
+        "línea de detención",
+        "rebase la linea de detencion",
+        "rebasar la linea de detencion",
+        "semaforo en rojo",
+        "paso en rojo",
+        "cruce fase roja",
+        "articulo 146",
+        "art. 146",
+    ]
+    if any(s in blob for s in sema_signals):
+        return True
+
+    if ("roja" in blob and "cruce" in blob) or ("roja" in blob and "detencion" in blob):
+        return True
+
+    return False
+
+
+def resolve_infraction_type(core: Dict[str, Any]) -> str:
+    tipo = _safe_str(core.get("tipo_infraccion")).lower().strip()
+    if tipo == "semaforo":
+        return "semaforo"
+    if tipo and tipo not in ("otro", "unknown", "desconocido", "generic"):
+        return tipo
+
+    if _looks_like_semaforo(core):
+        return "semaforo"
+
+    blob = json.dumps(core, ensure_ascii=False).lower()
+
+    if any(s in blob for s in ["km/h", "radar", "cinemometro", "cinemómetro", "exceso de velocidad"]):
+        return "velocidad"
+    if any(s in blob for s in ["telefono movil", "teléfono móvil", "uso manual", "movil", "móvil", "telefono", "teléfono"]):
+        return "movil"
+    if any(s in blob for s in ["auricular", "auriculares", "cascos conectados", "reproductores de sonido", "porta auricular"]):
+        return "auriculares"
+    if any(s in blob for s in ["itv", "inspeccion tecnica", "inspección técnica"]):
+        return "itv"
+    if any(s in blob for s in ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "vehículo no asegurado", "fiva", "8/2004"]):
+        return "seguro"
+    if any(s in blob for s in ["linea continua", "línea continua", "marca longitudinal continua", "marca vial"]):
+        return "marcas_viales"
+    if any(s in blob for s in ["atencion permanente", "atención permanente", "conduccion negligente", "conducción negligente", "distraccion", "distracción", "mordia las unas", "mordía las uñas"]):
+        return "atencion"
+    if any(s in blob for s in ["condiciones reglamentarias", "alumbrado", "senalizacion optica", "señalización óptica", "homolog", "neumatico", "neumático", "reflect", "espejo"]):
+        return "condiciones_vehiculo"
+    return "generic"
+
 
 def fix_roman_headings(text: str) -> str:
     replacements = {
@@ -300,10 +278,6 @@ def ensure_tpl_dict(tpl: Any, core: Dict[str, Any]) -> Dict[str, str]:
         "cuerpo": fix_roman_headings(fallback.get("cuerpo") or "A la atención del órgano competente."),
     }
 
-
-# ======================================================
-# VELOCIDAD FUERTE
-# ======================================================
 
 def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     expediente = core.get("expediente_ref") or core.get("numero_expediente") or "[EXPEDIENTE]"
@@ -373,10 +347,6 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
-# ======================================================
-# GENERACIÓN PRINCIPAL
-# ======================================================
-
 def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     row = conn.execute(
         text("SELECT extracted_json FROM extractions WHERE case_id=:case_id ORDER BY created_at DESC LIMIT 1"),
@@ -397,56 +367,47 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     tipo = resolve_infraction_type(core)
     jurisdiccion = resolve_jurisdiction(core)
 
-    # Dispatcher estabilizado: semáforo nunca cae a velocidad si analyze dijo semáforo
     if tipo == "semaforo" and jurisdiccion == "municipal":
         tpl = build_municipal_semaforo_template(core)
         final_kind = "municipal_semaforo"
-
     elif tipo == "semaforo":
         tpl = build_semaforo_strong_template(core)
         final_kind = "semaforo"
-
     elif tipo == "velocidad":
         tpl = build_velocity_strong_template(core)
         final_kind = "velocidad"
-
     elif tipo == "movil":
         tpl = build_movil_strong_template(core)
         final_kind = "movil"
-
     elif tipo == "auriculares":
         tpl = build_auriculares_strong_template(core)
         final_kind = "auriculares"
-
     elif tipo == "atencion":
         tpl = build_atencion_strong_template(core)
         final_kind = "atencion"
-
     elif tipo == "marcas_viales":
         tpl = build_marcas_viales_strong_template(core)
         final_kind = "marcas_viales"
-
     elif tipo == "seguro":
         tpl = build_seguro_strong_template(core)
         final_kind = "seguro"
-
     elif tipo == "itv":
         tpl = build_itv_strong_template(core)
         final_kind = "itv"
-
     elif tipo == "condiciones_vehiculo":
         tpl = build_condiciones_vehiculo_strong_template(core)
         final_kind = "condiciones_vehiculo"
-
     elif jurisdiccion == "municipal":
         blob = json.dumps(core, ensure_ascii=False).lower()
         if "sentido contrario" in blob or "direccion prohibida" in blob or "dirección prohibida" in blob:
             tpl = build_municipal_sentido_contrario_template(core)
             final_kind = "municipal_sentido_contrario"
+        elif _looks_like_semaforo(core):
+            tpl = build_municipal_semaforo_template(core)
+            final_kind = "municipal_semaforo_fallback"
         else:
             tpl = build_municipal_generic_template(core)
             final_kind = "municipal_generic"
-
     else:
         tpl = build_generic_body(core)
         final_kind = "generic"
