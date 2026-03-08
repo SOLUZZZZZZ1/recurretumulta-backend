@@ -16,41 +16,27 @@ from ai.infractions.atencion import build_atencion_strong_template
 from ai.infractions.marcas_viales import build_marcas_viales_strong_template
 from ai.infractions.seguro import build_seguro_strong_template
 from ai.infractions.itv import build_itv_strong_template
+from ai.infractions.carril import build_carril_strong_template
 from ai.infractions.generic import build_generic_body
-from ai.infractions.velocidad import (
-    compute_velocity_calc_from_core,
-    build_velocity_calc_paragraph,
-    should_inject_tramo_error,
-    build_tramo_error_paragraph,
-)
+from ai.infractions.municipal_semaforo import build_municipal_semaforo_template
+from ai.infractions.municipal_sentido_contrario import build_municipal_sentido_contrario_template
+from ai.infractions.municipal_generic import build_municipal_generic_template
 
 from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
+from dgt_templates import build_dgt_alegaciones_text
 
 router = APIRouter(tags=["generate"])
 
 
 # ======================================================
-# HELPERS SEGUROS
-# ======================================================
-
-def _safe_dict(v: Any) -> Dict[str, Any]:
-    return v if isinstance(v, dict) else {}
-
-
-def _safe_str(v: Any) -> str:
-    return v if isinstance(v, str) else ""
-
-
-# ======================================================
-# EXTRACTOR HECHO DENUNCIADO
+# EXTRACTOR DE RELATO / HECHO DENUNCIADO
 # ======================================================
 
 def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
     text_parts = []
-
-    for k in ("raw_text_pdf", "raw_text_vision", "raw_text_blob"):
+    for k in ("hecho_denunciado_literal", "raw_text_pdf", "raw_text_vision", "raw_text_blob"):
         v = core.get(k)
         if isinstance(v, str) and v.strip():
             text_parts.append(v)
@@ -60,7 +46,7 @@ def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
         return ""
 
     pattern = re.search(
-        r"(hecho denunciado|hecho que se notifica|hecho imputado)\s*[:\-]?\s*",
+        r"(hecho denunciado|hecho que se notifica|hecho imputado|hecho infringido)\s*[:\-]?\s*",
         text,
         re.IGNORECASE,
     )
@@ -78,7 +64,6 @@ def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
             for x in [
                 "importe",
                 "bonificacion",
-                "bonificación",
                 "reduccion",
                 "reducción",
                 "fecha limite",
@@ -97,138 +82,106 @@ def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
                 "boletín",
                 "agente",
                 "jefatura",
+                "motivo de no notificacion",
+                "motivo de no notificación",
+                "vehiculo en marcha",
             ]
         ):
             break
 
         collected.append(ln)
-        if len(" ".join(collected)) > 700:
+        if len(" ".join(collected)) > 800:
             break
 
     literal = " ".join(collected)
-    literal = re.sub(r"\s+", " ", literal).strip()
+    literal = re.sub(r"\s+", " ", literal).strip(" :-\t")
     return literal
 
 
 # ======================================================
-# RESOLUCIÓN DEL TIPO DE INFRACCIÓN
+# HECHO PARA MOSTRAR EN ANTECEDENTES
+# ======================================================
+
+def build_display_hecho(core: Dict[str, Any]) -> str:
+    for key in ("hecho_denunciado_resumido", "hecho_denunciado_literal"):
+        val = core.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+
+    literal = extract_hecho_denunciado_literal(core)
+    if literal:
+        return literal
+
+    hecho = core.get("hecho_imputado")
+    if isinstance(hecho, str) and hecho.strip():
+        return hecho.strip()
+
+    tipo = (core.get("tipo_infraccion") or "").lower().strip()
+    defaults = {
+        "semaforo": "NO RESPETAR LA LUZ ROJA (SEMÁFORO).",
+        "velocidad": "EXCESO DE VELOCIDAD.",
+        "movil": "USO MANUAL DEL TELÉFONO MÓVIL.",
+        "auriculares": "USO DE AURICULARES O CASCOS CONECTADOS.",
+        "atencion": "NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN.",
+        "marcas_viales": "NO RESPETAR MARCA VIAL.",
+        "seguro": "CARENCIA DE SEGURO OBLIGATORIO.",
+        "itv": "ITV NO VIGENTE / INSPECCIÓN TÉCNICA CADUCADA.",
+        "carril": "POSICIÓN INCORRECTA EN LA VÍA / USO INDEBIDO DEL CARRIL.",
+        "condiciones_vehiculo": "INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO.",
+    }
+    return defaults.get(tipo, "HECHO NO DETERMINADO (falta concreción en la documentación aportada).")
+
+
+# ======================================================
+# RESOLUCIÓN DEL TIPO Y JURISDICCIÓN
 # ======================================================
 
 def resolve_infraction_type(core: Dict[str, Any]) -> str:
-    tipo = _safe_str(core.get("tipo_infraccion")).lower().strip()
-
-    # ANALYZE manda.
+    # ANALYZE MANDA
+    tipo = (core.get("tipo_infraccion") or "").lower().strip()
     if tipo and tipo not in ("otro", "unknown", "desconocido"):
         return tipo
 
-    try:
-        blob = json.dumps(core, ensure_ascii=False).lower()
-    except Exception:
-        blob = ""
+    blob = json.dumps(core, ensure_ascii=False).lower()
 
     if any(s in blob for s in ["semaforo", "semáforo", "fase roja", "luz roja", "linea de detencion", "línea de detención"]):
         return "semaforo"
-
     if any(s in blob for s in ["km/h", "radar", "cinemometro", "cinemómetro", "exceso de velocidad"]):
         return "velocidad"
-
     if any(s in blob for s in ["telefono movil", "teléfono móvil", "uso manual", "movil", "móvil", "telefono", "teléfono"]):
         return "movil"
-
     if any(s in blob for s in ["auricular", "auriculares", "cascos conectados", "reproductores de sonido"]):
         return "auriculares"
-
     if any(s in blob for s in ["itv", "inspeccion tecnica", "inspección técnica"]):
         return "itv"
-
     if any(s in blob for s in ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "vehículo no asegurado", "fiva", "8/2004"]):
         return "seguro"
-
     if any(s in blob for s in ["linea continua", "línea continua", "marca longitudinal continua", "marca vial"]):
         return "marcas_viales"
-
+    if any(s in blob for s in ["carril distinto del situado mas a la derecha", "carril distinto del situado más a la derecha", "art. 31", "articulo 31", "artículo 31"]):
+        return "carril"
     if any(s in blob for s in ["atencion permanente", "atención permanente", "conduccion negligente", "conducción negligente", "distraccion", "distracción"]):
         return "atencion"
-
     if any(s in blob for s in ["condiciones reglamentarias", "alumbrado", "senalizacion optica", "señalización óptica", "homolog", "neumatico", "neumático"]):
         return "condiciones_vehiculo"
-
     return "generic"
 
 
-# ======================================================
-# PLANTILLA VELOCIDAD (FUERTE Y SEGURA)
-# ======================================================
+def resolve_jurisdiction(core: Dict[str, Any]) -> str:
+    juris = (core.get("jurisdiccion") or "").lower().strip()
+    if juris:
+        return juris
 
-def build_velocidad_template(core: Dict[str, Any]) -> Dict[str, str]:
-    core = _safe_dict(core)
-
-    expediente = core.get("expediente_ref") or core.get("numero_expediente") or "No consta acreditado."
-    organo = core.get("organo") or core.get("organismo") or "No consta acreditado."
-    hecho = core.get("hecho_denunciado_literal") or core.get("hecho_imputado") or "EXCESO DE VELOCIDAD."
-
-    fecha_hecho = core.get("fecha_infraccion") or core.get("fecha_hecho") or core.get("fecha_documento") or ""
-    fecha_line = f" (fecha indicada: {fecha_hecho})" if isinstance(fecha_hecho, str) and fecha_hecho.strip() else ""
-
-    measured = core.get("velocidad_medida_kmh")
-    limit = core.get("velocidad_limite_kmh")
-    radar_model = core.get("radar_modelo_hint") or "cinemómetro (no especificado)"
-
-    calc = compute_velocity_calc_from_core(core, capture_mode="AUTO")
-    calc_paragraph = build_velocity_calc_paragraph(core, capture_mode="AUTO") if isinstance(calc, dict) and calc.get("ok") else ""
-    tramo_paragraph = build_tramo_error_paragraph(core, capture_mode="AUTO") if should_inject_tramo_error(core, capture_mode="AUTO") else ""
-
-    asunto = "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE"
-
-    cuerpo = (
-        "A la atención del órgano competente,\n\n"
-        "I. ANTECEDENTES\n"
-        f"1) Órgano: {organo}\n"
-        f"2) Identificación expediente: {expediente}\n"
-        f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
-        "II. ALEGACIONES\n\n"
-        "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA DEL CINEMÓMETRO\n\n"
-        "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. No basta una referencia genérica al radar o cinemómetro: debe constar de forma precisa el dispositivo utilizado, su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado.\n\n"
-        "No consta acreditado de forma completa en el expediente:\n"
-        f"1) Identificación completa del cinemómetro utilizado (marca/modelo/número de serie). En la documentación solo se aprecia: {radar_model}.\n"
-        "2) Certificado de verificación metrológica vigente en la fecha del hecho.\n"
-        "3) Acreditación del control metrológico conforme a la normativa aplicable (Orden ICT/155/2020 o la normativa metrológica que corresponda en la fecha del hecho).\n"
-        "4) Captura o fotograma completo y legible, con identificación inequívoca del vehículo.\n"
-        "5) Aplicación concreta del margen y determinación de la velocidad corregida.\n"
-        "6) Acreditación de la cadena de custodia del dato y su correspondencia inequívoca con el vehículo denunciado.\n"
-        "7) Acreditación del límite aplicable y de su señalización en el punto exacto.\n\n"
-    )
-
-    if isinstance(measured, (int, float)) or isinstance(limit, (int, float)):
-        cuerpo += (
-            "DATOS TÉCNICOS EXTRAÍDOS DEL EXPEDIENTE\n\n"
-            f"• Velocidad medida: {measured if measured is not None else 'No consta'} km/h\n"
-            f"• Velocidad límite: {limit if limit is not None else 'No consta'} km/h\n"
-            f"• Dispositivo/radar: {radar_model}\n\n"
-        )
-
-    if calc_paragraph:
-        cuerpo += calc_paragraph + "\n\n"
-
-    if tramo_paragraph:
-        cuerpo += tramo_paragraph + "\n\n"
-
-    cuerpo += (
-        "ALEGACIÓN SEGUNDA — DEFECTOS DE MOTIVACIÓN Y FALTA DE SOPORTE COMPLETO\n\n"
-        "La Administración debe motivar de forma individualizada por qué la velocidad atribuida, una vez aplicado el margen correspondiente, encaja exactamente en el tramo sancionador impuesto. Sin fotograma completo, certificado metrológico, identificación técnica del equipo y acreditación de la cadena de custodia, no puede enervarse la presunción de inocencia con el rigor exigible en Derecho sancionador.\n\n"
-        "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA\n\n"
-        "Se solicita la aportación íntegra del expediente, incluyendo: boletín/denuncia completa, fotograma o secuencia completa, certificado de verificación metrológica, identificación del equipo, documentación técnica del control y motivación detallada del tramo sancionador aplicado.\n\n"
-        "III. SOLICITO\n"
-        "1) Que se tengan por formuladas las presentes alegaciones.\n"
-        "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de acreditación técnica suficiente.\n"
-        "3) Subsidiariamente, que se aporte expediente íntegro y prueba técnica completa para contradicción efectiva.\n"
-    )
-
-    return {"asunto": asunto, "cuerpo": cuerpo.strip()}
+    blob = json.dumps(core, ensure_ascii=False).lower()
+    if any(s in blob for s in ["ayuntamiento", "policia local", "policía local", "guardia urbana", "ajuntament"]):
+        return "municipal"
+    if any(s in blob for s in ["dgt", "jefatura provincial de trafico", "jefatura provincial de tráfico", "guardia civil"]):
+        return "estatal"
+    return "desconocida"
 
 
 # ======================================================
-# VALIDACIÓN PLANTILLA
+# VALIDACIÓN DE PLANTILLA
 # ======================================================
 
 def ensure_tpl_dict(tpl: Any, core: Dict[str, Any]) -> Dict[str, str]:
@@ -266,47 +219,72 @@ def generate_dgt_for_case(
         raise HTTPException(status_code=404, detail="No hay extracción.")
 
     wrapper = row[0] if isinstance(row[0], dict) else json.loads(row[0])
-    core = _safe_dict(wrapper.get("extracted"))
+    core = dict(wrapper.get("extracted") or {})
 
-    literal = extract_hecho_denunciado_literal(core)
-    if literal:
-        core["hecho_denunciado_literal"] = literal
+    # preservamos el hecho canónico y mejoramos el hecho de antecedentes
+    canonical_hecho = core.get("hecho_imputado")
+    display_hecho = build_display_hecho(core)
+    if display_hecho:
+        core["hecho_denunciado_literal"] = display_hecho
+        core["hecho_imputado_canonico"] = canonical_hecho
+        core["hecho_imputado"] = display_hecho
 
     final_kind = resolve_infraction_type(core)
+    jurisdiccion = resolve_jurisdiction(core)
 
-    if final_kind == "semaforo":
-        tpl = build_semaforo_strong_template(core)
-    elif final_kind == "velocidad":
-        tpl = build_velocidad_template(core)
-    elif final_kind == "movil":
-        tpl = build_movil_strong_template(core)
-    elif final_kind == "auriculares":
-        tpl = build_auriculares_strong_template(core)
-    elif final_kind == "atencion":
-        tpl = build_atencion_strong_template(core)
-    elif final_kind == "marcas_viales":
-        tpl = build_marcas_viales_strong_template(core)
-    elif final_kind == "seguro":
-        tpl = build_seguro_strong_template(core)
-    elif final_kind == "itv":
-        tpl = build_itv_strong_template(core)
-    elif final_kind == "condiciones_vehiculo":
-        tpl = build_condiciones_vehiculo_strong_template(core)
+    # -----------------------------
+    # MUNICIPAL PRIMERO
+    # -----------------------------
+    if jurisdiccion == "municipal":
+        if final_kind == "semaforo":
+            tpl = build_municipal_semaforo_template(core)
+        elif final_kind in ("sentido_contrario", "sentido-contrario"):
+            tpl = build_municipal_sentido_contrario_template(core)
+        else:
+            # En municipal, si no hay módulo específico aún, usar genérico municipal.
+            tpl = build_municipal_generic_template(core)
+
+    # -----------------------------
+    # ESTATAL / DGT
+    # -----------------------------
     else:
-        tpl = build_generic_body(core)
+        if final_kind == "semaforo":
+            tpl = build_semaforo_strong_template(core)
+        elif final_kind == "velocidad":
+            tpl = build_dgt_alegaciones_text(core, interesado or {})
+        elif final_kind == "movil":
+            tpl = build_movil_strong_template(core)
+        elif final_kind == "auriculares":
+            tpl = build_auriculares_strong_template(core)
+        elif final_kind == "atencion":
+            tpl = build_atencion_strong_template(core)
+        elif final_kind == "marcas_viales":
+            tpl = build_marcas_viales_strong_template(core)
+        elif final_kind == "seguro":
+            tpl = build_seguro_strong_template(core)
+        elif final_kind == "itv":
+            tpl = build_itv_strong_template(core)
+        elif final_kind == "carril":
+            tpl = build_carril_strong_template(core)
+        elif final_kind == "condiciones_vehiculo":
+            tpl = build_condiciones_vehiculo_strong_template(core)
+        else:
+            tpl = build_generic_body(core)
 
     tpl = ensure_tpl_dict(tpl, core)
 
+    # Reforzar con extracto literal si el cuerpo no lo contiene
     cuerpo = tpl.get("cuerpo") or ""
     literal = core.get("hecho_denunciado_literal")
     if isinstance(literal, str) and literal.strip() and literal.lower() not in cuerpo.lower():
         cuerpo = (
-            'Extracto literal del boletín:\n'
+            "Extracto literal del boletín:\n"
             f'"{literal.strip()}"\n\n'
             f"{cuerpo}"
         )
     tpl["cuerpo"] = cuerpo
 
+    # documentos
     docx_bytes = build_docx(tpl["asunto"], tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
         case_id,
@@ -357,6 +335,7 @@ def generate_dgt_for_case(
         "ok": True,
         "case_id": case_id,
         "final_kind": final_kind,
+        "jurisdiccion": jurisdiccion,
     }
 
 
@@ -368,10 +347,12 @@ class GenerateRequest(BaseModel):
 @router.post("/generate/dgt")
 def generate_dgt(req: GenerateRequest) -> Dict[str, Any]:
     engine = get_engine()
+
     with engine.begin() as conn:
         result = generate_dgt_for_case(
             conn,
             req.case_id,
             interesado=req.interesado,
         )
+
     return {"ok": True, "message": "Recurso generado.", **result}
