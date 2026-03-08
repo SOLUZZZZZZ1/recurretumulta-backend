@@ -626,9 +626,17 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         "no respetar la luz roja", "no respeta la luz roja", "no respeta luz roja",
         "no respeta la fase roja", "no respetar la fase roja", "senal luminosa roja",
         "linea de detencion", "rebase la linea de detencion", "rebasar la linea de detencion",
+        "rebase de la linea de detencion", "rebaso la linea de detencion",
+        "semaforo en rojo", "luz roja", "fase semaforica roja", "fase semafórica roja",
+        "cruce fase roja", "paso en rojo", "paso con rojo",
         "ts roja", "t/s roja",
     ]
     if any(s in combined for s in sema_signals):
+        facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
+        return ("semaforo", facts[0], facts)
+
+    # Regla combinada muy útil para municipales con OCR roto
+    if ("roja" in combined and "cruce" in combined) or ("roja" in combined and "detencion" in combined):
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
 
