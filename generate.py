@@ -1,34 +1,34 @@
 import json
 import os
 import re
-from typing import Any, Dict, Optional, List, Tuple
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from database import get_engine
-from ai.expediente_engine import run_expediente_ai
+
 from ai.velocity_decision import decide_modo_velocidad
 
 from ai.infractions.semaforo import build_semaforo_strong_template
-from ai.infractions.movil import is_movil_context, build_movil_strong_template
+from ai.infractions.movil import build_movil_strong_template
 from ai.infractions.condiciones_vehiculo import build_condiciones_vehiculo_strong_template
-from ai.infractions.distracciones import is_auriculares_context, build_auriculares_strong_template
-from ai.infractions.atencion import is_atencion_context, build_atencion_strong_template
-from ai.infractions.marcas_viales import is_marcas_viales_context, build_marcas_viales_strong_template
-from ai.infractions.seguro import is_seguro_context, build_seguro_strong_template
+from ai.infractions.distracciones import build_auriculares_strong_template
+from ai.infractions.atencion import build_atencion_strong_template
+from ai.infractions.marcas_viales import build_marcas_viales_strong_template
+from ai.infractions.seguro import build_seguro_strong_template
+from ai.infractions.itv import build_itv_strong_template
 
 from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
-from dgt_templates import build_dgt_alegaciones_text, build_dgt_reposicion_text
 
 router = APIRouter(tags=["generate"])
 
 
 # ======================================================
-# EXTRACTOR ROBUSTO DE HECHO DENUNCIADO
+# EXTRACTOR HECHO DENUNCIADO
 # ======================================================
 
 def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
@@ -74,7 +74,6 @@ def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
             "matricula",
             "marca",
             "modelo",
-            "fecha limite",
         ]):
             break
 
@@ -84,49 +83,43 @@ def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
             break
 
     literal = " ".join(collected)
-
     literal = re.sub(r"\s+", " ", literal).strip()
 
     return literal
 
 
 # ======================================================
-# DETECTORES DE CONTEXTO
+# RESOLUCIÓN DEL TIPO DE INFRACCIÓN
 # ======================================================
 
-def is_semaforo_context(core: Dict[str, Any]) -> bool:
+def resolve_infraction_type(core: Dict[str, Any]) -> str:
 
-    blob = " ".join([
-        str(core.get("raw_text_pdf") or ""),
-        str(core.get("raw_text_vision") or ""),
-        str(core.get("raw_text_blob") or ""),
-        str(core.get("hecho_denunciado_literal") or ""),
-    ]).lower()
+    tipo = (core.get("tipo_infraccion") or "").lower().strip()
 
-    signals = [
-        "semáforo",
-        "semaforo",
-        "luz roja",
-        "fase roja",
-        "linea de detencion",
-        "línea de detención",
-        "no respetar",
-    ]
+    if tipo and tipo != "otro":
+        return tipo
 
-    return any(s in blob for s in signals)
+    blob = json.dumps(core, ensure_ascii=False).lower()
 
+    if "semaforo" in blob or "fase roja" in blob:
+        return "semaforo"
 
-def is_velocity_context(core: Dict[str, Any]) -> bool:
+    if "km/h" in blob or "radar" in blob:
+        return "velocidad"
 
-    if core.get("velocidad_medida_kmh") and core.get("velocidad_limite_kmh"):
-        return True
+    if "movil" in blob or "telefono" in blob:
+        return "movil"
 
-    blob = " ".join([
-        str(core.get("raw_text_pdf") or ""),
-        str(core.get("raw_text_vision") or ""),
-    ]).lower()
+    if "auricular" in blob:
+        return "auriculares"
 
-    return "km/h" in blob or "velocidad" in blob
+    if "itv" in blob:
+        return "itv"
+
+    if "seguro" in blob:
+        return "seguro"
+
+    return "generic"
 
 
 # ======================================================
@@ -137,7 +130,6 @@ def generate_dgt_for_case(
     conn,
     case_id: str,
     interesado: Optional[Dict[str, str]] = None,
-    tipo: Optional[str] = None,
 ):
 
     row = conn.execute(
@@ -151,68 +143,55 @@ def generate_dgt_for_case(
     if not row:
         raise HTTPException(status_code=404, detail="No hay extracción.")
 
-    extracted_json = row[0]
-
-    wrapper = extracted_json if isinstance(extracted_json, dict) else json.loads(extracted_json)
-
-    core = (wrapper.get("extracted") or {})
-
-    # -------------------------------------------------
-    # EXTRAER HECHO DENUNCIADO
-    # -------------------------------------------------
+    wrapper = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+    core = wrapper.get("extracted") or {}
 
     literal = extract_hecho_denunciado_literal(core)
 
     if literal:
         core["hecho_denunciado_literal"] = literal
 
-    # -------------------------------------------------
-    # ROUTING
-    # -------------------------------------------------
+    tipo = resolve_infraction_type(core)
 
-    if is_semaforo_context(core):
+    # =================================================
+    # ROUTING
+    # =================================================
+
+    if tipo == "semaforo":
 
         tpl = build_semaforo_strong_template(core)
-        final_kind = "semaforo"
 
-    elif is_velocity_context(core):
+    elif tipo == "velocidad":
 
-        tpl = build_dgt_alegaciones_text(core, interesado)
-        final_kind = "velocidad"
+        tpl = decide_modo_velocidad(core)
 
-    elif is_movil_context(core, ""):
+    elif tipo == "movil":
 
         tpl = build_movil_strong_template(core)
-        final_kind = "movil"
 
-    elif is_auriculares_context(core, ""):
+    elif tipo == "auriculares":
 
         tpl = build_auriculares_strong_template(core)
-        final_kind = "auriculares"
 
-    elif is_atencion_context(core, ""):
+    elif tipo == "atencion":
 
         tpl = build_atencion_strong_template(core)
-        final_kind = "atencion"
 
-    elif is_marcas_viales_context(core, ""):
+    elif tipo == "marcas_viales":
 
         tpl = build_marcas_viales_strong_template(core)
-        final_kind = "marcas_viales"
 
-    elif is_seguro_context(core, ""):
+    elif tipo == "seguro":
 
         tpl = build_seguro_strong_template(core)
-        final_kind = "seguro"
+
+    elif tipo == "itv":
+
+        tpl = build_itv_strong_template(core)
 
     else:
 
-        tpl = build_dgt_alegaciones_text(core, interesado)
-        final_kind = "generic"
-
-    # -------------------------------------------------
-    # INSERTAR EXTRACTO LITERAL
-    # -------------------------------------------------
+        tpl = build_condiciones_vehiculo_strong_template(core)
 
     cuerpo = tpl.get("cuerpo") or ""
 
@@ -228,10 +207,6 @@ Extracto literal del boletín:
 """
 
     tpl["cuerpo"] = cuerpo
-
-    # -------------------------------------------------
-    # GENERAR DOCUMENTOS
-    # -------------------------------------------------
 
     docx_bytes = build_docx(tpl["asunto"], tpl["cuerpo"])
 
@@ -284,7 +259,7 @@ Extracto literal del boletín:
     return {
         "ok": True,
         "case_id": case_id,
-        "final_kind": final_kind,
+        "final_kind": tipo,
     }
 
 
@@ -292,7 +267,6 @@ class GenerateRequest(BaseModel):
 
     case_id: str
     interesado: Dict[str, str] = Field(default_factory=dict)
-    tipo: Optional[str] = None
 
 
 @router.post("/generate/dgt")
@@ -306,7 +280,6 @@ def generate_dgt(req: GenerateRequest):
             conn,
             req.case_id,
             interesado=req.interesado,
-            tipo=req.tipo,
         )
 
     return {"ok": True, "message": "Recurso generado.", **result}
