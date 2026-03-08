@@ -145,6 +145,15 @@ _STOP_LINE_SIGNALS = [
     "precepto infringido",
     "lugar de denuncia",
     "ejemplar para el infractor",
+    "ejemplar para la infractora",
+    "ejemplar para el/la infractor/a",
+    "ejemplar para el/la infractor",
+    "ejemplar para ella infractor",
+    "identificacion de la multa",
+    "identificación de la multa",
+    "vehiculo titular",
+    "apellidos y nombre del infractor",
+    "identificador fiscal",
 ]
 
 _ADMIN_KV_PREFIXES = [
@@ -302,6 +311,9 @@ def _extract_hecho_denunciado_literal_from_text(raw_text: str) -> str:
     admin_poison = [
         "fax", "correo ordinario", "telefono de informacion", "teléfono de información",
         "telefono de atencion", "teléfono de atención", "remitir el presente", "impreso relleno",
+        "ejemplar para el infractor", "ejemplar para la infractora", "ejemplar para el/la infractor/a",
+        "identificacion de la multa", "vehiculo titular", "apellidos y nombre del infractor",
+        "identificador fiscal",
     ]
     low_out = out.lower()
     if any(s in low_out for s in admin_poison):
@@ -636,7 +648,8 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     organismo = _normalize_for_matching(_safe_str(core.get("organismo")))
     tipo_sancion = _normalize_for_matching(_safe_str(core.get("tipo_sancion")))
 
-    combined = "\\n".join([x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]).strip()
+    combined = "
+".join([x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]).strip()
 
     vehicle_light_context = any(
         s in combined
