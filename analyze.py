@@ -223,6 +223,54 @@ def _looks_like_narrative_line(line: str) -> bool:
     return False
 
 
+
+def _score_candidate_hecho(line: str) -> int:
+    l = _normalize_for_matching(line)
+
+    bad = [
+        "fecha caducidad documento",
+        "referencia de cobro",
+        "ejemplar para el",
+        "ejemplar para la",
+        "ejemplar para el/la",
+        "identificacion de la multa",
+        "vehiculo titular",
+        "lugar de pago",
+        "telefono",
+        "fax",
+        "correo ordinario",
+        "impreso relleno",
+        "remitir el presente",
+    ]
+    if any(b in l for b in bad):
+        return -100
+
+    score = 0
+
+    strong_verbs = [
+        "no respetar",
+        "superar",
+        "circular",
+        "utilizando",
+        "no mantener",
+        "carecer de",
+        "conducir de forma negligente",
+        "no llevar",
+    ]
+    for v in strong_verbs:
+        if v in l:
+            score += 20
+
+    if "semaforo" in l or "fase roja" in l or "luz roja" in l:
+        score += 10
+    if "km/h" in l or "velocidad" in l:
+        score += 10
+    if "auricular" in l or "telefono movil" in l or "marca longitudinal continua" in l:
+        score += 10
+
+    return score
+
+
 def _extract_hecho_denunciado_literal_from_text(raw_text: str) -> str:
     if not isinstance(raw_text, str) or not raw_text.strip():
         return ""
@@ -257,39 +305,47 @@ def _extract_hecho_denunciado_literal_from_text(raw_text: str) -> str:
     if not lines:
         return ""
 
-    collected: List[str] = []
+    candidates: List[str] = []
+    current: List[str] = []
     started = False
 
     for ln in lines:
         if _is_admin_line(ln):
-            if started:
-                break
+            if current:
+                candidates.append(" ".join(current))
+                current = []
+            started = False
             continue
 
         norm = _normalize_for_matching(ln)
 
         if re.match(r"^\s*5[abc]\b", norm):
-            started = True
             cleaned = re.sub(r"^\s*5[abc]\s*", "", ln, flags=re.IGNORECASE).strip()
             if cleaned:
-                collected.append(cleaned)
+                if current:
+                    candidates.append(" ".join(current))
+                current = [cleaned]
+                started = True
             continue
 
-        if not started:
-            if _looks_like_narrative_line(ln):
-                started = True
-                collected.append(ln)
-            else:
-                continue
-        else:
-            collected.append(ln)
+        if _looks_like_narrative_line(ln):
+            if not started and current:
+                candidates.append(" ".join(current))
+                current = []
+            started = True
 
-        if len(" ".join(collected)) > 1000:
-            break
+        if started:
+            current.append(ln)
 
-    out = _clean_literal_text(" ".join(collected))
+        if len(" ".join(current)) > 1000:
+            candidates.append(" ".join(current))
+            current = []
+            started = False
 
-    if len(out) < 25:
+    if current:
+        candidates.append(" ".join(current))
+
+    if not candidates:
         second: List[str] = []
         for ln in lines:
             if _is_admin_line(ln):
@@ -299,31 +355,40 @@ def _extract_hecho_denunciado_literal_from_text(raw_text: str) -> str:
             second.append(ln)
             if len(" ".join(second)) > 1000:
                 break
-        out2 = _clean_literal_text(" ".join(second))
-        if len(out2) > len(out):
-            out = out2
+        if second:
+            candidates.append(" ".join(second))
+
+    cleaned_candidates: List[str] = []
+    for c in candidates:
+        cc = _clean_literal_text(c)
+        if not cc:
+            continue
+        low = cc.lower()
+        admin_poison = [
+            "fax", "correo ordinario", "telefono de informacion", "teléfono de información",
+            "telefono de atencion", "teléfono de atención", "remitir el presente", "impreso relleno",
+            "ejemplar para el infractor", "ejemplar para la infractora", "ejemplar para el/la infractor/a",
+            "identificacion de la multa", "vehiculo titular", "apellidos y nombre del infractor",
+            "identificador fiscal", "fecha caducidad documento", "referencia de cobro",
+        ]
+        if any(s in low for s in admin_poison):
+            continue
+        cleaned_candidates.append(cc)
+
+    if not cleaned_candidates:
+        return ""
+
+    out = max(cleaned_candidates, key=_score_candidate_hecho)
 
     for kv in _ADMIN_KV_PREFIXES:
         pos = out.lower().find(kv)
         if pos > 0:
             out = out[:pos].strip()
 
-    admin_poison = [
-        "fax", "correo ordinario", "telefono de informacion", "teléfono de información",
-        "telefono de atencion", "teléfono de atención", "remitir el presente", "impreso relleno",
-        "ejemplar para el infractor", "ejemplar para la infractora", "ejemplar para el/la infractor/a",
-        "identificacion de la multa", "vehiculo titular", "apellidos y nombre del infractor",
-        "identificador fiscal",
-    ]
-    low_out = out.lower()
-    if any(s in low_out for s in admin_poison):
-        return ""
-
     if len(out) > 700:
         out = out[:700].rsplit(" ", 1)[0].strip() + "…"
 
     return out.strip()
-
 
 def _build_hecho_denunciado_resumido(literal: str, tipo_infraccion: str = "") -> str:
     text = _clean_literal_text(literal)
@@ -648,7 +713,8 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     organismo = _normalize_for_matching(_safe_str(core.get("organismo")))
     tipo_sancion = _normalize_for_matching(_safe_str(core.get("tipo_sancion")))
 
-    combined = "\\n".join([x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]).strip()
+    combined = "
+".join([x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]).strip()".join([x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]).strip()
 
     vehicle_light_context = any(
         s in combined
