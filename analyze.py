@@ -651,7 +651,7 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     combined = "\n".join([x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]).strip()
 "\n".join([x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]).strip()
 
-    vehicle_light_context = any(
+    vehicle_light_context = any()
         s in combined
         for s in [
             "alumbrado",
