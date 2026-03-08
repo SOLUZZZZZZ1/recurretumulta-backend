@@ -128,6 +128,279 @@ def _normalize_for_matching(text: str) -> str:
     return t.strip()
 
 
+ADMIN_FIELDS = [
+    "importe multa",
+    "importe con reduccion",
+    "importe con reducción",
+    "fecha limite",
+    "fecha límite",
+    "lugar de denuncia",
+    "puntos a detraer",
+    "matricula",
+    "matrícula",
+    "marca y modelo",
+    "marca",
+    "modelo",
+    "clase vehiculo",
+    "clase vehículo",
+    "datos del vehic",
+    "domicilio",
+    "provincia",
+    "codigo postal",
+    "código postal",
+    "identificacion de la multa",
+    "identificación de la multa",
+    "organo",
+    "órgano",
+    "expediente",
+    "fecha documento",
+    "hora",
+    "via ",
+    "vía ",
+    "punto km",
+    "sentido",
+    "titular",
+    "boletin",
+    "boletín",
+    "agente denunciante",
+    "observaciones internas",
+    "jefatura",
+    "fecha caducidad documento",
+    "lugar de pago",
+    "referenciado cobro",
+    "total principal",
+    "bonificacion",
+    "bonificación",
+    "importe para ingresar",
+    "motivo de no notificacion",
+    "motivo de no notificación",
+]
+
+NARRATIVE_SIGNALS = [
+    "conducir",
+    "circular",
+    "circulando",
+    "circulaba",
+    "no respetar",
+    "no respeta",
+    "utilizando",
+    "bailando",
+    "tocando",
+    "golpeando",
+    "auricular",
+    "auriculares",
+    "cascos",
+    "luz roja",
+    "fase roja",
+    "marca longitudinal",
+    "adelantamiento",
+    "sin mantener",
+    "atencion permanente",
+    "atención permanente",
+    "vehiculo resenado",
+    "vehículo reseñado",
+    "observado por agente",
+    "interceptado",
+    "interceptación",
+    "interceptacion",
+    "menor de",
+    "ciclistas",
+    "arcen",
+    "arcén",
+    "en paralelo",
+    "conversando",
+    "telefono movil",
+    "teléfono móvil",
+    "telefono",
+    "teléfono",
+    "movil",
+    "móvil",
+    "itv",
+    "seguro obligatorio",
+    "alumbrado",
+    "senalizacion optica",
+    "señalización óptica",
+    "linea continua",
+    "línea continua",
+    "linea de detencion",
+    "línea de detención",
+    "uso manual",
+    "radar",
+    "cinemometro",
+    "cinemómetro",
+    "velocidad",
+    "km/h",
+    "cruce con fase roja",
+    "semaforo en rojo",
+    "semáforo en rojo",
+    "cruce con luz roja",
+]
+
+
+def _clean_literal_text(text: str) -> str:
+    t = (text or "").replace("\r", "\n")
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"\n{2,}", "\n", t)
+    t = t.strip()
+
+    t = re.sub(r"^\s*hecho denunciado\s*[:\-]?\s*", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"^\s*hecho imputado\s*[:\-]?\s*", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"^\s*hecho que se notifica\s*[:\-]?\s*", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"^\s*hecho infringido\s*[:\-]?\s*", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"^\s*5[abc]\s*", "", t, flags=re.IGNORECASE)
+
+    t = re.sub(r"\s+/\s+", " / ", t)
+    t = re.sub(r"\s+", " ", t).strip(" :-\t")
+    return t
+
+
+def _is_probably_admin_line(line: str) -> bool:
+    l = _normalize_for_matching(line)
+    return any(x in l for x in ADMIN_FIELDS)
+
+
+def _looks_like_narrative_line(line: str) -> bool:
+    l = _normalize_for_matching(line)
+    return any(k in l for k in NARRATIVE_SIGNALS)
+
+
+def _extract_literal_from_blob(raw_text: str) -> str:
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        return ""
+
+    original_text = raw_text.replace("\r", "\n")
+    normalized_text = _normalize_for_matching(original_text)
+
+    patterns = [
+        r"hecho denunciado\s*[:\-]?\s*",
+        r"hecho imputado\s*[:\-]?\s*",
+        r"hecho que se notifica\s*[:\-]?\s*",
+        r"hecho infringido\s*[:\-]?\s*",
+    ]
+    m = None
+    for pat in patterns:
+        m = re.search(pat, normalized_text, flags=re.IGNORECASE)
+        if m:
+            break
+
+    if not m:
+        return ""
+
+    start = m.end()
+    tail = original_text[start:].strip()
+    if not tail:
+        return ""
+
+    lines = [ln.strip() for ln in tail.split("\n") if ln.strip()]
+    if not lines:
+        return ""
+
+    collected: List[str] = []
+    started = False
+
+    for ln in lines:
+        low = _normalize_for_matching(ln)
+
+        if _is_probably_admin_line(ln):
+            if started:
+                break
+            continue
+
+        if re.match(r"^\s*5[abc]\b", low):
+            started = True
+            cleaned = re.sub(r"^\s*5[abc]\s*", "", ln, flags=re.IGNORECASE).strip()
+            if cleaned:
+                collected.append(cleaned)
+            continue
+
+        if not started:
+            if _looks_like_narrative_line(ln):
+                started = True
+                collected.append(ln)
+            else:
+                continue
+        else:
+            collected.append(ln)
+
+        if len(" ".join(collected)) > 900:
+            break
+
+    if not collected:
+        return ""
+
+    out = _clean_literal_text(" / ".join(collected))
+
+    if len(out) < 35:
+        second_pass: List[str] = []
+        for ln in lines:
+            if _is_probably_admin_line(ln):
+                if second_pass:
+                    break
+                continue
+            second_pass.append(ln)
+            if len(" ".join(second_pass)) > 900:
+                break
+        out2 = _clean_literal_text(" / ".join(second_pass))
+        if len(out2) > len(out):
+            out = out2
+
+    if len(out) > 700:
+        out = out[:700].rsplit(" ", 1)[0].strip() + "…"
+
+    return out.strip()
+
+
+def _build_hecho_resumido(literal: str, tipo: str = "", fallback: str = "") -> str:
+    lit = _clean_literal_text(literal or "")
+    if not lit:
+        fb = _clean_literal_text(fallback or "")
+        return fb[:280].strip() if fb else ""
+
+    resumen = lit
+
+    # limpiar basura residual frecuente
+    stop_patterns = [
+        r"\borganismo\s*:",
+        r"\bexpediente_ref\s*:",
+        r"\btipo_sancion\s*:",
+        r"\bobservaciones\s*:",
+        r"\bvision_raw_text\s*:",
+        r"\braw_text_vision\s*:",
+        r"\braw_text_blob\s*:",
+        r"\btotal principal\s*:",
+        r"\bimporte\s*:",
+        r"\bfecha documento\s*:",
+        r"\bfecha notificacion\s*:",
+    ]
+    lowered = _normalize_for_matching(resumen)
+    cut_positions = []
+    for pat in stop_patterns:
+        m = re.search(pat, lowered, flags=re.IGNORECASE)
+        if m:
+            cut_positions.append(m.start())
+    if cut_positions:
+        resumen = resumen[: min(cut_positions)].strip(" .;,-")
+
+    resumen = re.sub(r"^\s*5[abc]\s*", "", resumen, flags=re.IGNORECASE).strip()
+
+    if len(resumen) <= 280:
+        return resumen
+
+    # recorte semántico suave
+    pieces = [p.strip(" .;,-") for p in re.split(r"[./;]+", resumen) if p.strip()]
+    if pieces:
+        acc = ""
+        for p in pieces:
+            candidate = (acc + ". " + p).strip(". ").strip()
+            if len(candidate) > 280:
+                break
+            acc = candidate
+        if acc:
+            return acc + "."
+
+    return resumen[:280].rsplit(" ", 1)[0].strip() + "…"
+
+
 def _extract_precepts(text_blob: str) -> Dict[str, Any]:
     t = _normalize_for_matching(text_blob)
 
@@ -524,6 +797,19 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     out["hecho_imputado"] = hecho or None
     out["facts_phrases"] = facts
     out["jurisdiccion"] = _extract_jurisdiction(text_blob, extracted_core)
+
+    existing_literal = _safe_str(out.get("hecho_denunciado_literal")).strip()
+    extracted_literal = existing_literal or _extract_literal_from_blob(text_blob)
+    if extracted_literal:
+        out["hecho_denunciado_literal"] = extracted_literal
+
+    resumen = _build_hecho_resumido(
+        extracted_literal or "",
+        tipo=tipo,
+        fallback=_safe_str(out.get("hecho_imputado") or hecho or ""),
+    )
+    if resumen:
+        out["hecho_denunciado_resumido"] = resumen
 
     pre = _extract_precepts(text_blob)
     out["preceptos_detectados"] = pre.get("preceptos_detectados") or []
