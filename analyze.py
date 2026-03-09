@@ -713,7 +713,8 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     organismo = _normalize_for_matching(_safe_str(core.get("organismo")))
     tipo_sancion = _normalize_for_matching(_safe_str(core.get("tipo_sancion")))
 
-    combined = "\\n".join([x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]).strip()
+    combined = "
+".join([x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]).strip()".join([x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]).strip()
 
     vehicle_light_context = any(
         s in combined
@@ -894,6 +895,29 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
 
 
 
+
+HECHO_CANONICO = {
+    "velocidad": "EXCESO DE VELOCIDAD",
+    "semaforo": "NO RESPETAR LA LUZ ROJA (SEMÁFORO)",
+    "movil": "USO MANUAL DEL TELÉFONO MÓVIL",
+    "auriculares": "USO DE AURICULARES O CASCOS CONECTADOS",
+    "marcas_viales": "NO RESPETAR MARCA VIAL",
+    "seguro": "CARENCIA DE SEGURO OBLIGATORIO",
+    "itv": "ITV NO VIGENTE / INSPECCIÓN TÉCNICA CADUCADA",
+    "condiciones_vehiculo": "INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO",
+    "carril": "POSICIÓN INCORRECTA EN LA VÍA / USO INDEBIDO DEL CARRIL",
+    "atencion": "NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN",
+}
+
+
+def _canonical_hecho_imputado(tipo_infraccion: str, hecho_actual: str = "") -> str:
+    tipo = (tipo_infraccion or "").strip().lower()
+    canon = HECHO_CANONICO.get(tipo)
+    if canon:
+        return canon
+    return (hecho_actual or "").strip()
+
+
 def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
     out = dict(extracted_core or {})
 
@@ -904,7 +928,7 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
 
     tipo, hecho, facts = _detect_facts_and_type(text_blob, out)
     out["tipo_infraccion"] = tipo
-    out["hecho_imputado"] = hecho or None
+    out["hecho_imputado"] = _canonical_hecho_imputado(tipo, hecho) or None
     out["facts_phrases"] = facts
     out["jurisdiccion"] = _extract_jurisdiction(text_blob, out)
 
