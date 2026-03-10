@@ -807,6 +807,50 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
         return ("condiciones_vehiculo", facts[0], facts)
 
+    casco_context = any(
+        s in combined
+        for s in [
+            "sin casco",
+            "no llevar casco",
+            "no utili zar casco",
+            "no utilizar casco",
+            "casco de proteccion",
+            "casco de protección",
+            "casco abrochado",
+            "debidamente abrochado",
+            "sin hacer uso del casco",
+            "sin hacer uso del casco de proteccion",
+            "sin hacer uso del casco de protección",
+        ]
+    )
+
+    visibilidad_context = any(
+        s in combined
+        for s in [
+            "superficie acristalada",
+            "visibilidad diafana",
+            "visibilidad diáfana",
+            "laminas",
+            "láminas",
+            "adhesivos",
+            "cortinillas",
+            "elementos no autorizados",
+            "no permite a su conductor la visibilidad",
+            "visibilidad suficiente",
+            "visibilidad directa",
+        ]
+    )
+
+    # CASCO
+    if casco_context:
+        facts.append("NO UTILIZAR CASCO DE PROTECCIÓN")
+        return ("casco", facts[0], facts)
+
+    # VISIBILIDAD / LÁMINAS / CORTINILLAS
+    if visibilidad_context:
+        facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
+        return ("condiciones_vehiculo", facts[0], facts)
+
     # 2) AURICULARES — antes que móvil
     if auriculares_context:
         facts.append("USO DE AURICULARES O CASCOS CONECTADOS")
@@ -925,7 +969,7 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
         if v:
             out[k] = v
 
-    tipo, hecho, facts = _detect_facts_and_type(text_blob, out)
+        tipo, hecho, facts = _detect_facts_and_type(text_blob, out)
     out["tipo_infraccion"] = tipo
     out["hecho_imputado"] = _canonical_hecho_imputado(tipo, hecho) or None
     out["facts_phrases"] = facts
