@@ -18,6 +18,7 @@ from ai.infractions.seguro import build_seguro_strong_template
 from ai.infractions.itv import build_itv_strong_template
 from ai.infractions.generic import build_generic_body
 from ai.infractions.municipal_semaforo import build_municipal_semaforo_template
+from ai.infractions.casco import build_casco_strong_template
 from ai.infractions.municipal_sentido_contrario import build_municipal_sentido_contrario_template
 from ai.infractions.municipal_generic import build_municipal_generic_template
 from ai.infractions.velocidad import (
@@ -394,6 +395,8 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     elif tipo == "itv":
         tpl = build_itv_strong_template(core)
         final_kind = "itv"
+    elif tipo == "casco":
+        tpl = build_casco_strong_template(core)
     elif tipo == "condiciones_vehiculo":
         tpl = build_condiciones_vehiculo_strong_template(core)
         final_kind = "condiciones_vehiculo"
