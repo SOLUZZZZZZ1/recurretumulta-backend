@@ -396,8 +396,8 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         tpl = build_itv_strong_template(core)
         final_kind = "itv"
     elif tipo == "casco":
-    tpl = build_casco_strong_template(core)
-    final_kind = "casco"
+        tpl = build_casco_strong_template(core)
+        final_kind = "casco"
     elif tipo == "condiciones_vehiculo":
         tpl = build_condiciones_vehiculo_strong_template(core)
         final_kind = "condiciones_vehiculo"
