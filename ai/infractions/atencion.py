@@ -128,24 +128,32 @@ def _has_ciclistas(b: str) -> bool:
 def _extraer_ejemplos_habitaculo(b: str) -> str:
     ejemplos = []
 
-    if "palm" in b:
+    # solo si el boletín lo dice literalmente
+    if "tocando las palmas" in b or "tocar las palmas" in b:
         ejemplos.append("tocar las palmas")
-    if "volante" in b:
+
+    if "golpeando el volante" in b or "golpear el volante" in b:
         ejemplos.append("golpear el volante")
+
     if "bail" in b:
         ejemplos.append("bailar dentro del vehículo")
-    if "convers" in b:
+
+    if "mantiene conversacion" in b or "mantener conversacion" in b or "mantiene conversación" in b:
         ejemplos.append("mantener conversación con ocupantes")
-    if "mirando" in b and ("acompañante" in b or "acompanante" in b):
+
+    if "mirando en repetidas ocasiones" in b:
         ejemplos.append("mirar repetidamente al acompañante")
+
     if "mordia las uñas" in b or "mordia las unas" in b:
         ejemplos.append("morderse las uñas mientras conduce")
+
     if "libertad de movimientos" in b:
         ejemplos.append("conducir sin mantener la propia libertad de movimientos")
 
     if not ejemplos:
         return ""
 
+    ejemplos = list(dict.fromkeys(ejemplos))
     return " (por ejemplo " + ", ".join(ejemplos) + ")"
 
 
