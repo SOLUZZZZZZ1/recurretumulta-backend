@@ -763,6 +763,13 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
             "sin hacer uso del casco",
             "sin hacer uso del casco de proteccion",
             "sin hacer uso del casco de protección",
+            "casco homologado",
+            "casco de protección homologado",
+            "camara de video",
+            "cámara de vídeo",
+            "camara en casco",
+            "cámara en casco",
+            "anclado al casco",
         ]
     )
 
