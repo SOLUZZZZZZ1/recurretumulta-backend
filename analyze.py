@@ -947,6 +947,7 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
 
 
 HECHO_CANONICO = {
+    "cinturon": "NO UTILIZAR CINTURÓN DE SEGURIDAD",
     "velocidad": "EXCESO DE VELOCIDAD",
     "semaforo": "NO RESPETAR LA LUZ ROJA (SEMÁFORO)",
     "movil": "USO MANUAL DEL TELÉFONO MÓVIL",
