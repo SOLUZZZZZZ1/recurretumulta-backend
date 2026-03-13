@@ -224,6 +224,7 @@ def _looks_like_semaforo(core: Dict[str, Any]) -> bool:
     return False
 
 
+
 def resolve_infraction_type(core: Dict[str, Any]) -> str:
     tipo = _safe_str(core.get("tipo_infraccion")).lower().strip()
     if tipo == "semaforo":
@@ -231,23 +232,30 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
     if tipo and tipo not in ("otro", "unknown", "desconocido", "generic"):
         return tipo
 
+    blob = json.dumps(core, ensure_ascii=False).lower()
+    blob = blob.replace("semáforo", "semaforo").replace("cinturón", "cinturon").replace("teléfono", "telefono").replace("línea", "linea")
+
     if _looks_like_semaforo(core):
         return "semaforo"
 
-    blob = json.dumps(core, ensure_ascii=False).lower()
-
-    if any(s in blob for s in ["km/h", "radar", "cinemometro", "cinemómetro", "exceso de velocidad"]):
-        return "velocidad"
-    if any(s in blob for s in ["telefono movil", "teléfono móvil", "uso manual", "movil", "móvil", "telefono", "teléfono"]):
-        return "movil"
+    if any(s in blob for s in ["cinturon de seguridad", "sin cinturon", "no utilizar el cinturon", "abrochado el cinturon"]):
+        return "cinturon"
+    if any(s in blob for s in ["sin casco", "no llevar casco", "casco de proteccion", "casco homologado"]):
+        return "casco"
     if any(s in blob for s in ["auricular", "auriculares", "cascos conectados", "reproductores de sonido", "porta auricular"]):
         return "auriculares"
+    if any(s in blob for s in ["telefono movil", "uso manual", "movil", "telefono", "manipulando el movil", "interactuando con la pantalla"]):
+        return "movil"
+    if any(s in blob for s in ["km/h", "radar", "cinemometro", "cinemómetro", "exceso de velocidad"]):
+        return "velocidad"
     if any(s in blob for s in ["itv", "inspeccion tecnica", "inspección técnica"]):
         return "itv"
     if any(s in blob for s in ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "vehículo no asegurado", "fiva", "8/2004"]):
         return "seguro"
-    if any(s in blob for s in ["linea continua", "línea continua", "marca longitudinal continua", "marca vial"]):
+    if any(s in blob for s in ["linea continua", "marca longitudinal continua", "marca vial", "senalizacion horizontal", "señalización horizontal"]):
         return "marcas_viales"
+    if any(s in blob for s in ["carril distinto del situado mas a la derecha", "carril distinto del situado más a la derecha", "adelantar por la derecha", "posición en la vía", "posicion en la via"]):
+        return "carril"
     if any(s in blob for s in ["atencion permanente", "atención permanente", "conduccion negligente", "conducción negligente", "distraccion", "distracción", "mordia las unas", "mordía las uñas"]):
         return "atencion"
     if any(s in blob for s in ["condiciones reglamentarias", "alumbrado", "senalizacion optica", "señalización óptica", "homolog", "neumatico", "neumático", "reflect", "espejo"]):
@@ -368,6 +376,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
 
     tipo = resolve_infraction_type(core)
     jurisdiccion = resolve_jurisdiction(core)
+
 
     if tipo == "semaforo" and jurisdiccion == "municipal":
         tpl = build_municipal_semaforo_template(core)

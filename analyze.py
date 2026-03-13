@@ -686,6 +686,7 @@ def _extract_jurisdiction(text_blob: str, core: Optional[Dict[str, Any]] = None)
     return "desconocida"
 
 
+
 def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None) -> Tuple[str, str, List[str]]:
     """
     Devuelve:
@@ -1087,6 +1088,75 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
 
 
 
+def _detect_family_confidence(text_blob: str, core: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    core = core or {}
+    blob = _normalize_for_matching(
+        "\n".join(
+            [
+                _safe_str(text_blob),
+                _safe_str(core.get("hecho_denunciado_literal")),
+                _safe_str(core.get("hecho_denunciado_resumido")),
+                _safe_str(core.get("organismo")),
+                _safe_str(core.get("tipo_sancion")),
+            ]
+        )
+    )
+
+    signals_map = {
+        "condiciones_vehiculo": ["alumbrado", "senalizacion", "homologacion", "reflectante", "visibilidad"],
+        "casco": ["casco", "proteccion", "abrochado", "anclado al casco"],
+        "auriculares": ["auricular", "auriculares", "cascos conectados", "reproductores de sonido"],
+        "cinturon": ["cinturon de seguridad", "cinturón de seguridad", "abrochado", "sin cinturón"],
+        "movil": ["telefono movil", "teléfono móvil", "uso manual", "manipulando"],
+        "semaforo": ["semaforo", "semáforo", "fase roja", "linea de detencion", "luz roja"],
+        "velocidad": ["km/h", "radar", "cinemometro", "velocidad"],
+        "seguro": ["seguro obligatorio", "sin seguro", "fiva", "8/2004"],
+        "itv": ["itv", "inspeccion tecnica", "inspección técnica"],
+        "marcas_viales": ["linea continua", "línea continua", "marca vial", "senalizacion horizontal"],
+        "carril": ["carril", "posición en la vía", "adelantar por la derecha"],
+        "atencion": ["atencion permanente", "conduccion negligente", "distraccion", "volante"],
+    }
+
+    scores: Dict[str, float] = {}
+    for family, signals in signals_map.items():
+        hits = sum(1 for s in signals if _normalize_for_matching(s) in blob)
+        if hits:
+            scores[family] = min(0.99, round(0.35 + hits * 0.18, 2))
+
+    if not scores:
+        return {"best_family": "otro", "confidence": 0.0, "scores": {}}
+
+    best_family = max(scores, key=scores.get)
+    return {"best_family": best_family, "confidence": scores[best_family], "scores": scores}
+
+
+def _extract_evidence_gaps(core: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    core = core or {}
+    blob = _normalize_for_matching(
+        "\n".join(
+            [
+                _safe_str(core.get("hecho_denunciado_literal")),
+                _safe_str(core.get("hecho_denunciado_resumido")),
+                _safe_str(core.get("observaciones")),
+                _safe_str(core.get("raw_text_pdf")),
+                _safe_str(core.get("raw_text_vision")),
+            ]
+        )
+    )
+
+    def has_any(signals: List[str]) -> bool:
+        return any(_normalize_for_matching(s) in blob for s in signals)
+
+    gaps = {
+        "agent_position_missing": not has_any(["posicion del agente", "posición del agente", "situado", "ubicado"]),
+        "distance_missing": not has_any(["distancia", "metros", "a unos", "desde una distancia"]),
+        "observation_time_missing": not has_any(["durante", "segundos", "instantes", "tiempo de observacion", "tiempo de observación"]),
+        "visibility_missing": not has_any(["visibilidad", "vision directa", "visión directa", "campo de vision", "campo de visión"]),
+        "objective_evidence_missing": not has_any(["fotografia", "fotografía", "video", "imagen", "grabacion", "grabación"]),
+    }
+    gaps["gap_count"] = sum(1 for v in gaps.values() if v is True)
+    return gaps
+
 
 HECHO_CANONICO = {
     "velocidad": "EXCESO DE VELOCIDAD",
@@ -1125,6 +1195,10 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     out["hecho_imputado"] = _canonical_hecho_imputado(tipo, hecho) or None
     out["facts_phrases"] = facts
     out["jurisdiccion"] = _extract_jurisdiction(text_blob, out)
+    confidence_info = _detect_family_confidence(text_blob, out)
+    out["tipo_infraccion_confidence"] = confidence_info.get("confidence")
+    out["tipo_infraccion_scores"] = confidence_info.get("scores")
+    out["evidence_gaps"] = _extract_evidence_gaps(out)
 
     pre = _extract_precepts(text_blob)
     out["preceptos_detectados"] = pre.get("preceptos_detectados") or []
