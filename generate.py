@@ -418,12 +418,15 @@ elif tipo == "carril":
 
 elif jurisdiccion == "municipal":
     blob = json.dumps(core, ensure_ascii=False).lower()
+
     if "sentido contrario" in blob or "direccion prohibida" in blob or "dirección prohibida" in blob:
         tpl = build_municipal_sentido_contrario_template(core)
         final_kind = "municipal_sentido_contrario"
+
     elif _looks_like_semaforo(core):
         tpl = build_municipal_semaforo_template(core)
         final_kind = "municipal_semaforo_fallback"
+
     else:
         tpl = build_municipal_generic_template(core)
         final_kind = "municipal_generic"
