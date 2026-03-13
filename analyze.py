@@ -686,7 +686,6 @@ def _extract_jurisdiction(text_blob: str, core: Optional[Dict[str, Any]] = None)
     return "desconocida"
 
 
-
 def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None) -> Tuple[str, str, List[str]]:
     """
     Devuelve:
@@ -1086,148 +1085,292 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
 
     return ("otro", "", [])
 
-
-
-def _detect_family_confidence(text_blob: str, core: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
     core = core or {}
-    blob = _normalize_for_matching(
-        "\n".join(
-            [
-                _safe_str(text_blob),
-                _safe_str(core.get("hecho_denunciado_literal")),
-                _safe_str(core.get("hecho_denunciado_resumido")),
-                _safe_str(core.get("organismo")),
-                _safe_str(core.get("tipo_sancion")),
-            ]
-        )
+    combined = _normalize_for_matching(
+        "\n".join([
+            _safe_str(text_blob),
+            _safe_str(core.get("hecho_denunciado_literal")),
+            _safe_str(core.get("hecho_denunciado_resumido")),
+            _safe_str(core.get("organismo")),
+            _safe_str(core.get("tipo_sancion")),
+            _safe_str(core.get("norma_hint")),
+            _safe_str(core.get("raw_text_blob")),
+        ])
     )
 
-    signals_map = {
-        "condiciones_vehiculo": ["alumbrado", "senalizacion", "homologacion", "reflectante", "visibilidad"],
-        "casco": ["casco", "proteccion", "abrochado", "anclado al casco"],
-        "auriculares": ["auricular", "auriculares", "cascos conectados", "reproductores de sonido"],
-        "cinturon": ["cinturon de seguridad", "cinturón de seguridad", "abrochado", "sin cinturón"],
-        "movil": ["telefono movil", "teléfono móvil", "uso manual", "manipulando"],
-        "semaforo": ["semaforo", "semáforo", "fase roja", "linea de detencion", "luz roja"],
-        "velocidad": ["km/h", "radar", "cinemometro", "velocidad"],
-        "seguro": ["seguro obligatorio", "sin seguro", "fiva", "8/2004"],
-        "itv": ["itv", "inspeccion tecnica", "inspección técnica"],
-        "marcas_viales": ["linea continua", "línea continua", "marca vial", "senalizacion horizontal"],
-        "carril": ["carril", "posición en la vía", "adelantar por la derecha"],
-        "atencion": ["atencion permanente", "conduccion negligente", "distraccion", "volante"],
+    scores: Dict[str, int] = {
+        "condiciones_vehiculo": 0,
+        "casco": 0,
+        "auriculares": 0,
+        "cinturon": 0,
+        "movil": 0,
+        "semaforo": 0,
+        "velocidad": 0,
+        "seguro": 0,
+        "itv": 0,
+        "marcas_viales": 0,
+        "carril": 0,
+        "atencion": 0,
     }
 
-    scores: Dict[str, float] = {}
-    for family, signals in signals_map.items():
-        hits = sum(1 for s in signals if _normalize_for_matching(s) in blob)
-        if hits:
-            scores[family] = min(0.99, round(0.35 + hits * 0.18, 2))
+    def add(tipo: str, signal: str, points: int) -> None:
+        if signal in combined:
+            scores[tipo] += points
 
+    # Velocidad
+    for s, pts in [
+        ("km/h", 5),
+        ("velocidad", 3),
+        ("limitada la velocidad a", 4),
+        ("teniendo limitada la velocidad a", 4),
+        ("radar", 4),
+        ("cinemometro", 5),
+        ("cinemómetro", 5),
+        ("multanova", 4),
+        ("velocidad fotografica", 3),
+        ("velocidad fotográfica", 3),
+        ("exceso de velocidad", 5),
+    ]:
+        add("velocidad", s, pts)
+
+    # Cinturón
+    for s, pts in [
+        ("cinturon de seguridad", 6),
+        ("cinturón de seguridad", 6),
+        ("sin cinturon", 5),
+        ("sin cinturón", 5),
+        ("no utilizar el cinturon", 6),
+        ("no utilizar el cinturón", 6),
+        ("no llevar abrochado el cinturon", 5),
+        ("no llevar abrochado el cinturón", 5),
+        ("correctamente abrochado", 5),
+        ("sistema de retencion", 2),
+    ]:
+        add("cinturon", s, pts)
+
+    # Móvil
+    for s, pts in [
+        ("telefono movil", 6),
+        ("teléfono móvil", 6),
+        ("uso manual", 4),
+        ("manipulando el movil", 5),
+        ("manipulando el móvil", 5),
+        ("sujetando con la mano el dispositivo", 5),
+        ("interactuando con la pantalla", 5),
+    ]:
+        add("movil", s, pts)
+
+    # Auriculares
+    for s, pts in [
+        ("auricular", 6),
+        ("auriculares", 6),
+        ("cascos conectados", 5),
+        ("cascos o auriculares", 5),
+        ("reproductores de sonido", 4),
+        ("porta auricular", 3),
+        ("bluetooth instalado en casco", 3),
+    ]:
+        add("auriculares", s, pts)
+
+    # Casco
+    for s, pts in [
+        ("sin casco", 6),
+        ("no llevar casco", 6),
+        ("no utilizar casco", 6),
+        ("casco de proteccion", 5),
+        ("casco de protección", 5),
+        ("casco homologado", 4),
+        ("debidamente abrochado", 2),
+    ]:
+        add("casco", s, pts)
+
+    # Semáforo
+    for s, pts in [
+        ("semaforo", 6),
+        ("semáforo", 6),
+        ("fase roja", 5),
+        ("luz roja", 5),
+        ("cruce en rojo", 5),
+        ("linea de detencion", 4),
+        ("línea de detención", 4),
+        ("paso en rojo", 5),
+        ("articulo 146", 2),
+        ("art. 146", 2),
+    ]:
+        add("semaforo", s, pts)
+
+    # Seguro
+    for s, pts in [
+        ("seguro obligatorio", 6),
+        ("sin seguro", 6),
+        ("vehiculo no asegurado", 6),
+        ("vehículo no asegurado", 6),
+        ("fiva", 4),
+        ("8/2004", 4),
+        ("responsabilidad civil", 3),
+    ]:
+        add("seguro", s, pts)
+
+    # ITV
+    for s, pts in [
+        ("itv", 6),
+        ("inspeccion tecnica", 5),
+        ("inspección técnica", 5),
+        ("itv caducada", 6),
+        ("caducidad de itv", 6),
+    ]:
+        add("itv", s, pts)
+
+    # Marcas viales
+    for s, pts in [
+        ("linea continua", 6),
+        ("línea continua", 6),
+        ("marca longitudinal continua", 5),
+        ("marca vial", 4),
+        ("senalizacion horizontal", 3),
+        ("señalización horizontal", 3),
+        ("articulo 167", 2),
+        ("art. 167", 2),
+    ]:
+        add("marcas_viales", s, pts)
+
+    # Carril
+    for s, pts in [
+        ("carril distinto del situado mas a la derecha", 6),
+        ("carril distinto del situado más a la derecha", 6),
+        ("posicion en la via", 4),
+        ("posición en la vía", 4),
+        ("adelantar por la derecha", 5),
+        ("por parte del arcen", 4),
+        ("por parte del arcén", 4),
+    ]:
+        add("carril", s, pts)
+
+    # Atención
+    for s, pts in [
+        ("atencion permanente", 5),
+        ("atención permanente", 5),
+        ("conduccion negligente", 6),
+        ("conducción negligente", 6),
+        ("distraccion", 5),
+        ("distracción", 5),
+        ("golpeando el volante", 3),
+        ("mordía las uñas", 3),
+        ("mordia las unas", 3),
+        ("libertad de movimientos", 2),
+    ]:
+        add("atencion", s, pts)
+
+    # Condiciones vehículo
+    for s, pts in [
+        ("alumbrado", 4),
+        ("senalizacion optica", 4),
+        ("señalizacion optica", 4),
+        ("dispositivos de alumbrado", 4),
+        ("condiciones reglamentarias", 5),
+        ("homologacion", 3),
+        ("homologación", 3),
+        ("reflectante", 3),
+        ("espejo", 2),
+        ("superficie acristalada", 4),
+    ]:
+        add("condiciones_vehiculo", s, pts)
+
+    return scores
+
+
+def _pick_best_infraction(scores: Dict[str, int]) -> Tuple[str, float]:
     if not scores:
-        return {"best_family": "otro", "confidence": 0.0, "scores": {}}
+        return "otro", 0.0
+    ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    best_type, best_score = ordered[0]
+    second = ordered[1][1] if len(ordered) > 1 else 0
+    if best_score <= 0:
+        return "otro", 0.0
+    confidence = round(best_score / max(best_score + second, 1), 4)
+    return best_type, confidence
 
-    best_family = max(scores, key=scores.get)
-    return {"best_family": best_family, "confidence": scores[best_family], "scores": scores}
+
+def _resolve_cinturon_subtype(text_blob: str, core: Optional[Dict[str, Any]] = None) -> str:
+    core = core or {}
+    combined = _normalize_for_matching(
+        "\n".join([
+            _safe_str(text_blob),
+            _safe_str(core.get("hecho_denunciado_literal")),
+            _safe_str(core.get("hecho_denunciado_resumido")),
+        ])
+    )
+    if "correctamente abrochado" in combined and (
+        "no utilizar" in combined
+        or "no utiliza" in combined
+        or "sin cinturon" in combined
+        or "sin cinturón" in combined
+    ):
+        return "cinturon_redaccion_ambigua"
+    if "colocacion incorrecta" in combined or "colocación incorrecta" in combined:
+        return "cinturon_colocacion_incorrecta"
+    if "mal abrochado" in combined or "no llevar abrochado" in combined:
+        return "cinturon_mal_abrochado"
+    if "sin cinturon" in combined or "sin cinturón" in combined or "no utilizar el cinturon" in combined or "no utilizar el cinturón" in combined:
+        return "cinturon_no_uso_total"
+    return "cinturon_generico"
 
 
-def _extract_evidence_gaps(core: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _detect_evidence_gaps(text_blob: str, core: Optional[Dict[str, Any]] = None, tipo: str = "") -> List[str]:
     core = core or {}
     blob = _normalize_for_matching(
-        "\n".join(
-            [
-                _safe_str(core.get("hecho_denunciado_literal")),
-                _safe_str(core.get("hecho_denunciado_resumido")),
-                _safe_str(core.get("observaciones")),
-                _safe_str(core.get("raw_text_pdf")),
-                _safe_str(core.get("raw_text_vision")),
-            ]
-        )
+        "\n".join([
+            _safe_str(text_blob),
+            _safe_str(core.get("raw_text_blob")),
+            _safe_str(core.get("hecho_denunciado_literal")),
+        ])
     )
+    gaps: List[str] = []
 
-    def has_any(signals: List[str]) -> bool:
-        return any(_normalize_for_matching(s) in blob for s in signals)
+    if tipo in ("cinturon", "movil", "auriculares", "casco", "atencion", "semaforo"):
+        if not any(s in blob for s in ["foto", "fotografia", "fotografía", "video", "vídeo", "fotograma", "secuencia"]):
+            gaps.append("no_prueba_objetiva")
+        if not any(s in blob for s in ["distancia", "metros", "m "]):
+            gaps.append("distancia_no_acreditada")
+        if not any(s in blob for s in ["posicion del agente", "posición del agente", "desde el punto", "ubicado", "situado"]):
+            gaps.append("posicion_agente_no_acreditada")
+        if not any(s in blob for s in ["segundos", "durante", "instantes", "tiempo de observacion", "tiempo de observación"]):
+            gaps.append("duracion_observacion_no_acreditada")
+        if not any(s in blob for s in ["visibilidad", "iluminacion", "iluminación", "campo visual"]):
+            gaps.append("visibilidad_no_acreditada")
 
-    gaps = {
-        "agent_position_missing": not has_any(["posicion del agente", "posición del agente", "situado", "ubicado"]),
-        "distance_missing": not has_any(["distancia", "metros", "a unos", "desde una distancia"]),
-        "observation_time_missing": not has_any(["durante", "segundos", "instantes", "tiempo de observacion", "tiempo de observación"]),
-        "visibility_missing": not has_any(["visibilidad", "vision directa", "visión directa", "campo de vision", "campo de visión"]),
-        "objective_evidence_missing": not has_any(["fotografia", "fotografía", "video", "imagen", "grabacion", "grabación"]),
-        "concretion_missing": not has_any(["describe", "observa", "observado", "concreta", "posición", "posicion", "distancia", "visibilidad"]),
-    }
-    gaps["gap_count"] = sum(1 for v in gaps.values() if v is True)
+    if tipo == "velocidad":
+        if not any(s in blob for s in ["certificado de verificacion", "certificado de verificación", "control metrologico", "control metrológico"]):
+            gaps.append("metrologia_no_acreditada")
+        if not any(s in blob for s in ["fotograma", "captura", "imagen", "fotografia", "fotografía"]):
+            gaps.append("fotograma_no_aportado")
+        if not any(s in blob for s in ["margen", "velocidad corregida"]):
+            gaps.append("margen_no_explicitado")
+
+    if tipo == "cinturon":
+        if not any(s in blob for s in ["ausencia total", "mal abrochado", "correctamente abrochado", "colocacion incorrecta", "colocación incorrecta"]):
+            gaps.append("concrecion_missing")
+
     return gaps
 
 
-
-
-def _detect_cinturon_subtype(core: Dict[str, Any], text_blob: str = "") -> Dict[str, Any]:
-    blob = "\n".join([
-        _safe_str(text_blob),
-        _safe_str(core.get("hecho_denunciado_literal")),
-        _safe_str(core.get("hecho_denunciado_resumido")),
-        _safe_str(core.get("hecho_imputado")),
-    ])
-    n = _normalize_for_matching(blob)
-
-    strong_total = [
-        "sin cinturon",
-        "sin cinturón",
-        "no utilizar el cinturon",
-        "no utilizar el cinturón",
-        "no utiliza el conductor del vehiculo el cinturon",
-        "no utiliza el conductor del vehículo el cinturón",
-        "no llevaba el cinturon",
-        "no llevaba el cinturón",
-    ]
-    bad_fastened = [
-        "no llevar abrochado el cinturon",
-        "no llevar abrochado el cinturón",
-        "no lo llevaba abrochado",
-        "mal abrochado",
-        "incorrectamente abrochado",
-        "correctamente abrochado",
-    ]
-    incorrect_position = [
-        "colocacion incorrecta",
-        "colocación incorrecta",
-        "mal colocado",
-        "incorrectamente colocado",
-        "colocado de forma incorrecta",
-        "banda toracica",
-        "banda torácica",
-        "sistema de retencion",
-        "sistema de retención",
-    ]
-
-    subtype = "cinturon_no_uso_total"
-    strategy = "insuficiencia_probatoria"
-    signals = []
-
-    if any(s in n for s in incorrect_position):
-        subtype = "cinturon_colocacion_incorrecta"
-        strategy = "falta_precision_material"
-        signals.append("colocacion_incorrecta")
-
-    if any(s in n for s in bad_fastened):
-        subtype = "cinturon_mal_abrochado"
-        strategy = "ambiguedad_hecho"
-        signals.append("mal_abrochado")
-
-    if "correctamente abrochado" in n and ("no utilizar" in n or "no utiliza" in n):
-        subtype = "cinturon_redaccion_ambigua"
-        strategy = "ambiguedad_hecho_insuficiencia_probatoria"
-        signals.append("redaccion_ambigua")
-
-    if any(s in n for s in strong_total) and subtype == "cinturon_no_uso_total":
-        signals.append("no_uso_total")
-
-    return {
-        "subtipo_infraccion": subtype,
-        "recurso_strategy": strategy,
-        "subtipo_signals": signals,
-    }
-
+def _infer_recurso_strategy(tipo: str, subtipo: str, evidence_gaps: List[str]) -> List[str]:
+    strategy: List[str] = []
+    if evidence_gaps:
+        strategy.append("insuficiencia_probatoria")
+    if tipo == "velocidad":
+        strategy.append("prueba_tecnica_radar")
+    if tipo in ("cinturon", "movil", "auriculares", "casco", "atencion"):
+        strategy.append("observacion_agente")
+    if subtipo == "cinturon_redaccion_ambigua":
+        strategy.append("ambiguedad_hecho")
+        strategy.append("falta_concrecion")
+    if "concrecion_missing" in evidence_gaps and "falta_concrecion" not in strategy:
+        strategy.append("falta_concrecion")
+    if "solicitud_expediente_integro" not in strategy:
+        strategy.append("solicitud_expediente_integro")
+    return strategy
 
 HECHO_CANONICO = {
     "velocidad": "EXCESO DE VELOCIDAD",
@@ -1262,24 +1405,27 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
             out[k] = v
 
     tipo, hecho, facts = _detect_facts_and_type(text_blob, out)
+    score_map = _score_infraction_families(text_blob, out)
+    best_tipo, confidence = _pick_best_infraction(score_map)
+
+    if tipo in ("otro", "", None) and best_tipo not in ("", "otro"):
+        tipo = best_tipo
+
     out["tipo_infraccion"] = tipo
     out["hecho_imputado"] = _canonical_hecho_imputado(tipo, hecho) or None
     out["facts_phrases"] = facts
     out["jurisdiccion"] = _extract_jurisdiction(text_blob, out)
+    out["tipo_infraccion_scores"] = score_map
+    out["tipo_infraccion_confidence"] = confidence
 
+    subtipo = ""
     if tipo == "cinturon":
-        cinturon_triage = _detect_cinturon_subtype(out, text_blob)
-        out["subtipo_infraccion"] = cinturon_triage.get("subtipo_infraccion")
-        out["recurso_strategy"] = cinturon_triage.get("recurso_strategy")
-        out["subtipo_signals"] = cinturon_triage.get("subtipo_signals") or []
-    else:
-        out["subtipo_infraccion"] = out.get("subtipo_infraccion") or None
-        out["recurso_strategy"] = out.get("recurso_strategy") or None
-        out["subtipo_signals"] = out.get("subtipo_signals") or []
-    confidence_info = _detect_family_confidence(text_blob, out)
-    out["tipo_infraccion_confidence"] = confidence_info.get("confidence")
-    out["tipo_infraccion_scores"] = confidence_info.get("scores")
-    out["evidence_gaps"] = _extract_evidence_gaps(out)
+        subtipo = _resolve_cinturon_subtype(text_blob, out)
+    out["subtipo_infraccion"] = subtipo or None
+
+    evidence_gaps = _detect_evidence_gaps(text_blob, out, tipo=tipo)
+    out["evidence_gaps"] = evidence_gaps
+    out["recurso_strategy"] = _infer_recurso_strategy(tipo, subtipo or "", evidence_gaps)
 
     pre = _extract_precepts(text_blob)
     out["preceptos_detectados"] = pre.get("preceptos_detectados") or []
@@ -1304,7 +1450,6 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
         )
 
     return out
-
 
 def _needs_speed_retry(core: Dict[str, Any]) -> bool:
     if not isinstance(core, dict):
