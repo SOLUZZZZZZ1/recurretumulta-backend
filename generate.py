@@ -361,83 +361,81 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     wrapper = row[0] if isinstance(row[0], dict) else json.loads(row[0])
     core = wrapper.get("extracted") or {}
 
+    if not core.get("hecho_denunciado_literal"):
+        literal = extract_hecho_denunciado_literal(core)
+        if literal:
+            core["hecho_denunciado_literal"] = literal
+
     tipo = resolve_infraction_type(core)
-jurisdiccion = resolve_jurisdiction(core)
+    jurisdiccion = resolve_jurisdiction(core)
 
-if tipo == "semaforo" and jurisdiccion == "municipal":
-    tpl = build_municipal_semaforo_template(core)
-    final_kind = "municipal_semaforo"
-
-elif tipo == "semaforo":
-    tpl = build_semaforo_strong_template(core)
-    final_kind = "semaforo"
-
-elif tipo == "velocidad":
-    tpl = build_velocity_strong_template(core)
-    final_kind = "velocidad"
-
-elif tipo == "movil":
-    tpl = build_movil_strong_template(core)
-    final_kind = "movil"
-
-elif tipo == "auriculares":
-    tpl = build_auriculares_strong_template(core)
-    final_kind = "auriculares"
-
-elif tipo == "cinturon":
-    tpl = build_cinturon_strong_template(core)
-    final_kind = "cinturon"
-
-elif tipo == "casco":
-    tpl = build_casco_strong_template(core)
-    final_kind = "casco"
-
-elif tipo == "atencion":
-    tpl = build_atencion_strong_template(core)
-    final_kind = "atencion"
-
-elif tipo == "marcas_viales":
-    tpl = build_marcas_viales_strong_template(core)
-    final_kind = "marcas_viales"
-
-elif tipo == "seguro":
-    tpl = build_seguro_strong_template(core)
-    final_kind = "seguro"
-
-elif tipo == "itv":
-    tpl = build_itv_strong_template(core)
-    final_kind = "itv"
-
-elif tipo == "condiciones_vehiculo":
-    tpl = build_condiciones_vehiculo_strong_template(core)
-    final_kind = "condiciones_vehiculo"
-
-elif tipo == "carril":
-    tpl = build_generic_body(core)
-    final_kind = "carril"
-
-elif jurisdiccion == "municipal":
-    blob = json.dumps(core, ensure_ascii=False).lower()
-
-    if "sentido contrario" in blob or "direccion prohibida" in blob or "dirección prohibida" in blob:
-        tpl = build_municipal_sentido_contrario_template(core)
-        final_kind = "municipal_sentido_contrario"
-
-    elif _looks_like_semaforo(core):
+    if tipo == "semaforo" and jurisdiccion == "municipal":
         tpl = build_municipal_semaforo_template(core)
-        final_kind = "municipal_semaforo_fallback"
+        final_kind = "municipal_semaforo"
+
+    elif tipo == "semaforo":
+        tpl = build_semaforo_strong_template(core)
+        final_kind = "semaforo"
+
+    elif tipo == "velocidad":
+        tpl = build_velocity_strong_template(core)
+        final_kind = "velocidad"
+
+    elif tipo == "movil":
+        tpl = build_movil_strong_template(core)
+        final_kind = "movil"
+
+    elif tipo == "auriculares":
+        tpl = build_auriculares_strong_template(core)
+        final_kind = "auriculares"
+
+    elif tipo == "cinturon":
+        tpl = build_cinturon_strong_template(core)
+        final_kind = "cinturon"
+
+    elif tipo == "casco":
+        tpl = build_casco_strong_template(core)
+        final_kind = "casco"
+
+    elif tipo == "atencion":
+        tpl = build_atencion_strong_template(core)
+        final_kind = "atencion"
+
+    elif tipo == "marcas_viales":
+        tpl = build_marcas_viales_strong_template(core)
+        final_kind = "marcas_viales"
+
+    elif tipo == "seguro":
+        tpl = build_seguro_strong_template(core)
+        final_kind = "seguro"
+
+    elif tipo == "itv":
+        tpl = build_itv_strong_template(core)
+        final_kind = "itv"
+
+    elif tipo == "condiciones_vehiculo":
+        tpl = build_condiciones_vehiculo_strong_template(core)
+        final_kind = "condiciones_vehiculo"
+
+    elif tipo == "carril":
+        tpl = build_generic_body(core)
+        final_kind = "carril"
+
+    elif jurisdiccion == "municipal":
+        blob = json.dumps(core, ensure_ascii=False).lower()
+        if "sentido contrario" in blob or "direccion prohibida" in blob or "dirección prohibida" in blob:
+            tpl = build_municipal_sentido_contrario_template(core)
+            final_kind = "municipal_sentido_contrario"
+        elif _looks_like_semaforo(core):
+            tpl = build_municipal_semaforo_template(core)
+            final_kind = "municipal_semaforo_fallback"
+        else:
+            tpl = build_municipal_generic_template(core)
+            final_kind = "municipal_generic"
 
     else:
-        tpl = build_municipal_generic_template(core)
-        final_kind = "municipal_generic"
-
-else:
-    tpl = build_generic_body(core)
-    final_kind = "generic"
-
-    else:
-    tpl = build_generic_body(core)
-    final_kind = "generic"
+        tpl = build_generic_body(core)
+        final_kind = "generic"
 
     tpl = ensure_tpl_dict(tpl, core)
 
