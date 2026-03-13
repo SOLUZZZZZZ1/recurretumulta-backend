@@ -433,8 +433,8 @@ else:
     final_kind = "generic"
 
     else:
-        tpl = build_generic_body(core)
-        final_kind = "generic"
+    tpl = build_generic_body(core)
+    final_kind = "generic"
 
     tpl = ensure_tpl_dict(tpl, core)
 
