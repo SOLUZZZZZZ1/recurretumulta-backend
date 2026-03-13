@@ -1153,9 +1153,80 @@ def _extract_evidence_gaps(core: Optional[Dict[str, Any]] = None) -> Dict[str, A
         "observation_time_missing": not has_any(["durante", "segundos", "instantes", "tiempo de observacion", "tiempo de observación"]),
         "visibility_missing": not has_any(["visibilidad", "vision directa", "visión directa", "campo de vision", "campo de visión"]),
         "objective_evidence_missing": not has_any(["fotografia", "fotografía", "video", "imagen", "grabacion", "grabación"]),
+        "concretion_missing": not has_any(["describe", "observa", "observado", "concreta", "posición", "posicion", "distancia", "visibilidad"]),
     }
     gaps["gap_count"] = sum(1 for v in gaps.values() if v is True)
     return gaps
+
+
+
+
+def _detect_cinturon_subtype(core: Dict[str, Any], text_blob: str = "") -> Dict[str, Any]:
+    blob = "\n".join([
+        _safe_str(text_blob),
+        _safe_str(core.get("hecho_denunciado_literal")),
+        _safe_str(core.get("hecho_denunciado_resumido")),
+        _safe_str(core.get("hecho_imputado")),
+    ])
+    n = _normalize_for_matching(blob)
+
+    strong_total = [
+        "sin cinturon",
+        "sin cinturón",
+        "no utilizar el cinturon",
+        "no utilizar el cinturón",
+        "no utiliza el conductor del vehiculo el cinturon",
+        "no utiliza el conductor del vehículo el cinturón",
+        "no llevaba el cinturon",
+        "no llevaba el cinturón",
+    ]
+    bad_fastened = [
+        "no llevar abrochado el cinturon",
+        "no llevar abrochado el cinturón",
+        "no lo llevaba abrochado",
+        "mal abrochado",
+        "incorrectamente abrochado",
+        "correctamente abrochado",
+    ]
+    incorrect_position = [
+        "colocacion incorrecta",
+        "colocación incorrecta",
+        "mal colocado",
+        "incorrectamente colocado",
+        "colocado de forma incorrecta",
+        "banda toracica",
+        "banda torácica",
+        "sistema de retencion",
+        "sistema de retención",
+    ]
+
+    subtype = "cinturon_no_uso_total"
+    strategy = "insuficiencia_probatoria"
+    signals = []
+
+    if any(s in n for s in incorrect_position):
+        subtype = "cinturon_colocacion_incorrecta"
+        strategy = "falta_precision_material"
+        signals.append("colocacion_incorrecta")
+
+    if any(s in n for s in bad_fastened):
+        subtype = "cinturon_mal_abrochado"
+        strategy = "ambiguedad_hecho"
+        signals.append("mal_abrochado")
+
+    if "correctamente abrochado" in n and ("no utilizar" in n or "no utiliza" in n):
+        subtype = "cinturon_redaccion_ambigua"
+        strategy = "ambiguedad_hecho_insuficiencia_probatoria"
+        signals.append("redaccion_ambigua")
+
+    if any(s in n for s in strong_total) and subtype == "cinturon_no_uso_total":
+        signals.append("no_uso_total")
+
+    return {
+        "subtipo_infraccion": subtype,
+        "recurso_strategy": strategy,
+        "subtipo_signals": signals,
+    }
 
 
 HECHO_CANONICO = {
@@ -1195,6 +1266,16 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     out["hecho_imputado"] = _canonical_hecho_imputado(tipo, hecho) or None
     out["facts_phrases"] = facts
     out["jurisdiccion"] = _extract_jurisdiction(text_blob, out)
+
+    if tipo == "cinturon":
+        cinturon_triage = _detect_cinturon_subtype(out, text_blob)
+        out["subtipo_infraccion"] = cinturon_triage.get("subtipo_infraccion")
+        out["recurso_strategy"] = cinturon_triage.get("recurso_strategy")
+        out["subtipo_signals"] = cinturon_triage.get("subtipo_signals") or []
+    else:
+        out["subtipo_infraccion"] = out.get("subtipo_infraccion") or None
+        out["recurso_strategy"] = out.get("recurso_strategy") or None
+        out["subtipo_signals"] = out.get("subtipo_signals") or []
     confidence_info = _detect_family_confidence(text_blob, out)
     out["tipo_infraccion_confidence"] = confidence_info.get("confidence")
     out["tipo_infraccion_scores"] = confidence_info.get("scores")

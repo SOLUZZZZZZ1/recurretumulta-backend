@@ -357,6 +357,59 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+
+
+def build_cinturon_v3_template(core: Dict[str, Any]) -> Dict[str, str]:
+    base = build_cinturon_strong_template(core)
+    base = ensure_tpl_dict(base, core)
+
+    subtype = _safe_str(core.get("subtipo_infraccion")).strip().lower()
+    strategy = _safe_str(core.get("recurso_strategy")).strip().lower()
+    gaps = core.get("evidence_gaps") or {}
+    gap_count = gaps.get("gap_count", 0) if isinstance(gaps, dict) else 0
+
+    introduccion = ""
+    if subtype == "cinturon_redaccion_ambigua":
+        introduccion = (
+            "ALEGACIÓN ESPECÍFICA — AMBIGÜEDAD DEL HECHO IMPUTADO\n\n"
+            "La propia redacción del boletín resulta internamente equívoca al combinar fórmulas propias del no uso absoluto con referencias a un supuesto cinturón 'correctamente abrochado'. "
+            "Esa formulación híbrida impide conocer con precisión qué conducta concreta se atribuye realmente: ausencia total de uso, uso incorrecto, mal abrochado o colocación defectuosa. "
+            "Tal indeterminación debilita la tipicidad y exige una descripción mucho más concreta y circunstanciada del hecho imputado.\n\n"
+        )
+    elif subtype == "cinturon_mal_abrochado":
+        introduccion = (
+            "ALEGACIÓN ESPECÍFICA — FALTA DE PRECISIÓN SOBRE EL MODO DE USO\n\n"
+            "No basta afirmar de forma genérica que el cinturón no estaba correctamente abrochado. "
+            "Debe concretarse si el agente observó un desabrochado completo, un uso parcial, una colocación defectuosa o un mero instante transitorio, porque cada supuesto exige una constatación fáctica precisa.\n\n"
+        )
+    elif subtype == "cinturon_colocacion_incorrecta":
+        introduccion = (
+            "ALEGACIÓN ESPECÍFICA — NECESIDAD DE DESCRIPCIÓN MATERIAL CONCRETA\n\n"
+            "Si lo que se reprocha es una colocación incorrecta del sistema de retención, la denuncia debe especificar de forma material y verificable cuál era exactamente la anomalía observada. "
+            "La mera afirmación genérica no permite contradicción real ni desvirtúa por sí sola la presunción de inocencia.\n\n"
+        )
+    else:
+        introduccion = (
+            "ALEGACIÓN ESPECÍFICA — INSUFICIENCIA PROBATORIA SOBRE EL NO USO DEL CINTURÓN\n\n"
+            "La imputación por no utilizar el cinturón exige una observación clara, directa y suficientemente descrita, no una fórmula estereotipada o conclusiva.\n\n"
+        )
+
+    refuerzo = ""
+    if gap_count >= 3:
+        refuerzo = (
+            "REFUERZO PROBATORIO\n\n"
+            "Además, del propio expediente no resultan acreditados con el detalle exigible extremos esenciales como la posición exacta del agente, la distancia de observación, la duración de la observación, "
+            "las condiciones de visibilidad o la existencia de soporte objetivo adicional. Esa acumulación de vacíos probatorios impide tener por acreditado el hecho con la solidez exigida en el procedimiento sancionador.\n\n"
+        )
+
+    cuerpo = base.get("cuerpo") or ""
+    cuerpo = introduccion + refuerzo + cuerpo
+    return {
+        "asunto": base.get("asunto") or "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE",
+        "cuerpo": fix_roman_headings(cuerpo),
+    }
+
+
 def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     row = conn.execute(
         text("SELECT extracted_json FROM extractions WHERE case_id=:case_id ORDER BY created_at DESC LIMIT 1"),
@@ -399,7 +452,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         final_kind = "auriculares"
 
     elif tipo == "cinturon":
-        tpl = build_cinturon_strong_template(core)
+        tpl = build_cinturon_v3_template(core)
         final_kind = "cinturon"
 
     elif tipo == "casco":
