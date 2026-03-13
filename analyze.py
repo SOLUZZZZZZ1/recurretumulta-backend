@@ -691,19 +691,19 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     Devuelve:
       (tipo_infraccion, hecho_imputado_canonico, facts_phrases)
 
-    Orden anti-cruces:
+    12 familias principales:
       1) condiciones_vehiculo
       2) casco
       3) auriculares
-      4) movil
-      5) semaforo
-      6) velocidad
-      7) seguro
-      8) itv
-      9) marcas_viales
-      10) carril
-      11) atencion
-      12) otro
+      4) cinturon
+      5) movil
+      6) semaforo
+      7) velocidad
+      8) seguro
+      9) itv
+      10) marcas_viales
+      11) carril
+      12) atencion
     """
     core = core or {}
     facts: List[str] = []
@@ -714,22 +714,37 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     organismo = _normalize_for_matching(_safe_str(core.get("organismo")))
     tipo_sancion = _normalize_for_matching(_safe_str(core.get("tipo_sancion")))
 
-    combined = "\n".join([x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]).strip()
+    combined = "\n".join(
+        [x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]
+    ).strip()
 
+    # -------------------------------------------------
+    # 1) CONDICIONES DEL VEHÍCULO
+    # -------------------------------------------------
     vehicle_light_context = any(
         s in combined
         for s in [
             "alumbrado",
             "senalizacion optica",
+            "señalizacion optica",
             "senalizacion",
+            "señalizacion",
             "luz trasera",
             "parte trasera",
             "destellos",
             "anexo i",
             "reglamentacion del anexo",
+            "reglamentación del anexo",
             "dispositivos de alumbrado",
             "dispositivos de senalizacion",
+            "dispositivos de señalizacion",
             "no cumplan las exigencias",
+            "condiciones reglamentarias",
+            "homologacion",
+            "homologación",
+            "reflectante",
+            "deslumbramiento",
+            "espejo",
         ]
     )
 
@@ -750,6 +765,13 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         ]
     )
 
+    if vehicle_light_context or visibilidad_context:
+        facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
+        return ("condiciones_vehiculo", facts[0], facts)
+
+    # -------------------------------------------------
+    # 2) CASCO
+    # -------------------------------------------------
     casco_context = any(
         s in combined
         for s in [
@@ -758,43 +780,29 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
             "no utilizar casco",
             "casco de proteccion",
             "casco de protección",
+            "cascos de proteccion homologados",
+            "cascos de protección homologados",
+            "casco homologado",
             "casco abrochado",
             "debidamente abrochado",
             "sin hacer uso del casco",
             "sin hacer uso del casco de proteccion",
             "sin hacer uso del casco de protección",
-            "casco homologado",
-            "casco de protección homologado",
+            "anclado al casco",
             "camara de video",
             "cámara de vídeo",
             "camara en casco",
             "cámara en casco",
-            "anclado al casco",
         ]
     )
 
-    velocity_context = (
-        ("km/h" in combined)
-        and any(
-            s in combined
-            for s in [
-                "velocidad",
-                "radar",
-                "cinemometro",
-                "exceso de velocidad",
-                "limitada a",
-                "siendo limitada la velocidad a",
-                "teniendo limitada la velocidad a",
-                "velocidad maxima",
-                "velocidad registrada",
-                "velocidad fotografica",
-                "superar el limite de velocidad",
-                "circular a",
-                "circulaba a",
-            ]
-        )
-    )
+    if casco_context:
+        facts.append("NO UTILIZAR CASCO DE PROTECCIÓN")
+        return ("casco", facts[0], facts)
 
+    # -------------------------------------------------
+    # 3) AURICULARES
+    # -------------------------------------------------
     auriculares_context = any(
         s in combined
         for s in [
@@ -807,117 +815,241 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
             "aparatos reproductores",
             "porta auricular",
             "oido izquierdo",
+            "oído izquierdo",
             "oido derecho",
+            "oído derecho",
+            "bluetooth instalado en casco",
         ]
     )
 
+    if auriculares_context:
+        facts.append("USO DE AURICULARES O CASCOS CONECTADOS")
+        return ("auriculares", facts[0], facts)
+
+    # -------------------------------------------------
+    # 4) CINTURÓN
+    # -------------------------------------------------
+    cinturon_context = any(
+        s in combined
+        for s in [
+            "cinturon de seguridad",
+            "cinturón de seguridad",
+            "sin cinturon",
+            "sin cinturón",
+            "no utilizar el cinturon",
+            "no utilizar el cinturón",
+            "no llevar abrochado el cinturon",
+            "no llevar abrochado el cinturón",
+            "correctamente abrochado",
+            "no utiliza el conductor del vehiculo el cinturon",
+            "no utiliza el conductor del vehículo el cinturón",
+        ]
+    )
+
+    if cinturon_context:
+        facts.append("NO UTILIZAR CINTURÓN DE SEGURIDAD")
+        return ("cinturon", facts[0], facts)
+
+    # -------------------------------------------------
+    # 5) MÓVIL
+    # -------------------------------------------------
     movil_context = any(
         s in combined
         for s in [
             "telefono movil",
+            "teléfono móvil",
             "uso manual del movil",
+            "uso manual del móvil",
             "uso manual del telefono",
+            "uso manual del teléfono",
             "utilizando manualmente",
             "sujetando con la mano el dispositivo",
             "manipulando el movil",
+            "manipulando el móvil",
             "interactuando con la pantalla",
         ]
+    )
+
+    if movil_context:
+        facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
+        return ("movil", facts[0], facts)
+
+    # -------------------------------------------------
+    # 6) SEMÁFORO
+    # -------------------------------------------------
+    velocity_context = (
+        ("km/h" in combined)
+        and any(
+            s in combined
+            for s in [
+                "velocidad",
+                "radar",
+                "cinemometro",
+                "cinemómetro",
+                "exceso de velocidad",
+                "limitada a",
+                "siendo limitada la velocidad a",
+                "teniendo limitada la velocidad a",
+                "velocidad maxima",
+                "velocidad máxima",
+                "velocidad registrada",
+                "velocidad fotografica",
+                "velocidad fotográfica",
+                "superar el limite de velocidad",
+                "superar el límite de velocidad",
+                "circular a",
+                "circulaba a",
+            ]
+        )
     )
 
     semaforo_context = any(
         s in combined
         for s in [
             "semaforo",
+            "semáforo",
             "fase roja",
             "luz roja del semaforo",
+            "luz roja del semáforo",
             "cruce con fase roja",
             "cruce en rojo",
             "senal luminosa roja",
+            "señal luminosa roja",
             "linea de detencion",
+            "línea de detención",
             "rebase la linea de detencion",
             "rebasar la linea de detencion",
             "semaforo en rojo",
+            "semáforo en rojo",
             "paso en rojo",
+            "cruce fase roja",
             "articulo 146",
+            "artículo 146",
             "art. 146",
         ]
     ) or (("roja" in combined and "cruce" in combined) or ("roja" in combined and "detencion" in combined))
 
-    # 1) CONDICIONES DEL VEHÍCULO — antes que semáforo
-    if vehicle_light_context or visibilidad_context:
-        facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
-        return ("condiciones_vehiculo", facts[0], facts)
-
-    # 2) CASCO
-    if casco_context:
-        facts.append("NO UTILIZAR CASCO DE PROTECCIÓN")
-        return ("casco", facts[0], facts)
-
-    # 3) AURICULARES — antes que móvil
-    if auriculares_context:
-        facts.append("USO DE AURICULARES O CASCOS CONECTADOS")
-        return ("auriculares", facts[0], facts)
-
-    # 4) MÓVIL
-    if movil_context:
-        facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
-        return ("movil", facts[0], facts)
-
-    # 5) SEMÁFORO — nunca si hay contexto de velocidad o alumbrado
     if semaforo_context and not velocity_context and not vehicle_light_context and not visibilidad_context:
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
 
-    # 6) VELOCIDAD
+    # -------------------------------------------------
+    # 7) VELOCIDAD
+    # -------------------------------------------------
     if velocity_context:
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
 
-    # 7) SEGURO
-    if (
+    # -------------------------------------------------
+    # 8) SEGURO
+    # -------------------------------------------------
+    seguro_context = (
         ("lsoa" in combined)
         or (("r.d. legislativo" in combined or "rd legislativo" in combined) and "8/2004" in combined)
         or ("8/2004" in combined and "responsabilidad civil" in combined)
-        or any(s in combined for s in ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "vehiculo carece de seguro"])
-    ):
+        or any(
+            s in combined
+            for s in [
+                "seguro obligatorio",
+                "sin seguro",
+                "vehiculo no asegurado",
+                "vehículo no asegurado",
+                "vehiculo carece de seguro",
+                "vehículo carece de seguro",
+                "fiva",
+                "responsabilidad civil derivada de su circulacion",
+                "responsabilidad civil derivada de su circulación",
+            ]
+        )
+    )
+
+    if seguro_context:
         facts.append("CARENCIA DE SEGURO OBLIGATORIO")
         return ("seguro", facts[0], facts)
 
-    # 8) ITV
-    if any(s in combined for s in ["itv", "inspeccion tecnica", "inspeccion tecnica de vehiculos", "itv caducada", "caducidad de itv"]):
+    # -------------------------------------------------
+    # 9) ITV
+    # -------------------------------------------------
+    itv_context = any(
+        s in combined
+        for s in [
+            "itv",
+            "inspeccion tecnica",
+            "inspección técnica",
+            "inspeccion tecnica de vehiculos",
+            "inspección técnica de vehículos",
+            "itv caducada",
+            "caducidad de itv",
+        ]
+    )
+
+    if itv_context:
         facts.append("ITV NO VIGENTE / INSPECCIÓN TÉCNICA CADUCADA")
         return ("itv", facts[0], facts)
 
-    # 9) MARCAS VIALES
-    if any(
+    # -------------------------------------------------
+    # 10) MARCAS VIALES
+    # -------------------------------------------------
+    marcas_context = any(
         s in combined
         for s in [
             "linea continua",
+            "línea continua",
             "marca longitudinal continua",
             "marca vial",
             "senalizacion horizontal",
+            "señalización horizontal",
             "no respetar una marca longitudinal continua",
             "adelantamiento",
             "articulo 167",
+            "artículo 167",
             "art. 167",
         ]
-    ):
+    )
+
+    if marcas_context:
         facts.append("NO RESPETAR MARCA VIAL")
         return ("marcas_viales", facts[0], facts)
 
-    # 10) CARRIL / POSICIÓN EN VÍA
-    if any(s in combined for s in ["carril distinto del situado mas a la derecha", "posicion en la via", "articulo 31", "art. 31"]):
+    # -------------------------------------------------
+    # 11) CARRIL / POSICIÓN EN VÍA / ADELANTAMIENTO
+    # -------------------------------------------------
+    carril_context = any(
+        s in combined
+        for s in [
+            "carril distinto del situado mas a la derecha",
+            "carril distinto del situado más a la derecha",
+            "posicion en la via",
+            "posición en la vía",
+            "articulo 31",
+            "artículo 31",
+            "art. 31",
+            "adelantar por la derecha",
+            "adelantar a un vehiculo por la derecha",
+            "adelantar a un vehículo por la derecha",
+            "por parte del arcen",
+            "por parte del arcén",
+        ]
+    )
+
+    if carril_context:
         facts.append("POSICIÓN INCORRECTA EN LA VÍA / USO INDEBIDO DEL CARRIL")
         return ("carril", facts[0], facts)
 
-    # 11) ATENCIÓN / CONDUCCIÓN NEGLIGENTE
-    if any(
+    # -------------------------------------------------
+    # 12) ATENCIÓN / CONDUCCIÓN NEGLIGENTE
+    # -------------------------------------------------
+    atencion_context = any(
         s in combined
         for s in [
             "no mantener la atencion",
+            "no mantener la atención",
             "atencion permanente",
+            "atención permanente",
             "conduccion negligente",
+            "conducción negligente",
             "distraccion",
+            "distracción",
             "bail",
             "palmas",
             "tocando las palmas",
@@ -928,16 +1060,26 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
             "tambor",
             "menor",
             "bebe",
+            "bebé",
             "intercept",
             "mordia las unas",
+            "mordía las uñas",
             "libertad de movimientos",
             "ciclistas",
             "circular de a tres",
             "conversando con ellos",
             "conversacion",
+            "conversación",
             "mirando en repetidas ocasiones",
+            "diligencia",
+            "precaucion",
+            "precaución",
+            "no distraccion",
+            "no distracción",
         ]
-    ):
+    )
+
+    if atencion_context:
         facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN")
         return ("atencion", facts[0], facts)
 
@@ -947,13 +1089,13 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
 
 
 HECHO_CANONICO = {
-    "cinturon": "NO UTILIZAR CINTURÓN DE SEGURIDAD",
     "velocidad": "EXCESO DE VELOCIDAD",
-    "semaforo": "NO RESPETAR LA LUZ ROJA (SEMÁFORO)",
     "movil": "USO MANUAL DEL TELÉFONO MÓVIL",
     "auriculares": "USO DE AURICULARES O CASCOS CONECTADOS",
-    "casco": "NO UTILIZAR CASCO DE PROTECCIÓN",
+    "cinturon": "NO UTILIZAR CINTURÓN DE SEGURIDAD",
+    "semaforo": "NO RESPETAR LA LUZ ROJA (SEMÁFORO)",
     "marcas_viales": "NO RESPETAR MARCA VIAL",
+    "casco": "NO UTILIZAR CASCO DE PROTECCIÓN",
     "seguro": "CARENCIA DE SEGURO OBLIGATORIO",
     "itv": "ITV NO VIGENTE / INSPECCIÓN TÉCNICA CADUCADA",
     "condiciones_vehiculo": "INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO",
