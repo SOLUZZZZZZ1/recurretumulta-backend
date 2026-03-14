@@ -321,6 +321,43 @@ def _score_candidate_hecho(line: str) -> int:
     return score
 
 
+
+
+def _looks_like_valid_infraction_literal(text: str) -> bool:
+    t = _normalize_for_matching(text)
+    if not t or len(t) < 12:
+        return False
+
+    # Señales fuertes de hecho denunciado real
+    strong_signals = [
+        "cinturon", "cinturón", "casco", "auricular", "auriculares",
+        "telefono movil", "teléfono móvil", "movil", "móvil",
+        "fase roja", "luz roja", "semaforo", "semáforo",
+        "circular a", "circulaba a", "km/h", "velocidad",
+        "itv", "seguro", "linea continua", "línea continua",
+        "marca vial", "adelantar por la derecha", "conduccion negligente",
+        "conducción negligente", "atencion permanente", "atención permanente",
+        "alumbrado", "sentido contrario", "direccion prohibida", "dirección prohibida",
+    ]
+    if any(s in t for s in strong_signals):
+        return True
+
+    # Señales de texto administrativo / OCR basura que no debe pasar como hecho literal
+    bad_signals = [
+        "agentes de la", "agentes encargados de la vigilancia",
+        "vigilancia del trafico", "vigilancia del tráfico",
+        "han formulado denuncia", "han forumllado denuncia",
+        "preimpreso", "pre impreso", "pudo proceder", "no habiendo podido",
+        "notificar en el acto", "tráfico infractor", "vehiculo haya",
+        "vehículo haya", "parte superior del pre", "pseud-paper",
+        "concretoado vehiculo", "cleso o concretado",
+    ]
+    if any(s in t for s in bad_signals):
+        return False
+
+    # Si no hay ninguna señal jurídica clara de infracción, mejor rechazar
+    return False
+
 def _extract_hecho_denunciado_literal_from_text(raw_text: str) -> str:
     if not isinstance(raw_text, str) or not raw_text.strip():
         return ""
@@ -443,7 +480,11 @@ def _extract_hecho_denunciado_literal_from_text(raw_text: str) -> str:
     if len(out) > 700:
         out = out[:700].rsplit(" ", 1)[0].strip() + "…"
 
-    return out.strip()
+    out = out.strip()
+    if not _looks_like_valid_infraction_literal(out):
+        return ""
+
+    return out
 
 def _build_hecho_denunciado_resumido(literal: str, tipo_infraccion: str = "") -> str:
     text = _clean_literal_text(literal)
@@ -505,6 +546,10 @@ def _extract_preferred_hecho_fields(text_blob: str, core: Optional[Dict[str, Any
 
     tipo_hint = _safe_str(core.get("tipo_infraccion"))
     resumido = _build_hecho_denunciado_resumido(literal, tipo_hint) if literal else ""
+
+    if literal and not _looks_like_valid_infraction_literal(literal):
+        literal = ""
+        resumido = ""
 
     return {
         "hecho_denunciado_literal": literal or None,
@@ -1427,197 +1472,6 @@ def _infer_recurso_strategy(tipo: str, subtipo: str, evidence_gaps: List[str]) -
         strategy.append("solicitud_expediente_integro")
     return strategy
 
-
-def _score_attack_routes(tipo: str, subtipo: str, evidence_gaps: List[str], core: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    core = core or {}
-    routes: Dict[str, int] = {}
-
-    def add(route: str, points: int) -> None:
-        routes[route] = routes.get(route, 0) + points
-
-    gap_count = len(evidence_gaps or [])
-    if gap_count:
-        add("insuficiencia_probatoria", min(95, 45 + gap_count * 10))
-        add("solicitud_expediente_integro", min(70, 20 + gap_count * 8))
-
-    if tipo == "velocidad":
-        add("prueba_tecnica_radar", 70)
-        if "metrologia_no_acreditada" in evidence_gaps:
-            add("prueba_tecnica_radar", 15)
-        if "fotograma_no_aportado" in evidence_gaps:
-            add("prueba_tecnica_radar", 10)
-        if "margen_no_explicitado" in evidence_gaps:
-            add("defecto_motivacion", 15)
-
-    if tipo in ("cinturon", "movil", "auriculares", "casco", "atencion"):
-        add("observacion_agente", 55)
-        if "no_prueba_objetiva" in evidence_gaps:
-            add("observacion_agente", 15)
-
-    if tipo == "semaforo":
-        add("secuencia_y_sincronizacion", 55)
-        if "no_prueba_objetiva" in evidence_gaps:
-            add("secuencia_y_sincronizacion", 15)
-
-    if subtipo == "cinturon_redaccion_ambigua":
-        add("ambiguedad_hecho", 88)
-        add("falta_concrecion", 80)
-
-    if "concrecion_missing" in evidence_gaps:
-        add("falta_concrecion", 70)
-
-    if "margen_no_explicitado" in evidence_gaps or "fotograma_no_aportado" in evidence_gaps:
-        add("defecto_motivacion", 45)
-
-    ordered = sorted(
-        [{"route": k, "score": int(v)} for k, v in routes.items() if v > 0],
-        key=lambda x: x["score"],
-        reverse=True,
-    )
-    return ordered
-
-
-def _infer_expediente_strength(evidence_gaps: List[str], tipo: str = "") -> str:
-    gap_count = len(evidence_gaps or [])
-    if tipo == "velocidad":
-        if gap_count >= 3:
-            return "debil"
-        if gap_count >= 1:
-            return "medio"
-        return "fuerte"
-
-    if gap_count >= 4:
-        return "debil"
-    if gap_count >= 2:
-        return "medio"
-    return "fuerte"
-
-
-def _infer_recommended_tone(expediente_strength: str, attack_routes: List[Dict[str, Any]]) -> str:
-    primary = attack_routes[0]["route"] if attack_routes else ""
-    if expediente_strength == "debil":
-        return "agresivo"
-    if primary in ("prueba_tecnica_radar", "secuencia_y_sincronizacion"):
-        return "tecnico"
-    if expediente_strength == "medio":
-        return "tecnico"
-    return "prudente"
-
-
-def _detect_expediente_errors(
-    tipo: str,
-    subtipo: str,
-    evidence_gaps: List[str],
-    core: Optional[Dict[str, Any]] = None,
-) -> Tuple[List[str], List[str], int, str]:
-    core = core or {}
-    errors: List[str] = []
-    critical: List[str] = []
-
-    def add(error_code: str, critical_error: bool = False) -> None:
-        if error_code not in errors:
-            errors.append(error_code)
-        if critical_error and error_code not in critical:
-            critical.append(error_code)
-
-    gap_set = set(evidence_gaps or [])
-
-    # Velocidad
-    if tipo == "velocidad":
-        if "metrologia_no_acreditada" in gap_set:
-            add("metrologia_no_acreditada", critical_error=True)
-        if "fotograma_no_aportado" in gap_set:
-            add("fotograma_no_aportado", critical_error=True)
-        if "margen_no_explicitado" in gap_set:
-            add("margen_no_acreditado", critical_error=True)
-
-        if not core.get("radar_modelo_hint"):
-            add("radar_identificacion_incompleta")
-        if not core.get("velocidad_limite_kmh"):
-            add("limite_no_acreditado", critical_error=True)
-        if core.get("velocidad_conflicto_detectado"):
-            add("velocidad_conflictiva", critical_error=True)
-
-        tramo_hint = _safe_str(core.get("tramo_sancionador_hint"))
-        if not tramo_hint:
-            add("tramo_sancionador_no_motivado")
-
-        tipo_via = _safe_str(core.get("tipo_via_hint"))
-        if not tipo_via:
-            add("tipo_via_no_identificado")
-        elif tipo_via in ("autovia", "autopista", "interurbana") and core.get("velocidad_limite_kmh") not in (None, 120):
-            add("limite_potencialmente_incoherente")
-        elif tipo_via == "urbana" and core.get("velocidad_limite_kmh") not in (None, 30, 50):
-            add("limite_potencialmente_incoherente")
-
-    # Cinturón y observación directa
-    if tipo == "cinturon":
-        if subtipo == "cinturon_redaccion_ambigua":
-            add("hecho_ambiguo", critical_error=True)
-        if "no_prueba_objetiva" in gap_set:
-            add("sin_prueba_objetiva", critical_error=True)
-        if "distancia_no_acreditada" in gap_set:
-            add("distancia_no_acreditada")
-        if "posicion_agente_no_acreditada" in gap_set:
-            add("posicion_agente_no_acreditada", critical_error=True)
-        if "duracion_observacion_no_acreditada" in gap_set:
-            add("duracion_observacion_no_acreditada")
-        if "visibilidad_no_acreditada" in gap_set:
-            add("visibilidad_no_acreditada")
-        if "concrecion_missing" in gap_set:
-            add("falta_concrecion", critical_error=True)
-
-    if tipo in ("movil", "auriculares", "casco", "atencion"):
-        if "no_prueba_objetiva" in gap_set:
-            add("sin_prueba_objetiva", critical_error=True)
-        if "posicion_agente_no_acreditada" in gap_set:
-            add("posicion_agente_no_acreditada")
-        if "duracion_observacion_no_acreditada" in gap_set:
-            add("duracion_observacion_no_acreditada")
-
-    if tipo == "semaforo":
-        if "no_prueba_objetiva" in gap_set:
-            add("secuencia_no_aportada", critical_error=True)
-        if "visibilidad_no_acreditada" in gap_set:
-            add("visibilidad_no_acreditada")
-        if "duracion_observacion_no_acreditada" in gap_set:
-            add("sincronizacion_o_tiempo_no_acreditado")
-        add("fase_roja_y_rebase_deben_acreditarse")
-
-    if tipo == "seguro":
-        add("cobertura_debe_acreditarse")
-    if tipo == "itv":
-        add("vigencia_itv_debe_acreditarse")
-    if tipo == "marcas_viales":
-        add("senalizacion_y_trazado_deben_acreditarse")
-    if tipo == "condiciones_vehiculo":
-        add("condiciones_reglamentarias_deben_acreditarse")
-    if tipo == "carril":
-        add("posicion_y_maniobra_deben_acreditarse")
-
-    # Score
-    score = 0
-    score += min(len(errors) * 8, 48)
-    score += len(critical) * 18
-
-    if tipo == "velocidad" and "margen_no_acreditado" in errors:
-        score += 8
-    if tipo == "cinturon" and "hecho_ambiguo" in errors:
-        score += 12
-    if tipo == "semaforo" and "secuencia_no_aportada" in errors:
-        score += 10
-
-    score = min(score, 100)
-
-    if score >= 75:
-        viability = "alta"
-    elif score >= 45:
-        viability = "media"
-    else:
-        viability = "baja"
-
-    return errors, critical, score, viability
-
 HECHO_CANONICO = {
     "velocidad": "EXCESO DE VELOCIDAD",
     "movil": "USO MANUAL DEL TELÉFONO MÓVIL",
@@ -1672,20 +1526,6 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     evidence_gaps = _detect_evidence_gaps(text_blob, out, tipo=tipo)
     out["evidence_gaps"] = evidence_gaps
     out["recurso_strategy"] = _infer_recurso_strategy(tipo, subtipo or "", evidence_gaps)
-
-    attack_routes = _score_attack_routes(tipo, subtipo or "", evidence_gaps, out)
-    out["attack_routes"] = attack_routes
-    out["primary_attack_route"] = attack_routes[0]["route"] if attack_routes else None
-    out["expediente_strength"] = _infer_expediente_strength(evidence_gaps, tipo=tipo)
-    out["recommended_tone"] = _infer_recommended_tone(out["expediente_strength"], attack_routes)
-
-    expediente_errors, critical_errors, error_score, case_viability = _detect_expediente_errors(
-        tipo, subtipo or "", evidence_gaps, out
-    )
-    out["expediente_errors"] = expediente_errors
-    out["critical_errors"] = critical_errors
-    out["error_score"] = error_score
-    out["case_viability"] = case_viability
 
     pre = _extract_precepts(text_blob)
     out["preceptos_detectados"] = pre.get("preceptos_detectados") or []
