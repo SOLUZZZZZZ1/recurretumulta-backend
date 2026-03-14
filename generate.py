@@ -30,6 +30,7 @@ from ai.infractions.velocidad import (
 from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
+from dispatch import dispatch_deterministic_template
 
 router = APIRouter(tags=["generate"])
 
@@ -545,7 +546,16 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     tipo = resolve_infraction_type(core)
     jurisdiccion = resolve_jurisdiction(core)
 
-    tpl, final_kind = _select_template(core, tipo, jurisdiccion)
+    # Dispatcher principal: si decide plantilla, generate.py no vuelve a enrutar.
+    draft_body = get_hecho_para_recurso(core)
+    dispatched_tpl = dispatch_deterministic_template(core, draft_body=draft_body)
+
+    if isinstance(dispatched_tpl, dict) and dispatched_tpl.get("asunto") and dispatched_tpl.get("cuerpo"):
+        tpl = dispatched_tpl
+        final_kind = tipo or "deterministic"
+    else:
+        tpl, final_kind = _select_template(core, tipo, jurisdiccion)
+
     tpl = ensure_tpl_dict(tpl, core)
 
     cuerpo = tpl.get("cuerpo") or ""
