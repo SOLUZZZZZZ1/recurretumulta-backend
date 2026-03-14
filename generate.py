@@ -402,6 +402,29 @@ def build_atencion_bicicleta_template(core: Dict[str, Any]) -> Dict[str, str]:
         "cuerpo": fix_roman_headings(cuerpo),
     }
 
+def _is_bicicleta_context(core: Dict[str, Any]) -> bool:
+    contexto = _safe_str(core.get("contexto_movilidad")).lower().strip()
+    if contexto == "bicicleta":
+        return True
+    blob = json.dumps(core or {}, ensure_ascii=False).lower()
+    return any(s in blob for s in ["bicicleta", "ciclista", "ciclistas", "arcen", "arcén"])
+
+
+def _sanitize_bicicleta_body(body: str) -> str:
+    txt = _safe_str(body)
+    if not txt:
+        return txt
+
+    txt = txt.replace("ALEGACIÓN TERCERA — CONDICIONES DE OBSERVACIÓN DEL INTERIOR DEL VEHÍCULO", "ALEGACIÓN TERCERA — CONDICIONES DE OBSERVACIÓN DE LA CONDUCTA DENUNCIADA")
+    txt = txt.replace("La denuncia describe conductas realizadas dentro del habitáculo del vehículo.", "La denuncia atribuye una conducta observada durante la circulación en bicicleta junto con otros ciclistas.")
+    txt = txt.replace("interior del vehículo", "circulación en bicicleta")
+    txt = txt.replace("habitáculo del vehículo", "entorno de circulación")
+    txt = txt.replace("dentro del vehículo", "durante la circulación")
+
+    txt = re.sub(r"\n{3,}", "\n\n", txt).strip()
+    return txt
+
+
 def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
     if tipo == "semaforo" and jurisdiccion == "municipal":
         return build_municipal_semaforo_template(core), "municipal_semaforo"
@@ -418,8 +441,7 @@ def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
     elif tipo == "casco":
         return build_casco_strong_template(core), "casco"
     elif tipo == "atencion":
-        contexto = _safe_str(core.get("contexto_movilidad")).lower().strip()
-        if contexto == "bicicleta":
+        if _is_bicicleta_context(core):
             return build_atencion_bicicleta_template(core), "atencion_bicicleta"
         return build_atencion_strong_template(core), "atencion"
     elif tipo == "marcas_viales":
@@ -546,8 +568,10 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     jurisdiccion = resolve_jurisdiction(core)
 
     # Dispatcher principal: si decide plantilla, generate.py no vuelve a enrutar.
+    # Excepción segura: en contexto bicicleta no permitimos reutilizar plantillas de interior/habitáculo de vehículo.
     draft_body = get_hecho_para_recurso(core)
-    dispatched_tpl = dispatch_deterministic_template(core, draft_body=draft_body)
+    bicicleta_ctx = _is_bicicleta_context(core)
+    dispatched_tpl = None if (tipo == "atencion" and bicicleta_ctx) else dispatch_deterministic_template(core, draft_body=draft_body)
 
     if isinstance(dispatched_tpl, dict) and dispatched_tpl.get("asunto") and dispatched_tpl.get("cuerpo"):
         tpl = dispatched_tpl
@@ -558,6 +582,8 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     tpl = ensure_tpl_dict(tpl, core)
 
     cuerpo = tpl.get("cuerpo") or ""
+    if tipo == "atencion" and _is_bicicleta_context(core):
+        cuerpo = _sanitize_bicicleta_body(cuerpo)
     hecho = get_hecho_para_recurso(core)
 
     if hecho and not _looks_like_internal_extract(hecho) and hecho.lower() not in cuerpo.lower():
