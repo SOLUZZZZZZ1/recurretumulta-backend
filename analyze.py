@@ -721,6 +721,25 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
     return out
 
 
+
+
+def _detect_mobility_context(text_blob: str, core: Optional[Dict[str, Any]] = None) -> str:
+    core = core or {}
+    blob = _normalize_for_matching(
+        "\n".join([
+            _safe_str(text_blob),
+            _safe_str(core.get("hecho_denunciado_literal")),
+            _safe_str(core.get("hecho_denunciado_resumido")),
+            _safe_str(core.get("raw_text_blob")),
+        ])
+    )
+
+    if any(s in blob for s in ["bicicleta", "ciclistas", "ciclista", "arcen", "arcén", "pedalea", "pedalear"]):
+        return "bicicleta"
+    if any(s in blob for s in ["vehiculo", "vehículo", "turismo", "camion", "camión", "matricula", "matrícula", "conductor"]):
+        return "vehiculo"
+    return "desconocido"
+
 def _extract_jurisdiction(text_blob: str, core: Optional[Dict[str, Any]] = None) -> str:
     core = core or {}
     organismo = _normalize_for_matching(_safe_str(core.get("organismo")))
@@ -781,7 +800,7 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     tipo_sancion = _normalize_for_matching(_safe_str(core.get("tipo_sancion")))
 
     combined = "\n".join(
-        [x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]
+        [x for x in [t, hecho_literal, hecho_resumido, organismo] if x]
     ).strip()
 
     # -------------------------------------------------
@@ -936,10 +955,6 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         ]
     )
 
-    if movil_context:
-        facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
-        return ("movil", facts[0], facts)
-
     # -------------------------------------------------
     # 6) SEMÁFORO
     # -------------------------------------------------
@@ -998,6 +1013,10 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     if semaforo_context and not velocity_context and not vehicle_light_context and not visibilidad_context:
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
+
+    if movil_context and not semaforo_context:
+        facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
+        return ("movil", facts[0], facts)
 
     # -------------------------------------------------
     # 7) VELOCIDAD
@@ -1557,6 +1576,7 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     out["hecho_imputado"] = _canonical_hecho_imputado(tipo, hecho) or None
     out["facts_phrases"] = facts
     out["jurisdiccion"] = _extract_jurisdiction(text_blob, out)
+    out["contexto_movilidad"] = _detect_mobility_context(text_blob, out)
     out["tipo_infraccion_scores"] = score_map
     out["tipo_infraccion_confidence"] = confidence
 

@@ -142,7 +142,11 @@ def get_hecho_para_recurso(core: Dict[str, Any]) -> str:
         or core.get("hecho_imputado")
         or ""
     )
-    return _clean_hecho_text(_safe_str(raw))
+    txt = _clean_hecho_text(_safe_str(raw))
+    low = txt.lower().strip()
+    if low.startswith("tipo_sancion:") or low.startswith("organismo:") or low.startswith("expediente_ref:") or low.startswith("hecho_imputado:"):
+        return ""
+    return txt
 
 
 def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
@@ -293,6 +297,12 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
     if _looks_like_semaforo(core):
         return "semaforo"
 
+    blob = json.dumps(core or {}, ensure_ascii=False).lower()
+    if any(s in blob for s in ["fase roja", "luz roja", "semaforo", "semáforo", "cruce en rojo", "linea de detencion", "línea de detención"]):
+        return "semaforo"
+    if any(s in blob for s in ["bicicleta", "ciclistas", "ciclista"]) and any(s in blob for s in ["atencion permanente", "atención permanente", "conduccion negligente", "conducción negligente", "distraccion", "distracción"]):
+        return "atencion"
+
     scores = _score_infraction_from_core(core)
     best = max(scores.items(), key=lambda kv: kv[1])
     if best[1] > 0:
@@ -362,6 +372,36 @@ def build_cinturon_v4_template(core: Dict[str, Any]) -> Dict[str, str]:
     return tpl
 
 
+
+
+def build_atencion_bicicleta_template(core: Dict[str, Any]) -> Dict[str, str]:
+    expediente = core.get("expediente_ref") or core.get("numero_expediente") or "No consta acreditado."
+    organo = core.get("organo") or core.get("organismo") or "No consta acreditado."
+    hecho = get_hecho_para_recurso(core) or "NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN"
+
+    cuerpo = (
+        "A la atención del órgano competente,\n\n"
+        "I. ANTECEDENTES\n"
+        f"1) Órgano: {organo}\n"
+        f"2) Identificación expediente: {expediente}\n"
+        f"3) Hecho imputado: {hecho}\n\n"
+        "II. ALEGACIONES\n\n"
+        "ALEGACIÓN PRIMERA — FALTA DE DESCRIPCIÓN SUFICIENTE Y CIRCUNSTANCIADA\n\n"
+        "La denuncia describe una conducta observada durante la circulación en bicicleta, pero no concreta con el detalle exigible la conducta exacta, su duración, ni las circunstancias espaciales y temporales que permitirían verificarla con fiabilidad.\n\n"
+        "ALEGACIÓN SEGUNDA — AUSENCIA DE SOPORTE OBJETIVO Y DE DATOS DE OBSERVACIÓN\n\n"
+        "No consta en el expediente soporte objetivo adicional, ni se precisa desde qué posición se realizó la observación, a qué distancia ni durante cuánto tiempo, extremos imprescindibles para valorar la consistencia de una observación de este tipo en vía abierta.\n\n"
+        "ALEGACIÓN TERCERA — CONDICIONES DE OBSERVACIÓN DE LA CONDUCTA DENUNCIADA\n\n"
+        "Tratándose de una persona que circula en bicicleta junto con otros ciclistas, la Administración debe concretar de forma especialmente rigurosa la posición exacta del denunciante respecto del ciclista, la visibilidad existente y la forma en que se individualizó la conducta denunciada.\n\n"
+        "III. SOLICITO\n"
+        "1) Que se tengan por formuladas las presentes alegaciones.\n"
+        "2) Que se acuerde el archivo del expediente por insuficiencia probatoria.\n"
+        "3) Subsidiariamente, que se aporte expediente íntegro y prueba completa para contradicción efectiva.\n"
+    )
+    return {
+        "asunto": "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE",
+        "cuerpo": fix_roman_headings(cuerpo),
+    }
+
 def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
     if tipo == "semaforo" and jurisdiccion == "municipal":
         return build_municipal_semaforo_template(core), "municipal_semaforo"
@@ -378,6 +418,9 @@ def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
     elif tipo == "casco":
         return build_casco_strong_template(core), "casco"
     elif tipo == "atencion":
+        contexto = _safe_str(core.get("contexto_movilidad")).lower().strip()
+        if contexto == "bicicleta":
+            return build_atencion_bicicleta_template(core), "atencion_bicicleta"
         return build_atencion_strong_template(core), "atencion"
     elif tipo == "marcas_viales":
         return build_marcas_viales_strong_template(core), "marcas_viales"
