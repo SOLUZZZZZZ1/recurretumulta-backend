@@ -1408,6 +1408,42 @@ def _pick_best_infraction(scores: Dict[str, int]) -> Tuple[str, float]:
     return best_type, confidence
 
 
+
+
+def _validate_tipo_infraccion(tipo: str, hecho_focus: str) -> Tuple[str, float]:
+    if not hecho_focus:
+        return tipo, 0.5
+
+    # SEMÁFORO
+    if tipo == "semaforo":
+        signals = ["semaforo", "fase roja", "luz roja", "cruce en rojo", "linea de detencion"]
+        if any(s in hecho_focus for s in signals):
+            return "semaforo", 0.95
+        return "otro", 0.30
+
+    # ITV
+    if tipo == "itv":
+        signals = ["itv caducada", "caducidad de itv", "inspeccion tecnica"]
+        if any(s in hecho_focus for s in signals):
+            return "itv", 0.95
+        return "otro", 0.20
+
+    # MÓVIL
+    if tipo == "movil":
+        signals = ["telefono movil", "uso manual", "manipulando", "sujetando con la mano"]
+        if any(s in hecho_focus for s in signals):
+            return "movil", 0.95
+        return "otro", 0.25
+
+    # CINTURÓN
+    if tipo == "cinturon":
+        signals = ["cinturon", "cinturón"]
+        if any(s in hecho_focus for s in signals):
+            return "cinturon", 0.95
+        return "otro", 0.25
+
+    return tipo, 0.80
+
 def _resolve_cinturon_subtype(text_blob: str, core: Optional[Dict[str, Any]] = None) -> str:
     core = core or {}
     combined = _normalize_for_matching(
@@ -1600,8 +1636,21 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     score_map = _score_infraction_families(text_blob, out)
     best_tipo, confidence = _pick_best_infraction(score_map)
 
+    hecho_focus = _normalize_for_matching(
+        "\n".join([
+            _safe_str(out.get("hecho_denunciado_literal")),
+            _safe_str(out.get("hecho_denunciado_resumido")),
+        ])
+    )
+
     if tipo in ("otro", "", None) and best_tipo not in ("", "otro"):
         tipo = best_tipo
+
+    tipo_validado, conf_override = _validate_tipo_infraccion(tipo, hecho_focus)
+
+    if tipo_validado != "otro":
+        tipo = tipo_validado
+        confidence = max(confidence, conf_override)
 
     out["tipo_infraccion"] = tipo
     out["hecho_imputado"] = _canonical_hecho_imputado(tipo, hecho) or None
@@ -1625,6 +1674,67 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     out["primary_attack_route"] = attack_routes[0]["route"] if attack_routes else None
     out["expediente_strength"] = _infer_expediente_strength(evidence_gaps, tipo=tipo)
     out["recommended_tone"] = _infer_recommended_tone(out["expediente_strength"], attack_routes)
+
+    # ---- FASE 5: diagnóstico jurídico del expediente ----
+    expediente_errors = []
+    critical_errors = []
+
+    gap_set = set(evidence_gaps or [])
+
+    if tipo == "velocidad":
+        if "metrologia_no_acreditada" in gap_set:
+            expediente_errors.append("metrologia_no_acreditada")
+            critical_errors.append("metrologia_no_acreditada")
+
+        if "fotograma_no_aportado" in gap_set:
+            expediente_errors.append("fotograma_no_aportado")
+            critical_errors.append("fotograma_no_aportado")
+
+        if "margen_no_explicitado" in gap_set:
+            expediente_errors.append("margen_no_acreditado")
+            critical_errors.append("margen_no_acreditado")
+
+    elif tipo == "semaforo":
+        expediente_errors.extend([
+            "fase_roja_no_acreditada",
+            "rebase_linea_no_acreditado",
+            "secuencia_no_aportada"
+        ])
+
+        critical_errors.extend([
+            "fase_roja_no_acreditada",
+            "secuencia_no_aportada"
+        ])
+
+    elif tipo == "cinturon":
+        if "concrecion_missing" in gap_set:
+            expediente_errors.append("hecho_ambiguo")
+            critical_errors.append("hecho_ambiguo")
+
+        if "no_prueba_objetiva" in gap_set:
+            expediente_errors.append("sin_prueba_objetiva")
+
+    elif tipo == "atencion":
+        if "posicion_agente_no_acreditada" in gap_set:
+            expediente_errors.append("posicion_agente_no_acreditada")
+
+        if "duracion_observacion_no_acreditada" in gap_set:
+            expediente_errors.append("duracion_observacion_no_acreditada")
+
+    # puntuación del expediente
+    error_score = min(len(expediente_errors) * 8 + len(critical_errors) * 18, 100)
+
+    if error_score >= 75:
+        case_viability = "alta"
+    elif error_score >= 45:
+        case_viability = "media"
+    else:
+        case_viability = "baja"
+
+    out["expediente_errors"] = expediente_errors
+    out["critical_errors"] = critical_errors
+    out["error_score"] = error_score
+    out["case_viability"] = case_viability
 
     pre = _extract_precepts(text_blob)
     out["preceptos_detectados"] = pre.get("preceptos_detectados") or []
