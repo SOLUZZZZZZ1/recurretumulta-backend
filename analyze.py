@@ -1634,29 +1634,6 @@ def _ensure_raw_fields(core: Dict[str, Any], text_content: str = "") -> Dict[str
     return out
 
 
-
-def _infer_modelo_defensa(tipo: str, contexto_movilidad: str, evidence_gaps: list) -> str:
-    if tipo == "velocidad":
-        if "metrologia_no_acreditada" in evidence_gaps or "margen_no_explicitado" in evidence_gaps:
-            return "metrologia_radar"
-        return "exceso_velocidad_generico"
-
-    if tipo == "cinturon":
-        if "concrecion_missing" in evidence_gaps:
-            return "ambiguedad_hecho"
-        return "observacion_insuficiente"
-
-    if tipo == "semaforo":
-        return "fase_roja_no_acreditada"
-
-    if tipo == "atencion":
-        if contexto_movilidad == "bicicleta":
-            return "observacion_subjetiva_ciclista"
-        return "observacion_subjetiva"
-
-    return "generico"
-
-
 @router.post("/analyze")
 async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
     try:
