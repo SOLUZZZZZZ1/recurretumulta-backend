@@ -110,6 +110,7 @@ def _normalize_for_matching(text: str) -> str:
 _HECHO_HEADERS = [
     "hecho denunciado",
     "hecho que se notifica",
+    "lo que se notifica",
     "hecho imputado",
     "hecho infringido",
     "hecho infractor",
@@ -255,29 +256,8 @@ def _is_admin_line(line: str) -> bool:
     return False
 
 
-def _looks_like_info_box_line(line: str) -> bool:
-    l = _normalize_for_matching(line)
-    info_box_signals = [
-        "notificaciones a traves de internet y movil",
-        "notificaciones a través de internet y móvil",
-        "puede recibir la notificaciones",
-        "puede recibir notificaciones",
-        "consultarlas, domiciliarlas o pagar",
-        "consultarlas domiciliarlas o pagar",
-        "direccion electronica vial",
-        "dirección electrónica vial",
-        "internet y movil",
-        "internet y movil puede recibir",
-    ]
-    return any(s in l for s in info_box_signals)
-
-
 def _looks_like_narrative_line(line: str) -> bool:
     l = _normalize_for_matching(line)
-
-    if _looks_like_info_box_line(l):
-        return False
-
     narrative_signals = [
         "conducir", "circular", "circulando", "circulaba", "cruce", "fase roja", "luz roja",
         "semaforo", "utilizando", "telefono", "movil", "auricular", "auriculares", "cascos",
@@ -286,17 +266,15 @@ def _looks_like_narrative_line(line: str) -> bool:
         "seguro obligatorio", "alumbrado", "destellos", "porta auricular", "oido izquierdo",
         "oido derecho", "mordia las unas", "mordia las uñas", "libertad de movimientos",
         "sentido contrario", "direccion prohibida",
-        "cinturon", "cinturón", "cinturon de seguridad", "cinturón de seguridad",
-        "abrochado", "correctamente abrochado", "no utilizar el conductor",
-        "no utiliza el conductor", "no llevar abrochado",
     ]
     if any(s in l for s in narrative_signals):
         return True
     if re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+\d{2,3}\s*km", l):
         return True
-    if re.search(r"\bno\s+utilizar\b.*\bcintur", l):
-        return True
     return False
+
+
+
 
 
 def _looks_like_vehicle_ficha(text: str) -> bool:
@@ -337,11 +315,9 @@ def _score_candidate_hecho(line: str) -> int:
         "remitir el presente",
         "notificaciones a traves de internet y movil",
         "notificaciones a través de internet y móvil",
-        "puede recibir notificaciones",
-        "direccion electronica vial",
-        "dirección electrónica vial",
-        "consultarlas, domiciliarlas o pagar",
-        "consultarlas domiciliarlas o pagar",
+        "puede recibir",
+        "tablón edictal de sanciones de trafico",
+        "tablon edictal de sanciones de trafico",
     ]
     if any(b in l for b in bad):
         return -100
@@ -357,8 +333,6 @@ def _score_candidate_hecho(line: str) -> int:
         "carecer de",
         "conducir de forma negligente",
         "no llevar",
-        "no utilizar",
-        "no utiliza el conductor",
     ]
     for v in strong_verbs:
         if v in l:
@@ -370,14 +344,6 @@ def _score_candidate_hecho(line: str) -> int:
         score += 10
     if "auricular" in l or "telefono movil" in l or "marca longitudinal continua" in l:
         score += 10
-    if "cinturon" in l or "cinturón" in l:
-        score += 35
-    if "cinturon de seguridad" in l or "cinturón de seguridad" in l:
-        score += 40
-    if "correctamente abrochado" in l or "abrochado" in l:
-        score += 20
-    if "no utilizar el conductor" in l or "no utiliza el conductor" in l:
-        score += 25
 
     return score
 
@@ -402,15 +368,7 @@ def _extract_hecho_denunciado_literal_from_text(raw_text: str) -> str:
     else:
         lines_fb = [ln.strip() for ln in original_text.split("\n") if ln.strip()]
         start_pos = None
-        best_fb_score = -10**9
         for i, ln in enumerate(lines_fb):
-            if _looks_like_info_box_line(ln):
-                continue
-            cand_score = _score_candidate_hecho(ln)
-            if cand_score > best_fb_score:
-                best_fb_score = cand_score
-                if cand_score > 0:
-                    start_pos = i
             if _looks_like_narrative_line(ln):
                 start_pos = i
                 break
@@ -429,7 +387,7 @@ def _extract_hecho_denunciado_literal_from_text(raw_text: str) -> str:
     started = False
 
     for ln in lines:
-        if _is_admin_line(ln) or _looks_like_info_box_line(ln):
+        if _is_admin_line(ln):
             if current:
                 candidates.append(" ".join(current))
                 current = []
@@ -495,7 +453,7 @@ def _extract_hecho_denunciado_literal_from_text(raw_text: str) -> str:
             "velocidad_corregida_kmh", "tramo_sancionador_hint", "velocidad_conflicto_detectado",
             "raw_text_pdf", "raw_text_vision", "raw_text_blob", "vision_raw_text",
             "notificaciones a traves de internet y movil", "notificaciones a través de internet y móvil",
-            "puede recibir notificaciones", "consultarlas, domiciliarlas o pagar", "direccion electronica vial",
+            "puede recibir", "tablón edictal de sanciones de trafico", "tablon edictal de sanciones de trafico",
         ]
         if any(s in low for s in admin_poison):
             continue
@@ -1459,8 +1417,8 @@ def _pick_best_infraction(scores: Dict[str, int]) -> Tuple[str, float]:
 
 
 
-
 def _validate_tipo_infraccion(tipo: str, hecho_focus: str) -> Tuple[str, float]:
+
     if not hecho_focus:
         return tipo, 0.5
 
@@ -1493,6 +1451,7 @@ def _validate_tipo_infraccion(tipo: str, hecho_focus: str) -> Tuple[str, float]:
         return "otro", 0.25
 
     return tipo, 0.80
+
 
 def _resolve_cinturon_subtype(text_blob: str, core: Optional[Dict[str, Any]] = None) -> str:
     core = core or {}
@@ -1771,7 +1730,6 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
         if "duracion_observacion_no_acreditada" in gap_set:
             expediente_errors.append("duracion_observacion_no_acreditada")
 
-    # puntuación del expediente
     error_score = min(len(expediente_errors) * 8 + len(critical_errors) * 18, 100)
 
     if error_score >= 75:
