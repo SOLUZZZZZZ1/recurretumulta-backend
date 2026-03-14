@@ -683,6 +683,16 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
             points = None
 
     radar_model = None
+    tipo_via = None
+    if "autovia" in t or "autovía" in t:
+        tipo_via = "autovia"
+    elif "autopista" in t:
+        tipo_via = "autopista"
+    elif "via urbana" in t or "vía urbana" in t or "zona urbana" in t or "urbana" in t:
+        tipo_via = "urbana"
+    elif "via interurbana" in t or "vía interurbana" in t or "carretera" in t:
+        tipo_via = "interurbana"
+
     if velocity_context:
         mr = re.search(r"(multanova\s*[a-z0-9\-]*)", t)
         if mr:
@@ -699,6 +709,7 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
         "sancion_importe_eur": fine_eur,
         "puntos_detraccion": points,
         "radar_modelo_hint": radar_model,
+        "tipo_via_hint": tipo_via,
     }
 
     if velocity_context and candidates_all:
@@ -1427,6 +1438,82 @@ def _infer_recurso_strategy(tipo: str, subtipo: str, evidence_gaps: List[str]) -
         strategy.append("solicitud_expediente_integro")
     return strategy
 
+
+def _score_attack_routes(tipo: str, subtipo: str, evidence_gaps: List[str], core: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    core = core or {}
+    routes: Dict[str, int] = {}
+
+    def add(route: str, points: int) -> None:
+        routes[route] = routes.get(route, 0) + points
+
+    gap_count = len(evidence_gaps or [])
+    if gap_count:
+        add("insuficiencia_probatoria", min(95, 45 + gap_count * 10))
+        add("solicitud_expediente_integro", min(70, 20 + gap_count * 8))
+
+    if tipo == "velocidad":
+        add("prueba_tecnica_radar", 70)
+        if "metrologia_no_acreditada" in evidence_gaps:
+            add("prueba_tecnica_radar", 15)
+        if "fotograma_no_aportado" in evidence_gaps:
+            add("prueba_tecnica_radar", 10)
+        if "margen_no_explicitado" in evidence_gaps:
+            add("defecto_motivacion", 15)
+
+    if tipo in ("cinturon", "movil", "auriculares", "casco", "atencion"):
+        add("observacion_agente", 55)
+        if "no_prueba_objetiva" in evidence_gaps:
+            add("observacion_agente", 15)
+
+    if tipo == "semaforo":
+        add("secuencia_y_sincronizacion", 55)
+        if "no_prueba_objetiva" in evidence_gaps:
+            add("secuencia_y_sincronizacion", 15)
+
+    if subtipo == "cinturon_redaccion_ambigua":
+        add("ambiguedad_hecho", 88)
+        add("falta_concrecion", 80)
+
+    if "concrecion_missing" in evidence_gaps:
+        add("falta_concrecion", 70)
+
+    if "margen_no_explicitado" in evidence_gaps or "fotograma_no_aportado" in evidence_gaps:
+        add("defecto_motivacion", 45)
+
+    ordered = sorted(
+        [{"route": k, "score": int(v)} for k, v in routes.items() if v > 0],
+        key=lambda x: x["score"],
+        reverse=True,
+    )
+    return ordered
+
+
+def _infer_expediente_strength(evidence_gaps: List[str], tipo: str = "") -> str:
+    gap_count = len(evidence_gaps or [])
+    if tipo == "velocidad":
+        if gap_count >= 3:
+            return "debil"
+        if gap_count >= 1:
+            return "medio"
+        return "fuerte"
+
+    if gap_count >= 4:
+        return "debil"
+    if gap_count >= 2:
+        return "medio"
+    return "fuerte"
+
+
+def _infer_recommended_tone(expediente_strength: str, attack_routes: List[Dict[str, Any]]) -> str:
+    primary = attack_routes[0]["route"] if attack_routes else ""
+    if expediente_strength == "debil":
+        return "agresivo"
+    if primary in ("prueba_tecnica_radar", "secuencia_y_sincronizacion"):
+        return "tecnico"
+    if expediente_strength == "medio":
+        return "tecnico"
+    return "prudente"
+
 HECHO_CANONICO = {
     "velocidad": "EXCESO DE VELOCIDAD",
     "movil": "USO MANUAL DEL TELÉFONO MÓVIL",
@@ -1481,6 +1568,12 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     evidence_gaps = _detect_evidence_gaps(text_blob, out, tipo=tipo)
     out["evidence_gaps"] = evidence_gaps
     out["recurso_strategy"] = _infer_recurso_strategy(tipo, subtipo or "", evidence_gaps)
+
+    attack_routes = _score_attack_routes(tipo, subtipo or "", evidence_gaps, out)
+    out["attack_routes"] = attack_routes
+    out["primary_attack_route"] = attack_routes[0]["route"] if attack_routes else None
+    out["expediente_strength"] = _infer_expediente_strength(evidence_gaps, tipo=tipo)
+    out["recommended_tone"] = _infer_recommended_tone(out["expediente_strength"], attack_routes)
 
     pre = _extract_precepts(text_blob)
     out["preceptos_detectados"] = pre.get("preceptos_detectados") or []
