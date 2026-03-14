@@ -172,6 +172,26 @@ _ADMIN_KV_PREFIXES = [
     "fecha_notificacion:",
     "importe:",
     "jurisdiccion:",
+    "pone_fin_via_administrativa:",
+    "plazo_recurso_sugerido:",
+    "tipo_infraccion:",
+    "facts_phrases:",
+    "preceptos_detectados:",
+    "articulo_infringido_num:",
+    "apartado_infringido_num:",
+    "norma_hint:",
+    "tipo_infraccion_scores:",
+    "tipo_infraccion_confidence:",
+    "subtipo_infraccion:",
+    "evidence_gaps:",
+    "recurso_strategy:",
+    "radar_modelo_hint:",
+    "radar_tipo:",
+    "metrologia_requerida:",
+    "margen_legal_aplicado_hint_kmh:",
+    "velocidad_corregida_kmh:",
+    "tramo_sancionador_hint:",
+    "velocidad_conflicto_detectado:",
 ]
 
 
@@ -194,8 +214,38 @@ def _clean_literal_text(text: str) -> str:
     return t.strip()
 
 
+
+
+def _is_internal_meta_line(line: str) -> bool:
+    l = _normalize_for_matching(line)
+    internal_tokens = [
+        "pone_fin_via_administrativa",
+        "plazo_recurso_sugerido",
+        "tipo_infraccion_scores",
+        "tipo_infraccion_confidence",
+        "subtipo_infraccion",
+        "evidence_gaps",
+        "recurso_strategy",
+        "radar_modelo_hint",
+        "radar_tipo",
+        "metrologia_requerida",
+        "margen_legal_aplicado_hint_kmh",
+        "velocidad_corregida_kmh",
+        "tramo_sancionador_hint",
+        "velocidad_conflicto_detectado",
+        "facts_phrases",
+        "preceptos_detectados",
+        "raw_text_pdf",
+        "raw_text_vision",
+        "raw_text_blob",
+        "vision_raw_text",
+    ]
+    return any(tok in l for tok in internal_tokens)
+
 def _is_admin_line(line: str) -> bool:
     l = _normalize_for_matching(line)
+    if _is_internal_meta_line(line):
+        return True
     if any(l.startswith(p) for p in _ADMIN_KV_PREFIXES):
         return True
     if any(s in l for s in _STOP_LINE_SIGNALS):
@@ -221,6 +271,7 @@ def _looks_like_narrative_line(line: str) -> bool:
     if re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+\d{2,3}\s*km", l):
         return True
     return False
+
 
 
 def _score_candidate_hecho(line: str) -> int:
@@ -369,6 +420,11 @@ def _extract_hecho_denunciado_literal_from_text(raw_text: str) -> str:
             "ejemplar para el infractor", "ejemplar para la infractora", "ejemplar para el/la infractor/a",
             "identificacion de la multa", "vehiculo titular", "apellidos y nombre del infractor",
             "identificador fiscal", "fecha caducidad documento", "referencia de cobro",
+            "pone_fin_via_administrativa", "plazo_recurso_sugerido", "tipo_infraccion_scores",
+            "tipo_infraccion_confidence", "subtipo_infraccion", "evidence_gaps", "recurso_strategy",
+            "radar_modelo_hint", "radar_tipo", "metrologia_requerida", "margen_legal_aplicado_hint_kmh",
+            "velocidad_corregida_kmh", "tramo_sancionador_hint", "velocidad_conflicto_detectado",
+            "raw_text_pdf", "raw_text_vision", "raw_text_blob", "vision_raw_text",
         ]
         if any(s in low for s in admin_poison):
             continue
@@ -530,85 +586,6 @@ def _extract_precepts(text_blob: str) -> Dict[str, Any]:
     }
 
 
-def _detect_radar_from_text(t: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    tt = _normalize_for_matching(t or "")
-    radar_model: Optional[str] = None
-    radar_tipo: Optional[str] = None
-    metrologia: Optional[str] = None
-
-    patterns = [
-        ("multanova", r"(multanova\s*[a-z0-9\-]*)", "radar_fijo", "certificado_verificacion_cinemometro"),
-        ("multaradar", r"(multaradar\s*[a-z0-9\-]*)", "radar_fijo", "certificado_verificacion_cinemometro"),
-        ("gatso", r"(gatso\s*[a-z0-9\-]*)", "radar_fijo", "certificado_verificacion_cinemometro"),
-        ("velolaser", r"(velolaser\s*[a-z0-9\-]*)", "laser_movil", "certificado_verificacion_laser"),
-        ("trucam", r"(trucam\s*[a-z0-9\-]*)", "laser_movil", "certificado_verificacion_laser"),
-    ]
-    for _name, pattern, tipo, met in patterns:
-        m = re.search(pattern, tt)
-        if m:
-            radar_model = m.group(1).strip()
-            radar_tipo = tipo
-            metrologia = met
-            break
-
-    if radar_model is None:
-        if "laser" in tt or "lidar" in tt:
-            radar_model = "laser/lidar (no especificado)"
-            radar_tipo = "laser_movil"
-            metrologia = "certificado_verificacion_laser"
-        elif "radar movil" in tt or "radar móvil" in tt:
-            radar_model = "radar movil (no especificado)"
-            radar_tipo = "radar_movil"
-            metrologia = "certificado_verificacion_cinemometro"
-        elif "radar fijo" in tt or "cabina" in tt or "poste" in tt:
-            radar_model = "radar fijo (no especificado)"
-            radar_tipo = "radar_fijo"
-            metrologia = "certificado_verificacion_cinemometro"
-        elif "radar de tramo" in tt or "tramo" in tt:
-            radar_model = "radar de tramo (no especificado)"
-            radar_tipo = "radar_tramo"
-            metrologia = "certificado_verificacion_cinemometro"
-        elif "cinemometro" in tt or "cinemómetro" in tt or "radar" in tt:
-            radar_model = "cinemometro/radar (no especificado)"
-            radar_tipo = "radar_no_especificado"
-            metrologia = "certificado_verificacion_cinemometro"
-
-    return radar_model, radar_tipo, metrologia
-
-
-def _infer_velocity_margin_kmh(measured: Optional[int], radar_model: Optional[str], radar_tipo: Optional[str]) -> Optional[float]:
-    if measured is None:
-        return None
-
-    model = _normalize_for_matching(radar_model or "")
-    tipo = _normalize_for_matching(radar_tipo or "")
-
-    uses_7 = any(s in model for s in ["velolaser", "trucam", "laser", "lidar"]) or any(
-        s in tipo for s in ["laser_movil", "radar_movil"]
-    )
-
-    if uses_7:
-        return 7.0 if measured <= 100 else round(measured * 0.07, 2)
-
-    return 5.0 if measured <= 100 else round(measured * 0.05, 2)
-
-
-def _infer_sanction_band_hint(limit: Optional[int], corrected: Optional[float]) -> Optional[str]:
-    if limit is None or corrected is None:
-        return None
-
-    excess = round(corrected - limit, 2)
-    if excess <= 0:
-        return "sin_exceso_apreciable"
-    if excess <= 20:
-        return "tramo_orientativo_bajo"
-    if excess <= 30:
-        return "tramo_orientativo_medio"
-    if excess <= 50:
-        return "tramo_orientativo_alto"
-    return "tramo_orientativo_muy_alto"
-
-
 def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
     t = _normalize_for_matching(text_blob).replace("\n", " ")
     t = re.sub(r"\s+", " ", t).strip()
@@ -630,6 +607,7 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
     candidates_all: List[int] = []
 
     if velocity_context:
+        # 1) Todos los candidatos km/h
         for mm in re.finditer(r"\b(\d{2,3})\s*km\s*/?\s*h\b", t):
             try:
                 n = int(mm.group(1))
@@ -638,6 +616,7 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
             except Exception:
                 pass
 
+        # 2) Prioridad máxima: patrón narrativo fuerte del hecho
         strong_measured: List[int] = []
         for mm in re.finditer(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km\s*/?\s*h\b", t):
             try:
@@ -650,6 +629,7 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
         if strong_measured:
             measured = max(strong_measured)
 
+        # 3) Extraer límite con patrones fuertes
         t_no_deadlines = re.sub(r"fecha\s*l[ií]mite[^\d]{0,40}\d{1,2}/\d{1,2}/\d{2,4}", "", t)
 
         limit_candidates: List[int] = []
@@ -667,6 +647,7 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
         if limit_candidates:
             limit = sorted(set(limit_candidates))[0]
 
+        # 4) Fallback si no hubo patrón narrativo fuerte
         if measured is None and candidates_all:
             if limit is not None:
                 above = [x for x in candidates_all if x >= (limit + 5)]
@@ -674,6 +655,7 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
             else:
                 measured = max(candidates_all)
 
+        # 5) Detección de conflicto
         uniq = sorted(set(candidates_all))
         if len(uniq) >= 2:
             if (max(uniq) - min(uniq)) >= 15:
@@ -701,18 +683,15 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
             points = None
 
     radar_model = None
-    radar_tipo = None
-    metrologia_requerida = None
-    margen_hint = None
-    velocidad_corregida = None
-    tramo_hint = None
-
     if velocity_context:
-        radar_model, radar_tipo, metrologia_requerida = _detect_radar_from_text(t)
-        margen_hint = _infer_velocity_margin_kmh(measured, radar_model, radar_tipo)
-        if measured is not None and margen_hint is not None:
-            velocidad_corregida = round(measured - margen_hint, 2)
-        tramo_hint = _infer_sanction_band_hint(limit, velocidad_corregida)
+        mr = re.search(r"(multanova\s*[a-z0-9\-]*)", t)
+        if mr:
+            radar_model = mr.group(1).strip()
+        elif "multaradar" in t:
+            mr2 = re.search(r"(multaradar\s*[a-z0-9\-]*)", t)
+            radar_model = mr2.group(1).strip() if mr2 else "multaradar"
+        elif "cinem" in t:
+            radar_model = "cinemometro (no especificado)"
 
     out = {
         "velocidad_medida_kmh": measured,
@@ -720,11 +699,6 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
         "sancion_importe_eur": fine_eur,
         "puntos_detraccion": points,
         "radar_modelo_hint": radar_model,
-        "radar_tipo": radar_tipo,
-        "metrologia_requerida": metrologia_requerida,
-        "margen_legal_aplicado_hint_kmh": margen_hint,
-        "velocidad_corregida_kmh": velocidad_corregida,
-        "tramo_sancionador_hint": tramo_hint,
     }
 
     if velocity_context and candidates_all:
@@ -768,6 +742,24 @@ def _extract_jurisdiction(text_blob: str, core: Optional[Dict[str, Any]] = None)
 
 
 def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None) -> Tuple[str, str, List[str]]:
+    """
+    Devuelve:
+      (tipo_infraccion, hecho_imputado_canonico, facts_phrases)
+
+    12 familias principales:
+      1) condiciones_vehiculo
+      2) casco
+      3) auriculares
+      4) cinturon
+      5) movil
+      6) semaforo
+      7) velocidad
+      8) seguro
+      9) itv
+      10) marcas_viales
+      11) carril
+      12) atencion
+    """
     core = core or {}
     facts: List[str] = []
 
@@ -781,24 +773,50 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         [x for x in [t, hecho_literal, hecho_resumido, organismo, tipo_sancion] if x]
     ).strip()
 
+    # -------------------------------------------------
+    # 1) CONDICIONES DEL VEHÍCULO
+    # -------------------------------------------------
     vehicle_light_context = any(
         s in combined
         for s in [
-            "alumbrado", "senalizacion optica", "señalizacion optica", "senalizacion",
-            "señalizacion", "luz trasera", "parte trasera", "destellos", "anexo i",
-            "reglamentacion del anexo", "reglamentación del anexo", "dispositivos de alumbrado",
-            "dispositivos de senalizacion", "dispositivos de señalizacion", "no cumplan las exigencias",
-            "condiciones reglamentarias", "homologacion", "homologación", "reflectante",
-            "deslumbramiento", "espejo",
+            "alumbrado",
+            "senalizacion optica",
+            "señalizacion optica",
+            "senalizacion",
+            "señalizacion",
+            "luz trasera",
+            "parte trasera",
+            "destellos",
+            "anexo i",
+            "reglamentacion del anexo",
+            "reglamentación del anexo",
+            "dispositivos de alumbrado",
+            "dispositivos de senalizacion",
+            "dispositivos de señalizacion",
+            "no cumplan las exigencias",
+            "condiciones reglamentarias",
+            "homologacion",
+            "homologación",
+            "reflectante",
+            "deslumbramiento",
+            "espejo",
         ]
     )
 
     visibilidad_context = any(
         s in combined
         for s in [
-            "superficie acristalada", "visibilidad diafana", "visibilidad diáfana", "laminas",
-            "láminas", "adhesivos", "cortinillas", "elementos no autorizados",
-            "no permite a su conductor la visibilidad", "visibilidad suficiente", "visibilidad directa",
+            "superficie acristalada",
+            "visibilidad diafana",
+            "visibilidad diáfana",
+            "laminas",
+            "láminas",
+            "adhesivos",
+            "cortinillas",
+            "elementos no autorizados",
+            "no permite a su conductor la visibilidad",
+            "visibilidad suficiente",
+            "visibilidad directa",
         ]
     )
 
@@ -806,14 +824,30 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
         return ("condiciones_vehiculo", facts[0], facts)
 
+    # -------------------------------------------------
+    # 2) CASCO
+    # -------------------------------------------------
     casco_context = any(
         s in combined
         for s in [
-            "sin casco", "no llevar casco", "no utilizar casco", "casco de proteccion",
-            "casco de protección", "cascos de proteccion homologados", "cascos de protección homologados",
-            "casco homologado", "casco abrochado", "debidamente abrochado", "sin hacer uso del casco",
-            "sin hacer uso del casco de proteccion", "sin hacer uso del casco de protección", "anclado al casco",
-            "camara de video", "cámara de vídeo", "camara en casco", "cámara en casco",
+            "sin casco",
+            "no llevar casco",
+            "no utilizar casco",
+            "casco de proteccion",
+            "casco de protección",
+            "cascos de proteccion homologados",
+            "cascos de protección homologados",
+            "casco homologado",
+            "casco abrochado",
+            "debidamente abrochado",
+            "sin hacer uso del casco",
+            "sin hacer uso del casco de proteccion",
+            "sin hacer uso del casco de protección",
+            "anclado al casco",
+            "camara de video",
+            "cámara de vídeo",
+            "camara en casco",
+            "cámara en casco",
         ]
     )
 
@@ -821,12 +855,25 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("NO UTILIZAR CASCO DE PROTECCIÓN")
         return ("casco", facts[0], facts)
 
+    # -------------------------------------------------
+    # 3) AURICULARES
+    # -------------------------------------------------
     auriculares_context = any(
         s in combined
         for s in [
-            "auricular", "auriculares", "cascos conectados", "cascos o auriculares",
-            "reproductores de sonido", "aparatos receptores", "aparatos reproductores", "porta auricular",
-            "oido izquierdo", "oído izquierdo", "oido derecho", "oído derecho", "bluetooth instalado en casco",
+            "auricular",
+            "auriculares",
+            "cascos conectados",
+            "cascos o auriculares",
+            "reproductores de sonido",
+            "aparatos receptores",
+            "aparatos reproductores",
+            "porta auricular",
+            "oido izquierdo",
+            "oído izquierdo",
+            "oido derecho",
+            "oído derecho",
+            "bluetooth instalado en casco",
         ]
     )
 
@@ -834,13 +881,23 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("USO DE AURICULARES O CASCOS CONECTADOS")
         return ("auriculares", facts[0], facts)
 
+    # -------------------------------------------------
+    # 4) CINTURÓN
+    # -------------------------------------------------
     cinturon_context = any(
         s in combined
         for s in [
-            "cinturon de seguridad", "cinturón de seguridad", "sin cinturon", "sin cinturón",
-            "no utilizar el cinturon", "no utilizar el cinturón", "no llevar abrochado el cinturon",
-            "no llevar abrochado el cinturón", "correctamente abrochado",
-            "no utiliza el conductor del vehiculo el cinturon", "no utiliza el conductor del vehículo el cinturón",
+            "cinturon de seguridad",
+            "cinturón de seguridad",
+            "sin cinturon",
+            "sin cinturón",
+            "no utilizar el cinturon",
+            "no utilizar el cinturón",
+            "no llevar abrochado el cinturon",
+            "no llevar abrochado el cinturón",
+            "correctamente abrochado",
+            "no utiliza el conductor del vehiculo el cinturon",
+            "no utiliza el conductor del vehículo el cinturón",
         ]
     )
 
@@ -848,12 +905,22 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("NO UTILIZAR CINTURÓN DE SEGURIDAD")
         return ("cinturon", facts[0], facts)
 
+    # -------------------------------------------------
+    # 5) MÓVIL
+    # -------------------------------------------------
     movil_context = any(
         s in combined
         for s in [
-            "telefono movil", "teléfono móvil", "uso manual del movil", "uso manual del móvil",
-            "uso manual del telefono", "uso manual del teléfono", "utilizando manualmente",
-            "sujetando con la mano el dispositivo", "manipulando el movil", "manipulando el móvil",
+            "telefono movil",
+            "teléfono móvil",
+            "uso manual del movil",
+            "uso manual del móvil",
+            "uso manual del telefono",
+            "uso manual del teléfono",
+            "utilizando manualmente",
+            "sujetando con la mano el dispositivo",
+            "manipulando el movil",
+            "manipulando el móvil",
             "interactuando con la pantalla",
         ]
     )
@@ -862,15 +929,31 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
 
+    # -------------------------------------------------
+    # 6) SEMÁFORO
+    # -------------------------------------------------
     velocity_context = (
         ("km/h" in combined)
         and any(
             s in combined
             for s in [
-                "velocidad", "radar", "cinemometro", "cinemómetro", "exceso de velocidad", "limitada a",
-                "siendo limitada la velocidad a", "teniendo limitada la velocidad a", "velocidad maxima",
-                "velocidad máxima", "velocidad registrada", "velocidad fotografica", "velocidad fotográfica",
-                "superar el limite de velocidad", "superar el límite de velocidad", "circular a", "circulaba a",
+                "velocidad",
+                "radar",
+                "cinemometro",
+                "cinemómetro",
+                "exceso de velocidad",
+                "limitada a",
+                "siendo limitada la velocidad a",
+                "teniendo limitada la velocidad a",
+                "velocidad maxima",
+                "velocidad máxima",
+                "velocidad registrada",
+                "velocidad fotografica",
+                "velocidad fotográfica",
+                "superar el limite de velocidad",
+                "superar el límite de velocidad",
+                "circular a",
+                "circulaba a",
             ]
         )
     )
@@ -878,11 +961,26 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     semaforo_context = any(
         s in combined
         for s in [
-            "semaforo", "semáforo", "fase roja", "luz roja del semaforo", "luz roja del semáforo",
-            "cruce con fase roja", "cruce en rojo", "senal luminosa roja", "señal luminosa roja",
-            "linea de detencion", "línea de detención", "rebase la linea de detencion",
-            "rebasar la linea de detencion", "semaforo en rojo", "semáforo en rojo", "paso en rojo",
-            "cruce fase roja", "articulo 146", "artículo 146", "art. 146",
+            "semaforo",
+            "semáforo",
+            "fase roja",
+            "luz roja del semaforo",
+            "luz roja del semáforo",
+            "cruce con fase roja",
+            "cruce en rojo",
+            "senal luminosa roja",
+            "señal luminosa roja",
+            "linea de detencion",
+            "línea de detención",
+            "rebase la linea de detencion",
+            "rebasar la linea de detencion",
+            "semaforo en rojo",
+            "semáforo en rojo",
+            "paso en rojo",
+            "cruce fase roja",
+            "articulo 146",
+            "artículo 146",
+            "art. 146",
         ]
     ) or (("roja" in combined and "cruce" in combined) or ("roja" in combined and "detencion" in combined))
 
@@ -890,10 +988,16 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
 
+    # -------------------------------------------------
+    # 7) VELOCIDAD
+    # -------------------------------------------------
     if velocity_context:
         facts.append("EXCESO DE VELOCIDAD")
         return ("velocidad", facts[0], facts)
 
+    # -------------------------------------------------
+    # 8) SEGURO
+    # -------------------------------------------------
     seguro_context = (
         ("lsoa" in combined)
         or (("r.d. legislativo" in combined or "rd legislativo" in combined) and "8/2004" in combined)
@@ -901,9 +1005,15 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         or any(
             s in combined
             for s in [
-                "seguro obligatorio", "sin seguro", "vehiculo no asegurado", "vehículo no asegurado",
-                "vehiculo carece de seguro", "vehículo carece de seguro", "fiva",
-                "responsabilidad civil derivada de su circulacion", "responsabilidad civil derivada de su circulación",
+                "seguro obligatorio",
+                "sin seguro",
+                "vehiculo no asegurado",
+                "vehículo no asegurado",
+                "vehiculo carece de seguro",
+                "vehículo carece de seguro",
+                "fiva",
+                "responsabilidad civil derivada de su circulacion",
+                "responsabilidad civil derivada de su circulación",
             ]
         )
     )
@@ -912,11 +1022,19 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("CARENCIA DE SEGURO OBLIGATORIO")
         return ("seguro", facts[0], facts)
 
+    # -------------------------------------------------
+    # 9) ITV
+    # -------------------------------------------------
     itv_context = any(
         s in combined
         for s in [
-            "itv", "inspeccion tecnica", "inspección técnica", "inspeccion tecnica de vehiculos",
-            "inspección técnica de vehículos", "itv caducada", "caducidad de itv",
+            "itv",
+            "inspeccion tecnica",
+            "inspección técnica",
+            "inspeccion tecnica de vehiculos",
+            "inspección técnica de vehículos",
+            "itv caducada",
+            "caducidad de itv",
         ]
     )
 
@@ -924,12 +1042,23 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("ITV NO VIGENTE / INSPECCIÓN TÉCNICA CADUCADA")
         return ("itv", facts[0], facts)
 
+    # -------------------------------------------------
+    # 10) MARCAS VIALES
+    # -------------------------------------------------
     marcas_context = any(
         s in combined
         for s in [
-            "linea continua", "línea continua", "marca longitudinal continua", "marca vial",
-            "senalizacion horizontal", "señalización horizontal", "no respetar una marca longitudinal continua",
-            "adelantamiento", "articulo 167", "artículo 167", "art. 167",
+            "linea continua",
+            "línea continua",
+            "marca longitudinal continua",
+            "marca vial",
+            "senalizacion horizontal",
+            "señalización horizontal",
+            "no respetar una marca longitudinal continua",
+            "adelantamiento",
+            "articulo 167",
+            "artículo 167",
+            "art. 167",
         ]
     )
 
@@ -937,13 +1066,24 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("NO RESPETAR MARCA VIAL")
         return ("marcas_viales", facts[0], facts)
 
+    # -------------------------------------------------
+    # 11) CARRIL / POSICIÓN EN VÍA / ADELANTAMIENTO
+    # -------------------------------------------------
     carril_context = any(
         s in combined
         for s in [
-            "carril distinto del situado mas a la derecha", "carril distinto del situado más a la derecha",
-            "posicion en la via", "posición en la vía", "articulo 31", "artículo 31", "art. 31",
-            "adelantar por la derecha", "adelantar a un vehiculo por la derecha",
-            "adelantar a un vehículo por la derecha", "por parte del arcen", "por parte del arcén",
+            "carril distinto del situado mas a la derecha",
+            "carril distinto del situado más a la derecha",
+            "posicion en la via",
+            "posición en la vía",
+            "articulo 31",
+            "artículo 31",
+            "art. 31",
+            "adelantar por la derecha",
+            "adelantar a un vehiculo por la derecha",
+            "adelantar a un vehículo por la derecha",
+            "por parte del arcen",
+            "por parte del arcén",
         ]
     )
 
@@ -951,16 +1091,45 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("POSICIÓN INCORRECTA EN LA VÍA / USO INDEBIDO DEL CARRIL")
         return ("carril", facts[0], facts)
 
+    # -------------------------------------------------
+    # 12) ATENCIÓN / CONDUCCIÓN NEGLIGENTE
+    # -------------------------------------------------
     atencion_context = any(
         s in combined
         for s in [
-            "no mantener la atencion", "no mantener la atención", "atencion permanente",
-            "atención permanente", "conduccion negligente", "conducción negligente", "distraccion",
-            "distracción", "bail", "palmas", "tocando las palmas", "tocar las palmas",
-            "golpeando el volante", "golpear el volante", "volante", "tambor", "menor", "bebe", "bebé",
-            "intercept", "mordia las unas", "mordía las uñas", "libertad de movimientos", "ciclistas",
-            "circular de a tres", "conversando con ellos", "conversacion", "conversación",
-            "mirando en repetidas ocasiones", "diligencia", "precaucion", "precaución", "no distraccion",
+            "no mantener la atencion",
+            "no mantener la atención",
+            "atencion permanente",
+            "atención permanente",
+            "conduccion negligente",
+            "conducción negligente",
+            "distraccion",
+            "distracción",
+            "bail",
+            "palmas",
+            "tocando las palmas",
+            "tocar las palmas",
+            "golpeando el volante",
+            "golpear el volante",
+            "volante",
+            "tambor",
+            "menor",
+            "bebe",
+            "bebé",
+            "intercept",
+            "mordia las unas",
+            "mordía las uñas",
+            "libertad de movimientos",
+            "ciclistas",
+            "circular de a tres",
+            "conversando con ellos",
+            "conversacion",
+            "conversación",
+            "mirando en repetidas ocasiones",
+            "diligencia",
+            "precaucion",
+            "precaución",
+            "no distraccion",
             "no distracción",
         ]
     )
@@ -970,7 +1139,6 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         return ("atencion", facts[0], facts)
 
     return ("otro", "", [])
-
 
 def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
     core = core or {}
@@ -1005,79 +1173,162 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
         if signal in combined:
             scores[tipo] += points
 
+    # Velocidad
     for s, pts in [
-        ("km/h", 5), ("velocidad", 3), ("limitada la velocidad a", 4), ("teniendo limitada la velocidad a", 4),
-        ("radar", 4), ("cinemometro", 5), ("cinemómetro", 5), ("multanova", 4),
-        ("velocidad fotografica", 3), ("velocidad fotográfica", 3), ("exceso de velocidad", 5),
+        ("km/h", 5),
+        ("velocidad", 3),
+        ("limitada la velocidad a", 4),
+        ("teniendo limitada la velocidad a", 4),
+        ("radar", 4),
+        ("cinemometro", 5),
+        ("cinemómetro", 5),
+        ("multanova", 4),
+        ("velocidad fotografica", 3),
+        ("velocidad fotográfica", 3),
+        ("exceso de velocidad", 5),
     ]:
         add("velocidad", s, pts)
 
+    # Cinturón
     for s, pts in [
-        ("cinturon de seguridad", 6), ("cinturón de seguridad", 6), ("sin cinturon", 5), ("sin cinturón", 5),
-        ("no utilizar el cinturon", 6), ("no utilizar el cinturón", 6), ("no llevar abrochado el cinturon", 5),
-        ("no llevar abrochado el cinturón", 5), ("correctamente abrochado", 5), ("sistema de retencion", 2),
+        ("cinturon de seguridad", 6),
+        ("cinturón de seguridad", 6),
+        ("sin cinturon", 5),
+        ("sin cinturón", 5),
+        ("no utilizar el cinturon", 6),
+        ("no utilizar el cinturón", 6),
+        ("no llevar abrochado el cinturon", 5),
+        ("no llevar abrochado el cinturón", 5),
+        ("correctamente abrochado", 5),
+        ("sistema de retencion", 2),
     ]:
         add("cinturon", s, pts)
 
+    # Móvil
     for s, pts in [
-        ("telefono movil", 6), ("teléfono móvil", 6), ("uso manual", 4), ("manipulando el movil", 5),
-        ("manipulando el móvil", 5), ("sujetando con la mano el dispositivo", 5), ("interactuando con la pantalla", 5),
+        ("telefono movil", 6),
+        ("teléfono móvil", 6),
+        ("uso manual", 4),
+        ("manipulando el movil", 5),
+        ("manipulando el móvil", 5),
+        ("sujetando con la mano el dispositivo", 5),
+        ("interactuando con la pantalla", 5),
     ]:
         add("movil", s, pts)
 
+    # Auriculares
     for s, pts in [
-        ("auricular", 6), ("auriculares", 6), ("cascos conectados", 5), ("cascos o auriculares", 5),
-        ("reproductores de sonido", 4), ("porta auricular", 3), ("bluetooth instalado en casco", 3),
+        ("auricular", 6),
+        ("auriculares", 6),
+        ("cascos conectados", 5),
+        ("cascos o auriculares", 5),
+        ("reproductores de sonido", 4),
+        ("porta auricular", 3),
+        ("bluetooth instalado en casco", 3),
     ]:
         add("auriculares", s, pts)
 
+    # Casco
     for s, pts in [
-        ("sin casco", 6), ("no llevar casco", 6), ("no utilizar casco", 6), ("casco de proteccion", 5),
-        ("casco de protección", 5), ("casco homologado", 4), ("debidamente abrochado", 2),
+        ("sin casco", 6),
+        ("no llevar casco", 6),
+        ("no utilizar casco", 6),
+        ("casco de proteccion", 5),
+        ("casco de protección", 5),
+        ("casco homologado", 4),
+        ("debidamente abrochado", 2),
     ]:
         add("casco", s, pts)
 
+    # Semáforo
     for s, pts in [
-        ("semaforo", 6), ("semáforo", 6), ("fase roja", 5), ("luz roja", 5), ("cruce en rojo", 5),
-        ("linea de detencion", 4), ("línea de detención", 4), ("paso en rojo", 5), ("articulo 146", 2), ("art. 146", 2),
+        ("semaforo", 6),
+        ("semáforo", 6),
+        ("fase roja", 5),
+        ("luz roja", 5),
+        ("cruce en rojo", 5),
+        ("linea de detencion", 4),
+        ("línea de detención", 4),
+        ("paso en rojo", 5),
+        ("articulo 146", 2),
+        ("art. 146", 2),
     ]:
         add("semaforo", s, pts)
 
+    # Seguro
     for s, pts in [
-        ("seguro obligatorio", 6), ("sin seguro", 6), ("vehiculo no asegurado", 6), ("vehículo no asegurado", 6),
-        ("fiva", 4), ("8/2004", 4), ("responsabilidad civil", 3),
+        ("seguro obligatorio", 6),
+        ("sin seguro", 6),
+        ("vehiculo no asegurado", 6),
+        ("vehículo no asegurado", 6),
+        ("fiva", 4),
+        ("8/2004", 4),
+        ("responsabilidad civil", 3),
     ]:
         add("seguro", s, pts)
 
+    # ITV
     for s, pts in [
-        ("itv", 6), ("inspeccion tecnica", 5), ("inspección técnica", 5), ("itv caducada", 6), ("caducidad de itv", 6),
+        ("itv", 6),
+        ("inspeccion tecnica", 5),
+        ("inspección técnica", 5),
+        ("itv caducada", 6),
+        ("caducidad de itv", 6),
     ]:
         add("itv", s, pts)
 
+    # Marcas viales
     for s, pts in [
-        ("linea continua", 6), ("línea continua", 6), ("marca longitudinal continua", 5), ("marca vial", 4),
-        ("senalizacion horizontal", 3), ("señalización horizontal", 3), ("articulo 167", 2), ("art. 167", 2),
+        ("linea continua", 6),
+        ("línea continua", 6),
+        ("marca longitudinal continua", 5),
+        ("marca vial", 4),
+        ("senalizacion horizontal", 3),
+        ("señalización horizontal", 3),
+        ("articulo 167", 2),
+        ("art. 167", 2),
     ]:
         add("marcas_viales", s, pts)
 
+    # Carril
     for s, pts in [
-        ("carril distinto del situado mas a la derecha", 6), ("carril distinto del situado más a la derecha", 6),
-        ("posicion en la via", 4), ("posición en la vía", 4), ("adelantar por la derecha", 5),
-        ("por parte del arcen", 4), ("por parte del arcén", 4),
+        ("carril distinto del situado mas a la derecha", 6),
+        ("carril distinto del situado más a la derecha", 6),
+        ("posicion en la via", 4),
+        ("posición en la vía", 4),
+        ("adelantar por la derecha", 5),
+        ("por parte del arcen", 4),
+        ("por parte del arcén", 4),
     ]:
         add("carril", s, pts)
 
+    # Atención
     for s, pts in [
-        ("atencion permanente", 5), ("atención permanente", 5), ("conduccion negligente", 6),
-        ("conducción negligente", 6), ("distraccion", 5), ("distracción", 5), ("golpeando el volante", 3),
-        ("mordía las uñas", 3), ("mordia las unas", 3), ("libertad de movimientos", 2),
+        ("atencion permanente", 5),
+        ("atención permanente", 5),
+        ("conduccion negligente", 6),
+        ("conducción negligente", 6),
+        ("distraccion", 5),
+        ("distracción", 5),
+        ("golpeando el volante", 3),
+        ("mordía las uñas", 3),
+        ("mordia las unas", 3),
+        ("libertad de movimientos", 2),
     ]:
         add("atencion", s, pts)
 
+    # Condiciones vehículo
     for s, pts in [
-        ("alumbrado", 4), ("senalizacion optica", 4), ("señalizacion optica", 4), ("dispositivos de alumbrado", 4),
-        ("condiciones reglamentarias", 5), ("homologacion", 3), ("homologación", 3), ("reflectante", 3),
-        ("espejo", 2), ("superficie acristalada", 4),
+        ("alumbrado", 4),
+        ("senalizacion optica", 4),
+        ("señalizacion optica", 4),
+        ("dispositivos de alumbrado", 4),
+        ("condiciones reglamentarias", 5),
+        ("homologacion", 3),
+        ("homologación", 3),
+        ("reflectante", 3),
+        ("espejo", 2),
+        ("superficie acristalada", 4),
     ]:
         add("condiciones_vehiculo", s, pts)
 
@@ -1106,7 +1357,10 @@ def _resolve_cinturon_subtype(text_blob: str, core: Optional[Dict[str, Any]] = N
         ])
     )
     if "correctamente abrochado" in combined and (
-        "no utilizar" in combined or "no utiliza" in combined or "sin cinturon" in combined or "sin cinturón" in combined
+        "no utilizar" in combined
+        or "no utiliza" in combined
+        or "sin cinturon" in combined
+        or "sin cinturón" in combined
     ):
         return "cinturon_redaccion_ambigua"
     if "colocacion incorrecta" in combined or "colocación incorrecta" in combined:

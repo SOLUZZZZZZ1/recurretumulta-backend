@@ -111,6 +111,30 @@ def _clean_hecho_text(text: str) -> str:
     return t
 
 
+
+
+def _looks_like_internal_extract(text: str) -> bool:
+    low = _safe_str(text).lower().strip()
+    if not low:
+        return True
+    bad_tokens = [
+        "pone_fin_via_administrativa",
+        "plazo_recurso_sugerido",
+        "tipo_infraccion_scores",
+        "tipo_infraccion_confidence",
+        "subtipo_infraccion",
+        "evidence_gaps",
+        "recurso_strategy",
+        "raw_text_pdf",
+        "raw_text_vision",
+        "raw_text_blob",
+        "vision_raw_text",
+        "radar_modelo_hint",
+        "radar_tipo",
+        "metrologia_requerida",
+    ]
+    return any(tok in low for tok in bad_tokens)
+
 def get_hecho_para_recurso(core: Dict[str, Any]) -> str:
     raw = (
         core.get("hecho_denunciado_resumido")
@@ -287,70 +311,6 @@ def fix_roman_headings(text: str) -> str:
     return out
 
 
-def _fmt_num(v: Any) -> str:
-    if isinstance(v, float):
-        return f"{v:.2f}".rstrip("0").rstrip(".")
-    return str(v)
-
-
-def _build_velocity_hint_block(core: Dict[str, Any]) -> str:
-    measured = core.get("velocidad_medida_kmh")
-    limit = core.get("velocidad_limite_kmh")
-    radar = core.get("radar_modelo_hint")
-    radar_tipo = core.get("radar_tipo")
-    margen = core.get("margen_legal_aplicado_hint_kmh")
-    corregida = core.get("velocidad_corregida_kmh")
-    tramo = core.get("tramo_sancionador_hint")
-    conflicto = core.get("velocidad_conflicto_detectado")
-    metrologia = core.get("metrologia_requerida")
-
-    lines = []
-    if radar_tipo:
-        lines.append(f"• Tipo de radar detectado (orientativo): {radar_tipo}")
-    if radar:
-        lines.append(f"• Modelo/dispositivo detectado (orientativo): {radar}")
-    if metrologia:
-        lines.append(f"• Soporte metrológico exigible (orientativo): {metrologia}")
-    if measured is not None:
-        lines.append(f"• Velocidad medida: {_fmt_num(measured)} km/h")
-    if limit is not None:
-        lines.append(f"• Velocidad límite: {_fmt_num(limit)} km/h")
-    if margen is not None:
-        lines.append(f"• Margen orientativo a revisar: {_fmt_num(margen)} km/h")
-    if corregida is not None:
-        lines.append(f"• Velocidad corregida orientativa: {_fmt_num(corregida)} km/h")
-    if tramo:
-        lines.append(f"• Tramo sancionador orientativo: {tramo}")
-    if conflicto:
-        lines.append("• Advertencia: el expediente contiene velocidades candidatas potencialmente conflictivas; debe aclararse la cifra exacta tomada como base sancionadora.")
-
-    if not lines:
-        return ""
-
-    return "DATOS TÉCNICOS EXTRAÍDOS DEL EXPEDIENTE\n" + "\n".join(lines) + "\n\n"
-
-
-def _build_velocity_radar_paragraph(core: Dict[str, Any]) -> str:
-    radar = _safe_str(core.get("radar_modelo_hint"))
-    radar_tipo = _safe_str(core.get("radar_tipo"))
-    margen = core.get("margen_legal_aplicado_hint_kmh")
-    corregida = core.get("velocidad_corregida_kmh")
-    metrologia = _safe_str(core.get("metrologia_requerida"))
-
-    parts = []
-    desc = radar or radar_tipo
-    if desc:
-        parts.append(f"Del expediente parece desprenderse, de forma meramente orientativa, la utilización de {desc}.")
-    if metrologia:
-        parts.append(f"En tal caso, debería aportarse la documentación de {metrologia} vigente en la fecha del hecho.")
-    if margen is not None and corregida is not None:
-        parts.append(
-            f"A efectos ilustrativos y sin perjuicio de la prueba que corresponde a la Administración, "
-            f"la revisión del margen podría situar la velocidad corregida en torno a {_fmt_num(corregida)} km/h."
-        )
-    return " ".join(parts).strip()
-
-
 def build_cinturon_v4_template(core: Dict[str, Any]) -> Dict[str, str]:
     tpl = build_cinturon_strong_template(core)
     if not isinstance(tpl, dict):
@@ -462,10 +422,24 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     fecha_hecho = core.get("fecha_infraccion") or core.get("fecha_hecho") or core.get("fecha_documento") or ""
     fecha_line = f" (fecha indicada: {fecha_hecho})" if isinstance(fecha_hecho, str) and fecha_hecho.strip() else ""
 
-    tech_block = _build_velocity_hint_block(core)
+    measured = core.get("velocidad_medida_kmh")
+    limit = core.get("velocidad_limite_kmh")
+    radar = core.get("radar_modelo_hint") or "cinemometro (no especificado)"
+
+    tech_lines = []
+    if measured:
+        tech_lines.append(f"• Velocidad medida: {measured} km/h")
+    if limit:
+        tech_lines.append(f"• Velocidad límite: {limit} km/h")
+    if radar:
+        tech_lines.append(f"• Dispositivo/radar: {radar}")
+
+    tech_block = ""
+    if tech_lines:
+        tech_block = "DATOS TÉCNICOS EXTRAÍDOS DEL EXPEDIENTE\n" + "\n".join(tech_lines) + "\n\n"
+
     calc_paragraph = build_velocity_calc_paragraph(core)
     tramo_paragraph = build_tramo_error_paragraph(core)
-    radar_paragraph = _build_velocity_radar_paragraph(core)
 
     cuerpo = (
         "A la atención del órgano competente,\n\n"
@@ -487,9 +461,6 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"{tech_block}"
         f"{calc_paragraph}\n\n"
     )
-
-    if radar_paragraph:
-        cuerpo += f"{radar_paragraph}\n\n"
 
     if tramo_paragraph:
         cuerpo += f"{tramo_paragraph}\n\n"
@@ -537,7 +508,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     cuerpo = tpl.get("cuerpo") or ""
     hecho = get_hecho_para_recurso(core)
 
-    if hecho and hecho.lower() not in cuerpo.lower():
+    if hecho and not _looks_like_internal_extract(hecho) and hecho.lower() not in cuerpo.lower():
         cuerpo = "Extracto literal del boletín:\n" + f"“{hecho}”\n\n" + cuerpo
 
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
