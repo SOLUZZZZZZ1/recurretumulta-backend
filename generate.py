@@ -30,8 +30,7 @@ from ai.infractions.velocidad import (
 from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
-from dispatch import dispatch_deterministic_template
-
+from ai.infractions.dispatch import dispatch_deterministic_template
 router = APIRouter(tags=["generate"])
 
 
