@@ -274,6 +274,27 @@ def _looks_like_narrative_line(line: str) -> bool:
 
 
 
+
+
+def _looks_like_vehicle_ficha(text: str) -> bool:
+    l = _normalize_for_matching(text)
+    ficha_signals = [
+        "itv: vigente",
+        "itv vigente",
+        "color:",
+        "ano matric",
+        "año matric",
+        "mecanismo:",
+        "potencia:",
+        "turismo",
+        "cilindrada",
+        "bastidor",
+        "marca:",
+        "modelo:",
+    ]
+    hits = sum(1 for s in ficha_signals if s in l)
+    return hits >= 2
+
 def _score_candidate_hecho(line: str) -> int:
     l = _normalize_for_matching(line)
 
@@ -428,6 +449,8 @@ def _extract_hecho_denunciado_literal_from_text(raw_text: str) -> str:
         ]
         if any(s in low for s in admin_poison):
             continue
+        if _looks_like_vehicle_ficha(cc):
+            continue
         cleaned_candidates.append(cc)
 
     if not cleaned_candidates:
@@ -443,7 +466,11 @@ def _extract_hecho_denunciado_literal_from_text(raw_text: str) -> str:
     if len(out) > 700:
         out = out[:700].rsplit(" ", 1)[0].strip() + "…"
 
-    return out.strip()
+    out = out.strip()
+    if _looks_like_vehicle_ficha(out):
+        return ""
+
+    return out
 
 def _build_hecho_denunciado_resumido(literal: str, tipo_infraccion: str = "") -> str:
     text = _clean_literal_text(literal)
@@ -803,6 +830,10 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         [x for x in [t, hecho_literal, hecho_resumido, organismo] if x]
     ).strip()
 
+    hecho_focus = "\n".join(
+        [x for x in [hecho_literal, hecho_resumido] if x]
+    ).strip()
+
     # -------------------------------------------------
     # 1) CONDICIONES DEL VEHÍCULO
     # -------------------------------------------------
@@ -1029,11 +1060,11 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     # 8) SEGURO
     # -------------------------------------------------
     seguro_context = (
-        ("lsoa" in combined)
-        or (("r.d. legislativo" in combined or "rd legislativo" in combined) and "8/2004" in combined)
-        or ("8/2004" in combined and "responsabilidad civil" in combined)
+        ("lsoa" in hecho_focus)
+        or (("r.d. legislativo" in hecho_focus or "rd legislativo" in hecho_focus) and "8/2004" in hecho_focus)
+        or ("8/2004" in hecho_focus and "responsabilidad civil" in hecho_focus)
         or any(
-            s in combined
+            s in hecho_focus
             for s in [
                 "seguro obligatorio",
                 "sin seguro",
@@ -1056,7 +1087,7 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     # 9) ITV
     # -------------------------------------------------
     itv_context = any(
-        s in combined
+        s in hecho_focus
         for s in [
             "itv",
             "inspeccion tecnica",
