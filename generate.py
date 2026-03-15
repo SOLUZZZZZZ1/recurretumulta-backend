@@ -443,17 +443,45 @@ def _inject_tipicidad_material_en_alegaciones(body: str, core: Dict[str, Any]) -
 
 
 def _build_fundamentos_derecho(tipo: str = "") -> str:
+    tipo_map = {
+        "semaforo": "la infracción semafórica imputada",
+        "municipal_semaforo": "la infracción semafórica imputada",
+        "velocidad": "la infracción por exceso de velocidad imputada",
+        "movil": "la infracción por uso manual de dispositivo móvil imputada",
+        "auriculares": "la infracción por uso de auriculares o dispositivos análogos imputada",
+        "cinturon": "la infracción relativa al cinturón de seguridad imputada",
+        "casco": "la infracción relativa al casco de protección imputada",
+        "atencion": "la infracción por falta de atención permanente a la conducción imputada",
+        "atencion_bicicleta": "la infracción por falta de atención en la circulación imputada",
+        "marcas_viales": "la infracción relativa a marcas viales imputada",
+        "seguro": "la infracción relativa al aseguramiento obligatorio imputada",
+        "itv": "la infracción relativa a la ITV imputada",
+        "condiciones_vehiculo": "la infracción relativa a las condiciones del vehículo imputada",
+        "carril": "la infracción relativa a la posición o uso del carril imputada",
+        "generic": "la infracción administrativa imputada",
+    }
+
+    tipo_desc = tipo_map.get(_safe_str(tipo).lower().strip(), "la infracción administrativa imputada")
+
     return (
         "FUNDAMENTOS DE DERECHO\n\n"
         "PRIMERO.– Resultan de aplicación los principios generales del Derecho "
         "Administrativo sancionador, en particular los principios de legalidad, "
         "tipicidad, presunción de inocencia y carga de la prueba a cargo de la "
         "Administración.\n\n"
-        "SEGUNDO.– Conforme a reiterada jurisprudencia, la potestad sancionadora "
+        "SEGUNDO.– Conforme al principio de tipicidad, la conducta imputada debe "
+        "encajar de forma clara, precisa e inequívoca en el tipo infractor aplicado "
+        "por la Administración. La descripción fáctica del boletín o denuncia debe "
+        "permitir identificar con claridad la conducta concreta sancionada y su "
+        "adecuación jurídica al precepto invocado. En consecuencia, solo puede "
+        "mantenerse la sanción cuando quede suficientemente motivada la subsunción "
+        "de los hechos en "
+        f"{tipo_desc}.\n\n"
+        "TERCERO.– Conforme a reiterada jurisprudencia, la potestad sancionadora "
         "de la Administración exige una motivación suficiente del hecho imputado "
         "y una acreditación probatoria bastante que permita enervar la presunción "
         "de inocencia del administrado.\n\n"
-        "TERCERO.– La ausencia de prueba suficiente, la insuficiente motivación "
+        "CUARTO.– La ausencia de prueba suficiente, la insuficiente motivación "
         "del expediente o la falta de concreción del hecho imputado determinan "
         "la improcedencia de la sanción propuesta.\n\n"
     )
@@ -632,8 +660,8 @@ def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: 
     cabecera = (
         f"REFERENCIA: EXPTE. {exp_ref}\n\n\n"
         f"                A LA {str(organismo).upper()}\n\n"
-        f"                          DE {str(provincia).upper()}\n\n\n"
-        "\n\n                ESCRITO DE ALEGACIONES\n\n"
+        f"                          DE {str(provincia).upper()}\n\n\n\n"
+        "\n\n                ESCRITO DE ALEGACIONES\n\n\n"
         "D./D.ª ........................................, mayor de edad, con DNI/NIE/TR "
         "........................, y con domicilio en ........................................, "
         "a efectos de notificaciones, actuando en su propio nombre e interés "
