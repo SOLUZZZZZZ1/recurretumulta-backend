@@ -625,16 +625,50 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
     t = _normalize_for_matching(text_blob).replace("\n", " ")
     t = re.sub(r"\s+", " ", t).strip()
 
-    velocity_context = (
+    semaforo_hard_signals = [
+        "luz roja no intermitente",
+        "luz roja del semaforo",
+        "luz roja de un semaforo",
+        "no respetar el conductor de un vehiculo la luz roja",
+        "cruce con fase del rojo",
+        "cruce con fase roja",
+        "fase del rojo",
+        "fase roja",
+        "senal luminosa roja",
+        "linea de detencion",
+        "articulo 146",
+        "art. 146",
+    ]
+    semaforo_context = any(s in t for s in semaforo_hard_signals)
+
+    radar_speed_context = (
         ("radar" in t)
         or ("cinemometro" in t)
-        or ("km/h" in t)
         or ("exceso de velocidad" in t)
         or bool(re.search(r"\bcircular\s+a\s+\d{2,3}\s*km\s*/?\s*h\b", t))
         or bool(re.search(r"\bcirculaba\s+a\s+\d{2,3}\s*km\s*/?\s*h\b", t))
         or bool(re.search(r"\bvelocidad\s+medida\b", t))
         or bool(re.search(r"\bvelocidad\s+maxima\b", t))
     )
+
+    velocity_context = (
+        radar_speed_context
+        or (
+            ("km/h" in t)
+            and not semaforo_context
+            and bool(re.search(r"\bvelocidad\b", t))
+        )
+    )
+
+    if semaforo_context and not radar_speed_context:
+        return {
+            "velocidad_medida_kmh": None,
+            "velocidad_limite_kmh": None,
+            "sancion_importe_eur": None,
+            "puntos_detraccion": None,
+            "radar_modelo_hint": None,
+            "tipo_via_hint": None,
+        }
 
     measured = None
     limit = None
@@ -737,6 +771,12 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
             radar_model = mr2.group(1).strip() if mr2 else "multaradar"
         elif "cinem" in t:
             radar_model = "cinemometro (no especificado)"
+
+    if ("bonificacion" in t or "bonificacion del 50" in t or "reduccion del 50" in t) and not radar_speed_context:
+        measured = None
+        limit = None
+        candidates_all = []
+        conflict = False
 
     out = {
         "velocidad_medida_kmh": measured,
@@ -997,8 +1037,53 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     # -------------------------------------------------
     # 6) SEMÁFORO
     # -------------------------------------------------
+    semaforo_hard_signals = [
+        "semaforo",
+        "semáforo",
+        "fase roja",
+        "fase del rojo",
+        "luz roja no intermitente",
+        "luz roja del semaforo",
+        "luz roja del semáforo",
+        "luz roja de un semaforo",
+        "luz roja de un semáforo",
+        "cruce con fase roja",
+        "cruce con fase del rojo",
+        "cruce en rojo",
+        "senal luminosa roja",
+        "señal luminosa roja",
+        "linea de detencion",
+        "línea de detención",
+        "rebase la linea de detencion",
+        "rebasar la linea de detencion",
+        "semaforo en rojo",
+        "semáforo en rojo",
+        "paso en rojo",
+        "cruce fase roja",
+        "articulo 146",
+        "artículo 146",
+        "art. 146",
+        "no respetar el conductor de un vehiculo la luz roja",
+        "no respetar el conductor de un vehículo la luz roja",
+    ]
+
+    semaforo_context = any(s in combined for s in semaforo_hard_signals) or (
+        ("roja" in combined and "cruce" in combined)
+        or ("roja" in combined and "detencion" in combined)
+        or ("roja" in combined and "semaforo" in combined)
+    )
+
+    semaforo_legal_priority = (
+        ("articulo 146" in combined or "artículo 146" in combined or "art. 146" in combined)
+        or ("luz roja no intermitente" in combined and ("semaforo" in combined or "semáforo" in combined))
+        or ("cruce con fase del rojo" in combined)
+        or ("fase del rojo" in combined and ("cruce" in combined or "semaforo" in combined or "semáforo" in combined))
+        or ("no respetar el conductor de un vehiculo la luz roja" in combined and ("semaforo" in combined or "semáforo" in combined))
+    )
+
     velocity_context = (
-        ("km/h" in combined)
+        not semaforo_context
+        and ("km/h" in combined)
         and any(
             s in combined
             for s in [
@@ -1023,31 +1108,9 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         )
     )
 
-    semaforo_context = any(
-        s in combined
-        for s in [
-            "semaforo",
-            "semáforo",
-            "fase roja",
-            "luz roja del semaforo",
-            "luz roja del semáforo",
-            "cruce con fase roja",
-            "cruce en rojo",
-            "senal luminosa roja",
-            "señal luminosa roja",
-            "linea de detencion",
-            "línea de detención",
-            "rebase la linea de detencion",
-            "rebasar la linea de detencion",
-            "semaforo en rojo",
-            "semáforo en rojo",
-            "paso en rojo",
-            "cruce fase roja",
-            "articulo 146",
-            "artículo 146",
-            "art. 146",
-        ]
-    ) or (("roja" in combined and "cruce" in combined) or ("roja" in combined and "detencion" in combined))
+    if semaforo_legal_priority and not vehicle_light_context and not visibilidad_context:
+        facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
+        return ("semaforo", facts[0], facts)
 
     if semaforo_context and not velocity_context and not vehicle_light_context and not visibilidad_context:
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
@@ -1313,14 +1376,17 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
     for s, pts in [
         ("semaforo", 6),
         ("semáforo", 6),
-        ("fase roja", 5),
-        ("luz roja", 5),
+        ("fase roja", 6),
+        ("fase del rojo", 8),
+        ("luz roja", 7),
+        ("luz roja no intermitente", 10),
+        ("cruce con fase del rojo", 10),
         ("cruce en rojo", 5),
         ("linea de detencion", 4),
         ("línea de detención", 4),
         ("paso en rojo", 5),
-        ("articulo 146", 2),
-        ("art. 146", 2),
+        ("articulo 146", 10),
+        ("art. 146", 10),
     ]:
         add("semaforo", s, pts)
 
@@ -1424,9 +1490,20 @@ def _validate_tipo_infraccion(tipo: str, hecho_focus: str) -> Tuple[str, float]:
 
     # SEMÁFORO
     if tipo == "semaforo":
-        signals = ["semaforo", "fase roja", "luz roja", "cruce en rojo", "linea de detencion"]
+        signals = [
+            "semaforo",
+            "fase roja",
+            "fase del rojo",
+            "luz roja",
+            "luz roja no intermitente",
+            "cruce en rojo",
+            "cruce con fase del rojo",
+            "linea de detencion",
+            "articulo 146",
+            "art. 146",
+        ]
         if any(s in hecho_focus for s in signals):
-            return "semaforo", 0.95
+            return "semaforo", 0.98
         return "otro", 0.30
 
     # ITV
@@ -1609,6 +1686,65 @@ def _infer_recommended_tone(expediente_strength: str, attack_routes: List[Dict[s
         return "tecnico"
     return "prudente"
 
+
+def _infer_modelo_defensa(tipo: str, subtipo: str, expediente_errors: List[str], critical_errors: List[str], attack_routes: List[Dict[str, Any]]) -> str:
+    gap_set = set(expediente_errors or [])
+    critical_set = set(critical_errors or [])
+    primary = attack_routes[0]["route"] if attack_routes else ""
+
+    if tipo == "velocidad":
+        if "metrologia_no_acreditada" in critical_set:
+            return "metrologia_radar_no_acreditada"
+        if "fotograma_no_aportado" in critical_set:
+            return "fotograma_no_aportado"
+        if "margen_no_acreditado" in critical_set:
+            return "margen_no_acreditado"
+        return "prueba_tecnica_insuficiente"
+
+    if tipo == "semaforo":
+        if "fase_roja_no_acreditada" in critical_set:
+            return "fase_roja_no_acreditada"
+        if "secuencia_no_aportada" in critical_set:
+            return "secuencia_no_aportada"
+        return "prueba_semaforo_insuficiente"
+
+    if tipo == "cinturon":
+        if "hecho_ambiguo" in critical_set:
+            return "hecho_ambiguo_cinturon"
+        if "sin_prueba_objetiva" in gap_set:
+            return "observacion_agente_sin_soporte"
+        return "falta_concrecion_cinturon"
+
+    if tipo == "movil":
+        if primary == "observacion_agente":
+            return "uso_manual_no_acreditado"
+        return "falta_prueba_objetiva_movil"
+
+    if tipo == "auriculares":
+        return "uso_auriculares_no_acreditado"
+
+    if tipo == "atencion":
+        if "posicion_agente_no_acreditada" in gap_set:
+            return "observacion_insuficiente"
+        return "conduccion_negligente_no_concretada"
+
+    if tipo == "itv":
+        return "itv_no_acreditada"
+
+    if tipo == "seguro":
+        return "seguro_no_acreditado"
+
+    if tipo == "marcas_viales":
+        return "marca_vial_no_acreditada"
+
+    if tipo == "carril":
+        return "maniobra_no_acreditada"
+
+    if tipo == "casco":
+        return "no_uso_casco_no_acreditado"
+
+    return "defensa_general_sancionador"
+
 HECHO_CANONICO = {
     "velocidad": "EXCESO DE VELOCIDAD",
     "movil": "USO MANUAL DEL TELÉFONO MÓVIL",
@@ -1743,6 +1879,13 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     out["critical_errors"] = critical_errors
     out["error_score"] = error_score
     out["case_viability"] = case_viability
+    out["modelo_defensa"] = _infer_modelo_defensa(
+        tipo,
+        subtipo or "",
+        out.get("expediente_errors") or [],
+        out.get("critical_errors") or [],
+        attack_routes,
+    )
 
     pre = _extract_precepts(text_blob)
     out["preceptos_detectados"] = pre.get("preceptos_detectados") or []
