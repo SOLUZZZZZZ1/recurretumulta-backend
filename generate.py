@@ -527,60 +527,44 @@ def _build_strategic_reinforcement_block(core: Dict[str, Any], tipo: str, assess
 
     if "sin_prueba_objetiva" in flags or "sin_soporte_tecnico" in flags or "motivacion_debil" in flags:
         parts.append(
-            parts.append(
-    """ALEGACIÓN DE REFUERZO — PRESUNCIÓN DE INOCENCIA Y CARGA PROBATORIA
-
-La presunción de inocencia solo puede quedar desvirtuada mediante prueba suficiente,
-válida y específicamente referida al hecho imputado. La mera redacción del boletín,
-si no viene acompañada de concreción bastante, soporte objetivo o motivación
-individualizada, no basta por sí sola para fundamentar válidamente una sanción
-administrativa.
-"""
-)
-"
+            "ALEGACIÓN DE REFUERZO — PRESUNCIÓN DE INOCENCIA Y CARGA PROBATORIA\n\n"
+            "La presunción de inocencia solo puede quedar desvirtuada mediante prueba suficiente, "
+            "válida y específicamente referida al hecho imputado. La mera redacción del boletín, "
+            "si no viene acompañada de concreción bastante, soporte objetivo o motivación "
+            "individualizada, no basta por sí sola para fundamentar válidamente una sanción "
+            "administrativa.\n"
         )
 
     if "tipicidad_debil" in flags or "hecho_generico" in flags:
         parts.append(
-            "ALEGACIÓN DE REFUERZO — FALTA DE TIPICIDAD MATERIAL Y JURÍDICA
-
-"
+            "ALEGACIÓN DE REFUERZO — FALTA DE TIPICIDAD MATERIAL Y JURÍDICA\n\n"
             "La Administración debe describir con precisión la conducta verdaderamente atribuida y "
             "justificar su exacta subsunción en el tipo sancionador aplicado. Cuando el boletín utiliza "
             "fórmulas genéricas, ambiguas o estandarizadas sin concretar de forma suficiente el hecho "
-            "sancionable, se debilita gravemente la validez del expediente.
-"
+            "sancionable, se debilita gravemente la validez del expediente.\n"
         )
 
     if "sin_riesgo_vial_concreto" in flags and level in ("agresivo", "muy_agresivo"):
         parts.append(
-            "ALEGACIÓN DE REFUERZO — AUSENCIA DE RIESGO VIAL OBJETIVABLE
-
-"
+            "ALEGACIÓN DE REFUERZO — AUSENCIA DE RIESGO VIAL OBJETIVABLE\n\n"
             "No toda conducta llamativa, impropia o socialmente reprobable constituye por sí misma "
             "una infracción sancionable en materia de tráfico. Resulta imprescindible la identificación "
             "de una maniobra peligrosa, una afectación real al control del vehículo o un riesgo vial "
             "concreto, individualizado y objetivable. Su ausencia impide sostener con rigor el tipo "
-            "infractor aplicado.
-"
+            "infractor aplicado.\n"
         )
 
     if "boletin_incoherente" in flags and level in ("agresivo", "muy_agresivo"):
         parts.append(
-            "ALEGACIÓN DE REFUERZO — DESVIACIÓN DEL OBJETO DEL DERECHO SANCIONADOR
-
-"
+            "ALEGACIÓN DE REFUERZO — DESVIACIÓN DEL OBJETO DEL DERECHO SANCIONADOR\n\n"
             "Cuando el boletín enfatiza aspectos escandalosos, morales o contextuales, pero no concreta "
             "debidamente la conducta vial típica ni su peligrosidad material, se produce una desviación "
             "respecto del verdadero objeto de la potestad sancionadora en materia de tráfico. La sanción "
             "no puede descansar sobre impresiones llamativas, sino sobre hechos típicos, acreditados y "
-            "jurídicamente bien motivados.
-"
+            "jurídicamente bien motivados.\n"
         )
 
-    return "
-
-".join(p.strip() for p in parts if p.strip())
+    return "\n\n".join(p.strip() for p in parts if p.strip())
 
 
 def _inject_strategic_legal_reinforcement(body: str, core: Dict[str, Any], tipo: str) -> str:
@@ -591,21 +575,13 @@ def _inject_strategic_legal_reinforcement(body: str, core: Dict[str, Any], tipo:
     if not block.strip():
         return txt
 
-    marker = "II. ALEGACIONES
-
-"
+    marker = "II. ALEGACIONES\n\n"
     if marker in txt:
-        return txt.replace(marker, marker + block + "
+        return txt.replace(marker, marker + block + "\n\n", 1)
 
-", 1)
-
-    marker_alt = "I. ALEGACIONES
-
-"
+    marker_alt = "I. ALEGACIONES\n\n"
     if marker_alt in txt:
-        return txt.replace(marker_alt, marker_alt + block + "
-
-", 1)
+        return txt.replace(marker_alt, marker_alt + block + "\n\n", 1)
 
     return txt
 
@@ -665,47 +641,31 @@ def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> s
             "objetivable, se desdibuja el verdadero objeto del Derecho sancionador en materia de "
             "tráfico. La potestad sancionadora no puede fundarse en impresiones escandalosas o "
             "valoraciones de contexto, sino en hechos típicos, acreditados y jurídicamente "
-            "subsumibles con claridad en el precepto aplicado.
-
-"
+            "subsumibles con claridad en el precepto aplicado.\n\n"
         )
 
     return (
-        "FUNDAMENTOS DE DERECHO
-
-"
+        "FUNDAMENTOS DE DERECHO\n\n"
         "PRIMERO.– Resultan de aplicación los principios generales del Derecho "
         "Administrativo sancionador, en particular los principios de legalidad, "
         "tipicidad, presunción de inocencia y carga de la prueba a cargo de la "
-        "Administración.
-
-"
+        "Administración.\n\n"
         "SEGUNDO.– Conforme al principio de tipicidad, la conducta imputada debe "
         "encajar de forma clara, precisa e inequívoca en el tipo infractor aplicado "
         "por la Administración. La descripción fáctica del boletín o denuncia debe "
         "permitir identificar con claridad la conducta concreta sancionada y su "
         "adecuación jurídica al precepto invocado. En consecuencia, solo puede "
         "mantenerse la sanción cuando quede suficientemente motivada la subsunción "
-        "de los hechos en "
-        f"{tipo_desc}.{extra_tipicidad}
-
-"
+        f"de los hechos en {tipo_desc}.{extra_tipicidad}\n\n"
         "TERCERO.– Conforme a reiterada jurisprudencia, la potestad sancionadora "
         "de la Administración exige una motivación suficiente del hecho imputado "
         "y una acreditación probatoria bastante que permita enervar la presunción "
-        f"de inocencia del administrado.{tercero_extra}
-
-"
+        f"de inocencia del administrado.{tercero_extra}\n\n"
         "CUARTO.– La ausencia de prueba suficiente, la insuficiente motivación "
         "del expediente o la falta de concreción del hecho imputado determinan "
-        f"la improcedencia de la sanción propuesta.{cuarto_extra}
-
-"
+        f"la improcedencia de la sanción propuesta.{cuarto_extra}\n\n"
         f"{quinto}"
     )
-
-
-
 def _build_unified_suplico(tipo: str = "") -> str:
     punto_4 = (
         "4) Subsidiariamente, que se imponga en su caso la sanción mínima legalmente\n"
