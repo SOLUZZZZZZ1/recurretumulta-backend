@@ -463,13 +463,107 @@ def _build_comparecencia_text(core: Dict[str, Any], asunto_out: str) -> str:
     )
 
 
+def _resolve_header_destination(core: Dict[str, Any]) -> Dict[str, str]:
+    blob = json.dumps(core or {}, ensure_ascii=False).lower()
+    organismo_raw = _safe_str(core.get("organismo")).strip()
+
+    organismo_fmt = "............................................"
+    provincia_fmt = "............................................"
+
+    provincia_aliases = {
+        "barcelona": "BARCELONA",
+        "girona": "GIRONA",
+        "gerona": "GIRONA",
+        "madrid": "MADRID",
+        "oviedo": "OVIEDO",
+        "asturias": "ASTURIAS",
+        "valencia": "VALENCIA",
+        "sevilla": "SEVILLA",
+        "zaragoza": "ZARAGOZA",
+        "malaga": "MÁLAGA",
+        "málaga": "MÁLAGA",
+        "alicante": "ALICANTE",
+        "murcia": "MURCIA",
+        "bilbao": "BILBAO",
+        "vizcaya": "VIZCAYA",
+        "bizkaia": "BIZKAIA",
+        "granada": "GRANADA",
+        "cordoba": "CÓRDOBA",
+        "córdoba": "CÓRDOBA",
+        "valladolid": "VALLADOLID",
+        "coruña": "A CORUÑA",
+        "a coruña": "A CORUÑA",
+        "pontevedra": "PONTEVEDRA",
+        "tarragona": "TARRAGONA",
+        "lleida": "LLEIDA",
+        "lerida": "LLEIDA",
+        "castellon": "CASTELLÓN",
+        "castellón": "CASTELLÓN",
+        "badajoz": "BADAJOZ",
+        "cadiz": "CÁDIZ",
+        "cádiz": "CÁDIZ",
+        "huelva": "HUELVA",
+        "jaen": "JAÉN",
+        "jaén": "JAÉN",
+        "leon": "LEÓN",
+        "león": "LEÓN",
+        "salamanca": "SALAMANCA",
+        "toledo": "TOLEDO",
+        "burgos": "BURGOS",
+        "palma": "PALMA",
+        "mallorca": "MALLORCA",
+    }
+
+    for k, v in provincia_aliases.items():
+        if k in blob:
+            provincia_fmt = v
+            break
+
+    if any(s in blob for s in ["jefatura provincial de trafico", "jefatura provincial de tráfico", "dgt", "guardia civil", "ministerio del interior"]):
+        organismo_fmt = "JEFATURA PROVINCIAL DE TRÁFICO"
+    elif "guardia urbana" in blob:
+        organismo_fmt = "GUARDIA URBANA"
+    elif any(s in blob for s in ["policia local", "policía local"]):
+        organismo_fmt = "POLICÍA LOCAL"
+    elif "ajuntament" in blob:
+        organismo_fmt = "AJUNTAMENT"
+    elif "ayuntamiento" in blob:
+        organismo_fmt = "AYUNTAMIENTO"
+    elif organismo_raw:
+        organismo_fmt = organismo_raw.upper()
+
+    return {
+        "organismo_cabecera": organismo_fmt,
+        "provincia_cabecera": provincia_fmt,
+    }
+
+
+def _integrate_extract_after_comparecencia(body: str, hecho: str) -> str:
+    txt = _safe_str(body)
+    hecho = _safe_str(hecho).strip()
+    if not hecho:
+        return txt
+
+    bloque = f'Extracto literal del boletín:\n“{hecho}”\n\n'
+
+    if bloque.strip() in txt:
+        return txt
+
+    marker = "A N T E C E D E N T E S\n\n"
+    if marker in txt:
+        return txt.replace(marker, marker + bloque, 1)
+
+    return bloque + txt
+
+
 def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: Dict[str, Any] = None) -> Dict[str, str]:
     core = core or {}
     asunto_out = "ESCRITO DE ALEGACIONES"
 
     exp_ref = core.get("expediente_ref") or core.get("numero_expediente") or "........ / ........"
-    organismo = core.get("organismo") or "............................................"
-    provincia = core.get("provincia") or "............................................"
+    destino = _resolve_header_destination(core)
+    organismo = destino["organismo_cabecera"]
+    provincia = destino["provincia_cabecera"]
 
     comparecencia = _build_comparecencia_text(core, asunto_out)
 
@@ -778,14 +872,15 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     cuerpo = tpl.get("cuerpo") or ""
     if tipo == "atencion" and _is_bicicleta_context(core):
         cuerpo = _sanitize_bicicleta_body(cuerpo)
-    hecho = get_hecho_para_recurso(core)
 
-    if hecho and not _looks_like_internal_extract(hecho) and hecho.lower() not in cuerpo.lower():
-        cuerpo = "Extracto literal del boletín:\n" + f"“{hecho}”\n\n" + cuerpo
+    hecho = get_hecho_para_recurso(core)
+    if hecho and not _looks_like_internal_extract(hecho):
+        cuerpo = _integrate_extract_after_comparecencia(cuerpo, hecho)
 
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
 
-    docx_bytes = build_docx(tpl["asunto"], tpl["cuerpo"])
+    # Dejamos el asunto vacío para que el builder no pinte el título antes de la referencia.
+    docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
         case_id,
         "generated",
@@ -794,7 +889,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
-    pdf_bytes = build_pdf(tpl["asunto"], tpl["cuerpo"])
+    pdf_bytes = build_pdf("", tpl["cuerpo"])
     _, b2_key_pdf = upload_bytes(case_id, "generated", pdf_bytes, ".pdf", "application/pdf")
 
     conn.execute(
