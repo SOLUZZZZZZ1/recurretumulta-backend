@@ -1718,6 +1718,32 @@ def _infer_recommended_tone(expediente_strength: str, attack_routes: List[Dict[s
     return "prudente"
 
 
+
+
+def _infer_operational_strategy(case_viability: str, critical_errors: List[str], evidence_gaps: List[str]) -> Dict[str, Any]:
+    critical_count = len(critical_errors or [])
+    gap_count = len(evidence_gaps or [])
+
+    if case_viability == "alta" and critical_count >= 1:
+        return {
+            "resultado_estrategico": "archivo_probable",
+            "motivo_estrategico": "Se detectan errores críticos del expediente y una base defensiva fuerte para solicitar archivo.",
+            "presentacion_automatica_recomendada": True,
+        }
+
+    if case_viability in ("alta", "media") and gap_count >= 2:
+        return {
+            "resultado_estrategico": "defensa_viable",
+            "motivo_estrategico": "Existen carencias probatorias o documentales suficientes para sostener una defensa sólida, aunque no necesariamente determinante de archivo inmediato.",
+            "presentacion_automatica_recomendada": True,
+        }
+
+    return {
+        "resultado_estrategico": "revision_manual_recomendada",
+        "motivo_estrategico": "El expediente no presenta por ahora una debilidad bastante clara; conviene revisión manual antes de presentación automática.",
+        "presentacion_automatica_recomendada": False,
+    }
+
 def _infer_modelo_defensa(tipo: str, subtipo: str, expediente_errors: List[str], critical_errors: List[str], attack_routes: List[Dict[str, Any]]) -> str:
     gap_set = set(expediente_errors or [])
     critical_set = set(critical_errors or [])
@@ -1910,6 +1936,16 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     out["critical_errors"] = critical_errors
     out["error_score"] = error_score
     out["case_viability"] = case_viability
+
+    strategy_meta = _infer_operational_strategy(
+        case_viability=case_viability,
+        critical_errors=critical_errors,
+        evidence_gaps=evidence_gaps,
+    )
+    out["resultado_estrategico"] = strategy_meta["resultado_estrategico"]
+    out["motivo_estrategico"] = strategy_meta["motivo_estrategico"]
+    out["presentacion_automatica_recomendada"] = strategy_meta["presentacion_automatica_recomendada"]
+
     out["modelo_defensa"] = _infer_modelo_defensa(
         tipo,
         subtipo or "",
