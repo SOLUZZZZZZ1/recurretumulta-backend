@@ -321,6 +321,62 @@ def fix_roman_headings(text: str) -> str:
     return out
 
 
+
+
+def _build_unified_suplico(tipo: str = "") -> str:
+    tipo = _safe_str(tipo).lower().strip()
+    punto_4 = (
+        "4) Subsidiariamente, que se imponga en su caso la sanción mínima legalmente\n"
+        "procedente dentro del tipo infractor que finalmente pudiera considerarse\n"
+        "aplicable.\n\n"
+    )
+
+    return (
+        "III. SUPLICO\n\n"
+        "1) Que se tengan por formuladas las presentes alegaciones.\n\n"
+        "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria,\n"
+        "falta de acreditación suficiente del hecho imputado o ausencia de motivación\n"
+        "individualizada.\n\n"
+        "3) Subsidiariamente, para el caso de no estimarse el archivo, que se proceda\n"
+        "a una correcta recalificación jurídica de los hechos conforme a la prueba\n"
+        "realmente acreditada en el expediente.\n\n"
+        f"{punto_4}"
+        "5) Subsidiariamente, que se aporte expediente íntegro y prueba completa\n"
+        "para contradicción efectiva.\n\n"
+        "OTROSÍ DIGO\n\n"
+        "Que esta parte se reserva expresamente el ejercicio de cuantos recursos\n"
+        "administrativos y acciones legales pudieran corresponder en defensa de sus\n"
+        "derechos e intereses legítimos.\n"
+    )
+
+
+def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "") -> Dict[str, str]:
+    asunto_out = "ESCRITO DE ALEGACIONES"
+    body = _safe_str(cuerpo)
+
+    # Normaliza encabezados romanos previos
+    body = re.sub(r"\bIII\.\s*SOLICITO\b", "III. SUPLICO", body, flags=re.IGNORECASE)
+    body = re.sub(r"\bIII\.\s*SUPLICITO\b", "III. SUPLICO", body, flags=re.IGNORECASE)
+
+    suplico = _build_unified_suplico(tipo)
+
+    # Sustituye todo el bloque final desde III. SOLICITO / III. SUPLICO hasta el final
+    if re.search(r"\bIII\.\s*(SOLICITO|SUPLICO)\b", body, flags=re.IGNORECASE):
+        body = re.sub(
+            r"\bIII\.\s*(?:SOLICITO|SUPLICO)\b[\s\S]*$",
+            suplico,
+            body,
+            flags=re.IGNORECASE,
+        )
+    else:
+        body = body.rstrip() + "\n\n" + suplico
+
+    body = fix_roman_headings(body)
+    body = re.sub(r"\bIII\.\s*SOLICITO\b", "III. SUPLICO", body, flags=re.IGNORECASE)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip() + "\n"
+
+    return {"asunto": asunto_out, "cuerpo": body}
+
 def build_cinturon_v4_template(core: Dict[str, Any]) -> Dict[str, str]:
     tpl = build_cinturon_strong_template(core)
     if not isinstance(tpl, dict):
@@ -580,6 +636,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         tpl, final_kind = _select_template(core, tipo, jurisdiccion)
 
     tpl = ensure_tpl_dict(tpl, core)
+    tpl = _upgrade_generated_template(tpl.get("asunto") or "", tpl.get("cuerpo") or "", tipo)
 
     cuerpo = tpl.get("cuerpo") or ""
     if tipo == "atencion" and _is_bicicleta_context(core):
