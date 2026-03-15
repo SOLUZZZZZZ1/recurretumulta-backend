@@ -148,6 +148,28 @@ def _looks_like_noisy_velocity_text(text: str) -> bool:
     return bad_chars >= 3
 
 
+def _velocity_margin_info(measured: Optional[float], radar_hint: str = "") -> Dict[str, Any]:
+    if not isinstance(measured, (int, float)) or measured <= 0:
+        return {"margin_value": None, "corrected_speed": None, "margin_label": ""}
+
+    radar_low = _safe_str(radar_hint).lower()
+    # Regla orientativa de visualización: >100 km/h => 5%; en caso contrario 5 km/h.
+    # Para radares tipo Multanova/antena esto encaja con el ejemplo esperado por el usuario.
+    if measured > 100:
+        margin_value = round(float(measured) * 0.05, 2)
+        margin_label = "5 %"
+    else:
+        margin_value = 5.0
+        margin_label = "5 km/h"
+
+    corrected_speed = round(float(measured) - margin_value, 2)
+    return {
+        "margin_value": margin_value,
+        "corrected_speed": corrected_speed,
+        "margin_label": margin_label,
+    }
+
+
 def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
     measured = core.get("velocidad_medida_kmh")
     limit = core.get("velocidad_limite_kmh")
@@ -1160,6 +1182,10 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     fecha_line = f" (fecha indicada: {fecha_hecho})" if isinstance(fecha_hecho, str) and fecha_hecho.strip() else ""
 
     radar = core.get("radar_modelo_hint") or "cinemometro (no especificado)"
+    margin_info = _velocity_margin_info(measured, radar)
+    margin_value = margin_info.get("margin_value")
+    corrected_speed = margin_info.get("corrected_speed")
+    margin_label = margin_info.get("margin_label")
 
     tech_lines = []
     if measured:
@@ -1168,19 +1194,31 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         tech_lines.append(f"• Velocidad límite: {int(limit)} km/h")
     if radar:
         tech_lines.append(f"• Dispositivo/radar: {radar}")
+    if margin_value is not None:
+        if isinstance(margin_value, float) and not margin_value.is_integer():
+            margin_txt = f"{margin_value:.2f}".replace(".", ",")
+        else:
+            margin_txt = str(int(margin_value))
+        if isinstance(corrected_speed, float) and not corrected_speed.is_integer():
+            corrected_txt = f"{corrected_speed:.2f}".replace(".", ",")
+        else:
+            corrected_txt = str(int(corrected_speed))
+        tech_lines.append(f"• Margen de corrección orientativo: {margin_txt} km/h ({margin_label})")
+        tech_lines.append(f"• Velocidad corregida orientativa: {corrected_txt} km/h")
     if conflict:
-        tech_lines.append("• Observación: el texto OCR del boletín presenta lecturas numéricas inconsistentes; debe prevalecer el dato acreditado documentalmente en el expediente íntegro.")
+        tech_lines.append("• Observación: la copia analizada del boletín presenta lecturas numéricas inconsistentes; debe prevalecer el dato acreditado documentalmente en el expediente íntegro.")
 
     tech_block = ""
     if tech_lines:
         tech_block = "DATOS TÉCNICOS EXTRAÍDOS DEL EXPEDIENTE\n" + "\n".join(tech_lines) + "\n\n"
 
     if measured and limit and measured > limit and not conflict:
-        calc_paragraph = build_velocity_calc_paragraph({
-            **core,
-            "velocidad_medida_kmh": measured,
-            "velocidad_limite_kmh": limit,
-        })
+        calc_paragraph = (
+            "A efectos de contradicción, la Administración debe acreditar de forma documental la velocidad "
+            "medida, el límite aplicable, el margen efectivamente aplicado y la velocidad corregida resultante. "
+            f"Tomando como referencia la medición consignada de {int(measured)} km/h, el margen orientativo aplicable "
+            f"sería de {margin_txt} km/h, lo que dejaría una velocidad corregida aproximada de {corrected_txt} km/h."
+        )
         tramo_paragraph = build_tramo_error_paragraph({
             **core,
             "velocidad_medida_kmh": measured,
@@ -1190,7 +1228,7 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         calc_paragraph = (
             "A efectos de contradicción, la Administración debe acreditar de forma documental la velocidad "
             "medida, el límite aplicable, el margen efectivamente aplicado y la velocidad corregida resultante, "
-            "evitando cualquier duda derivada de lecturas OCR o transcripciones defectuosas del boletín."
+            "evitando cualquier duda derivada de lecturas automatizadas o transcripciones defectuosas del boletín."
         )
         tramo_paragraph = ""
 
