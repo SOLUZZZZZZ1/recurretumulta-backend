@@ -442,7 +442,172 @@ def _inject_tipicidad_material_en_alegaciones(body: str, core: Dict[str, Any]) -
     return body
 
 
-def _build_fundamentos_derecho(tipo: str = "") -> str:
+def _assess_legal_strength(core: Dict[str, Any], tipo: str = "") -> Dict[str, Any]:
+    blob = json.dumps(core or {}, ensure_ascii=False).lower()
+    flags = []
+    score = 0
+
+    hecho = get_hecho_para_recurso(core)
+    hecho_low = _safe_str(hecho).lower().strip()
+
+    if not hecho_low or len(hecho_low) < 25:
+        flags.append("hecho_generico")
+        score += 2
+
+    if _detect_boletin_incoherente(core):
+        flags.append("boletin_incoherente")
+        score += 4
+
+    if tipo in ("atencion", "atencion_bicicleta", "generic") and not any(
+        s in blob for s in [
+            "invasion de carril",
+            "invasión de carril",
+            "frenada brusca",
+            "perdida de control",
+            "pérdida de control",
+            "colision",
+            "colisión",
+            "maniobra evasiva",
+            "riesgo vial",
+        ]
+    ):
+        flags.append("sin_riesgo_vial_concreto")
+        score += 3
+
+    if any(s in blob for s in ["no consta acreditado", "no consta", "insuficiente motivacion", "insuficiente motivación"]):
+        flags.append("motivacion_debil")
+        score += 2
+
+    if tipo == "velocidad":
+        if not any(s in blob for s in ["cinemometro", "cinemómetro", "radar_modelo_hint", "multanova", "velocidad_medida_kmh"]):
+            flags.append("sin_soporte_tecnico")
+            score += 3
+    elif tipo in ("movil", "auriculares", "cinturon", "casco", "atencion", "atencion_bicicleta"):
+        if not any(s in blob for s in ["fotografia", "fotografía", "video", "vídeo", "distancia", "angulo visual", "ángulo visual", "duracion", "duración"]):
+            flags.append("sin_prueba_objetiva")
+            score += 2
+    elif tipo == "semaforo":
+        if not any(s in blob for s in ["fotografia", "fotografía", "video", "vídeo", "fase roja", "linea de detencion", "línea de detención"]):
+            flags.append("sin_prueba_objetiva")
+            score += 2
+
+    if any(s in blob for s in [
+        "tipicidad",
+        "subsuncion",
+        "subsunción",
+        "redaccion ambigua",
+        "redacción ambigua",
+        "no concreta",
+        "falta de precision",
+        "falta de precisión",
+    ]):
+        flags.append("tipicidad_debil")
+        score += 2
+
+    if score >= 8:
+        level = "muy_agresivo"
+    elif score >= 6:
+        level = "agresivo"
+    elif score >= 3:
+        level = "reforzado"
+    else:
+        level = "normal"
+
+    return {
+        "score": score,
+        "level": level,
+        "flags": flags,
+    }
+
+
+def _build_strategic_reinforcement_block(core: Dict[str, Any], tipo: str, assessment: Dict[str, Any]) -> str:
+    flags = set(assessment.get("flags") or [])
+    level = assessment.get("level", "normal")
+    parts = []
+
+    if "sin_prueba_objetiva" in flags or "sin_soporte_tecnico" in flags or "motivacion_debil" in flags:
+        parts.append(
+            "ALEGACIÓN DE REFUERZO — PRESUNCIÓN DE INOCENCIA Y CARGA PROBATORIA
+
+"
+            "La presunción de inocencia solo puede quedar desvirtuada mediante prueba suficiente, "
+            "válida y específicamente referida al hecho imputado. La mera redacción del boletín, "
+            "si no viene acompañada de concreción bastante, soporte objetivo o motivación individualizada, "
+            "no basta por sí sola para fundamentar válidamente una sanción administrativa.
+"
+        )
+
+    if "tipicidad_debil" in flags or "hecho_generico" in flags:
+        parts.append(
+            "ALEGACIÓN DE REFUERZO — FALTA DE TIPICIDAD MATERIAL Y JURÍDICA
+
+"
+            "La Administración debe describir con precisión la conducta verdaderamente atribuida y "
+            "justificar su exacta subsunción en el tipo sancionador aplicado. Cuando el boletín utiliza "
+            "fórmulas genéricas, ambiguas o estandarizadas sin concretar de forma suficiente el hecho "
+            "sancionable, se debilita gravemente la validez del expediente.
+"
+        )
+
+    if "sin_riesgo_vial_concreto" in flags and level in ("agresivo", "muy_agresivo"):
+        parts.append(
+            "ALEGACIÓN DE REFUERZO — AUSENCIA DE RIESGO VIAL OBJETIVABLE
+
+"
+            "No toda conducta llamativa, impropia o socialmente reprobable constituye por sí misma "
+            "una infracción sancionable en materia de tráfico. Resulta imprescindible la identificación "
+            "de una maniobra peligrosa, una afectación real al control del vehículo o un riesgo vial "
+            "concreto, individualizado y objetivable. Su ausencia impide sostener con rigor el tipo "
+            "infractor aplicado.
+"
+        )
+
+    if "boletin_incoherente" in flags and level in ("agresivo", "muy_agresivo"):
+        parts.append(
+            "ALEGACIÓN DE REFUERZO — DESVIACIÓN DEL OBJETO DEL DERECHO SANCIONADOR
+
+"
+            "Cuando el boletín enfatiza aspectos escandalosos, morales o contextuales, pero no concreta "
+            "debidamente la conducta vial típica ni su peligrosidad material, se produce una desviación "
+            "respecto del verdadero objeto de la potestad sancionadora en materia de tráfico. La sanción "
+            "no puede descansar sobre impresiones llamativas, sino sobre hechos típicos, acreditados y "
+            "jurídicamente bien motivados.
+"
+        )
+
+    return "
+
+".join(p.strip() for p in parts if p.strip())
+
+
+def _inject_strategic_legal_reinforcement(body: str, core: Dict[str, Any], tipo: str) -> str:
+    txt = _safe_str(body)
+    assessment = _assess_legal_strength(core, tipo)
+    block = _build_strategic_reinforcement_block(core, tipo, assessment)
+
+    if not block.strip():
+        return txt
+
+    marker = "II. ALEGACIONES
+
+"
+    if marker in txt:
+        return txt.replace(marker, marker + block + "
+
+", 1)
+
+    marker_alt = "I. ALEGACIONES
+
+"
+    if marker_alt in txt:
+        return txt.replace(marker_alt, marker_alt + block + "
+
+", 1)
+
+    return txt
+
+
+def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> str:
     tipo_map = {
         "semaforo": "la infracción semafórica imputada",
         "municipal_semaforo": "la infracción semafórica imputada",
@@ -462,13 +627,56 @@ def _build_fundamentos_derecho(tipo: str = "") -> str:
     }
 
     tipo_desc = tipo_map.get(_safe_str(tipo).lower().strip(), "la infracción administrativa imputada")
+    assessment = _assess_legal_strength(core or {}, tipo)
+    level = assessment.get("level", "normal")
+    flags = set(assessment.get("flags") or [])
+
+    extra_tipicidad = ""
+    if "tipicidad_debil" in flags or "hecho_generico" in flags or "boletin_incoherente" in flags:
+        extra_tipicidad = (
+            " La mera formulación genérica, estereotipada o llamativa del boletín no "
+            "satisface por sí sola las exigencias de tipicidad cuando no permite identificar "
+            "con precisión la conducta verdaderamente sancionada."
+        )
+
+    tercero_extra = ""
+    if level in ("reforzado", "agresivo", "muy_agresivo"):
+        tercero_extra = (
+            " No basta una afirmación apodíctica o formularia del agente denunciante cuando "
+            "faltan elementos objetivos de corroboración, concreción suficiente de la observación "
+            "o datos materiales que permitan contradicción efectiva."
+        )
+
+    cuarto_extra = ""
+    if "sin_prueba_objetiva" in flags or "sin_soporte_tecnico" in flags:
+        cuarto_extra = (
+            " La falta de soporte objetivo, prueba técnica bastante o acreditación material "
+            "individualizada del hecho denunciado refuerza la improcedencia de la sanción."
+        )
+
+    quinto = ""
+    if level in ("agresivo", "muy_agresivo"):
+        quinto = (
+            "QUINTO.– Cuando el expediente se apoya en una descripción llamativa, moral o "
+            "socialmente reprochable, pero no concreta una maniobra peligrosa ni un riesgo vial "
+            "objetivable, se desdibuja el verdadero objeto del Derecho sancionador en materia de "
+            "tráfico. La potestad sancionadora no puede fundarse en impresiones escandalosas o "
+            "valoraciones de contexto, sino en hechos típicos, acreditados y jurídicamente "
+            "subsumibles con claridad en el precepto aplicado.
+
+"
+        )
 
     return (
-        "FUNDAMENTOS DE DERECHO\n\n"
+        "FUNDAMENTOS DE DERECHO
+
+"
         "PRIMERO.– Resultan de aplicación los principios generales del Derecho "
         "Administrativo sancionador, en particular los principios de legalidad, "
         "tipicidad, presunción de inocencia y carga de la prueba a cargo de la "
-        "Administración.\n\n"
+        "Administración.
+
+"
         "SEGUNDO.– Conforme al principio de tipicidad, la conducta imputada debe "
         "encajar de forma clara, precisa e inequívoca en el tipo infractor aplicado "
         "por la Administración. La descripción fáctica del boletín o denuncia debe "
@@ -476,15 +684,23 @@ def _build_fundamentos_derecho(tipo: str = "") -> str:
         "adecuación jurídica al precepto invocado. En consecuencia, solo puede "
         "mantenerse la sanción cuando quede suficientemente motivada la subsunción "
         "de los hechos en "
-        f"{tipo_desc}.\n\n"
+        f"{tipo_desc}.{extra_tipicidad}
+
+"
         "TERCERO.– Conforme a reiterada jurisprudencia, la potestad sancionadora "
         "de la Administración exige una motivación suficiente del hecho imputado "
         "y una acreditación probatoria bastante que permita enervar la presunción "
-        "de inocencia del administrado.\n\n"
+        f"de inocencia del administrado.{tercero_extra}
+
+"
         "CUARTO.– La ausencia de prueba suficiente, la insuficiente motivación "
         "del expediente o la falta de concreción del hecho imputado determinan "
-        "la improcedencia de la sanción propuesta.\n\n"
+        f"la improcedencia de la sanción propuesta.{cuarto_extra}
+
+"
+        f"{quinto}"
     )
+
 
 
 def _build_unified_suplico(tipo: str = "") -> str:
@@ -679,7 +895,7 @@ def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: 
     )
 
     body = _safe_str(cuerpo)
-    fundamentos = _build_fundamentos_derecho(tipo)
+    fundamentos = _build_fundamentos_derecho(tipo, core)
     suplico = _build_unified_suplico(tipo)
 
     if re.search(r"\bIII\.\s*(SOLICITO|SUPLICO)\b", body, flags=re.IGNORECASE):
@@ -694,6 +910,7 @@ def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: 
 
     body = fix_roman_headings(body)
     body = _strip_initial_antecedentes_block(body)
+    body = re.sub(r"\bII\.\s*ALEGACIONES\b", "I. ALEGACIONES", body, count=1, flags=re.IGNORECASE)
     body = re.sub(r"\n{3,}", "\n\n", body).strip() + "\n"
 
     body = cabecera + body
@@ -970,6 +1187,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         cuerpo = _sanitize_bicicleta_body(cuerpo)
 
     cuerpo = _inject_tipicidad_material_en_alegaciones(cuerpo, core)
+    cuerpo = _inject_strategic_legal_reinforcement(cuerpo, core, tipo)
 
     hecho = get_hecho_para_recurso(core)
     if hecho and not _looks_like_internal_extract(hecho):
