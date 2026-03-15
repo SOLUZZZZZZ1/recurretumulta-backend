@@ -640,7 +640,7 @@ def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: 
         "[o actuando por cuenta de D./D.ª ................................, según autorización "
         "o poder que se adjunta como documento núm. 1], ante esta Dependencia comparece y, "
         "como mejor proceda en Derecho,\n\n"
-        "D I G O:\n\n"
+        "D I G O:\n\n\n"
         f"{comparecencia}"
     )
 
@@ -656,7 +656,7 @@ def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: 
             flags=re.IGNORECASE,
         )
     else:
-        body = body.rstrip() + "\n\n" + fundamentos + "\n" + suplico
+        body = body.rstrip() + "\n\n\n" + fundamentos + "\n" + suplico
 
     body = fix_roman_headings(body)
     body = _strip_initial_antecedentes_block(body)
