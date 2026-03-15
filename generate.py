@@ -487,39 +487,164 @@ def resolve_jurisdiction(core: Dict[str, Any]) -> str:
     return "desconocida"
 
 
-def _looks_like_semaforo(core: Dict[str, Any]) -> bool:
-    blob = json.dumps(core, ensure_ascii=False).lower()
-    blob = blob.replace("semáforo", "semaforo").replace("línea", "linea")
 
-    sema_signals = [
-        "semaforo",
-        "fase roja",
-        "luz roja",
-        "cruce en rojo",
-        "cruce con fase roja",
-        "señal luminosa roja",
-        "senal luminosa roja",
-        "linea de detencion",
-        "línea de detención",
-        "rebase la linea de detencion",
-        "rebasar la linea de detencion",
-        "semaforo en rojo",
-        "paso en rojo",
-        "cruce fase roja",
-        "articulo 146",
-        "art. 146",
+def _normalized_blob(core: Dict[str, Any]) -> str:
+    blob = json.dumps(core or {}, ensure_ascii=False).lower()
+    return (
+        blob.replace("semáforo", "semaforo")
+            .replace("línea", "linea")
+            .replace("detención", "detencion")
+            .replace("policía", "policia")
+            .replace("órdenes", "ordenes")
+            .replace("señalización", "senalizacion")
+    )
+
+
+def _semaforo_positive_signals(blob: str) -> int:
+    score = 0
+    weighted = [
+        ("cruce con fase roja", 6),
+        ("cruce fase roja", 6),
+        ("semaforo", 4),
+        ("fase roja", 4),
+        ("cruce en rojo", 4),
+        ("linea de detencion", 3),
+        ("rebase la linea de detencion", 3),
+        ("rebasar la linea de detencion", 3),
+        ("articulo 146", 5),
+        ("art. 146", 5),
     ]
-    if any(s in blob for s in sema_signals):
+    for token, pts in weighted:
+        if token in blob:
+            score += pts
+
+    if ("roja" in blob and "cruce" in blob):
+        score += 3
+
+    if "200,00" in blob or "200.00" in blob or "200 €" in blob or "200 eur" in blob:
+        score += 1
+    if "4 puntos" in blob or "puntos: 4" in blob or "puntos a detraer 4" in blob:
+        score += 1
+    return score
+
+
+def _semaforo_blockers(blob: str) -> int:
+    score = 0
+
+    # Casos que suelen ser órdenes de agentes / no detenerse
+    agent_tokens = [
+        "ordenes de los agentes",
+        "ordenes del agente",
+        "orden del agente",
+        "no se para",
+        "no detiene el vehiculo",
+        "no detenerse",
+        "no obedecer",
+        "agente",
+        "agentes",
+        "policia",
+        "alto",
+        "detencion",
+    ]
+    for tok in agent_tokens:
+        if tok in blob:
+            score += 3
+
+    # Casos de bici/patinete/alumbrado que no deben saltar a semáforo por una roja
+    bike_tokens = [
+        "bicicleta",
+        "ciclista",
+        "ciclistas",
+        "patinete",
+        "vmp",
+        "vehiculo de movilidad personal",
+        "destellos",
+        "intermitente",
+        "alumbrado",
+        "senalizacion optica",
+        "luz roja intermitente",
+        "catadioptrico",
+        "reflectante",
+    ]
+    for tok in bike_tokens:
+        if tok in blob:
+            score += 3
+
+    # Casos de atención / temeraria / art. 3.1
+    attention_tokens = [
+        "temeraria",
+        "conducir de forma temeraria",
+        "atencion permanente",
+        "conduccion negligente",
+        "distraccion",
+        "articulo 3",
+        "art. 3",
+        '"articulo": 3',
+        '"articulo_infringido_num": "3"',
+    ]
+    for tok in attention_tokens:
+        if tok in blob:
+            score += 4
+
+    return score
+
+
+def _looks_like_agent_order_case(core: Dict[str, Any]) -> bool:
+    blob = _normalized_blob(core)
+    return any(tok in blob for tok in [
+        "ordenes de los agentes",
+        "ordenes del agente",
+        "orden del agente",
+        "no se para",
+        "no detiene el vehiculo",
+        "no obedecer",
+        "alto",
+        "agente",
+        "agentes",
+        "policia",
+        "detencion",
+    ])
+
+
+def _looks_like_bike_light_case(core: Dict[str, Any]) -> bool:
+    blob = _normalized_blob(core)
+    return any(tok in blob for tok in [
+        "bicicleta",
+        "ciclista",
+        "ciclistas",
+        "patinete",
+        "vmp",
+        "vehiculo de movilidad personal",
+    ]) and any(tok in blob for tok in [
+        "luz roja",
+        "intermitente",
+        "destellos",
+        "alumbrado",
+        "senalizacion optica",
+    ])
+
+
+def _looks_like_semaforo(core: Dict[str, Any]) -> bool:
+    blob = _normalized_blob(core)
+
+    positive = _semaforo_positive_signals(blob)
+    blockers = _semaforo_blockers(blob)
+
+    # Regla conservadora:
+    # - Semáforo solo con evidencia fuerte
+    # - Si hay fuerte señal de agentes / art. 3.1 / bici-patinete-alumbrado, no forzar semáforo
+    if positive >= 6 and positive >= blockers + 3:
         return True
 
-    if ("roja" in blob and "cruce" in blob) or ("roja" in blob and "detencion" in blob):
+    # Caso clarísimo y expreso
+    if "cruce con fase roja del semaforo" in blob:
         return True
 
     return False
 
 
 def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
-    blob = json.dumps(core or {}, ensure_ascii=False).lower()
+    blob = _normalized_blob(core)
     scores = {
         "velocidad": 0,
         "semaforo": 0,
@@ -542,20 +667,72 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
 
     add(
         "velocidad",
-        ["km/h", "radar", "cinemometro", "cinemómetro", "exceso de velocidad", "limitada la velocidad a", "multanova"],
+        ["km/h", "radar", "cinemometro", "exceso de velocidad", "limitada la velocidad a", "multanova", "velolaser", "pegasus", "tramo"],
         3,
     )
-    add("semaforo", ["semaforo", "semáforo", "fase roja", "luz roja", "cruce en rojo", "linea de detencion", "línea de detención"], 3)
-    add("movil", ["telefono movil", "teléfono móvil", "uso manual", "manipulando el movil", "manipulando el móvil", "sujetando con la mano el dispositivo"], 3)
+
+    scores["semaforo"] += _semaforo_positive_signals(blob)
+    scores["semaforo"] -= _semaforo_blockers(blob)
+
+    add("movil", ["telefono movil", "uso manual", "manipulando el movil", "sujetando con la mano el dispositivo"], 3)
     add("auriculares", ["auricular", "auriculares", "cascos conectados", "reproductores de sonido", "porta auricular"], 3)
-    add("cinturon", ["cinturon de seguridad", "cinturón de seguridad", "sin cinturón", "sin cinturon", "correctamente abrochado", "no utilizar el cinturón"], 3)
-    add("casco", ["sin casco", "no llevar casco", "casco de protección", "casco de proteccion", "casco homologado"], 3)
-    add("atencion", ["atencion permanente", "atención permanente", "conduccion negligente", "conducción negligente", "distraccion", "distracción"], 3)
-    add("marcas_viales", ["linea continua", "línea continua", "marca vial", "marca longitudinal continua"], 3)
-    add("seguro", ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "vehículo no asegurado", "8/2004", "fiva"], 3)
-    add("itv", ["itv", "inspeccion tecnica", "inspección técnica", "itv caducada"], 3)
-    add("condiciones_vehiculo", ["condiciones reglamentarias", "alumbrado", "senalizacion optica", "señalización óptica", "homolog", "reflectante"], 3)
-    add("carril", ["carril distinto del situado más a la derecha", "carril distinto del situado mas a la derecha", "adelantar por la derecha", "posición en la vía", "posicion en la via"], 3)
+    add("cinturon", ["cinturon de seguridad", "sin cinturon", "sin cinturón", "correctamente abrochado", "no utilizar el cinturón"], 3)
+    add("casco", ["sin casco", "no llevar casco", "casco de proteccion", "casco de protección", "casco homologado"], 3)
+
+    add(
+        "atencion",
+        [
+            "atencion permanente",
+            "conduccion negligente",
+            "distraccion",
+            "temeraria",
+            "conducir de forma temeraria",
+            "no se para",
+            "ordenes de los agentes",
+            "orden del agente",
+            "no respeta las ordenes",
+            "no respeta las ordenes de los agentes",
+            "no obedece",
+            "agente",
+            "agentes",
+            "policia",
+            "articulo 3",
+            "art. 3",
+        ],
+        3,
+    )
+
+    add("marcas_viales", ["linea continua", "marca vial", "marca longitudinal continua"], 3)
+    add("seguro", ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "8/2004", "fiva"], 3)
+    add("itv", ["itv", "inspeccion tecnica", "itv caducada"], 3)
+
+    add(
+        "condiciones_vehiculo",
+        [
+            "condiciones reglamentarias",
+            "alumbrado",
+            "senalizacion optica",
+            "homolog",
+            "reflectante",
+            "luz roja intermitente",
+            "destellos",
+            "intermitente",
+            "catadioptrico",
+        ],
+        3,
+    )
+
+    add("carril", ["carril distinto del situado mas a la derecha", "adelantar por la derecha", "posicion en la via"], 3)
+
+    # Bloqueadores cruzados
+    if _looks_like_bike_light_case(core):
+        scores["semaforo"] -= 6
+        scores["condiciones_vehiculo"] += 4
+
+    if _looks_like_agent_order_case(core):
+        scores["semaforo"] -= 6
+        scores["atencion"] += 4
+
     return scores
 
 
@@ -564,17 +741,37 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
     if tipo and tipo not in ("otro", "unknown", "desconocido", "generic"):
         return tipo
 
+    blob = _normalized_blob(core)
+
+    # Casos expresos que no deben saltar a semáforo por ruido contextual
+    if _looks_like_bike_light_case(core):
+        scores = _score_infraction_from_core(core)
+        if scores.get("condiciones_vehiculo", 0) > 0:
+            return "condiciones_vehiculo"
+
+    if _looks_like_agent_order_case(core):
+        scores = _score_infraction_from_core(core)
+        if scores.get("atencion", 0) > 0:
+            return "atencion"
+
+    # Semáforo solo con evidencia fuerte y margen suficiente
     if _looks_like_semaforo(core):
         return "semaforo"
 
-    blob = json.dumps(core or {}, ensure_ascii=False).lower()
-    if any(s in blob for s in ["fase roja", "luz roja", "semaforo", "semáforo", "cruce en rojo", "linea de detencion", "línea de detención"]):
-        return "semaforo"
-    if any(s in blob for s in ["bicicleta", "ciclistas", "ciclista"]) and any(s in blob for s in ["atencion permanente", "atención permanente", "conduccion negligente", "conducción negligente", "distraccion", "distracción"]):
+    if any(s in blob for s in ["bicicleta", "ciclistas", "ciclista"]) and any(s in blob for s in ["atencion permanente", "conduccion negligente", "distraccion"]):
         return "atencion"
 
     scores = _score_infraction_from_core(core)
     best = max(scores.items(), key=lambda kv: kv[1])
+    sorted_scores = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    second_score = sorted_scores[1][1] if len(sorted_scores) > 1 else 0
+
+    # Semáforo solo si realmente gana con margen claro
+    if best[0] == "semaforo":
+        if best[1] >= 6 and best[1] >= second_score + 3:
+            return "semaforo"
+        return "generic"
+
     if best[1] > 0:
         return best[0]
     return "generic"
