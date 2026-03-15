@@ -245,10 +245,108 @@ def _apply_tipicity_strict(attack_plan: Dict[str, Any], extraction_core: Dict[st
 # ==========================
 # Infraction type (soft) desde extraction_core / classify facts_phrases
 # ==========================
+
+
+def _has_any(text: str, signals: List[str]) -> bool:
+    return any(s in (text or "") for s in signals)
+
+
+SEMAFORO_STRONG_SIGNALS = [
+    "semaforo", "semáforo", "fase roja", "fase del rojo",
+    "luz roja no intermitente", "cruce en rojo", "cruce con fase del rojo",
+    "articulo 146", "art. 146", "t/s roja", "ts roja",
+]
+
+SEMAFORO_FALSE_FRIENDS = [
+    "ordenarle la detencion",
+    "al ordenarle la detencion",
+    "orden de detencion",
+    "no se para en el lugar",
+    "no se para",
+    "parar en el lugar",
+    "detencion policial",
+]
+
+VEHICLE_LIGHT_SIGNALS = [
+    "dispositivos de alumbrado",
+    "dispositivos de señalizacion",
+    "dispositivos de senalizacion",
+    "senalizacion optica",
+    "señalizacion optica",
+    "luz en la parte trasera",
+    "parte trasera",
+    "destellos",
+    "anexo i",
+    "reglamentacion del anexo",
+    "reglamentación del anexo",
+    "alumbrado",
+]
+
+ATENCION_TEMERARIA_SIGNALS = [
+    "conducir de forma temeraria",
+    "conduccion temeraria",
+    "conducción temeraria",
+    "conducir de forma negligente",
+    "no mantener la atencion",
+    "no mantener la atención",
+    "atencion permanente",
+    "atención permanente",
+    "temeraria",
+    "temerario",
+]
+
+def _looks_like_semaforo_context(text: str) -> bool:
+    t = (text or "").lower()
+    if _has_any(t, VEHICLE_LIGHT_SIGNALS):
+        return False
+    if _has_any(t, ATENCION_TEMERARIA_SIGNALS):
+        return False
+    if _has_any(t, SEMAFORO_FALSE_FRIENDS) and not _has_any(
+        t,
+        [
+            "articulo 146", "art. 146", "semaforo", "semáforo",
+            "fase roja", "fase del rojo", "luz roja no intermitente",
+            "cruce en rojo", "cruce con fase del rojo",
+        ],
+    ):
+        return False
+    return _has_any(t, SEMAFORO_STRONG_SIGNALS)
+
 def _infer_infraction_from_facts_phrases(classify: Dict[str, Any]) -> Optional[str]:
     phrases = (classify or {}).get("facts_phrases") or []
     if not phrases:
         return None
+
+    joined = "\n".join([str(p) for p in phrases if p]).lower()
+
+    if _has_any(joined, VEHICLE_LIGHT_SIGNALS):
+        return "condiciones_vehiculo"
+
+    if _has_any(joined, ATENCION_TEMERARIA_SIGNALS):
+        return "atencion"
+
+    if _looks_like_semaforo_context(joined):
+        return "semaforo"
+
+    movil_signals = [
+        "uso manual del teléfono móvil",
+        "uso manual del telefono movil",
+        "uso manual del teléfono",
+        "uso manual del telefono",
+        "manipulando el móvil",
+        "manipulando el movil",
+        "interactuando con la pantalla",
+        "sujetando con la mano el dispositivo",
+        "utilizando manualmente el teléfono móvil",
+        "utilizando manualmente el telefono movil",
+    ]
+    if any(s in joined for s in movil_signals):
+        return "movil"
+
+    if any(s in joined for s in ["velocidad", "km/h", "radar", "cinemómetro", "cinemometro", "exceso de velocidad"]):
+        return "velocidad"
+
+    return None
 
     joined = "\n".join([str(p) for p in phrases if p]).lower()
 
@@ -295,14 +393,13 @@ def _infer_infraction_from_extraction(extraction_core: Dict[str, Any]) -> str:
     except Exception:
         t = ""
 
-    semaforo_signals = [
-        "fase roja", "fase del rojo", "luz roja", "luz roja no intermitente",
-        "t/s roja", "ts roja", "semáforo", "semaforo", "cruce en rojo",
-        "cruce con fase del rojo", "articulo 146", "art. 146",
-        "no respetar el conductor de un vehiculo la luz roja",
-        "no respetar el conductor de un vehículo la luz roja",
-    ]
-    if any(s in t for s in semaforo_signals):
+    if _has_any(t, VEHICLE_LIGHT_SIGNALS):
+        return "condiciones_vehiculo"
+
+    if _has_any(t, ATENCION_TEMERARIA_SIGNALS):
+        return "atencion"
+
+    if _looks_like_semaforo_context(t):
         return "semaforo"
 
     movil_strong_signals = [
