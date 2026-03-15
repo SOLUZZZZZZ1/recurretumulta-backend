@@ -1116,7 +1116,7 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
 
-    if movil_context and not semaforo_context:
+    if movil_context and not semaforo_context and not semaforo_legal_priority:
         facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
 
@@ -1515,10 +1515,19 @@ def _validate_tipo_infraccion(tipo: str, hecho_focus: str) -> Tuple[str, float]:
 
     # MÓVIL
     if tipo == "movil":
-        signals = ["telefono movil", "uso manual", "manipulando", "sujetando con la mano"]
+        signals = [
+            "telefono movil",
+            "teléfono móvil",
+            "uso manual del movil",
+            "uso manual del teléfono",
+            "manipulando el movil",
+            "manipulando el teléfono",
+            "interactuando con la pantalla",
+            "sujetando con la mano el dispositivo",
+        ]
         if any(s in hecho_focus for s in signals):
             return "movil", 0.95
-        return "otro", 0.25
+        return "otro", 0.10
 
     # CINTURÓN
     if tipo == "cinturon":
