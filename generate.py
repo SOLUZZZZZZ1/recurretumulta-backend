@@ -477,6 +477,7 @@ def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: 
         f"REFERENCIA: EXPTE. {exp_ref}\n\n\n"
         f"                A LA {str(organismo).upper()}\n\n"
         f"                          DE {str(provincia).upper()}\n\n\n"
+        "                ESCRITO DE ALEGACIONES\n\n\n"
         "D./D.ª ........................................, mayor de edad, con DNI/NIE/TR "
         "........................, y con domicilio en ........................................, "
         "a efectos de notificaciones, actuando en su propio nombre e interés "
@@ -488,9 +489,8 @@ def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: 
     )
 
     body = _safe_str(cuerpo)
-
-    suplico = _build_unified_suplico(tipo)
     fundamentos = _build_fundamentos_derecho(tipo)
+    suplico = _build_unified_suplico(tipo)
 
     if re.search(r"\bIII\.\s*(SOLICITO|SUPLICO)\b", body, flags=re.IGNORECASE):
         body = re.sub(
