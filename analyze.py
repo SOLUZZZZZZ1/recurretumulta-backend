@@ -1769,6 +1769,41 @@ HECHO_CANONICO = {
     "atencion": "NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN",
 }
 
+ARTICLE_EXPECTED: Dict[str, List[int]] = {
+    "semaforo": [146],
+    "marcas_viales": [167],
+    "movil": [18],
+    "atencion": [18],
+    "cinturon": [117],
+}
+
+
+def _detect_normative_mismatch(tipo: str, articulo_num: Optional[int]) -> Dict[str, Any]:
+    tipo_norm = (tipo or "").strip().lower()
+    expected = ARTICLE_EXPECTED.get(tipo_norm) or []
+    if not articulo_num or not expected:
+        return {
+            "normative_mismatch": False,
+            "normative_expected_article": expected or None,
+            "normative_detected_article": articulo_num,
+            "normative_mismatch_detail": None,
+        }
+
+    mismatch = articulo_num not in expected
+    detail = None
+    if mismatch:
+        detail = (
+            f"El hecho denunciado encaja mejor con la familia '{tipo_norm}', "
+            f"cuyo artículo esperado sería {expected}, pero el expediente cita el artículo {articulo_num}."
+        )
+
+    return {
+        "normative_mismatch": mismatch,
+        "normative_expected_article": expected,
+        "normative_detected_article": articulo_num,
+        "normative_mismatch_detail": detail,
+    }
+
 
 def _canonical_hecho_imputado(tipo_infraccion: str, hecho_actual: str = "") -> str:
     tipo = (tipo_infraccion or "").strip().lower()
@@ -1905,6 +1940,26 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
         out["norma_hint"] = pre.get("norma_hint")
     else:
         out["norma_hint"] = out.get("norma_hint")
+
+    normative_check = _detect_normative_mismatch(
+        out.get("tipo_infraccion") or "",
+        out.get("articulo_infringido_num"),
+    )
+    out["normative_mismatch"] = normative_check.get("normative_mismatch", False)
+    out["normative_expected_article"] = normative_check.get("normative_expected_article")
+    out["normative_detected_article"] = normative_check.get("normative_detected_article")
+    out["normative_mismatch_detail"] = normative_check.get("normative_mismatch_detail")
+
+    if out["normative_mismatch"]:
+        expediente_errors.append("discordancia_hecho_precepto")
+        critical_errors.append("discordancia_hecho_precepto")
+        out["expediente_errors"] = expediente_errors
+        out["critical_errors"] = critical_errors
+        out["error_score"] = min(len(expediente_errors) * 8 + len(critical_errors) * 18, 100)
+        out["case_viability"] = (
+            "alta" if out["error_score"] >= 75 else "media" if out["error_score"] >= 45 else "baja"
+        )
+        out["modelo_defensa"] = "discordancia_hecho_precepto"
 
     extra_fields = _extract_speed_and_sanction_fields(text_blob)
     for k, v in (extra_fields or {}).items():
