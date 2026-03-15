@@ -633,7 +633,7 @@ def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: 
         f"REFERENCIA: EXPTE. {exp_ref}\n\n\n"
         f"                A LA {str(organismo).upper()}\n\n"
         f"                          DE {str(provincia).upper()}\n\n\n"
-        "                ESCRITO DE ALEGACIONES\n\n\n"
+        "\n\n                ESCRITO DE ALEGACIONES\n\n"
         "D./D.ª ........................................, mayor de edad, con DNI/NIE/TR "
         "........................, y con domicilio en ........................................, "
         "a efectos de notificaciones, actuando en su propio nombre e interés "
