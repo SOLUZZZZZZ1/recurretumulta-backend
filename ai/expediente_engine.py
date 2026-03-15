@@ -249,38 +249,80 @@ def _infer_infraction_from_facts_phrases(classify: Dict[str, Any]) -> Optional[s
     phrases = (classify or {}).get("facts_phrases") or []
     if not phrases:
         return None
+
     joined = "\n".join([str(p) for p in phrases if p]).lower()
-    if any(s in joined for s in ["semáforo", "semaforo", "fase roja", "luz roja", "t/s roja", "cruce en rojo"]):
+
+    semaforo_signals = [
+        "semáforo", "semaforo", "fase roja", "fase del rojo", "luz roja",
+        "luz roja no intermitente", "t/s roja", "ts roja", "cruce en rojo",
+        "cruce con fase del rojo", "articulo 146", "art. 146",
+    ]
+    if any(s in joined for s in semaforo_signals):
         return "semaforo"
-    if any(s in joined for s in ["móvil", "movil", "teléfono", "telefono"]):
+
+    movil_signals = [
+        "uso manual del teléfono móvil",
+        "uso manual del telefono movil",
+        "uso manual del teléfono",
+        "uso manual del telefono",
+        "manipulando el móvil",
+        "manipulando el movil",
+        "interactuando con la pantalla",
+        "sujetando con la mano el dispositivo",
+        "utilizando manualmente el teléfono móvil",
+        "utilizando manualmente el telefono movil",
+    ]
+    if any(s in joined for s in movil_signals):
         return "movil"
-    if any(s in joined for s in ["velocidad", "km/h", "radar", "cinemómetro", "cinemometro"]):
+
+    if any(s in joined for s in ["velocidad", "km/h", "radar", "cinemómetro", "cinemometro", "exceso de velocidad"]):
         return "velocidad"
+
     return None
 
 
 def _infer_infraction_from_extraction(extraction_core: Dict[str, Any]) -> str:
+    extraction_core = extraction_core or {}
+
+    # CONFIAR PRIMERO en analyze.py si ya clasificó el caso
+    tipo = extraction_core.get("tipo_infraccion")
+    if isinstance(tipo, str) and tipo.strip() and tipo.strip().lower() not in ("", "otro", "generic", "unknown"):
+        return tipo.strip().lower()
+
     t = ""
     try:
-        t = json.dumps(extraction_core or {}, ensure_ascii=False).lower()
+        t = json.dumps(extraction_core, ensure_ascii=False).lower()
     except Exception:
         t = ""
 
-    # PRIORIDAD semáforo
-    sema = ["fase roja", "luz roja", "t/s roja", "ts roja", "semáforo", "semaforo", "cruce en rojo"]
-    if any(s in t for s in sema):
+    semaforo_signals = [
+        "fase roja", "fase del rojo", "luz roja", "luz roja no intermitente",
+        "t/s roja", "ts roja", "semáforo", "semaforo", "cruce en rojo",
+        "cruce con fase del rojo", "articulo 146", "art. 146",
+        "no respetar el conductor de un vehiculo la luz roja",
+        "no respetar el conductor de un vehículo la luz roja",
+    ]
+    if any(s in t for s in semaforo_signals):
         return "semaforo"
 
-    if any(s in t for s in ["teléfono", "telefono", "móvil", "movil"]):
+    movil_strong_signals = [
+        "telefono movil",
+        "teléfono móvil",
+        "uso manual del movil",
+        "uso manual del móvil",
+        "uso manual del telefono",
+        "uso manual del teléfono",
+        "manipulando el movil",
+        "manipulando el móvil",
+        "interactuando con la pantalla",
+        "sujetando con la mano el dispositivo",
+        "utilizando manualmente",
+    ]
+    if any(s in t for s in movil_strong_signals):
         return "movil"
 
     if any(s in t for s in ["km/h", "radar", "cinemómetro", "cinemometro", "exceso de velocidad"]):
         return "velocidad"
-
-    # si analyze ya lo puso
-    tipo = (extraction_core or {}).get("tipo_infraccion")
-    if isinstance(tipo, str) and tipo.strip():
-        return tipo.strip().lower()
 
     return "generic"
 
