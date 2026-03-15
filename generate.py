@@ -380,6 +380,50 @@ def fix_roman_headings(text: str) -> str:
     return out
 
 
+def _fix_alegaciones_numeracion(text: str) -> str:
+    labels = ["PRIMERA", "SEGUNDA", "TERCERA", "CUARTA", "QUINTA", "SEXTA"]
+    idx = 0
+
+    def repl(match):
+        nonlocal idx
+        if idx < len(labels):
+            out = f"ALEGACIÓN {labels[idx]}"
+        else:
+            out = match.group(0)
+        idx += 1
+        return out
+
+    return re.sub(r"ALEGACIÓN\s+[A-ZÁÉÍÓÚÑ]+", repl, text)
+
+
+def _detect_boletin_incoherente(core: Dict[str, Any]) -> bool:
+    blob = json.dumps(core or {}, ensure_ascii=False).lower()
+
+    escandaloso = [
+        "pene",
+        "calzoncillo",
+        "pantalon bajado",
+        "pantalón bajado",
+        "acto sexual",
+        "desnudo",
+        "cabeza entre las piernas",
+    ]
+
+    riesgo_vial = [
+        "invasion de carril",
+        "invasión de carril",
+        "frenada brusca",
+        "perdida de control",
+        "pérdida de control",
+        "colision",
+        "colisión",
+        "maniobra evasiva",
+        "riesgo vial",
+    ]
+
+    return any(s in blob for s in escandaloso) and not any(s in blob for s in riesgo_vial)
+
+
 def _build_fundamentos_derecho(tipo: str = "") -> str:
     return (
         "FUNDAMENTOS DE DERECHO\n\n"
@@ -873,10 +917,22 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     if tipo == "atencion" and _is_bicicleta_context(core):
         cuerpo = _sanitize_bicicleta_body(cuerpo)
 
+    if _detect_boletin_incoherente(core):
+        cuerpo = (
+            "ALEGACIÓN ESPECÍFICA — AUSENCIA DE TIPICIDAD MATERIAL\n\n"
+            "La descripción del boletín incorpora elementos llamativos o de "
+            "contenido moral, pero no concreta una conducta de conducción "
+            "que genere riesgo vial objetivable.\n\n"
+            "El Derecho sancionador no sanciona conductas meramente "
+            "escandalosas, sino infracciones tipificadas que afecten a la "
+            "seguridad vial.\n\n"
+        ) + cuerpo
+
     hecho = get_hecho_para_recurso(core)
     if hecho and not _looks_like_internal_extract(hecho):
         cuerpo = _integrate_extract_after_comparecencia(cuerpo, hecho)
 
+    cuerpo = _fix_alegaciones_numeracion(cuerpo)
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
 
     # Dejamos el asunto vacío para que el builder no pinte el título antes de la referencia.
