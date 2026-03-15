@@ -380,16 +380,14 @@ def fix_roman_headings(text: str) -> str:
     return out
 
 
+
 def _fix_alegaciones_numeracion(text: str) -> str:
     labels = ["PRIMERA", "SEGUNDA", "TERCERA", "CUARTA", "QUINTA", "SEXTA"]
     idx = 0
 
     def repl(match):
         nonlocal idx
-        if idx < len(labels):
-            out = f"ALEGACIÓN {labels[idx]}"
-        else:
-            out = match.group(0)
+        out = f"ALEGACIÓN {labels[idx]}" if idx < len(labels) else match.group(0)
         idx += 1
         return out
 
@@ -422,6 +420,26 @@ def _detect_boletin_incoherente(core: Dict[str, Any]) -> bool:
     ]
 
     return any(s in blob for s in escandaloso) and not any(s in blob for s in riesgo_vial)
+
+
+def _inject_tipicidad_material_en_alegaciones(body: str, core: Dict[str, Any]) -> str:
+    if not _detect_boletin_incoherente(core):
+        return body
+
+    bloque = (
+        "ALEGACIÓN PRIMERA — AUSENCIA DE TIPICIDAD MATERIAL\n\n"
+        "La descripción del boletín incorpora elementos llamativos o de contenido moral, "
+        "pero no concreta una conducta de conducción que genere riesgo vial objetivable.\n\n"
+        "El Derecho sancionador no sanciona conductas meramente escandalosas, sino "
+        "infracciones tipificadas que afecten a la seguridad vial.\n\n"
+    )
+
+    marker = "II. ALEGACIONES\n\n"
+    if marker in body and bloque.strip() not in body:
+        return body.replace(marker, marker + bloque, 1)
+    if bloque.strip() not in body:
+        return bloque + body
+    return body
 
 
 def _build_fundamentos_derecho(tipo: str = "") -> str:
@@ -917,16 +935,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     if tipo == "atencion" and _is_bicicleta_context(core):
         cuerpo = _sanitize_bicicleta_body(cuerpo)
 
-    if _detect_boletin_incoherente(core):
-        cuerpo = (
-            "ALEGACIÓN ESPECÍFICA — AUSENCIA DE TIPICIDAD MATERIAL\n\n"
-            "La descripción del boletín incorpora elementos llamativos o de "
-            "contenido moral, pero no concreta una conducta de conducción "
-            "que genere riesgo vial objetivable.\n\n"
-            "El Derecho sancionador no sanciona conductas meramente "
-            "escandalosas, sino infracciones tipificadas que afecten a la "
-            "seguridad vial.\n\n"
-        ) + cuerpo
+    cuerpo = _inject_tipicidad_material_en_alegaciones(cuerpo, core)
 
     hecho = get_hecho_para_recurso(core)
     if hecho and not _looks_like_internal_extract(hecho):
