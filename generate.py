@@ -521,7 +521,42 @@ def _strip_initial_antecedentes_block(body: str) -> str:
         txt,
         flags=re.IGNORECASE,
     )
+    txt = re.sub(
+        r"^\s*I\.\s*ANTECEDENTES\s*\n+",
+        "",
+        txt,
+        flags=re.IGNORECASE,
+    )
     return txt.strip()
+
+
+def _normalize_section_headings_after_cabecera(body: str) -> str:
+    txt = _safe_str(body)
+
+    if not re.search(r"^\s*I\.\s*ANTECEDENTES\b", txt, flags=re.IGNORECASE):
+        txt = re.sub(
+            r"\bII\.\s*ALEGACIONES\b",
+            "I. ALEGACIONES",
+            txt,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        txt = re.sub(
+            r"\bIII\.\s*SOLICITO\b",
+            "II. SOLICITO",
+            txt,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        txt = re.sub(
+            r"\bIII\.\s*SUPLICO\b",
+            "II. SUPLICO",
+            txt,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+
+    return txt
 
 
 def _build_comparecencia_text(core: Dict[str, Any], asunto_out: str) -> str:
@@ -688,6 +723,7 @@ def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: 
 
     body = fix_roman_headings(body)
     body = _strip_initial_antecedentes_block(body)
+    body = _normalize_section_headings_after_cabecera(body)
     body = re.sub(r"\n{3,}", "\n\n", body).strip() + "\n"
 
     body = cabecera + body
