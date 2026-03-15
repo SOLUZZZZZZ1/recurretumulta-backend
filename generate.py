@@ -527,7 +527,7 @@ def _build_strategic_reinforcement_block(core: Dict[str, Any], tipo: str, assess
 
     if "sin_prueba_objetiva" in flags or "sin_soporte_tecnico" in flags or "motivacion_debil" in flags:
         parts.append(
-            "ALEGACIÓN DE REFUERZO — PRESUNCIÓN DE INOCENCIA Y CARGA PROBATORIA
+            "ALEGACIÓN DE REFUERZO — PRESUNCIÓN DE INOCENCIA Y CARGA PROBATORIA"
 
 "
             "La presunción de inocencia solo puede quedar desvirtuada mediante prueba suficiente, "
