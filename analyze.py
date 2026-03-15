@@ -1034,6 +1034,22 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         ]
     )
 
+    # Prioridad alta para atención / temeraria antes de semáforo
+    atencion_hard_priority = any(
+        s in combined
+        for s in [
+            "conducir de forma temeraria",
+            "conduccion temeraria",
+            "conducción temeraria",
+            "conducir de forma negligente",
+            "no mantener la atencion",
+            "no mantener la atención",
+        ]
+    )
+    if atencion_hard_priority:
+        facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN")
+        return ("atencion", facts[0], facts)
+
     # -------------------------------------------------
     # 6) SEMÁFORO
     # -------------------------------------------------
@@ -1067,44 +1083,30 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         "no respetar el conductor de un vehículo la luz roja",
     ]
 
-    semaforo_false_positive_vehicle_light = any(
-        s in combined
-        for s in [
-            "dispositivos de alumbrado",
-            "senalizacion optica",
-            "señalizacion optica",
-            "senalizacion óptica",
-            "señalización óptica",
-            "luz en la parte trasera",
-            "parte trasera",
-            "emite luz en forma de destellos",
-            "destellos",
-            "reglamentacion del anexo i",
-            "reglamentación del anexo i",
-            "anexo i",
-            "alumbrado y señalizacion",
-            "alumbrado y señalización",
-        ]
-    )
-
-    semaforo_context = (
-        not semaforo_false_positive_vehicle_light
-        and (
-            any(s in combined for s in semaforo_hard_signals) or (
+    semaforo_context = any(s in combined for s in semaforo_hard_signals) or (
         ("roja" in combined and "cruce" in combined)
         or ("roja" in combined and "detencion" in combined)
         or ("roja" in combined and "semaforo" in combined)
     )
 
+    semaforo_false_friends = [
+        "ordenarle la detencion",
+        "al ordenarle la detencion",
+        "orden de detencion",
+        "no se para en el lugar",
+        "no se para",
+        "hacer caso omiso a la orden de detenerse",
+        "desobedecer la orden de detencion",
+    ]
+
+    semaforo_false_friend_hit = any(s in combined for s in semaforo_false_friends)
+
     semaforo_legal_priority = (
-        not semaforo_false_positive_vehicle_light
-        and (
-            ("articulo 146" in combined or "artículo 146" in combined or "art. 146" in combined)
-            or ("luz roja no intermitente" in combined and ("semaforo" in combined or "semáforo" in combined))
-            or ("cruce con fase del rojo" in combined)
-            or ("fase del rojo" in combined and ("cruce" in combined or "semaforo" in combined or "semáforo" in combined))
-            or ("no respetar el conductor de un vehiculo la luz roja" in combined and ("semaforo" in combined or "semáforo" in combined))
-        )
+        ("articulo 146" in combined or "artículo 146" in combined or "art. 146" in combined)
+        or ("luz roja no intermitente" in combined and ("semaforo" in combined or "semáforo" in combined))
+        or ("cruce con fase del rojo" in combined)
+        or ("fase del rojo" in combined and ("cruce" in combined or "semaforo" in combined or "semáforo" in combined))
+        or ("no respetar el conductor de un vehiculo la luz roja" in combined and ("semaforo" in combined or "semáforo" in combined))
     )
 
     velocity_context = (
@@ -1134,15 +1136,18 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         )
     )
 
+    if semaforo_false_friend_hit and not semaforo_legal_priority:
+        semaforo_context = False
+
     if semaforo_legal_priority and not vehicle_light_context and not visibilidad_context:
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
 
-    if semaforo_context and not velocity_context and not vehicle_light_context and not visibilidad_context:
+    if semaforo_context and not semaforo_false_friend_hit and not velocity_context and not vehicle_light_context and not visibilidad_context:
         facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
         return ("semaforo", facts[0], facts)
 
-    if movil_context and not semaforo_context and not semaforo_legal_priority:
+    if movil_context and not semaforo_context:
         facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
 
@@ -1541,19 +1546,10 @@ def _validate_tipo_infraccion(tipo: str, hecho_focus: str) -> Tuple[str, float]:
 
     # MÓVIL
     if tipo == "movil":
-        signals = [
-            "telefono movil",
-            "teléfono móvil",
-            "uso manual del movil",
-            "uso manual del teléfono",
-            "manipulando el movil",
-            "manipulando el teléfono",
-            "interactuando con la pantalla",
-            "sujetando con la mano el dispositivo",
-        ]
+        signals = ["telefono movil", "uso manual", "manipulando", "sujetando con la mano"]
         if any(s in hecho_focus for s in signals):
             return "movil", 0.95
-        return "otro", 0.10
+        return "otro", 0.25
 
     # CINTURÓN
     if tipo == "cinturon":
