@@ -35,6 +35,9 @@ def is_atencion_context(core: Dict[str, Any], body: str = "") -> bool:
         "conducción negligente",
         "conduccion negligente",
         "conducir de forma negligente",
+        "conducir de forma temeraria",
+        "conducción temeraria",
+        "conduccion temeraria",
         "distracción",
         "distraccion",
         "bail",
@@ -53,6 +56,12 @@ def is_atencion_context(core: Dict[str, Any], body: str = "") -> bool:
         "libertad de movimientos",
         "mordia las uñas",
         "mordia las unas",
+        "acompañante",
+        "acompanante",
+        "cabeza entre las piernas del conductor",
+        "no se para en el lugar",
+        "al ordenarle la detención",
+        "al ordenarle la detencion",
     ]
 
     return any(s in b for s in strong_signals)
@@ -90,6 +99,7 @@ def _has_conducta_interior(b: str) -> bool:
             "mordia las uñas",
             "mordia las unas",
             "libertad de movimientos",
+            "cabeza entre las piernas del conductor",
         ]
     )
 
@@ -150,6 +160,9 @@ def _extraer_ejemplos_habitaculo(b: str) -> str:
     if "libertad de movimientos" in b:
         ejemplos.append("conducir sin mantener la propia libertad de movimientos")
 
+    if "cabeza entre las piernas del conductor" in b:
+        ejemplos.append("mantener a la acompañante con la cabeza entre las piernas del conductor")
+
     if not ejemplos:
         return ""
 
@@ -179,47 +192,69 @@ def build_atencion_strong_template(core: Dict[str, Any], body: str = "") -> Dict
     )
 
     parts.append(
-        "ALEGACIÓN PRIMERA — AUSENCIA DE CONDUCTA DE CONDUCCIÓN CONCRETA\n\n"
-        "La denuncia describe conductas realizadas dentro del vehículo, pero no describe "
-        "ninguna maniobra concreta de conducción que suponga peligro real para la seguridad vial.\n\n"
+        "ALEGACIÓN PRIMERA — FALTA DE TIPICIDAD Y DE SUBSUNCIÓN SUFICIENTE EN EL TIPO SANCIONADOR\n\n"
+        "La infracción imputada exige acreditar una conducta de conducción que evidencie una falta real de atención "
+        "incompatible con la seguridad vial. No basta una descripción llamativa, impropia o moralmente reprochable "
+        "si no se explica de forma concreta y verificable cómo esa conducta afectó efectivamente al control del vehículo "
+        "o generó un riesgo vial objetivable.\n\n"
+        "La denuncia, tal como aparece redactada, no describe con precisión una subsunción suficiente entre el hecho observado "
+        "y el tipo administrativo aplicado, por lo que se produce una insuficiente motivación típica contraria al principio de tipicidad "
+        "propio del Derecho sancionador.\n"
+    )
+
+    parts.append(
+        "\nALEGACIÓN SEGUNDA — AUSENCIA DE MANIOBRA PELIGROSA O DE RIESGO VIAL CONCRETO\n\n"
+        "La denuncia no describe una maniobra concreta de conducción que permita afirmar un peligro real para la seguridad vial.\n\n"
         "No se menciona:\n"
         "- desviación de trayectoria\n"
         "- invasión de carril\n"
         "- frenada brusca\n"
-        "- reacción de otros conductores\n\n"
-        "Sin una conducta de conducción concreta no puede afirmarse la existencia de conducción negligente.\n"
+        "- pérdida de control del vehículo\n"
+        "- reacción evasiva de otros conductores\n"
+        "- riesgo vial concreto, individualizado y objetivable\n\n"
+        "Sin una maniobra peligrosa o un riesgo vial descrito de forma precisa, no puede afirmarse con el rigor exigible "
+        "la concurrencia de conducción negligente o de falta de atención sancionable.\n"
     )
 
     if _has_distance(b):
         parts.append(
-            "\nALEGACIÓN SEGUNDA — INTERVENCIÓN TARDÍA DEL AGENTE\n\n"
-            "La denuncia afirma que la conducta fue observada durante un tramo antes de proceder "
-            "a la interceptación del vehículo.\n\n"
-            "Si la conducta generaba realmente un peligro inmediato para la seguridad vial, "
-            "resultaría lógico que la intervención se produjera de forma inmediata.\n\n"
-            "La continuación de la marcha durante una distancia apreciable resulta difícilmente "
-            "compatible con la existencia de un riesgo real e inminente.\n"
+            "\nALEGACIÓN TERCERA — INTERVENCIÓN NO INMEDIATA DEL AGENTE Y FALTA DE CORRELACIÓN CON UN PELIGRO INMINENTE\n\n"
+            "La denuncia sugiere que la conducta fue observada durante un cierto tramo antes de proceder a la interceptación del vehículo.\n\n"
+            "Si la conducta generaba realmente un peligro inmediato y relevante para la circulación, resultaría lógico que la intervención "
+            "se produjera de forma inmediata. La continuidad de la marcha durante una distancia apreciable es difícilmente compatible con "
+            "la existencia de un riesgo real e inminente en los términos exigibles para sostener la imputación.\n"
         )
 
     if _has_conducta_interior(b):
         ejemplo_texto = _extraer_ejemplos_habitaculo(b)
 
         parts.append(
-            "\nALEGACIÓN TERCERA — CONDICIONES DE OBSERVACIÓN DEL INTERIOR DEL VEHÍCULO\n\n"
+            "\nALEGACIÓN CUARTA — EXIGENCIA REFORZADA DE FIABILIDAD EN LA OBSERVACIÓN DEL INTERIOR DEL VEHÍCULO\n\n"
             "La denuncia describe conductas realizadas dentro del habitáculo del vehículo"
             + ejemplo_texto +
             ".\n\n"
-            "Sin embargo, el boletín no indica:\n"
+            "Precisamente por tratarse de hechos supuestamente percibidos en el interior del vehículo, la Administración debe concretar con especial rigor:\n"
             "- desde qué posición se realizó la observación\n"
             "- a qué distancia\n"
-            "- durante cuánto tiempo\n\n"
-            "La ausencia de estos datos impide valorar la fiabilidad de la observación realizada.\n"
+            "- con qué ángulo visual\n"
+            "- durante cuánto tiempo\n"
+            "- con qué iluminación y continuidad visual\n\n"
+            "La ausencia de estos datos impide valorar la fiabilidad real de la observación y debilita gravemente la fuerza incriminatoria del boletín.\n"
+        )
+
+    if _has_menor(b):
+        parts.append(
+            "\nALEGACIÓN ADICIONAL — IMPROCEDENCIA DE INTRODUCIR ELEMENTOS EMOCIONALES O ACCESORIOS SIN VALOR TÍPICO AUTÓNOMO\n\n"
+            "La mera referencia a menores, acompañantes u otras circunstancias accesorias no suple la necesidad de describir con precisión "
+            "la conducta de conducción relevante a efectos sancionadores. La valoración jurídica debe centrarse en el hecho típico realmente imputado "
+            "y no en elementos de impacto narrativo que, por sí solos, no acreditan la infracción.\n"
         )
 
     parts.append(
         "\nIII. SOLICITO\n"
         "1) Que se tengan por formuladas las presentes alegaciones.\n"
-        "2) Que se acuerde el archivo del expediente por insuficiencia probatoria.\n"
+        "2) Que se acuerde el archivo del expediente por insuficiencia probatoria, falta de tipicidad suficiente y ausencia de motivación individualizada.\n"
+        "3) Subsidiariamente, que se aporte expediente íntegro y prueba completa para contradicción efectiva.\n"
     )
 
     return {"asunto": asunto, "cuerpo": "".join(parts).strip()}
