@@ -31,6 +31,7 @@ from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
 from ai.infractions.dispatch import dispatch_deterministic_template
+
 router = APIRouter(tags=["generate"])
 
 
@@ -63,153 +64,6 @@ def _safe_str(v: Any) -> str:
         return str(v)
     except Exception:
         return ""
-
-
-# ==============================
-# POSTPROCESADO JURÍDICO GLOBAL
-# ==============================
-
-_UNIFIED_ASUNTO = "ESCRITO DE ALEGACIONES"
-
-_UNIFIED_SUPLICO = """III. SUPLICO
-1) Que se tengan por formuladas las presentes alegaciones.
-2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria,
-falta de acreditación suficiente del hecho imputado o ausencia de motivación
-individualizada.
-3) Subsidiariamente, para el caso de no estimarse el archivo, que se proceda
-a una correcta recalificación jurídica de los hechos conforme a la prueba
-realmente acreditada en el expediente.
-4) Subsidiariamente, que se imponga en su caso la sanción mínima legalmente
-procedente dentro del tipo infractor que finalmente pudiera considerarse
-aplicable.
-5) Subsidiariamente, que se aporte expediente íntegro y prueba completa
-para contradicción efectiva.
-
-OTROSÍ DIGO
-
-Que esta parte se reserva expresamente el ejercicio de cuantos recursos
-administrativos y acciones legales pudieran corresponder en defensa de sus
-derechos e intereses legítimos."""
-
-_ESCANDALO_SIGNALS = [
-    "pantalon", "pantalón", "calzoncillo", "desnudo", "desnuda",
-    "acto sexual", "sexo", "penetracion", "penetración", "cabeza entre las piernas",
-    "pene", "mastur", "obsceno", "indecente", "escandalo", "escándalo",
-]
-
-_RIESGO_VIAL_SIGNALS = [
-    "invasion de carril", "invasión de carril", "frenada brusca", "pérdida de control",
-    "perdida de control", "maniobra evasiva", "riesgo vial", "colision", "colisión",
-    "salida de la via", "salida de la vía", "zigzag", "deriva", "derrape",
-    "reaccion evasiva", "reacción evasiva", "desviacion de trayectoria", "desviación de trayectoria",
-]
-
-_ROMAN_HEADING_MAP = {
-    "PRIMERA": "PRIMERA",
-    "SEGUNDA": "SEGUNDA",
-    "TERCERA": "TERCERA",
-    "CUARTA": "CUARTA",
-    "QUINTA": "QUINTA",
-    "SEXTA": "SEXTA",
-    "SEPTIMA": "SÉPTIMA",
-    "SÉPTIMA": "SÉPTIMA",
-    "OCTAVA": "OCTAVA",
-}
-
-def _normalize_simple(s: str) -> str:
-    s = (s or "").lower()
-    s = (
-        s.replace("á", "a")
-        .replace("é", "e")
-        .replace("í", "i")
-        .replace("ó", "o")
-        .replace("ú", "u")
-        .replace("ñ", "n")
-    )
-    return s
-
-def _looks_like_escandaloso_no_riesgo(core: Dict[str, Any]) -> bool:
-    blob = _normalize_simple(json.dumps(core or {}, ensure_ascii=False))
-    has_scandal = any(tok in blob for tok in _ESCANDALO_SIGNALS)
-    has_risk = any(tok in blob for tok in _RIESGO_VIAL_SIGNALS)
-    return has_scandal and not has_risk
-
-def _inject_tipicidad_material_if_needed(cuerpo: str, core: Dict[str, Any]) -> str:
-    if not _looks_like_escandaloso_no_riesgo(core):
-        return cuerpo or ""
-
-    if "ALEGACIÓN ESPECÍFICA — FALTA DE TIPICIDAD MATERIAL" in (cuerpo or ""):
-        return cuerpo or ""
-
-    alegacion = (
-        "ALEGACIÓN ESPECÍFICA — FALTA DE TIPICIDAD MATERIAL\n\n"
-        "La descripción contenida en el boletín recoge una conducta llamativa o impropia, "
-        "pero ello no equivale automáticamente a una infracción administrativa de tráfico. "
-        "El Derecho sancionador exige la acreditación de una conducta típica que afecte "
-        "de forma concreta a la seguridad vial.\n\n"
-        "La mera referencia a un comportamiento moralmente reprochable o socialmente "
-        "llamativo no satisface por sí sola el estándar de tipicidad exigido si no se "
-        "explica de manera precisa cómo esa conducta generó un riesgo vial real, "
-        "objetivable y verificable.\n\n"
-        "En ausencia de una maniobra peligrosa concreta, de una alteración real del "
-        "control del vehículo o de un riesgo vial individualizado, la subsunción del "
-        "hecho en el tipo sancionador invocado resulta insuficientemente motivada.\n\n"
-    )
-
-    marker = "II. ALEGACIONES"
-    if marker in (cuerpo or ""):
-        return (cuerpo or "").replace(marker, marker + "\n\n" + alegacion, 1)
-    return alegacion + (cuerpo or "")
-
-def _renumber_alegaciones(cuerpo: str) -> str:
-    pattern = re.compile(
-        r"ALEGACIÓN\s+(PRIMERA|SEGUNDA|TERCERA|CUARTA|QUINTA|SEXTA|SEPTIMA|SÉPTIMA|OCTAVA)",
-        re.IGNORECASE,
-    )
-    matches = list(pattern.finditer(cuerpo or ""))
-    if not matches:
-        return cuerpo or ""
-
-    ordered = ["PRIMERA", "SEGUNDA", "TERCERA", "CUARTA", "QUINTA", "SEXTA", "SÉPTIMA", "OCTAVA"]
-    idx = {"i": 0}
-
-    def repl(match: re.Match) -> str:
-        pos = idx["i"]
-        idx["i"] += 1
-        label = ordered[pos] if pos < len(ordered) else match.group(1).upper()
-        return f"ALEGACIÓN {label}"
-
-    return pattern.sub(repl, cuerpo or "")
-
-def _replace_final_petitions(cuerpo: str) -> str:
-    txt = cuerpo or ""
-    txt = re.sub(r"\bIII\.\s*SOLICITO\b", "III. SUPLICO", txt, flags=re.IGNORECASE)
-    txt = re.sub(r"\bIII\.\s*SUPLICO\b", "III. SUPLICO", txt, flags=re.IGNORECASE)
-
-    final_block_re = re.compile(
-        r"III\.\s*SUPLICO\b.*$|III\.\s*SOLICITO\b.*$",
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if final_block_re.search(txt):
-        txt = final_block_re.sub(_UNIFIED_SUPLICO, txt)
-    else:
-        txt = txt.rstrip() + "\n\n" + _UNIFIED_SUPLICO
-    return txt
-
-def _postprocess_generated_template(tpl: Dict[str, str], core: Dict[str, Any]) -> Dict[str, str]:
-    asunto = _UNIFIED_ASUNTO
-    cuerpo = _safe_str((tpl or {}).get("cuerpo"))
-
-    cuerpo = _inject_tipicidad_material_if_needed(cuerpo, core)
-    cuerpo = _renumber_alegaciones(cuerpo)
-    cuerpo = _replace_final_petitions(cuerpo)
-    cuerpo = fix_roman_headings(cuerpo)
-
-    return {
-        "asunto": asunto,
-        "cuerpo": cuerpo.strip(),
-    }
-
 
 
 def _clean_hecho_text(text: str) -> str:
@@ -258,8 +112,6 @@ def _clean_hecho_text(text: str) -> str:
     return t
 
 
-
-
 def _looks_like_internal_extract(text: str) -> bool:
     low = _safe_str(text).lower().strip()
     if not low:
@@ -282,6 +134,7 @@ def _looks_like_internal_extract(text: str) -> bool:
     ]
     return any(tok in low for tok in bad_tokens)
 
+
 def get_hecho_para_recurso(core: Dict[str, Any]) -> str:
     raw = (
         core.get("hecho_denunciado_resumido")
@@ -291,7 +144,12 @@ def get_hecho_para_recurso(core: Dict[str, Any]) -> str:
     )
     txt = _clean_hecho_text(_safe_str(raw))
     low = txt.lower().strip()
-    if low.startswith("tipo_sancion:") or low.startswith("organismo:") or low.startswith("expediente_ref:") or low.startswith("hecho_imputado:"):
+    if (
+        low.startswith("tipo_sancion:")
+        or low.startswith("organismo:")
+        or low.startswith("expediente_ref:")
+        or low.startswith("hecho_imputado:")
+    ):
         return ""
     return txt
 
@@ -322,13 +180,33 @@ def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
         low = ln.lower()
 
         if any(
-            x in low for x in [
-                "datos vehiculo", "datos vehículo", "importe", "bonificacion", "reduccion",
-                "fecha limite", "fecha límite", "puntos", "entidad", "matricula", "marca:",
-                "modelo", "domicilio", "boletin", "boletín", "telefono de informacion",
-                "teléfono de información", "telefono de atencion", "teléfono de atención",
-                "fax", "correo ordinario", "remitir el presente", "impreso relleno",
-                "motivo de no notificacion", "motivo de no notificación",
+            x in low
+            for x in [
+                "datos vehiculo",
+                "datos vehículo",
+                "importe",
+                "bonificacion",
+                "reduccion",
+                "fecha limite",
+                "fecha límite",
+                "puntos",
+                "entidad",
+                "matricula",
+                "marca:",
+                "modelo",
+                "domicilio",
+                "boletin",
+                "boletín",
+                "telefono de informacion",
+                "teléfono de información",
+                "telefono de atencion",
+                "teléfono de atención",
+                "fax",
+                "correo ordinario",
+                "remitir el presente",
+                "impreso relleno",
+                "motivo de no notificacion",
+                "motivo de no notificación",
             ]
         ):
             if started:
@@ -337,11 +215,31 @@ def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
 
         if not started:
             if any(
-                s in low for s in [
-                    "circular a", "circulaba a", "conducir", "cruce", "fase roja", "luz roja",
-                    "semaforo", "utilizando", "auricular", "auriculares", "cascos", "bail",
-                    "palmas", "volante", "km/h", "velocidad", "linea continua", "línea continua",
-                    "itv", "seguro", "alumbrado", "detencion", "detención"
+                s in low
+                for s in [
+                    "circular a",
+                    "circulaba a",
+                    "conducir",
+                    "cruce",
+                    "fase roja",
+                    "luz roja",
+                    "semaforo",
+                    "utilizando",
+                    "auricular",
+                    "auriculares",
+                    "cascos",
+                    "bail",
+                    "palmas",
+                    "volante",
+                    "km/h",
+                    "velocidad",
+                    "linea continua",
+                    "línea continua",
+                    "itv",
+                    "seguro",
+                    "alumbrado",
+                    "detencion",
+                    "detención",
                 ]
             ):
                 started = True
@@ -363,7 +261,16 @@ def resolve_jurisdiction(core: Dict[str, Any]) -> str:
     blob = json.dumps(core, ensure_ascii=False).lower()
     if any(s in blob for s in ["ayuntamiento", "policia local", "policía local", "guardia urbana"]):
         return "municipal"
-    if any(s in blob for s in ["direccion general de trafico", "dirección general de tráfico", "dgt", "guardia civil", "ministerio del interior"]):
+    if any(
+        s in blob
+        for s in [
+            "direccion general de trafico",
+            "dirección general de tráfico",
+            "dgt",
+            "guardia civil",
+            "ministerio del interior",
+        ]
+    ):
         return "estatal"
     return "desconocida"
 
@@ -421,7 +328,11 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             if s in blob:
                 scores[tipo] += points
 
-    add("velocidad", ["km/h", "radar", "cinemometro", "cinemómetro", "exceso de velocidad", "limitada la velocidad a", "multanova"], 3)
+    add(
+        "velocidad",
+        ["km/h", "radar", "cinemometro", "cinemómetro", "exceso de velocidad", "limitada la velocidad a", "multanova"],
+        3,
+    )
     add("semaforo", ["semaforo", "semáforo", "fase roja", "luz roja", "cruce en rojo", "linea de detencion", "línea de detención"], 3)
     add("movil", ["telefono movil", "teléfono móvil", "uso manual", "manipulando el movil", "manipulando el móvil", "sujetando con la mano el dispositivo"], 3)
     add("auriculares", ["auricular", "auriculares", "cascos conectados", "reproductores de sonido", "porta auricular"], 3)
@@ -456,6 +367,7 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         return best[0]
     return "generic"
 
+
 def fix_roman_headings(text: str) -> str:
     replacements = {
         r"\bi\.\s*antecedentes": "I. ANTECEDENTES",
@@ -466,6 +378,137 @@ def fix_roman_headings(text: str) -> str:
     for pattern, repl in replacements.items():
         out = re.sub(pattern, repl, out, flags=re.IGNORECASE)
     return out
+
+
+def _build_fundamentos_derecho(tipo: str = "") -> str:
+    return (
+        "FUNDAMENTOS DE DERECHO\n\n"
+        "PRIMERO.– Resultan de aplicación los principios generales del Derecho "
+        "Administrativo sancionador, en particular los principios de legalidad, "
+        "tipicidad, presunción de inocencia y carga de la prueba a cargo de la "
+        "Administración.\n\n"
+        "SEGUNDO.– Conforme a reiterada jurisprudencia, la potestad sancionadora "
+        "de la Administración exige una motivación suficiente del hecho imputado "
+        "y una acreditación probatoria bastante que permita enervar la presunción "
+        "de inocencia del administrado.\n\n"
+        "TERCERO.– La ausencia de prueba suficiente, la insuficiente motivación "
+        "del expediente o la falta de concreción del hecho imputado determinan "
+        "la improcedencia de la sanción propuesta.\n\n"
+    )
+
+
+def _build_unified_suplico(tipo: str = "") -> str:
+    punto_4 = (
+        "4) Subsidiariamente, que se imponga en su caso la sanción mínima legalmente\n"
+        "procedente dentro del tipo infractor que finalmente pudiera considerarse\n"
+        "aplicable.\n\n"
+    )
+
+    return (
+        "S U P L I C A:\n\n"
+        "1) Que se tengan por formuladas las presentes alegaciones.\n\n"
+        "2) Que, en atención a las alegaciones presentadas y sus fundamentos, se acuerde "
+        "el ARCHIVO del expediente por insuficiencia probatoria, falta de acreditación "
+        "suficiente del hecho imputado o ausencia de motivación individualizada.\n\n"
+        "3) Subsidiariamente, para el caso de no estimarse el archivo, que se proceda "
+        "a una correcta recalificación jurídica de los hechos conforme a la prueba "
+        "realmente acreditada en el expediente.\n\n"
+        f"{punto_4}"
+        "5) Subsidiariamente, que se aporte expediente íntegro y prueba completa "
+        "para contradicción efectiva.\n\n"
+        "OTROSÍ DIGO\n\n"
+        "Que esta parte se reserva expresamente el ejercicio de cuantos recursos "
+        "administrativos y acciones legales pudieran corresponder en defensa de sus "
+        "derechos e intereses legítimos.\n"
+    )
+
+
+def _strip_initial_antecedentes_block(body: str) -> str:
+    txt = _safe_str(body).strip()
+    txt = re.sub(
+        r"^\s*A la atención del órgano competente,?\s*",
+        "",
+        txt,
+        flags=re.IGNORECASE,
+    )
+    return txt.strip()
+
+
+def _build_comparecencia_text(core: Dict[str, Any], asunto_out: str) -> str:
+    tipo_accion = _safe_str(core.get("tipo_accion")).lower().strip()
+    fecha_res = core.get("fecha_resolucion") or "........"
+    tenor = core.get("tenor_resolucion") or "................................"
+
+    if "alzada" in tipo_accion:
+        return (
+            "Que mediante el presente escrito, documentación adjunta y sus copias, "
+            f"vengo a formular RECURSO DE ALZADA contra la resolución de fecha {fecha_res}, "
+            f"dictada por ese organismo, por la que se acuerda {tenor}, y todo ello según los siguientes\n\n"
+            "A N T E C E D E N T E S\n\n"
+        )
+
+    if "reposicion" in tipo_accion or "reposición" in tipo_accion:
+        return (
+            "Que mediante el presente escrito, documentación adjunta y sus copias, "
+            f"vengo a formular RECURSO POTESTATIVO DE REPOSICIÓN contra la resolución de fecha {fecha_res}, "
+            f"dictada por ese organismo, por la que se acuerda {tenor}, y todo ello según los siguientes\n\n"
+            "A N T E C E D E N T E S\n\n"
+        )
+
+    return (
+        "Que mediante el presente escrito, documentación adjunta y sus copias, "
+        f"vengo a formular {asunto_out} en el expediente más arriba referenciado, "
+        "y todo ello según los siguientes\n\n"
+        "A N T E C E D E N T E S\n\n"
+    )
+
+
+def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: Dict[str, Any] = None) -> Dict[str, str]:
+    core = core or {}
+    asunto_out = "ESCRITO DE ALEGACIONES"
+
+    exp_ref = core.get("expediente_ref") or core.get("numero_expediente") or "........ / ........"
+    organismo = core.get("organismo") or "............................................"
+    provincia = core.get("provincia") or "............................................"
+
+    comparecencia = _build_comparecencia_text(core, asunto_out)
+
+    cabecera = (
+        f"REFERENCIA: EXPTE. {exp_ref}\n\n\n"
+        f"                A LA {str(organismo).upper()}\n\n"
+        f"                          DE {str(provincia).upper()}\n\n\n"
+        "D./D.ª ........................................, mayor de edad, con DNI/NIE/TR "
+        "........................, y con domicilio en ........................................, "
+        "a efectos de notificaciones, actuando en su propio nombre e interés "
+        "[o actuando por cuenta de D./D.ª ................................, según autorización "
+        "o poder que se adjunta como documento núm. 1], ante esta Dependencia comparece y, "
+        "como mejor proceda en Derecho,\n\n"
+        "D I G O:\n\n"
+        f"{comparecencia}"
+    )
+
+    body = _safe_str(cuerpo)
+
+    suplico = _build_unified_suplico(tipo)
+    fundamentos = _build_fundamentos_derecho(tipo)
+
+    if re.search(r"\bIII\.\s*(SOLICITO|SUPLICO)\b", body, flags=re.IGNORECASE):
+        body = re.sub(
+            r"\bIII\.\s*(?:SOLICITO|SUPLICO)\b[\s\S]*$",
+            fundamentos + "\n" + suplico,
+            body,
+            flags=re.IGNORECASE,
+        )
+    else:
+        body = body.rstrip() + "\n\n" + fundamentos + "\n" + suplico
+
+    body = fix_roman_headings(body)
+    body = _strip_initial_antecedentes_block(body)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip() + "\n"
+
+    body = cabecera + body
+
+    return {"asunto": asunto_out, "cuerpo": body}
 
 
 def build_cinturon_v4_template(core: Dict[str, Any]) -> Dict[str, str]:
@@ -519,8 +562,6 @@ def build_cinturon_v4_template(core: Dict[str, Any]) -> Dict[str, str]:
     return tpl
 
 
-
-
 def build_atencion_bicicleta_template(core: Dict[str, Any]) -> Dict[str, str]:
     expediente = core.get("expediente_ref") or core.get("numero_expediente") or "No consta acreditado."
     organo = core.get("organo") or core.get("organismo") or "No consta acreditado."
@@ -548,6 +589,7 @@ def build_atencion_bicicleta_template(core: Dict[str, Any]) -> Dict[str, str]:
         "asunto": "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE",
         "cuerpo": fix_roman_headings(cuerpo),
     }
+
 
 def _is_bicicleta_context(core: Dict[str, Any]) -> bool:
     contexto = _safe_str(core.get("contexto_movilidad")).lower().strip()
@@ -611,6 +653,7 @@ def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
             return build_municipal_generic_template(core), "municipal_generic"
     else:
         return build_generic_body(core), "generic"
+
 
 def ensure_tpl_dict(tpl: Any, core: Dict[str, Any]) -> Dict[str, str]:
     if isinstance(tpl, dict):
@@ -714,8 +757,6 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     tipo = resolve_infraction_type(core)
     jurisdiccion = resolve_jurisdiction(core)
 
-    # Dispatcher principal: si decide plantilla, generate.py no vuelve a enrutar.
-    # Excepción segura: en contexto bicicleta no permitimos reutilizar plantillas de interior/habitáculo de vehículo.
     draft_body = get_hecho_para_recurso(core)
     bicicleta_ctx = _is_bicicleta_context(core)
     dispatched_tpl = None if (tipo == "atencion" and bicicleta_ctx) else dispatch_deterministic_template(core, draft_body=draft_body)
@@ -727,6 +768,12 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         tpl, final_kind = _select_template(core, tipo, jurisdiccion)
 
     tpl = ensure_tpl_dict(tpl, core)
+    tpl = _upgrade_generated_template(
+        tpl.get("asunto") or "",
+        tpl.get("cuerpo") or "",
+        tipo,
+        core,
+    )
 
     cuerpo = tpl.get("cuerpo") or ""
     if tipo == "atencion" and _is_bicicleta_context(core):
@@ -737,7 +784,6 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         cuerpo = "Extracto literal del boletín:\n" + f"“{hecho}”\n\n" + cuerpo
 
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
-    tpl = _postprocess_generated_template(tpl, core)
 
     docx_bytes = build_docx(tpl["asunto"], tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
@@ -779,6 +825,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         "tipo_infraccion": tipo,
         "jurisdiccion": jurisdiccion,
     }
+
 
 class GenerateRequest(BaseModel):
     case_id: str
