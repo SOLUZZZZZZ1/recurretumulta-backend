@@ -170,6 +170,103 @@ def _velocity_margin_info(measured: Optional[float], radar_hint: str = "") -> Di
     }
 
 
+def _resolve_radar_profile(core: Dict[str, Any]) -> Dict[str, Any]:
+    raw_sources = [
+        _safe_str(core.get("radar_modelo_hint")),
+        _safe_str(core.get("radar_tipo")),
+        _safe_str(core.get("hecho_denunciado_literal")),
+        _safe_str(core.get("hecho_denunciado_resumido")),
+        _safe_str(core.get("hecho_imputado")),
+        _safe_str(core.get("raw_text_pdf")),
+        _safe_str(core.get("raw_text_vision")),
+        _safe_str(core.get("raw_text_blob")),
+        _safe_str(core.get("vision_raw_text")),
+    ]
+    blob = "\n".join(s for s in raw_sources if s.strip()).lower()
+
+    profile = {
+        "kind": "cinemometro_no_especificado",
+        "label": "cinemómetro (modelo no consignado en la copia)",
+        "margin_percent_high": 5.0,
+        "margin_kmh_low": 5.0,
+        "attack_focus": "Debe aportarse identificación completa del equipo, certificado metrológico vigente y prueba técnica bastante."
+    }
+
+    if "pegasus" in blob or "helicoptero" in blob or "helicóptero" in blob:
+        profile.update({
+            "kind": "pegasus",
+            "label": "sistema aéreo Pegasus (a verificar documentalmente)",
+            "margin_percent_high": 7.0,
+            "margin_kmh_low": 7.0,
+            "attack_focus": "Tratándose de medición aérea, debe acreditarse de forma especialmente rigurosa la identificación del sistema, la secuencia completa de captación y la trazabilidad técnica de la medición.",
+        })
+        return profile
+
+    if "tramo" in blob:
+        profile.update({
+            "kind": "radar_tramo",
+            "label": "sistema de control de velocidad por tramo (a verificar documentalmente)",
+            "margin_percent_high": 5.0,
+            "margin_kmh_low": 5.0,
+            "attack_focus": "En controles de tramo debe acreditarse con precisión el punto inicial y final de medición, la sincronización temporal del sistema y la integridad del cálculo efectuado.",
+        })
+        return profile
+
+    if any(k in blob for k in ["velolaser", "lasertech", "lti 20/20", "lti20/20", "ultralyte"]):
+        profile.update({
+            "kind": "velolaser_laser",
+            "label": "cinemómetro láser portátil (modelo pendiente de acreditación)",
+            "margin_percent_high": 7.0,
+            "margin_kmh_low": 7.0,
+            "attack_focus": "En mediciones con láser portátil debe acreditarse con especial detalle la instalación, alineación, verificación y la concreta operativa de captación del vehículo denunciado.",
+        })
+        return profile
+
+    if any(k in blob for k in ["multanova", "antena", "cabina", "radar fijo", "pórtico", "portico"]):
+        profile.update({
+            "kind": "radar_fijo",
+            "label": "cinemómetro fijo o de cabina (modelo pendiente de acreditación)",
+            "margin_percent_high": 5.0,
+            "margin_kmh_low": 5.0,
+            "attack_focus": "En controles fijos debe acreditarse la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la correspondencia inequívoca con el vehículo denunciado.",
+        })
+        return profile
+
+    if any(k in blob for k in ["vehiculo patrulla", "vehículo patrulla", "movil", "móvil", "coche patrulla"]):
+        profile.update({
+            "kind": "radar_movil",
+            "label": "cinemómetro móvil (modelo pendiente de acreditación)",
+            "margin_percent_high": 7.0,
+            "margin_kmh_low": 7.0,
+            "attack_focus": "En controles móviles debe acreditarse la modalidad concreta de captación, la posición del vehículo policial, la verificación metrológica del equipo y la secuencia completa de medición.",
+        })
+        return profile
+
+    return profile
+
+
+def _velocity_margin_info_from_profile(measured: Optional[float], profile: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(measured, (int, float)) or measured <= 0:
+        return {"margin_value": None, "corrected_speed": None, "margin_label": ""}
+
+    pct = float(profile.get("margin_percent_high") or 5.0)
+    low_kmh = float(profile.get("margin_kmh_low") or 5.0)
+
+    if measured > 100:
+        margin_value = round(float(measured) * (pct / 100.0), 2)
+        margin_label = f"{int(pct) if pct.is_integer() else pct} %"
+    else:
+        margin_value = round(low_kmh, 2)
+        margin_label = f"{int(low_kmh) if low_kmh.is_integer() else low_kmh} km/h"
+
+    corrected_speed = round(float(measured) - margin_value, 2)
+    return {
+        "margin_value": margin_value,
+        "corrected_speed": corrected_speed,
+        "margin_label": margin_label,
+    }
+
+
 def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
     measured = core.get("velocidad_medida_kmh")
     limit = core.get("velocidad_limite_kmh")
@@ -1181,11 +1278,13 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     fecha_hecho = core.get("fecha_infraccion") or core.get("fecha_hecho") or core.get("fecha_documento") or ""
     fecha_line = f" (fecha indicada: {fecha_hecho})" if isinstance(fecha_hecho, str) and fecha_hecho.strip() else ""
 
-    radar = core.get("radar_modelo_hint") or "cinemometro (no especificado)"
-    margin_info = _velocity_margin_info(measured, radar)
+    radar_profile = _resolve_radar_profile(core)
+    radar = radar_profile.get("label") or "cinemómetro (modelo no consignado en la copia)"
+    margin_info = _velocity_margin_info_from_profile(measured, radar_profile)
     margin_value = margin_info.get("margin_value")
     corrected_speed = margin_info.get("corrected_speed")
     margin_label = margin_info.get("margin_label")
+    radar_focus = radar_profile.get("attack_focus") or ""
 
     tech_lines = []
     if measured:
@@ -1193,7 +1292,7 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     if limit:
         tech_lines.append(f"• Velocidad límite: {int(limit)} km/h")
     if radar:
-        tech_lines.append(f"• Dispositivo/radar: {radar}")
+        tech_lines.append(f"• Dispositivo de control: {radar}")
     if margin_value is not None:
         if isinstance(margin_value, float) and not margin_value.is_integer():
             margin_txt = f"{margin_value:.2f}".replace(".", ",")
@@ -1216,8 +1315,8 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         calc_paragraph = (
             "A efectos de contradicción, la Administración debe acreditar de forma documental la velocidad "
             "medida, el límite aplicable, el margen efectivamente aplicado y la velocidad corregida resultante. "
-            f"Tomando como referencia la medición consignada de {int(measured)} km/h, el margen orientativo aplicable "
-            f"sería de {margin_txt} km/h, lo que dejaría una velocidad corregida aproximada de {corrected_txt} km/h."
+            f"Tomando como referencia la medición consignada de {int(measured)} km/h, el margen mínimo de corrección aplicable "
+            f"sería de {margin_txt} km/h, lo que dejaría una velocidad resultante tras la corrección de {corrected_txt} km/h."
         )
         tramo_paragraph = build_tramo_error_paragraph({
             **core,
@@ -1239,10 +1338,11 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"2) Identificación expediente: {expediente}\n"
         f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
         "II. ALEGACIONES\n\n"
-        "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA DEL CINEMÓMETRO\n\n"
+        "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA DEL DISPOSITIVO DE CONTROL\n\n"
         "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. No basta "
         "una referencia genérica al radar o cinemómetro: debe constar de forma precisa el dispositivo utilizado, "
-        "su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado.\n\n"
+        "su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. "
+        f"{radar_focus}\n\n"
         "No consta acreditado de forma completa en el expediente:\n"
         "1) Identificación completa del cinemómetro utilizado (marca/modelo/número de serie).\n"
         "2) Certificado de verificación metrológica vigente en la fecha del hecho.\n"
