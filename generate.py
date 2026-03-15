@@ -1203,10 +1203,10 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
             corrected_txt = f"{corrected_speed:.2f}".replace(".", ",")
         else:
             corrected_txt = str(int(corrected_speed))
-        tech_lines.append(f"• Margen de corrección orientativo: {margin_txt} km/h ({margin_label})")
-        tech_lines.append(f"• Velocidad corregida orientativa: {corrected_txt} km/h")
+        tech_lines.append(f"• Margen mínimo de corrección aplicable: {margin_txt} km/h ({margin_label})")
+        tech_lines.append(f"• Velocidad resultante tras la corrección: {corrected_txt} km/h")
     if conflict:
-        tech_lines.append("• Observación: la copia analizada del boletín presenta lecturas numéricas inconsistentes; debe prevalecer el dato acreditado documentalmente en el expediente íntegro.")
+        tech_lines.append("• Observación: del examen de la copia aportada se desprenden discrepancias numéricas que exigen la exhibición del expediente íntegro y de la prueba técnica original.")
 
     tech_block = ""
     if tech_lines:
