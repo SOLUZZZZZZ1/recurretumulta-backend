@@ -112,6 +112,87 @@ def _clean_hecho_text(text: str) -> str:
     return t
 
 
+def _extract_speed_candidates(text: str) -> list[int]:
+    txt = _safe_str(text)
+    vals = []
+    for m in re.finditer(r"(?<!\d)(\d{2,3})(?:\s*km/?h)?", txt, flags=re.IGNORECASE):
+        try:
+            n = int(m.group(1))
+        except Exception:
+            continue
+        if 20 <= n <= 250:
+            vals.append(n)
+    return vals
+
+
+def _looks_like_noisy_velocity_text(text: str) -> bool:
+    txt = _safe_str(text)
+    low = txt.lower()
+    if not txt.strip():
+        return False
+    weird_markers = [
+        "notif1",
+        "cir[[",
+        "[ilegible]",
+        "meriega",
+        "inter[leccion",
+        "anenal",
+        "1006/2009",
+        "|=",
+        "[[",
+        "]]",
+    ]
+    if any(w in low for w in weird_markers):
+        return True
+    bad_chars = sum(1 for ch in txt if ch in "[]|{}")
+    return bad_chars >= 3
+
+
+def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
+    measured = core.get("velocidad_medida_kmh")
+    limit = core.get("velocidad_limite_kmh")
+    raw_sources = [
+        _safe_str(core.get("hecho_denunciado_resumido")),
+        _safe_str(core.get("hecho_denunciado_literal")),
+        _safe_str(core.get("hecho_imputado")),
+        _safe_str(core.get("raw_text_pdf")),
+        _safe_str(core.get("raw_text_vision")),
+        _safe_str(core.get("raw_text_blob")),
+        _safe_str(core.get("vision_raw_text")),
+    ]
+    joined = "\n".join(s for s in raw_sources if s.strip())
+    candidates = _extract_speed_candidates(joined)
+
+    if (not isinstance(measured, (int, float)) or measured <= 0) and candidates:
+        measured = max(candidates)
+
+    if (not isinstance(limit, (int, float)) or limit <= 0):
+        plausible_limits = [v for v in candidates if v in {20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120}]
+        if plausible_limits:
+            limit = max(plausible_limits)
+
+    conflict = False
+    if candidates:
+        uniq = sorted(set(v for v in candidates if 20 <= v <= 250))
+        if len(uniq) >= 2 and max(uniq) - min(uniq) >= 20:
+            conflict = True
+
+    if isinstance(measured, (int, float)) and isinstance(limit, (int, float)) and measured <= limit:
+        if candidates:
+            above = [v for v in candidates if isinstance(limit, (int, float)) and v > limit]
+            if above:
+                measured = min(above)
+            else:
+                conflict = True
+
+    return {
+        "measured": measured if isinstance(measured, (int, float)) and measured > 0 else None,
+        "limit": limit if isinstance(limit, (int, float)) and limit > 0 else None,
+        "conflict": conflict,
+        "raw_joined": joined,
+    }
+
+
 def _looks_like_internal_extract(text: str) -> bool:
     low = _safe_str(text).lower().strip()
     if not low:
@@ -151,6 +232,18 @@ def get_hecho_para_recurso(core: Dict[str, Any]) -> str:
         or low.startswith("hecho_imputado:")
     ):
         return ""
+
+    tipo = resolve_infraction_type(core)
+    if tipo == "velocidad":
+        facts = _resolve_velocity_facts(core)
+        measured = facts.get("measured")
+        limit = facts.get("limit")
+        if _looks_like_noisy_velocity_text(txt) or facts.get("conflict"):
+            if measured and limit:
+                return f"Presunto exceso de velocidad con medición consignada de {int(measured)} km/h en tramo limitado a {int(limit)} km/h"
+            return "Presunto exceso de velocidad"
+        if measured and limit and "km/h" not in low:
+            return f"Presunto exceso de velocidad con medición consignada de {int(measured)} km/h en tramo limitado a {int(limit)} km/h"
     return txt
 
 
@@ -813,11 +906,21 @@ def _resolve_header_destination(core: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
-def _integrate_extract_after_comparecencia(body: str, hecho: str) -> str:
+def _integrate_extract_after_comparecencia(body: str, hecho: str, core: Dict[str, Any] = None) -> str:
     txt = _safe_str(body)
     hecho = _safe_str(hecho).strip()
+    core = core or {}
     if not hecho:
         return txt
+
+    if resolve_infraction_type(core) == "velocidad" and (_looks_like_noisy_velocity_text(hecho) or _resolve_velocity_facts(core).get("conflict")):
+        facts = _resolve_velocity_facts(core)
+        measured = facts.get("measured")
+        limit = facts.get("limit")
+        if measured and limit:
+            hecho = f"Presunto exceso de velocidad con medición consignada de {int(measured)} km/h en tramo limitado a {int(limit)} km/h."
+        else:
+            hecho = "Presunto exceso de velocidad según denuncia automatizada."
 
     bloque = f'Extracto literal del boletín:\n“{hecho}”\n\n'
 
@@ -1043,28 +1146,53 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     expediente = core.get("expediente_ref") or core.get("numero_expediente") or "[EXPEDIENTE]"
     organo = core.get("organo") or core.get("organismo") or "No consta acreditado."
 
-    hecho = get_hecho_para_recurso(core) or "EXCESO DE VELOCIDAD"
+    facts = _resolve_velocity_facts(core)
+    measured = facts.get("measured")
+    limit = facts.get("limit")
+    conflict = facts.get("conflict")
+
+    if measured and limit:
+        hecho = f"Presunto exceso de velocidad con medición consignada de {int(measured)} km/h en tramo limitado a {int(limit)} km/h"
+    else:
+        hecho = "PRESUNTO EXCESO DE VELOCIDAD"
+
     fecha_hecho = core.get("fecha_infraccion") or core.get("fecha_hecho") or core.get("fecha_documento") or ""
     fecha_line = f" (fecha indicada: {fecha_hecho})" if isinstance(fecha_hecho, str) and fecha_hecho.strip() else ""
 
-    measured = core.get("velocidad_medida_kmh")
-    limit = core.get("velocidad_limite_kmh")
     radar = core.get("radar_modelo_hint") or "cinemometro (no especificado)"
 
     tech_lines = []
     if measured:
-        tech_lines.append(f"• Velocidad medida: {measured} km/h")
+        tech_lines.append(f"• Velocidad medida: {int(measured)} km/h")
     if limit:
-        tech_lines.append(f"• Velocidad límite: {limit} km/h")
+        tech_lines.append(f"• Velocidad límite: {int(limit)} km/h")
     if radar:
         tech_lines.append(f"• Dispositivo/radar: {radar}")
+    if conflict:
+        tech_lines.append("• Observación: el texto OCR del boletín presenta lecturas numéricas inconsistentes; debe prevalecer el dato acreditado documentalmente en el expediente íntegro.")
 
     tech_block = ""
     if tech_lines:
         tech_block = "DATOS TÉCNICOS EXTRAÍDOS DEL EXPEDIENTE\n" + "\n".join(tech_lines) + "\n\n"
 
-    calc_paragraph = build_velocity_calc_paragraph(core)
-    tramo_paragraph = build_tramo_error_paragraph(core)
+    if measured and limit and measured > limit and not conflict:
+        calc_paragraph = build_velocity_calc_paragraph({
+            **core,
+            "velocidad_medida_kmh": measured,
+            "velocidad_limite_kmh": limit,
+        })
+        tramo_paragraph = build_tramo_error_paragraph({
+            **core,
+            "velocidad_medida_kmh": measured,
+            "velocidad_limite_kmh": limit,
+        })
+    else:
+        calc_paragraph = (
+            "A efectos de contradicción, la Administración debe acreditar de forma documental la velocidad "
+            "medida, el límite aplicable, el margen efectivamente aplicado y la velocidad corregida resultante, "
+            "evitando cualquier duda derivada de lecturas OCR o transcripciones defectuosas del boletín."
+        )
+        tramo_paragraph = ""
 
     cuerpo = (
         "A la atención del órgano competente,\n\n"
@@ -1074,7 +1202,9 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
         "II. ALEGACIONES\n\n"
         "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA DEL CINEMÓMETRO\n\n"
-        "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. No basta una referencia genérica al radar o cinemómetro: debe constar de forma precisa el dispositivo utilizado, su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado.\n\n"
+        "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. No basta "
+        "una referencia genérica al radar o cinemómetro: debe constar de forma precisa el dispositivo utilizado, "
+        "su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado.\n\n"
         "No consta acreditado de forma completa en el expediente:\n"
         "1) Identificación completa del cinemómetro utilizado (marca/modelo/número de serie).\n"
         "2) Certificado de verificación metrológica vigente en la fecha del hecho.\n"
@@ -1092,9 +1222,14 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
 
     cuerpo += (
         "ALEGACIÓN SEGUNDA — DEFECTOS DE MOTIVACIÓN Y FALTA DE SOPORTE COMPLETO\n\n"
-        "La Administración debe motivar de forma individualizada por qué la velocidad atribuida, una vez aplicado el margen correspondiente, encaja exactamente en el tramo sancionador impuesto. Sin fotograma completo, certificado metrológico, identificación técnica del equipo y acreditación de la cadena de custodia, no puede enervarse la presunción de inocencia con el rigor exigible en Derecho sancionador.\n\n"
+        "La Administración debe motivar de forma individualizada por qué la velocidad atribuida, una vez aplicado "
+        "el margen correspondiente, encaja exactamente en el tramo sancionador impuesto. Sin fotograma completo, "
+        "certificado metrológico, identificación técnica del equipo y acreditación de la cadena de custodia, no puede "
+        "enervarse la presunción de inocencia con el rigor exigible en Derecho sancionador.\n\n"
         "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA\n\n"
-        "Se solicita la aportación íntegra del expediente, incluyendo: boletín/denuncia completa, fotograma o secuencia completa, certificado de verificación metrológica, identificación del equipo, documentación técnica del control y motivación detallada del tramo sancionador aplicado.\n\n"
+        "Se solicita la aportación íntegra del expediente, incluyendo: boletín/denuncia completa, fotograma o secuencia "
+        "completa, certificado de verificación metrológica, identificación del equipo, documentación técnica del control "
+        "y motivación detallada del tramo sancionador aplicado.\n\n"
         "III. SOLICITO\n"
         "1) Que se tengan por formuladas las presentes alegaciones.\n"
         "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de acreditación técnica suficiente.\n"
@@ -1154,7 +1289,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
 
     hecho = get_hecho_para_recurso(core)
     if hecho and not _looks_like_internal_extract(hecho):
-        cuerpo = _integrate_extract_after_comparecencia(cuerpo, hecho)
+        cuerpo = _integrate_extract_after_comparecencia(cuerpo, hecho, core)
 
     cuerpo = _fix_alegaciones_numeracion(cuerpo)
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
