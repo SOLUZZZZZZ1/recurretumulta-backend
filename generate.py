@@ -666,6 +666,7 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
         "itv": 0,
         "condiciones_vehiculo": 0,
         "carril": 0,
+        "alcohol": 0,
     }
 
     def add(tipo: str, signals, points: int) -> None:
@@ -810,6 +811,16 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             "come y manipula objetos",
             "comiendo y manipulando objetos",
             "sin la atencion necesaria",
+            "fumando",
+            "comiendo",
+            "bebiendo",
+            "sin mirar la carretera",
+            "mirando al acompanante",
+            "mirando al copiloto",
+            "mirando hacia el interior del vehiculo",
+            "manipulando objetos",
+            "manipulando comida",
+            "manipulando bebida",
             "libertad de movimientos",
             "no se para",
             "ordenes de los agentes",
@@ -831,6 +842,26 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
     add("marcas_viales", ["linea continua", "marca vial", "marca longitudinal continua"], 3)
     add("seguro", ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "8/2004", "fiva"], 3)
     add("itv", ["itv", "inspeccion tecnica", "itv caducada"], 3)
+
+    add(
+        "alcohol",
+        [
+            "alcohol",
+            "tasa de alcohol",
+            "alcoholemia",
+            "etilometro",
+            "etilometro evidencial",
+            "aire espirado",
+            "mg/l",
+            "miligramos por litro",
+            "control de alcoholemia",
+            "prueba de alcoholemia",
+            "resultado positivo",
+            "prueba de deteccion alcoholica",
+            "prueba de deteccion de alcohol",
+        ],
+        5,
+    )
 
     add(
         "condiciones_vehiculo",
@@ -932,6 +963,17 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         return "atencion"
 
     if any(s in blob for s in [
+        "tasa de alcohol",
+        "alcoholemia",
+        "etilometro",
+        "aire espirado",
+        "mg/l",
+        "control de alcoholemia",
+        "prueba de alcoholemia",
+    ]):
+        return "alcohol"
+
+    if any(s in blob for s in [
         "no mantener la atencion",
         "atencion permanente",
         "conduccion negligente",
@@ -948,6 +990,16 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "mirando repetidamente al acompañante",
         "mirando repetidamente al acompanante",
         "come y manipula objetos",
+        "fumando",
+        "comiendo",
+        "bebiendo",
+        "sin mirar la carretera",
+        "mirando al acompanante",
+        "mirando al copiloto",
+        "mirando hacia el interior del vehiculo",
+        "manipulando objetos",
+        "manipulando comida",
+        "manipulando bebida",
     ]):
         return "atencion"
 
