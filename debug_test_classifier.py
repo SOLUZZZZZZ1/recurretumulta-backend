@@ -65,7 +65,7 @@ def _build_core_from_case(caso: ClassifierTestCase) -> Dict[str, Any]:
 @router.post("/test-classifier", response_model=ClassifierTestResponse)
 def debug_test_classifier(
     payload: ClassifierTestRequest,
-    x_admin_token: str | None = Header(default=None, alias="x-admin-token"),
+    x_admin_token: str = Header(..., alias="x-admin-token"),
 ):
     _require_admin_token(x_admin_token)
 
