@@ -1593,6 +1593,13 @@ def _integrate_extract_after_comparecencia(body: str, hecho: str, core: Dict[str
     return bloque + txt
 
 
+def _center_text_line(text: str, width: int = 90) -> str:
+    s = _safe_str(text).strip()
+    if not s:
+        return ""
+    return s.center(width).rstrip()
+
+
 def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: Dict[str, Any] = None) -> Dict[str, str]:
     core = core or {}
     asunto_out = "ESCRITO DE ALEGACIONES"
@@ -1604,11 +1611,13 @@ def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: 
 
     comparecencia = _build_comparecencia_text(core, asunto_out)
 
+    linea_titulo = _center_text_line("ESCRITO DE ALEGACIONES", 90)
+    linea_destino = _center_text_line(f"A LA {str(organismo).upper()} DE {str(provincia).upper()}", 90)
+
     cabecera = (
-        f"REFERENCIA: EXPTE. {exp_ref}\n\n\n"
-        f"                A LA {str(organismo).upper()}\n\n"
-        f"                          DE {str(provincia).upper()}\n\n\n\n"
-        "\n\n                ESCRITO DE ALEGACIONES\n\n\n"
+        f"REFERENCIA: EXPTE. {exp_ref}\n\n"
+        f"{linea_titulo}\n\n\n"
+        f"{linea_destino}\n\n\n\n"
         "D./D.ª ........................................, mayor de edad, con DNI/NIE/TR "
         "........................, y con domicilio en ........................................, "
         "a efectos de notificaciones, actuando en su propio nombre e interés "
@@ -1636,7 +1645,7 @@ def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: 
     body = fix_roman_headings(body)
     body = _strip_initial_antecedentes_block(body)
     body = re.sub(r"\bII\.\s*ALEGACIONES\b", "I. ALEGACIONES", body, count=1, flags=re.IGNORECASE)
-    body = re.sub(r"\n{3,}", "\n\n", body).strip() + "\n"
+    body = re.sub(r"\n{4,}", "\n\n\n", body).strip() + "\n"
 
     body = cabecera + body
 
