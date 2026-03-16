@@ -4,7 +4,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
 
 
 def _escape_and_format(text: str) -> str:
@@ -47,7 +47,7 @@ def build_pdf(title: str, body: str) -> bytes:
         fontSize=14,
         leading=18,
         spaceAfter=10,
-        alignment=TA_LEFT,
+        alignment=TA_CENTER,
     )
 
     body_style = ParagraphStyle(
@@ -57,7 +57,7 @@ def build_pdf(title: str, body: str) -> bytes:
         fontSize=10,
         leading=13,
         spaceAfter=6,
-        alignment=TA_LEFT,
+        alignment=TA_CENTER,
     )
 
     story = []
