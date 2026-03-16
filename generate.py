@@ -17,6 +17,7 @@ from ai.infractions.marcas_viales import build_marcas_viales_strong_template
 from ai.infractions.seguro import build_seguro_strong_template
 from ai.infractions.cinturon import build_cinturon_strong_template
 from ai.infractions.itv import build_itv_strong_template
+from ai.infractions.carril import build_carril_strong_template
 from ai.infractions.generic import build_generic_body
 from ai.infractions.municipal_semaforo import build_municipal_semaforo_template
 from ai.infractions.casco import build_casco_strong_template
@@ -503,14 +504,22 @@ def _normalized_blob(core: Dict[str, Any]) -> str:
 def _semaforo_positive_signals(blob: str) -> int:
     score = 0
     weighted = [
+        ("cruce con fase roja del semaforo", 8),
         ("cruce con fase roja", 6),
         ("cruce fase roja", 6),
+        ("semaforo en fase roja", 6),
+        ("luz roja del semaforo", 6),
+        ("semaforo en rojo", 5),
+        ("cruce en rojo", 5),
+        ("señal luminosa roja", 5),
+        ("senal luminosa roja", 5),
         ("semaforo", 4),
         ("fase roja", 4),
-        ("cruce en rojo", 4),
-        ("linea de detencion", 3),
-        ("rebase la linea de detencion", 3),
-        ("rebasar la linea de detencion", 3),
+        ("linea de detencion", 4),
+        ("rebase la linea de detencion", 4),
+        ("rebasar la linea de detencion", 4),
+        ("no detenerse ante semaforo", 5),
+        ("reanudar la marcha con semaforo", 5),
         ("articulo 146", 5),
         ("art. 146", 5),
     ]
@@ -667,26 +676,117 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
 
     add(
         "velocidad",
-        ["km/h", "radar", "cinemometro", "exceso de velocidad", "limitada la velocidad a", "multanova", "velolaser", "pegasus", "tramo"],
+        [
+            "km/h",
+            "radar",
+            "cinemometro",
+            "exceso de velocidad",
+            "limitada la velocidad a",
+            "multanova",
+            "velolaser",
+            "pegasus",
+            "tramo",
+            "velocidad medida",
+            "velocidad detectada",
+            "velocidad maxima",
+            "velocidad maxima permitida",
+            "superar velocidad",
+        ],
         3,
     )
 
     scores["semaforo"] += _semaforo_positive_signals(blob)
     scores["semaforo"] -= _semaforo_blockers(blob)
 
-    add("movil", ["telefono movil", "uso manual", "manipulando el movil", "sujetando con la mano el dispositivo"], 3)
-    add("auriculares", ["auricular", "auriculares", "cascos conectados", "reproductores de sonido", "porta auricular"], 3)
-    add("cinturon", ["cinturon de seguridad", "sin cinturon", "sin cinturón", "correctamente abrochado", "no utilizar el cinturón"], 3)
-    add("casco", ["sin casco", "no llevar casco", "casco de proteccion", "casco de protección", "casco homologado"], 3)
+    add(
+        "movil",
+        [
+            "telefono movil",
+            "telefono",
+            "movil",
+            "uso manual",
+            "manipulando el movil",
+            "sujetando con la mano el dispositivo",
+            "manipular telefono",
+            "utilizar dispositivo movil",
+            "dispositivo movil con la mano",
+            "whatsapp",
+            "pantalla del telefono",
+            "llamada telefónica",
+            "llamada telefonica",
+        ],
+        3,
+    )
+
+    add(
+        "auriculares",
+        [
+            "auricular",
+            "auriculares",
+            "cascos conectados",
+            "reproductores de sonido",
+            "porta auricular",
+            "bluetooth",
+            "intercomunicador",
+            "aparatos receptores",
+            "aparatos reproductores",
+            "dispositivo de audio",
+            "reproductor de musica",
+            "reproductor de música",
+            "oido izquierdo",
+            "oido derecho",
+        ],
+        3,
+    )
+
+    add(
+        "cinturon",
+        [
+            "cinturon de seguridad",
+            "sin cinturon",
+            "sin cinturón",
+            "correctamente abrochado",
+            "no utilizar el cinturon",
+            "no utilizar el cinturón",
+            "sin llevar abrochado",
+            "ocupante del vehiculo sin cinturon",
+            "ocupante del vehículo sin cinturón",
+        ],
+        3,
+    )
+
+    add(
+        "casco",
+        [
+            "sin casco",
+            "no llevar casco",
+            "casco de proteccion",
+            "casco de protección",
+            "casco homologado",
+            "casco no homologado",
+            "casco desabrochado",
+            "casco mal abrochado",
+        ],
+        3,
+    )
 
     add(
         "atencion",
         [
             "atencion permanente",
             "conduccion negligente",
+            "conducir de forma negligente",
             "distraccion",
             "temeraria",
             "conducir de forma temeraria",
+            "sin la diligencia necesaria",
+            "manipulan objetos",
+            "soltar ambas manos",
+            "ambas manos del volante",
+            "bailando",
+            "mordia las uñas",
+            "mordia las unas",
+            "libertad de movimientos",
             "no se para",
             "ordenes de los agentes",
             "orden del agente",
@@ -698,6 +798,8 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             "policia",
             "articulo 3",
             "art. 3",
+            "riesgo",
+            "peligro",
         ],
         3,
     )
@@ -710,19 +812,51 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
         "condiciones_vehiculo",
         [
             "condiciones reglamentarias",
+            "luces no reglamentarias",
             "alumbrado",
             "senalizacion optica",
+            "dispositivo luminoso",
+            "panel luminoso",
             "homolog",
             "reflectante",
             "luz roja intermitente",
+            "luz trasera roja",
             "destellos",
             "intermitente",
             "catadioptrico",
+            "deslumbramiento",
+            "deslumbrar",
+            "neumatico",
+            "neumaticos en mal estado",
+            "banda de rodadura",
+            "dibujo inferior",
+            "1,6 mm",
+            "neumatico liso",
+            "no autorizado",
+            "modificacion no autorizada",
         ],
         3,
     )
 
-    add("carril", ["carril distinto del situado mas a la derecha", "adelantar por la derecha", "posicion en la via"], 3)
+    add(
+        "carril",
+        [
+            "carril distinto del situado mas a la derecha",
+            "carril distinto del sitio mas a la derecha",
+            "carril distinto",
+            "carril derecho",
+            "carril izquierdo",
+            "calzada de varios carriles",
+            "calzada con mas de un carril",
+            "sentido de la marcha",
+            "carril central",
+            "posicion en la via",
+            "posicion correcta en la calzada",
+            "sin adelantar",
+            "adelantar por la derecha",
+        ],
+        4,
+    )
 
     # Bloqueadores cruzados
     if _looks_like_bike_light_case(core):
@@ -759,6 +893,20 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         return "semaforo"
 
     if any(s in blob for s in ["bicicleta", "ciclistas", "ciclista"]) and any(s in blob for s in ["atencion permanente", "conduccion negligente", "distraccion"]):
+        return "atencion"
+
+    if any(s in blob for s in [
+        "no mantener la atencion",
+        "atencion permanente",
+        "conduccion negligente",
+        "conducir de forma negligente",
+        "sin la diligencia necesaria",
+        "libertad de movimientos",
+        "mordia las uñas",
+        "mordia las unas",
+        "bailando",
+        "soltar ambas manos",
+    ]):
         return "atencion"
 
     scores = _score_infraction_from_core(core)
@@ -1431,7 +1579,7 @@ def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
     elif tipo == "condiciones_vehiculo":
         return build_condiciones_vehiculo_strong_template(core), "condiciones_vehiculo"
     elif tipo == "carril":
-        return build_generic_body(core), "carril"
+        return build_carril_strong_template(core), "carril"
     elif jurisdiccion == "municipal":
         blob = json.dumps(core, ensure_ascii=False).lower()
         if "sentido contrario" in blob or "direccion prohibida" in blob or "dirección prohibida" in blob:
