@@ -9,13 +9,14 @@ from admin_migrate import router as admin_migrate_router
 from analyze import router as analyze_router
 from analyze_expediente import router as analyze_expediente_router
 from generate import router as generate_router
+from debug_generate_preview import router as debug_generate_preview_router
 from files import router as files_router
 from billing import router as billing_router
 from admin_migrate_payments import router as admin_payments_router
 from ai_router import router as ai_router
 from partner_cases import router as partner_cases_router
 from ops_automation_router import router as ops_automation_router
-from debug_generate_preview import router as debug_generate_preview_router
+
 
 # ✅ AÑADIDO: OPS (operador)
 from ops import router as ops_router
@@ -42,13 +43,14 @@ app.include_router(admin_migrate_router)
 app.include_router(analyze_router)
 app.include_router(analyze_expediente_router)
 app.include_router(generate_router)
+app.include_router(debug_generate_preview_router)
 app.include_router(files_router)
 app.include_router(billing_router)
 app.include_router(admin_payments_router)
 app.include_router(ai_router)
 app.include_router(partner_cases_router)
 app.include_router(ops_automation_router)
-app.include_router(debug_generate_preview_router)
+
 
 # ✅ NUEVO: router de operador (/ops/*)
 app.include_router(ops_router)
