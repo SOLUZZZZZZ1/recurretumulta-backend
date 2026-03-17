@@ -1008,8 +1008,7 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "luz roja intermitente",
         "deslumbramiento",
     ]):
-        if condición:
-            return "condiciones_vehiculo"
+        return "condiciones_vehiculo"
 
     if any(s in blob for s in [
         "carril derecho",
