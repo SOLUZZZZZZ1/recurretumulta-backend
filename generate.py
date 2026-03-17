@@ -1113,23 +1113,22 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         return tipo
 
     # Producción blindada: primero clasificar con el hecho limpio.
-    blob = _focused_infraction_blob(core) or _normalized_blob(core)
+    blob = _focused_infraction_blob(core)
     full_blob = _normalized_blob(core)
 
-    # ===============================
-    # 🔥 BLINDAJE FUERTE POR FAMILIAS
-    # ===============================
+    if not blob.strip():
+        blob = full_blob
 
-    # ITV
+    # Blindaje fuerte por familias (clasificación temprana con hecho limpio)
     if any(s in blob for s in [
         "inspeccion tecnica", "inspección técnica", "itv",
         "itv caducada", "itv vencida", "itv expirada",
         "sin inspeccion tecnica", "sin inspección técnica",
         "no tener vigente la inspeccion tecnica",
+        "no tener vigente la inspección técnica",
     ]):
         return "itv"
 
-    # SEGURO
     if any(s in blob for s in [
         "seguro obligatorio", "sin seguro", "carecer de seguro",
         "cobertura minima obligatoria", "cobertura mínima obligatoria",
@@ -1137,7 +1136,6 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
     ]):
         return "seguro"
 
-    # CASCO
     if any(s in blob for s in [
         "casco", "sin casco",
         "casco no abrochado", "casco desabrochado",
@@ -1145,59 +1143,63 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
     ]):
         return "casco"
 
-    # AURICULARES
     if any(s in blob for s in [
-        "auriculares", "dispositivos acusticos",
+        "auriculares", "dispositivos acusticos", "dispositivos acústicos",
         "aparato receptor sonoro",
         "en ambos oidos", "en ambos oídos",
     ]):
         return "auriculares"
 
-    # CONDICIONES VEHÍCULO
     if any(s in blob for s in [
         "neumatico", "neumático",
-        "ruedas en mal estado",
-        "componentes mecanicos defectuosos",
-        "deficiencias tecnicas",
+        "ruedas en mal estado", "ruedas en deficiente estado",
+        "componentes mecanicos defectuosos", "componentes mecánicos defectuosos",
+        "deficiencias tecnicas", "deficiencias técnicas",
         "fallo iluminacion", "fallo iluminación",
+        "fallo en el sistema de iluminacion", "fallo en el sistema de iluminación",
+        "sistema de iluminacion", "sistema de iluminación",
+        "dispositivos luminosos", "dispositivos luminosos no reglamentarios",
+        "elementos de seguridad", "deficiente estado",
     ]):
         return "condiciones_vehiculo"
 
-    # CARRIL
     if any(s in blob for s in [
-        "carril", "posicion en la calzada",
-        "posición en la calzada",
-        "carril no habilitado",
-        "ocupar carril",
+        "carril", "posicion en la calzada", "posición en la calzada",
+        "carril no habilitado", "ocupar carril",
+        "configuracion de la calzada", "configuración de la calzada",
+        "posicion no ajustada", "posición no ajustada",
+        "uso indebido del carril",
     ]):
         return "carril"
 
-    # ATENCIÓN
     if any(s in blob for s in [
         "distraccion", "distracción",
-        "no mantener la atencion",
-        "no conservar atencion",
-        "conducta distraida",
+        "no mantener la atencion", "no mantener la atención",
+        "no conservar atencion", "no conservar atención",
+        "conducta distraida", "conducta distraída",
+        "atencion plena", "atención plena",
     ]):
         return "atencion"
 
-    # MÓVIL
-    if any(s in blob for s in [
-        "telefono", "móvil", "movil",
-        "terminal", "dispositivo electronico",
-        "pantalla",
-    ]):
-        return "movil"
-
-    # 🔥 ALCOHOL PRIORIDAD ABSOLUTA
     if any(s in blob for s in [
         "alcohol", "alcoholemia", "etilometro", "etilómetro",
         "test de alcohol", "resultado positivo",
     ]):
         return "alcohol"
 
-    if not blob.strip():
-        blob = full_blob
+    if any(s in blob for s in [
+        "telefono", "teléfono", "móvil", "movil",
+        "terminal", "dispositivo electronico", "dispositivo electrónico",
+        "pantalla",
+    ]):
+        return "movil"
+
+    if any(s in blob for s in [
+        "delimitacion continua", "delimitación continua",
+        "linea continua", "línea continua",
+        "marca continua", "marca vial continua",
+    ]):
+        return "marcas_viales"
 
     # Blindaje duro: si el hecho limpio contiene señales semafóricas, semáforo gana.
     if any(s in blob for s in [
@@ -1327,6 +1329,12 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "manipulando objetos",
         "manipulando comida",
         "manipulando bebida",
+        "atencion plena",
+        "atención plena",
+        "no conservar atencion",
+        "no conservar atención",
+        "no conservar atencion plena",
+        "no conservar atención plena",
     ]):
         return "atencion"
 
@@ -1404,6 +1412,25 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "fallo en sistema de iluminacion",
         "fallo en sistema de iluminación",
         "elementos de seguridad defectuosos",
+        "dispositivos luminosos no reglamentarios",
+        "dispositivos luminosos",
+        "sistema de iluminacion",
+        "sistema de iluminación",
+        "fallo iluminacion",
+        "fallo iluminación",
+        "fallo en el sistema de iluminacion",
+        "fallo en el sistema de iluminación",
+        "componentes mecanicos defectuosos",
+        "componentes mecánicos defectuosos",
+        "mecanicos defectuosos",
+        "mecánicos defectuosos",
+        "deficiencias tecnicas",
+        "deficiencias técnicas",
+        "deficiente estado",
+        "estado de uso",
+        "ruedas en deficiente estado",
+        "ruedas en deficiente estado de uso",
+        "ruedas",
     ]):
         return "condiciones_vehiculo"
 
@@ -1464,6 +1491,11 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "marcas viales prohibidas",
         "zona de marcas viales prohibidas",
         "invadir zona de marcas viales",
+        "delimitacion continua",
+        "delimitación continua",
+        "marca continua",
+        "franquear la delimitacion continua",
+        "franquear la delimitación continua",
     ]):
         return "marcas_viales"
 
@@ -1483,6 +1515,13 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "posición incorrecta en la calzada",
         "no respetar posicion en calzada",
         "no respetar posición en calzada",
+        "configuracion de la calzada",
+        "configuración de la calzada",
+        "posicion no ajustada",
+        "posición no ajustada",
+        "posicion no ajustada a la configuracion de la calzada",
+        "posición no ajustada a la configuración de la calzada",
+        "uso indebido del carril",
     ]):
         return "carril"
 
