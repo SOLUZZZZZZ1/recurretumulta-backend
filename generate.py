@@ -500,6 +500,46 @@ def _normalized_blob(core: Dict[str, Any]) -> str:
     )
 
 
+def _focused_infraction_blob(core: Dict[str, Any]) -> str:
+    """
+    Blob conservador para clasificar la familia.
+    Prioriza SOLO el hecho denunciado / resumido / imputado y evita contaminarse
+    con OCR global, PDFs reconstruidos o textos internos del expediente.
+    """
+    core = core or {}
+    parts = [
+        _safe_str(core.get("hecho_denunciado_resumido")),
+        _safe_str(core.get("hecho_denunciado_literal")),
+        _safe_str(core.get("hecho_imputado")),
+        _safe_str(core.get("subtipo_infraccion")),
+        _safe_str(core.get("tipo_infraccion")),
+        _safe_str(core.get("norma_hint")),
+    ]
+
+    art = core.get("articulo_infringido_num")
+    apt = core.get("apartado_infringido_num")
+    if art not in (None, ""):
+        parts.append(f"articulo {art}")
+        parts.append(f"art. {art}")
+    if art not in (None, "") and apt not in (None, ""):
+        parts.append(f"articulo {art} apartado {apt}")
+
+    blob = " ".join(p for p in parts if isinstance(p, str) and p.strip()).lower()
+    return (
+        blob.replace("semáforo", "semaforo")
+            .replace("línea", "linea")
+            .replace("detención", "detencion")
+            .replace("policía", "policia")
+            .replace("órdenes", "ordenes")
+            .replace("señalización", "senalizacion")
+    )
+
+
+def _has_meaningful_focus(core: Dict[str, Any]) -> bool:
+    blob = _focused_infraction_blob(core)
+    return len(blob.strip()) >= 12
+
+
 def _semaforo_positive_signals(blob: str) -> int:
     score = 0
     weighted = [
@@ -652,7 +692,9 @@ def _looks_like_semaforo(core: Dict[str, Any]) -> bool:
 
 
 def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
-    blob = _normalized_blob(core)
+    blob = _focused_infraction_blob(core)
+    if not blob.strip():
+        blob = _normalized_blob(core)
     scores = {
         "velocidad": 0,
         "semaforo": 0,
@@ -1040,7 +1082,12 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
     if tipo and tipo not in ("otro", "unknown", "desconocido", "generic"):
         return tipo
 
-    blob = _normalized_blob(core)
+    # Producción blindada: primero clasificar con el hecho limpio.
+    blob = _focused_infraction_blob(core)
+    full_blob = _normalized_blob(core)
+
+    if not blob.strip():
+        blob = full_blob
 
     # Casos expresos que no deben saltar a semáforo por ruido contextual
     if _looks_like_bike_light_case(core):
@@ -1055,6 +1102,11 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
 
     # Semáforo solo con evidencia fuerte y margen suficiente
     if _looks_like_semaforo(core):
+        return "semaforo"
+
+    # Si el hecho limpio ya apunta a semáforo, no dejamos que OCR con km/h
+    # arrastre el caso hacia velocidad.
+    if any(s in blob for s in ["fase roja", "luz roja", "semaforo", "senal luminosa roja", "linea de detencion"]):
         return "semaforo"
 
     if any(s in blob for s in ["bicicleta", "ciclistas", "ciclista"]) and any(s in blob for s in ["atencion permanente", "conduccion negligente", "distraccion"]):
