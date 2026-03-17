@@ -1997,6 +1997,59 @@ def _needs_speed_retry(core: Dict[str, Any]) -> bool:
     return False
 
 
+
+
+def _looks_like_generated_rtm_document(text: str) -> bool:
+    t = _normalize_for_matching(text)
+    if not t:
+        return False
+
+    strong_markers = [
+        "escrito de alegaciones",
+        "fundamentos de derecho",
+        "s u p l i c a",
+        "suplica:",
+        "otrosi digo",
+        "otrosi digo",
+        "extracto literal del boletin",
+        "extracto literal del boletín",
+        "referencia: expte",
+        "identificacion expediente:",
+        "identificación expediente:",
+        "hecho imputado:",
+        "alegacion primera",
+        "alegación primera",
+        "archivo del expediente",
+        "insuficiencia probatoria",
+        "motivacion individualizada",
+        "motivación individualizada",
+    ]
+
+    hits = sum(1 for m in strong_markers if m in t)
+
+    if hits >= 3:
+        return True
+
+    # Patrón muy típico de documento generado por RTM
+    combo_a = ("escrito de alegaciones" in t and "fundamentos de derecho" in t)
+    combo_b = ("suplica:" in t and "otrosi digo" in t)
+    combo_c = ("extracto literal del boletin" in t and "hecho imputado:" in t)
+    combo_d = ("referencia: expte" in t and "archivo del expediente" in t)
+
+    return combo_a or combo_b or combo_c or combo_d
+
+
+def _raise_if_generated_resource_text(text: str) -> None:
+    if _looks_like_generated_rtm_document(text):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "documento_no_valido_para_analisis",
+                "message": "El archivo parece ser un recurso o escrito ya generado, no una denuncia o boletin original.",
+            },
+        )
+
+
 def _ensure_raw_fields(core: Dict[str, Any], text_content: str = "") -> Dict[str, Any]:
     out = dict(core or {})
 
@@ -2063,6 +2116,7 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
 
             elif mime == "application/pdf":
                 text_content = extract_text_from_pdf_bytes(content)
+                _raise_if_generated_resource_text(text_content)
 
                 extracted_text: Dict[str, Any] = {}
                 extracted_vision: Dict[str, Any] = {}
@@ -2097,6 +2151,7 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
 
             elif mime in DOCX_MIMES:
                 text_content = extract_text_from_docx_bytes(content)
+                _raise_if_generated_resource_text(text_content)
                 if has_enough_text(text_content):
                     extracted_core = extract_from_text(text_content) or {}
                     extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
