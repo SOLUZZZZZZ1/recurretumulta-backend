@@ -1113,8 +1113,88 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         return tipo
 
     # Producción blindada: primero clasificar con el hecho limpio.
-    blob = _focused_infraction_blob(core)
+    blob = _focused_infraction_blob(core) or _normalized_blob(core)
     full_blob = _normalized_blob(core)
+
+    # ===============================
+    # 🔥 BLINDAJE FUERTE POR FAMILIAS
+    # ===============================
+
+    # ITV
+    if any(s in blob for s in [
+        "inspeccion tecnica", "inspección técnica", "itv",
+        "itv caducada", "itv vencida", "itv expirada",
+        "sin inspeccion tecnica", "sin inspección técnica",
+        "no tener vigente la inspeccion tecnica",
+    ]):
+        return "itv"
+
+    # SEGURO
+    if any(s in blob for s in [
+        "seguro obligatorio", "sin seguro", "carecer de seguro",
+        "cobertura minima obligatoria", "cobertura mínima obligatoria",
+        "poliza obligatoria", "póliza obligatoria",
+    ]):
+        return "seguro"
+
+    # CASCO
+    if any(s in blob for s in [
+        "casco", "sin casco",
+        "casco no abrochado", "casco desabrochado",
+        "casco mal ajustado",
+    ]):
+        return "casco"
+
+    # AURICULARES
+    if any(s in blob for s in [
+        "auriculares", "dispositivos acusticos",
+        "aparato receptor sonoro",
+        "en ambos oidos", "en ambos oídos",
+    ]):
+        return "auriculares"
+
+    # CONDICIONES VEHÍCULO
+    if any(s in blob for s in [
+        "neumatico", "neumático",
+        "ruedas en mal estado",
+        "componentes mecanicos defectuosos",
+        "deficiencias tecnicas",
+        "fallo iluminacion", "fallo iluminación",
+    ]):
+        return "condiciones_vehiculo"
+
+    # CARRIL
+    if any(s in blob for s in [
+        "carril", "posicion en la calzada",
+        "posición en la calzada",
+        "carril no habilitado",
+        "ocupar carril",
+    ]):
+        return "carril"
+
+    # ATENCIÓN
+    if any(s in blob for s in [
+        "distraccion", "distracción",
+        "no mantener la atencion",
+        "no conservar atencion",
+        "conducta distraida",
+    ]):
+        return "atencion"
+
+    # MÓVIL
+    if any(s in blob for s in [
+        "telefono", "móvil", "movil",
+        "terminal", "dispositivo electronico",
+        "pantalla",
+    ]):
+        return "movil"
+
+    # 🔥 ALCOHOL PRIORIDAD ABSOLUTA
+    if any(s in blob for s in [
+        "alcohol", "alcoholemia", "etilometro", "etilómetro",
+        "test de alcohol", "resultado positivo",
+    ]):
+        return "alcohol"
 
     if not blob.strip():
         blob = full_blob
