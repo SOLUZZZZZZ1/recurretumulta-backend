@@ -365,9 +365,11 @@ def _looks_like_internal_extract(text: str) -> bool:
 
 
 def get_hecho_para_recurso(core: Dict[str, Any]) -> str:
+    # Fuente de verdad: priorizar siempre el hecho literal del boletín.
+    # El resumido puede venir contaminado por OCR, expediente o reconstrucciones.
     raw = (
-        core.get("hecho_denunciado_resumido")
-        or core.get("hecho_denunciado_literal")
+        core.get("hecho_denunciado_literal")
+        or core.get("hecho_denunciado_resumido")
         or core.get("hecho_imputado")
         or ""
     )
@@ -532,13 +534,13 @@ def _normalized_blob(core: Dict[str, Any]) -> str:
 def _focused_infraction_blob(core: Dict[str, Any]) -> str:
     """
     Blob conservador para clasificar la familia.
-    Prioriza SOLO el hecho denunciado / resumido / imputado y evita contaminarse
-    con OCR global, PDFs reconstruidos o textos internos del expediente.
+    Fuente de verdad: prioriza el hecho literal del boletín y solo después el resumido.
+    Evita contaminarse con OCR global, PDFs reconstruidos o textos internos del expediente.
     """
     core = core or {}
     parts = [
-        _safe_str(core.get("hecho_denunciado_resumido")),
         _safe_str(core.get("hecho_denunciado_literal")),
+        _safe_str(core.get("hecho_denunciado_resumido")),
         _safe_str(core.get("hecho_imputado")),
         _safe_str(core.get("subtipo_infraccion")),
         _safe_str(core.get("tipo_infraccion")),
@@ -2443,6 +2445,19 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+def classify(value: Any):
+    """Compatibilidad hacia atrás para llamadas antiguas.
+    Devuelve (tipo, scores) usando la lógica nueva y priorizando el hecho literal.
+    """
+    if isinstance(value, dict):
+        core = value
+    else:
+        core = {"hecho_denunciado_literal": _safe_str(value)}
+    tipo = resolve_infraction_type(core)
+    scores = _score_infraction_from_core(core)
+    return tipo, scores
+
+
 def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     row = conn.execute(
         text("SELECT extracted_json FROM extractions WHERE case_id=:case_id ORDER BY created_at DESC LIMIT 1"),
@@ -2460,6 +2475,8 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         if literal:
             core["hecho_denunciado_literal"] = literal
 
+    # Compatibilidad y fuente de verdad: clasificar siempre desde el core completo,
+    # priorizando el hecho literal del boletín.
     tipo = resolve_infraction_type(core)
     scores = _score_infraction_from_core(core)
     jurisdiccion = resolve_jurisdiction(core)
