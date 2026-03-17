@@ -1207,15 +1207,30 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
     ]):
         return "movil"
 
+    # Blindaje duro: si el hecho limpio contiene señales semafóricas, semáforo gana.
+    if any(s in blob for s in [
+        "luz roja",
+        "fase roja",
+        "semaforo",
+        "semáforo",
+        "indicacion luminosa roja",
+        "indicación luminosa roja",
+        "senal luminosa roja",
+        "señal luminosa roja",
+        "linea de detencion",
+        "línea de detención",
+    ]):
+        return "semaforo"
+
     # MARCAS VIALES
     if any(s in blob for s in [
         "linea continua", "marca vial continua", "marca vial longitudinal continua",
         "delimitacion continua", "marca continua",
-        "linea de detencion", "marcas viales prohibidas",
+        "marcas viales prohibidas",
     ]):
         return "marcas_viales"
 
-    # Blindaje duro: si el hecho limpio contiene señales semafóricas, semáforo gana.
+    # Blindaje duro redundante: si el hecho limpio contiene señales semafóricas, semáforo gana.
     if any(s in blob for s in [
         "luz roja",
         "fase roja",
