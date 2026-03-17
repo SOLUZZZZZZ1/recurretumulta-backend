@@ -713,6 +713,8 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             "manipular teléfono móvil durante la conducción",
             "manipular telefono movil",
             "manipular teléfono móvil",
+            "manipular telefono",
+            "manipular teléfono",
             "telefono movil con la mano",
             "teléfono móvil con la mano",
             "dispositivo movil",
@@ -725,23 +727,19 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             "pantalla del telefono",
             "pantalla del teléfono",
             "interactuar con la pantalla",
+            "interactuar con la pantalla del telefono",
             "interactuar con la pantalla del teléfono",
             "uso manual",
             "manipulando el movil",
             "manipulando el móvil",
             "sujetando con la mano el dispositivo",
-            "manipular telefono",
-            "manipular teléfono",
             "utilizar dispositivo movil",
             "utilizar dispositivo móvil",
-            "dispositivo movil con la mano",
-            "dispositivo móvil con la mano",
-            "uso del telefono movil",
-            "uso del teléfono móvil",
             "terminal movil",
             "terminal móvil",
+            "uso del telefono movil",
+            "uso del teléfono móvil",
             "whatsapp",
-            "pantalla del telefono",
             "llamada telefónica",
             "llamada telefonica",
         ],
@@ -921,14 +919,14 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             "neumáticos",
             "neumaticos en mal estado",
             "neumáticos en mal estado",
+            "neumatico en mal estado",
+            "neumático en mal estado",
             "neumatico liso",
             "neumático liso",
             "circular con neumatico liso",
             "circular con neumático liso",
             "neumaticos lisos",
             "neumáticos lisos",
-            "neumatico en mal estado",
-            "neumático en mal estado",
             "neumaticicos en mal estado",
             "banda de rodadura",
             "parte trasera pulida",
@@ -938,9 +936,7 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             "1,6 mm",
             "neumatico liso",
             "neumaticos lisos",
-            "neumáticos lisos",
             "neumatico en mal estado",
-            "neumático en mal estado",
             "no autorizado",
             "modificacion no autorizada",
         ],
@@ -959,13 +955,14 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             "calzada con mas de un carril",
             "sentido de la marcha",
             "carril central",
-            "posición correcta en la calzada",
-            "posición en la calzada",
-            "no respetar la posición correcta en la calzada",
             "posicion en la via",
+            "posición en la vía",
+            "posicion en la calzada",
+            "posición en la calzada",
             "posicion correcta en la calzada",
+            "posición correcta en la calzada",
             "no respetar la posicion correcta en la calzada",
-            "no respetar la posicion correcta en la calzada",
+            "no respetar la posición correcta en la calzada",
             "sin adelantar",
             "adelantar por la derecha",
         ],
@@ -993,36 +990,7 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
 
     # Casos expresos que no deben saltar a semáforo por ruido contextual
     if _looks_like_bike_light_case(core):
-        if any(s in blob for s in [
-        "neumatico",
-        "neumático",
-        "neumaticos",
-        "neumáticos",
-        "neumatico liso",
-        "neumático liso",
-        "neumaticos en mal estado",
-        "neumáticos en mal estado",
-        "banda de rodadura",
-        "dibujo inferior",
-        "dispositivo luminoso",
-        "luz roja intermitente",
-        "deslumbramiento",
-    ]):
-        return "condiciones_vehiculo"
-
-    if any(s in blob for s in [
-        "carril derecho",
-        "carril izquierdo",
-        "carril central",
-        "calzada de varios carriles",
-        "posicion correcta en la calzada",
-        "posición correcta en la calzada",
-        "posicion en la calzada",
-        "posición en la calzada",
-    ]):
-        return "carril"
-
-    scores = _score_infraction_from_core(core)
+        scores = _score_infraction_from_core(core)
         if scores.get("condiciones_vehiculo", 0) > 0:
             return "condiciones_vehiculo"
 
@@ -1050,23 +1018,6 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         return "alcohol"
 
     if any(s in blob for s in [
-        "telefono movil",
-        "teléfono móvil",
-        "movil",
-        "móvil",
-        "manipular telefono movil",
-        "manipular teléfono móvil",
-        "utilizar dispositivo movil",
-        "utilizar dispositivo móvil",
-        "sujetar el telefono movil",
-        "sujetar el teléfono móvil",
-        "pantalla del telefono",
-        "pantalla del teléfono",
-        "whatsapp",
-    ]):
-        return "movil"
-
-    if any(s in blob for s in [
         "no mantener la atencion",
         "no mantener la atención",
         "atencion permanente",
@@ -1076,6 +1027,12 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "conduccion negligente",
         "conducir de forma negligente",
         "sin la diligencia necesaria",
+        "sin la atencion necesaria",
+        "sin la atención necesaria",
+        "conducir sin la atencion necesaria",
+        "conducir sin la atención necesaria",
+        "falta de atencion",
+        "falta de atención",
         "libertad de movimientos",
         "mordia las uñas",
         "mordia las unas",
@@ -1083,16 +1040,14 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "morderse las unas",
         "se muerde las uñas",
         "se muerde las unas",
+        "mientras se muerde las uñas",
+        "mientras se muerde las unas",
         "conducir mientras se muerde las uñas",
         "conducir mientras se muerde las unas",
+        "conducir mientras se mordia las uñas",
+        "conducir mientras se mordia las unas",
         "bailando",
         "soltar ambas manos",
-        "sin la atencion necesaria",
-        "sin la atención necesaria",
-        "conducir sin la atencion necesaria",
-        "conducir sin la atención necesaria",
-        "falta de atencion",
-        "falta de atención",
         "mirando repetidamente al acompañante",
         "mirando repetidamente al acompanante",
         "come y manipula objetos",
@@ -1108,6 +1063,49 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "manipulando bebida",
     ]):
         return "atencion"
+
+    if any(s in blob for s in [
+        "telefono movil",
+        "teléfono móvil",
+        "movil",
+        "móvil",
+        "manipular telefono movil",
+        "manipular teléfono móvil",
+        "sujetar el telefono movil",
+        "sujetar el teléfono móvil",
+        "pantalla del telefono",
+        "pantalla del teléfono",
+        "whatsapp",
+        "terminal movil",
+        "terminal móvil",
+    ]):
+        return "movil"
+
+    if any(s in blob for s in [
+        "neumatico",
+        "neumático",
+        "neumaticos",
+        "neumáticos",
+        "neumatico liso",
+        "neumático liso",
+        "neumaticos en mal estado",
+        "neumáticos en mal estado",
+        "banda de rodadura",
+        "dibujo inferior",
+        "1,6 mm",
+    ]):
+        return "condiciones_vehiculo"
+
+    if any(s in blob for s in [
+        "carril derecho",
+        "carril izquierdo",
+        "carril central",
+        "posicion correcta en la calzada",
+        "posición correcta en la calzada",
+        "posicion en la calzada",
+        "posición en la calzada",
+    ]):
+        return "carril"
 
     scores = _score_infraction_from_core(core)
     best = max(scores.items(), key=lambda kv: kv[1])
