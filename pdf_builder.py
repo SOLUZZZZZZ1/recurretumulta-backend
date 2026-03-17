@@ -35,21 +35,23 @@ def build_pdf(title: str, body: str) -> bytes:
         parent=styles["Normal"],
         fontName="Helvetica",
         fontSize=10,
-        leading=14,
+        leading=15,
         alignment=TA_LEFT,
-        spaceAfter=6,
+        spaceAfter=8,
     )
 
     center_style = ParagraphStyle(
         "Center",
         parent=normal_style,
         alignment=TA_CENTER,
+        spaceAfter=12,
     )
 
     bold_style = ParagraphStyle(
         "Bold",
         parent=normal_style,
         fontName="Helvetica-Bold",
+        spaceAfter=10,
     )
 
     story = []
@@ -58,14 +60,25 @@ def build_pdf(title: str, body: str) -> bytes:
         txt = line.strip().upper()
 
         if not line.strip():
-            story.append(Spacer(1, 8))
+            story.append(Spacer(1, 10))
             continue
 
         if "ESCRITO DE ALEGACIONES" in txt or "A LA JEFATURA PROVINCIAL DE TRÁFICO" in txt or "A LA JEFATURA PROVINCIAL DE TRAFICO" in txt:
             story.append(Paragraph(_escape(line), center_style))
+            story.append(Spacer(1, 6))
 
-        elif txt in ["ANTECEDENTES", "ALEGACIONES", "FUNDAMENTOS DE DERECHO", "SUPLICA", "S U P L I C A", "OTROSÍ DIGO", "OTROSI DIGO"]:
+        elif txt in [
+            "ANTECEDENTES",
+            "ALEGACIONES",
+            "FUNDAMENTOS DE DERECHO",
+            "SUPLICA",
+            "S U P L I C A",
+            "OTROSÍ DIGO",
+            "OTROSI DIGO"
+        ]:
+            story.append(Spacer(1, 6))
             story.append(Paragraph(_escape(line), bold_style))
+            story.append(Spacer(1, 4))
 
         else:
             story.append(Paragraph(_escape(line), normal_style))
