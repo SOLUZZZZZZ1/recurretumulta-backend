@@ -2349,7 +2349,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         if literal:
             core["hecho_denunciado_literal"] = literal
 
-    tipo = resolve_infraction_type(core)
+    tipo, scores = classify(get_hecho_para_recurso(core))
     jurisdiccion = resolve_jurisdiction(core)
 
     draft_body = get_hecho_para_recurso(core)
