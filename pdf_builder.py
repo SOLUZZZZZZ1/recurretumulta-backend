@@ -1,79 +1,74 @@
 import io
-
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.enums import TA_LEFT, TA_CENTER
 
-
-def _escape_and_format(text: str) -> str:
-    """Convierte texto plano a markup básico para Paragraph.
-    - Escapa &, <, >
-    - Convierte saltos de línea en <br/>
-    """
-    if text is None:
+def _escape(text):
+    if not text:
         return ""
-    s = str(text)
-    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    s = s.replace("\n", "<br/>\n")
-    return s
-
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\n", "<br/>")
+    )
 
 def build_pdf(title: str, body: str) -> bytes:
-    """
-    Genera un PDF profesional (con ajuste automático de línea y paginado)
-    a partir de título y cuerpo.
-    """
     buffer = io.BytesIO()
 
-    margin = 25 * mm
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
-        leftMargin=margin,
-        rightMargin=margin,
-        topMargin=margin,
-        bottomMargin=margin,
-        title=str(title or "").strip()[:180],
+        leftMargin=25 * mm,
+        rightMargin=25 * mm,
+        topMargin=25 * mm,
+        bottomMargin=25 * mm,
     )
 
     styles = getSampleStyleSheet()
 
-    title_style = ParagraphStyle(
-        "RTMTitle",
-        parent=styles["Heading1"],
-        fontName="Helvetica-Bold",
-        fontSize=14,
-        leading=18,
-        spaceAfter=10,
-        alignment=TA_CENTER,
-    )
-
-    body_style = ParagraphStyle(
-        "RTMBody",
+    normal_style = ParagraphStyle(
+        "NormalLeft",
         parent=styles["Normal"],
         fontName="Helvetica",
         fontSize=10,
-        leading=13,
+        leading=14,
+        alignment=TA_LEFT,
         spaceAfter=6,
+    )
+
+    center_style = ParagraphStyle(
+        "Center",
+        parent=normal_style,
         alignment=TA_CENTER,
+    )
+
+    bold_style = ParagraphStyle(
+        "Bold",
+        parent=normal_style,
+        fontName="Helvetica-Bold",
     )
 
     story = []
 
-    if title and str(title).strip():
-        story.append(Paragraph(_escape_and_format(str(title).strip()), title_style))
-        story.append(Spacer(1, 6))
+    for line in (body or "").split("\n"):
+        txt = line.strip().upper()
 
-    raw = str(body or "").strip()
-    if raw:
-        paragraphs = [p.strip() for p in raw.split("\n\n") if p.strip()]
-        for p in paragraphs:
-            story.append(Paragraph(_escape_and_format(p), body_style))
+        if not line.strip():
+            story.append(Spacer(1, 8))
+            continue
 
-    if not story:
-        story.append(Paragraph(" ", body_style))
+        if "ESCRITO DE ALEGACIONES" in txt or "A LA JEFATURA PROVINCIAL DE TRÁFICO" in txt or "A LA JEFATURA PROVINCIAL DE TRAFICO" in txt:
+            story.append(Paragraph(_escape(line), center_style))
+
+        elif txt in ["ANTECEDENTES", "ALEGACIONES", "FUNDAMENTOS DE DERECHO", "SUPLICA", "S U P L I C A", "OTROSÍ DIGO", "OTROSI DIGO"]:
+            story.append(Paragraph(_escape(line), bold_style))
+
+        else:
+            story.append(Paragraph(_escape(line), normal_style))
 
     doc.build(story)
     return buffer.getvalue()
