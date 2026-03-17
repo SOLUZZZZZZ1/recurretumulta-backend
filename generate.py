@@ -747,6 +747,12 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             "dispositivo de comunicación manual",
             "dispositivo electronico portatil",
             "dispositivo electrónico portátil",
+            "dispositivo electronico",
+            "dispositivo electrónico",
+            "manipular dispositivo electronico en marcha",
+            "manipular dispositivo electrónico en marcha",
+            "uso de dispositivo durante la conduccion",
+            "uso de dispositivo durante la conducción",
             "aparato de telecomunicaciones",
             "pantalla de terminal",
             "pantalla digital",
@@ -837,6 +843,10 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             "conducta distraída",
             "atencion suficiente al trafico",
             "atención suficiente al tráfico",
+            "sin atencion suficiente",
+            "sin atención suficiente",
+            "conducir sin atencion suficiente",
+            "conducir sin atención suficiente",
             "atencion al volante",
             "atención al volante",
             "comprometen la atencion al volante",
@@ -1184,6 +1194,12 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "pantalla digital",
         "dispositivo portatil",
         "dispositivo portátil",
+        "dispositivo electronico",
+        "dispositivo electrónico",
+        "manipular dispositivo electronico en marcha",
+        "manipular dispositivo electrónico en marcha",
+        "uso de dispositivo durante la conduccion",
+        "uso de dispositivo durante la conducción",
     ]):
         return "movil"
 
@@ -1226,6 +1242,12 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         return "alcohol"
 
     if any(s in blob for s in [
+        "tasa superior a la permitida",
+        "conducir con tasa superior a la permitida",
+    ]):
+        return "alcohol"
+
+    if any(s in blob for s in [
         "casco reglamentario",
         "no hacer uso del casco reglamentario",
         "casco mal ajustado",
@@ -1237,12 +1259,18 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "uso de dispositivos de audio",
         "dispositivos de audio en marcha",
         "dispositivo de audio",
+        "dispositivos de audio en ambos oidos",
+        "dispositivos de audio en ambos oídos",
+        "utilizar dispositivos de audio en ambos oidos",
+        "utilizar dispositivos de audio en ambos oídos",
     ]):
         return "auriculares"
 
     if any(s in blob for s in [
         "inspeccion tecnica en vigor",
         "inspección técnica en vigor",
+        "inspeccion tecnica caducada",
+        "inspección técnica caducada",
         "sin inspeccion tecnica",
         "sin inspección técnica",
     ]):
@@ -1266,12 +1294,18 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "carril derecho",
         "carril izquierdo",
         "carril central",
+        "carril incorrecto",
+        "circular por carril incorrecto",
         "posicion correcta en la calzada",
         "posición correcta en la calzada",
         "posicion en la calzada",
         "posición en la calzada",
+        "posicion en calzada",
+        "posición en calzada",
         "posicion incorrecta en la calzada",
         "posición incorrecta en la calzada",
+        "no respetar posicion en calzada",
+        "no respetar posición en calzada",
     ]):
         return "carril"
 
