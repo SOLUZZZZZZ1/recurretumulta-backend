@@ -737,8 +737,21 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             "utilizar dispositivo móvil",
             "terminal movil",
             "terminal móvil",
+            "terminal telefonico",
+            "terminal telefónico",
+            "terminal portatil",
+            "terminal portátil",
             "uso del telefono movil",
             "uso del teléfono móvil",
+            "dispositivo de comunicacion manual",
+            "dispositivo de comunicación manual",
+            "dispositivo electronico portatil",
+            "dispositivo electrónico portátil",
+            "aparato de telecomunicaciones",
+            "pantalla de terminal",
+            "pantalla digital",
+            "dispositivo portatil",
+            "dispositivo portátil",
             "whatsapp",
             "llamada telefónica",
             "llamada telefonica",
@@ -815,6 +828,25 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             "conducir sin la atención necesaria",
             "falta de atencion",
             "falta de atención",
+            "diligencia debida",
+            "debida atencion",
+            "debida atención",
+            "atencion a la via",
+            "atención a la vía",
+            "conducta distraida",
+            "conducta distraída",
+            "atencion suficiente al trafico",
+            "atención suficiente al tráfico",
+            "atencion al volante",
+            "atención al volante",
+            "comprometen la atencion",
+            "comprometen la atención",
+            "disminuyen la atencion",
+            "disminuyen la atención",
+            "interior del vehiculo",
+            "interior del vehículo",
+            "limitan el control del vehiculo",
+            "limitan el control del vehículo",
             "conduccion negligente",
             "conducir de forma negligente",
             "distraccion",
@@ -1033,6 +1065,25 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "conducir sin la atención necesaria",
         "falta de atencion",
         "falta de atención",
+        "diligencia debida",
+        "debida atencion",
+        "debida atención",
+        "atencion a la via",
+        "atención a la vía",
+        "conducta distraida",
+        "conducta distraída",
+        "atencion suficiente al trafico",
+        "atención suficiente al tráfico",
+        "atencion al volante",
+        "atención al volante",
+        "comprometen la atencion",
+        "comprometen la atención",
+        "disminuyen la atencion",
+        "disminuyen la atención",
+        "interior del vehiculo",
+        "interior del vehículo",
+        "limitan el control del vehiculo",
+        "limitan el control del vehículo",
         "libertad de movimientos",
         "mordia las uñas",
         "mordia las unas",
@@ -1064,6 +1115,20 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
     ]):
         return "atencion"
 
+    if (
+        any(s in blob for s in [
+            "roja", "luz roja", "fase roja", "semaforo", "semáforo",
+            "interseccion", "intersección", "cruce",
+            "indicacion luminosa roja", "indicación luminosa roja",
+            "señal luminosa en fase roja", "reguladora del trafico", "reguladora del tráfico",
+            "dispositivo luminoso en rojo"
+        ])
+        and not any(s in blob for s in [
+            "trasera intermitente", "parte trasera", "destellos", "dispositivo luminoso no autorizado"
+        ])
+    ):
+        return "semaforo"
+
     if any(s in blob for s in [
         "telefono movil",
         "teléfono móvil",
@@ -1078,6 +1143,19 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "whatsapp",
         "terminal movil",
         "terminal móvil",
+        "terminal telefonico",
+        "terminal telefónico",
+        "terminal portatil",
+        "terminal portátil",
+        "dispositivo de comunicacion manual",
+        "dispositivo de comunicación manual",
+        "dispositivo electronico portatil",
+        "dispositivo electrónico portátil",
+        "aparato de telecomunicaciones",
+        "pantalla de terminal",
+        "pantalla digital",
+        "dispositivo portatil",
+        "dispositivo portátil",
     ]):
         return "movil"
 
@@ -1095,6 +1173,17 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "1,6 mm",
     ]):
         return "condiciones_vehiculo"
+
+    if any(s in blob for s in [
+        "bajo la influencia de bebidas alcoholicas",
+        "bajo la influencia de bebidas alcohólicas",
+        "tasa de alcohol",
+        "alcoholemia",
+        "test de alcohol",
+        "presencia de alcohol en sangre",
+        "efectos del alcohol",
+    ]):
+        return "alcohol"
 
     if any(s in blob for s in [
         "carril derecho",
