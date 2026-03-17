@@ -171,6 +171,7 @@ def _velocity_margin_info(measured: Optional[float], radar_hint: str = "") -> Di
     }
 
 
+
 def _resolve_radar_profile(core: Dict[str, Any]) -> Dict[str, Any]:
     raw_sources = [
         _safe_str(core.get("radar_modelo_hint")),
@@ -183,7 +184,8 @@ def _resolve_radar_profile(core: Dict[str, Any]) -> Dict[str, Any]:
         _safe_str(core.get("raw_text_blob")),
         _safe_str(core.get("vision_raw_text")),
     ]
-    blob = "\n".join(s for s in raw_sources if s.strip()).lower()
+    blob = "
+".join(s for s in raw_sources if s.strip()).lower()
 
     profile = {
         "kind": "cinemometro_no_especificado",
@@ -196,7 +198,7 @@ def _resolve_radar_profile(core: Dict[str, Any]) -> Dict[str, Any]:
     if "pegasus" in blob or "helicoptero" in blob or "helicóptero" in blob:
         profile.update({
             "kind": "pegasus",
-            "label": "sistema aéreo Pegasus (a verificar documentalmente)",
+            "label": "sistema aéreo Pegasus (modelo pendiente de acreditación)",
             "margin_percent_high": 7.0,
             "margin_kmh_low": 7.0,
             "attack_focus": "Tratándose de medición aérea, debe acreditarse de forma especialmente rigurosa la identificación del sistema, la secuencia completa de captación y la trazabilidad técnica de la medición.",
@@ -206,7 +208,7 @@ def _resolve_radar_profile(core: Dict[str, Any]) -> Dict[str, Any]:
     if "tramo" in blob:
         profile.update({
             "kind": "radar_tramo",
-            "label": "sistema de control de velocidad por tramo (a verificar documentalmente)",
+            "label": "sistema de control de velocidad por tramo (modelo pendiente de acreditación)",
             "margin_percent_high": 5.0,
             "margin_kmh_low": 5.0,
             "attack_focus": "En controles de tramo debe acreditarse con precisión el punto inicial y final de medición, la sincronización temporal del sistema y la integridad del cálculo efectuado.",
@@ -214,19 +216,34 @@ def _resolve_radar_profile(core: Dict[str, Any]) -> Dict[str, Any]:
         return profile
 
     if any(k in blob for k in ["velolaser", "lasertech", "lti 20/20", "lti20/20", "ultralyte"]):
+        exact = "Velolaser" if "velolaser" in blob else "cinemómetro láser portátil"
         profile.update({
             "kind": "velolaser_laser",
-            "label": "cinemómetro láser portátil (modelo pendiente de acreditación)",
+            "label": f"{exact} (modelo pendiente de acreditación)",
             "margin_percent_high": 7.0,
             "margin_kmh_low": 7.0,
             "attack_focus": "En mediciones con láser portátil debe acreditarse con especial detalle la instalación, alineación, verificación y la concreta operativa de captación del vehículo denunciado.",
         })
         return profile
 
-    if any(k in blob for k in ["multanova", "antena", "cabina", "radar fijo", "pórtico", "portico"]):
+    if "multanova" in blob:
+        label = "cinemómetro Multanova"
+        if "antena" in blob:
+            label += " antena"
+        profile.update({
+            "kind": "multanova",
+            "label": f"{label} (modelo pendiente de acreditación)",
+            "margin_percent_high": 5.0,
+            "margin_kmh_low": 5.0,
+            "attack_focus": "En controles con Multanova debe acreditarse la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la correspondencia inequívoca con el vehículo denunciado.",
+        })
+        return profile
+
+    if any(k in blob for k in ["antena", "cabina", "radar fijo", "pórtico", "portico"]):
+        subtype = "cinemómetro fijo de cabina" if ("cabina" in blob or "radar fijo" in blob) else "cinemómetro fijo tipo antena"
         profile.update({
             "kind": "radar_fijo",
-            "label": "cinemómetro fijo o de cabina (modelo pendiente de acreditación)",
+            "label": f"{subtype} (modelo pendiente de acreditación)",
             "margin_percent_high": 5.0,
             "margin_kmh_low": 5.0,
             "attack_focus": "En controles fijos debe acreditarse la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la correspondencia inequívoca con el vehículo denunciado.",
@@ -268,19 +285,32 @@ def _velocity_margin_info_from_profile(measured: Optional[float], profile: Dict[
     }
 
 
+
 def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
     measured = core.get("velocidad_medida_kmh")
     limit = core.get("velocidad_limite_kmh")
-    raw_sources = [
+
+    focused_sources = [
         _safe_str(core.get("hecho_denunciado_resumido")),
         _safe_str(core.get("hecho_denunciado_literal")),
         _safe_str(core.get("hecho_imputado")),
-        _safe_str(core.get("raw_text_pdf")),
-        _safe_str(core.get("raw_text_vision")),
-        _safe_str(core.get("raw_text_blob")),
-        _safe_str(core.get("vision_raw_text")),
+        _safe_str(core.get("radar_modelo_hint")),
+        _safe_str(core.get("radar_tipo")),
     ]
-    joined = "\n".join(s for s in raw_sources if s.strip())
+    joined = "
+".join(s for s in focused_sources if s.strip())
+
+    # Solo si el foco viene vacío o muy pobre, hacemos fallback controlado al OCR completo.
+    if not joined.strip() or len(joined.strip()) < 12:
+        fallback_sources = [
+            _safe_str(core.get("raw_text_pdf")),
+            _safe_str(core.get("raw_text_vision")),
+            _safe_str(core.get("raw_text_blob")),
+            _safe_str(core.get("vision_raw_text")),
+        ]
+        joined = "
+".join(s for s in fallback_sources if s.strip())
+
     candidates = _extract_speed_candidates(joined)
 
     if (not isinstance(measured, (int, float)) or measured <= 0) and candidates:
@@ -740,6 +770,9 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
     scores["semaforo"] += _semaforo_positive_signals(blob)
     scores["semaforo"] -= _semaforo_blockers(blob)
 
+    if any(s in blob for s in ["luz roja", "fase roja", "semaforo", "senal luminosa roja", "linea de detencion"]):
+        scores["velocidad"] = 0
+
     add(
         "movil",
         [
@@ -1088,6 +1121,21 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
 
     if not blob.strip():
         blob = full_blob
+
+    # Blindaje duro: si el hecho limpio contiene señales semafóricas, semáforo gana.
+    if any(s in blob for s in [
+        "luz roja",
+        "fase roja",
+        "semaforo",
+        "semáforo",
+        "indicacion luminosa roja",
+        "indicación luminosa roja",
+        "senal luminosa roja",
+        "señal luminosa roja",
+        "linea de detencion",
+        "línea de detención",
+    ]):
+        return "semaforo"
 
     # Casos expresos que no deben saltar a semáforo por ruido contextual
     if _looks_like_bike_light_case(core):
