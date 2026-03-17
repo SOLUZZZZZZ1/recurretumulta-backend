@@ -1,5 +1,6 @@
 import json
 import re
+import unicodedata
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -515,16 +516,17 @@ def resolve_jurisdiction(core: Dict[str, Any]) -> str:
 
 
 
+def _fold_text(value: Any) -> str:
+    text = _safe_str(value).lower().strip()
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return " ".join(text.split())
+
+
 def _normalized_blob(core: Dict[str, Any]) -> str:
-    blob = json.dumps(core or {}, ensure_ascii=False).lower()
-    return (
-        blob.replace("semáforo", "semaforo")
-            .replace("línea", "linea")
-            .replace("detención", "detencion")
-            .replace("policía", "policia")
-            .replace("órdenes", "ordenes")
-            .replace("señalización", "senalizacion")
-    )
+    return _fold_text(json.dumps(core or {}, ensure_ascii=False))
 
 
 def _focused_infraction_blob(core: Dict[str, Any]) -> str:
@@ -551,15 +553,8 @@ def _focused_infraction_blob(core: Dict[str, Any]) -> str:
     if art not in (None, "") and apt not in (None, ""):
         parts.append(f"articulo {art} apartado {apt}")
 
-    blob = " ".join(p for p in parts if isinstance(p, str) and p.strip()).lower()
-    return (
-        blob.replace("semáforo", "semaforo")
-            .replace("línea", "linea")
-            .replace("detención", "detencion")
-            .replace("policía", "policia")
-            .replace("órdenes", "ordenes")
-            .replace("señalización", "senalizacion")
-    )
+    blob = " ".join(p for p in parts if isinstance(p, str) and p.strip())
+    return _fold_text(blob)
 
 
 def _has_meaningful_focus(core: Dict[str, Any]) -> bool:
@@ -1119,85 +1114,104 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
     if not blob.strip():
         blob = full_blob
 
-    # Blindaje fuerte por familias (clasificación temprana con hecho limpio)
+    # ===============================
+    # BLINDAJE FUERTE POR FAMILIAS
+    # ===============================
+
+    # ITV
     if any(s in blob for s in [
-        "inspeccion tecnica", "inspección técnica", "itv",
+        "inspeccion tecnica", "itv",
         "itv caducada", "itv vencida", "itv expirada",
-        "sin inspeccion tecnica", "sin inspección técnica",
+        "sin inspeccion tecnica",
         "no tener vigente la inspeccion tecnica",
-        "no tener vigente la inspección técnica",
+        "inspeccion tecnica en vigor",
+        "inspeccion tecnica actualizada",
     ]):
         return "itv"
 
+    # SEGURO
     if any(s in blob for s in [
         "seguro obligatorio", "sin seguro", "carecer de seguro",
-        "cobertura minima obligatoria", "cobertura mínima obligatoria",
-        "poliza obligatoria", "póliza obligatoria",
+        "cobertura minima obligatoria",
+        "poliza obligatoria",
+        "carencia de seguro",
+        "sin tener concertado el seguro",
     ]):
         return "seguro"
 
+    # CASCO
     if any(s in blob for s in [
         "casco", "sin casco",
         "casco no abrochado", "casco desabrochado",
-        "casco mal ajustado",
+        "casco mal ajustado", "casco reglamentario",
+        "no hacer uso del casco",
     ]):
         return "casco"
 
+    # AURICULARES
     if any(s in blob for s in [
-        "auriculares", "dispositivos acusticos", "dispositivos acústicos",
+        "auriculares", "dispositivos acusticos",
         "aparato receptor sonoro",
-        "en ambos oidos", "en ambos oídos",
+        "en ambos oidos", "insertados en los oidos",
+        "reproductor de sonido", "dispositivo de audio",
     ]):
         return "auriculares"
 
+    # ALCOHOL - prioridad muy alta
     if any(s in blob for s in [
-        "neumatico", "neumático",
-        "ruedas en mal estado", "ruedas en deficiente estado",
-        "componentes mecanicos defectuosos", "componentes mecánicos defectuosos",
-        "deficiencias tecnicas", "deficiencias técnicas",
-        "fallo iluminacion", "fallo iluminación",
-        "fallo en el sistema de iluminacion", "fallo en el sistema de iluminación",
-        "sistema de iluminacion", "sistema de iluminación",
-        "dispositivos luminosos", "dispositivos luminosos no reglamentarios",
-        "elementos de seguridad", "deficiente estado",
-    ]):
-        return "condiciones_vehiculo"
-
-    if any(s in blob for s in [
-        "carril", "posicion en la calzada", "posición en la calzada",
-        "carril no habilitado", "ocupar carril",
-        "configuracion de la calzada", "configuración de la calzada",
-        "posicion no ajustada", "posición no ajustada",
-        "uso indebido del carril",
-    ]):
-        return "carril"
-
-    if any(s in blob for s in [
-        "distraccion", "distracción",
-        "no mantener la atencion", "no mantener la atención",
-        "no conservar atencion", "no conservar atención",
-        "conducta distraida", "conducta distraída",
-        "atencion plena", "atención plena",
-    ]):
-        return "atencion"
-
-    if any(s in blob for s in [
-        "alcohol", "alcoholemia", "etilometro", "etilómetro",
+        "alcohol", "alcoholemia", "etilometro",
         "test de alcohol", "resultado positivo",
+        "tasa de alcohol", "bajo la influencia de bebidas alcoholicas",
+        "aire espirado", "mg/l",
     ]):
         return "alcohol"
 
+    # CONDICIONES VEHICULO
     if any(s in blob for s in [
-        "telefono", "teléfono", "móvil", "movil",
-        "terminal", "dispositivo electronico", "dispositivo electrónico",
-        "pantalla",
+        "neumatico", "neumaticos",
+        "ruedas en mal estado", "ruedas en deficiente estado", "ruedas en deficiente estado de uso",
+        "estado de uso", "deficiente estado",
+        "componentes mecanicos defectuosos", "defectos mecanicos",
+        "deficiencias tecnicas", "deficiencias tecnicas relevantes", "deficiencias",
+        "fallo iluminacion", "fallo en el sistema de iluminacion", "sistema de iluminacion",
+        "dispositivos luminosos", "dispositivos luminosos no reglamentarios",
+        "elementos de seguridad defectuosos", "elementos de seguridad",
+        "vehiculo con defectos mecanicos",
+    ]):
+        return "condiciones_vehiculo"
+
+    # CARRIL
+    if any(s in blob for s in [
+        "carril", "posicion en la calzada",
+        "carril no habilitado", "ocupar carril",
+        "configuracion de la calzada",
+        "posicion no ajustada", "posicion no ajustada a la configuracion de la calzada",
+        "uso indebido del carril", "carril inadecuado",
+    ]):
+        return "carril"
+
+    # ATENCION
+    if any(s in blob for s in [
+        "distraccion", "no mantener la atencion",
+        "no conservar atencion", "no conservar atencion plena",
+        "atencion plena", "conducta distraida",
+        "desatencion", "comprometiendo el control del vehiculo",
+    ]):
+        return "atencion"
+
+    # MOVIL
+    if any(s in blob for s in [
+        "telefono", "movil",
+        "terminal", "dispositivo electronico",
+        "pantalla", "aparato de telecomunicaciones",
     ]):
         return "movil"
 
+    # MARCAS VIALES
     if any(s in blob for s in [
-        "delimitacion continua", "delimitación continua",
-        "linea continua", "línea continua",
-        "marca continua", "marca vial continua",
+        "linea continua", "marca vial continua", "marca vial longitudinal continua",
+        "delimitacion continua", "marca continua",
+        "linea de detencion", "marcas viales prohibidas",
     ]):
         return "marcas_viales"
 
@@ -1329,12 +1343,6 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "manipulando objetos",
         "manipulando comida",
         "manipulando bebida",
-        "atencion plena",
-        "atención plena",
-        "no conservar atencion",
-        "no conservar atención",
-        "no conservar atencion plena",
-        "no conservar atención plena",
     ]):
         return "atencion"
 
@@ -1412,25 +1420,6 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "fallo en sistema de iluminacion",
         "fallo en sistema de iluminación",
         "elementos de seguridad defectuosos",
-        "dispositivos luminosos no reglamentarios",
-        "dispositivos luminosos",
-        "sistema de iluminacion",
-        "sistema de iluminación",
-        "fallo iluminacion",
-        "fallo iluminación",
-        "fallo en el sistema de iluminacion",
-        "fallo en el sistema de iluminación",
-        "componentes mecanicos defectuosos",
-        "componentes mecánicos defectuosos",
-        "mecanicos defectuosos",
-        "mecánicos defectuosos",
-        "deficiencias tecnicas",
-        "deficiencias técnicas",
-        "deficiente estado",
-        "estado de uso",
-        "ruedas en deficiente estado",
-        "ruedas en deficiente estado de uso",
-        "ruedas",
     ]):
         return "condiciones_vehiculo"
 
@@ -1491,11 +1480,6 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "marcas viales prohibidas",
         "zona de marcas viales prohibidas",
         "invadir zona de marcas viales",
-        "delimitacion continua",
-        "delimitación continua",
-        "marca continua",
-        "franquear la delimitacion continua",
-        "franquear la delimitación continua",
     ]):
         return "marcas_viales"
 
@@ -1515,13 +1499,6 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "posición incorrecta en la calzada",
         "no respetar posicion en calzada",
         "no respetar posición en calzada",
-        "configuracion de la calzada",
-        "configuración de la calzada",
-        "posicion no ajustada",
-        "posición no ajustada",
-        "posicion no ajustada a la configuracion de la calzada",
-        "posición no ajustada a la configuración de la calzada",
-        "uso indebido del carril",
     ]):
         return "carril"
 
