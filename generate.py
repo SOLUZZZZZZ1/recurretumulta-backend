@@ -1061,6 +1061,22 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
     ]):
         return "alcohol"
 
+    if (
+        any(s in blob for s in [
+            "maniobra peligrosa",
+            "sin justificacion",
+            "sin justificación",
+            "maniobra incorrecta",
+        ])
+        and not any(s in blob for s in [
+            "atencion", "atención", "distraccion", "distracción",
+            "mirando", "interior del vehiculo", "interior del vehículo",
+            "libertad de movimientos", "mordia las uñas", "mordia las unas",
+            "morderse las uñas", "morderse las unas"
+        ])
+    ):
+        return "generic"
+
     if any(s in blob for s in [
         "no mantener la atencion",
         "no mantener la atención",
