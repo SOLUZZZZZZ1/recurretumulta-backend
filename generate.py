@@ -184,8 +184,7 @@ def _resolve_radar_profile(core: Dict[str, Any]) -> Dict[str, Any]:
         _safe_str(core.get("raw_text_blob")),
         _safe_str(core.get("vision_raw_text")),
     ]
-    blob = "
-".join(s for s in raw_sources if s.strip()).lower()
+    blob = "\n".join(s for s in raw_sources if s.strip()).lower()
 
     profile = {
         "kind": "cinemometro_no_especificado",
@@ -297,8 +296,7 @@ def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
         _safe_str(core.get("radar_modelo_hint")),
         _safe_str(core.get("radar_tipo")),
     ]
-    joined = "
-".join(s for s in focused_sources if s.strip())
+    joined = "\n".join(s for s in focused_sources if s.strip())
 
     # Solo si el foco viene vacío o muy pobre, hacemos fallback controlado al OCR completo.
     if not joined.strip() or len(joined.strip()) < 12:
@@ -308,8 +306,7 @@ def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
             _safe_str(core.get("raw_text_blob")),
             _safe_str(core.get("vision_raw_text")),
         ]
-        joined = "
-".join(s for s in fallback_sources if s.strip())
+        joined = "\n".join(s for s in fallback_sources if s.strip())
 
     candidates = _extract_speed_candidates(joined)
 
