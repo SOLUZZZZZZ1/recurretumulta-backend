@@ -839,8 +839,8 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             "atención suficiente al tráfico",
             "atencion al volante",
             "atención al volante",
-            "comprometen la atencion",
-            "comprometen la atención",
+            "comprometen la atencion al volante",
+            "comprometen la atención al volante",
             "disminuyen la atencion",
             "disminuyen la atención",
             "interior del vehiculo",
@@ -959,6 +959,18 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             "circular con neumático liso",
             "neumaticos lisos",
             "neumáticos lisos",
+            "elementos del vehiculo en deficiente estado",
+            "elementos del vehículo en deficiente estado",
+            "deficiencias tecnicas en el vehiculo",
+            "deficiencias técnicas en el vehículo",
+            "alteracion de elementos luminosos",
+            "alteración de elementos luminosos",
+            "vehiculo con defectos mecanicos",
+            "vehículo con defectos mecánicos",
+            "ruedas en mal estado",
+            "fallo en sistema de iluminacion",
+            "fallo en sistema de iluminación",
+            "elementos de seguridad defectuosos",
             "neumaticicos en mal estado",
             "banda de rodadura",
             "parte trasera pulida",
@@ -1171,6 +1183,18 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "banda de rodadura",
         "dibujo inferior",
         "1,6 mm",
+        "elementos del vehiculo en deficiente estado",
+        "elementos del vehículo en deficiente estado",
+        "deficiencias tecnicas en el vehiculo",
+        "deficiencias técnicas en el vehículo",
+        "alteracion de elementos luminosos",
+        "alteración de elementos luminosos",
+        "vehiculo con defectos mecanicos",
+        "vehículo con defectos mecánicos",
+        "ruedas en mal estado",
+        "fallo en sistema de iluminacion",
+        "fallo en sistema de iluminación",
+        "elementos de seguridad defectuosos",
     ]):
         return "condiciones_vehiculo"
 
@@ -1186,6 +1210,43 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         return "alcohol"
 
     if any(s in blob for s in [
+        "casco reglamentario",
+        "no hacer uso del casco reglamentario",
+        "casco mal ajustado",
+        "casco incorrectamente ajustado",
+    ]):
+        return "casco"
+
+    if any(s in blob for s in [
+        "uso de dispositivos de audio",
+        "dispositivos de audio en marcha",
+        "dispositivo de audio",
+    ]):
+        return "auriculares"
+
+    if any(s in blob for s in [
+        "inspeccion tecnica en vigor",
+        "inspección técnica en vigor",
+        "sin inspeccion tecnica",
+        "sin inspección técnica",
+    ]):
+        return "itv"
+
+    if any(s in blob for s in [
+        "carencia de seguro",
+        "carencia de seguro del vehiculo",
+        "carencia de seguro del vehículo",
+    ]):
+        return "seguro"
+
+    if any(s in blob for s in [
+        "marcas viales prohibidas",
+        "zona de marcas viales prohibidas",
+        "invadir zona de marcas viales",
+    ]):
+        return "marcas_viales"
+
+    if any(s in blob for s in [
         "carril derecho",
         "carril izquierdo",
         "carril central",
@@ -1193,6 +1254,8 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
         "posición correcta en la calzada",
         "posicion en la calzada",
         "posición en la calzada",
+        "posicion incorrecta en la calzada",
+        "posición incorrecta en la calzada",
     ]):
         return "carril"
 
