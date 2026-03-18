@@ -2460,10 +2460,79 @@ def classify(core: Any):
 
 
 def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    row = conn.execute(
-        text("SELECT extracted_json FROM extractions WHERE case_id=:case_id ORDER BY created_at DESC LIMIT 1"),
+    """
+    Genera usando la extracción del DOCUMENTO ACTUAL del caso, no simplemente la última extracción.
+    Estrategia:
+      1) localizar el último documento original del case
+      2) buscar la extracción cuyo wrapper.storage.key coincida con ese documento
+      3) si no existe, fallback a la última extracción del case
+    """
+    doc_row = conn.execute(
+        text(
+            "SELECT b2_bucket, b2_key, sha256, mime, size_bytes "
+            "FROM documents "
+            "WHERE case_id=:case_id AND kind='original' "
+            "ORDER BY created_at DESC LIMIT 1"
+        ),
         {"case_id": case_id},
     ).fetchone()
+
+    row = None
+
+    if doc_row:
+        b2_bucket = doc_row[0]
+        b2_key = doc_row[1]
+        sha256 = doc_row[2]
+        mime = doc_row[3]
+        size_bytes = doc_row[4]
+
+        row = conn.execute(
+            text(
+                "SELECT extracted_json "
+                "FROM extractions "
+                "WHERE case_id=:case_id "
+                "  AND ("
+                "       extracted_json->'storage'->>'key' = :b2_key "
+                "    OR extracted_json->'storage'->>'bucket' = :b2_bucket "
+                "    OR extracted_json->>'filename' ILIKE :filename_like"
+                "  ) "
+                "ORDER BY created_at DESC LIMIT 1"
+            ),
+            {
+                "case_id": case_id,
+                "b2_key": b2_key,
+                "b2_bucket": b2_bucket,
+                "filename_like": f"%{(b2_key or '').split('/')[-1]}%",
+            },
+        ).fetchone()
+
+        # Fallback adicional por sha/tamaño/mime si el wrapper no conserva bien el storage key
+        if not row and sha256:
+            candidate_rows = conn.execute(
+                text(
+                    "SELECT extracted_json "
+                    "FROM extractions "
+                    "WHERE case_id=:case_id "
+                    "ORDER BY created_at DESC LIMIT 10"
+                ),
+                {"case_id": case_id},
+            ).fetchall()
+
+            for cand in candidate_rows:
+                wrapper_cand = cand[0] if isinstance(cand[0], dict) else json.loads(cand[0])
+                if (
+                    (wrapper_cand.get("size_bytes") == size_bytes)
+                    and (wrapper_cand.get("mime") == mime)
+                    and (wrapper_cand.get("storage") or {}).get("key") == b2_key
+                ):
+                    row = cand
+                    break
+
+    if not row:
+        row = conn.execute(
+            text("SELECT extracted_json FROM extractions WHERE case_id=:case_id ORDER BY created_at DESC LIMIT 1"),
+            {"case_id": case_id},
+        ).fetchone()
 
     if not row:
         raise HTTPException(status_code=404, detail="No hay extracción.")
@@ -2471,10 +2540,23 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     wrapper = row[0] if isinstance(row[0], dict) else json.loads(row[0])
     core = wrapper.get("extracted") or {}
 
-    if not core.get("hecho_denunciado_literal"):
+    # Blindaje: usar SIEMPRE el hecho jurídico más fuerte, sin pisarlo con blobs sucios
+    hecho_fuerte = (
+        _safe_str(core.get("hecho_imputado"))
+        or _safe_str(core.get("hecho_denunciado"))
+        or _safe_str(core.get("hecho_denunciado_resumido"))
+        or _safe_str(core.get("hecho_denunciado_literal"))
+    ).strip()
+
+    if hecho_fuerte:
+        core["hecho_para_recurso"] = hecho_fuerte
+        if not _safe_str(core.get("hecho_denunciado_literal")).strip():
+            core["hecho_denunciado_literal"] = hecho_fuerte
+    else:
         literal = extract_hecho_denunciado_literal(core)
         if literal:
             core["hecho_denunciado_literal"] = literal
+            core["hecho_para_recurso"] = literal
 
     tipo, scores = classify(core)
     jurisdiccion = resolve_jurisdiction(core)
@@ -2493,73 +2575,22 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     tpl = _upgrade_generated_template(
         tpl.get("asunto") or "",
         tpl.get("cuerpo") or "",
-        tipo,
-        core,
-    )
-
-    cuerpo = tpl.get("cuerpo") or ""
-    if tipo == "atencion" and _is_bicicleta_context(core):
-        cuerpo = _sanitize_bicicleta_body(cuerpo)
-
-    cuerpo = _inject_tipicidad_material_en_alegaciones(cuerpo, core)
-    cuerpo = _inject_strategic_legal_reinforcement(cuerpo, core, tipo)
-
-    hecho = get_hecho_para_recurso(core)
-    if hecho and not _looks_like_internal_extract(hecho):
-        cuerpo = _integrate_extract_after_comparecencia(cuerpo, hecho, core)
-
-    cuerpo = _fix_alegaciones_numeracion(cuerpo)
-    tpl["cuerpo"] = fix_roman_headings(cuerpo)
-
-    # Dejamos el asunto vacío para que el builder no pinte el título antes de la referencia.
-    docx_bytes = build_docx("", tpl["cuerpo"])
-    b2_bucket, b2_key_docx = upload_bytes(
-        case_id,
-        "generated",
-        docx_bytes,
-        ".docx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
-
-    pdf_bytes = build_pdf("", tpl["cuerpo"])
-    _, b2_key_pdf = upload_bytes(case_id, "generated", pdf_bytes, ".pdf", "application/pdf")
-
-    conn.execute(
-        text("""
-            INSERT INTO documents (case_id, kind, b2_bucket, b2_key, mime, created_at)
-            VALUES (:case_id, :kind_docx, :bucket, :key_docx, :mime_docx, NOW()),
-                   (:case_id, :kind_pdf,  :bucket, :key_pdf,  :mime_pdf,  NOW())
-        """),
-        {
-            "case_id": case_id,
-            "kind_docx": f"{final_kind}_docx",
-            "kind_pdf": f"{final_kind}_pdf",
-            "bucket": b2_bucket,
-            "key_docx": b2_key_docx,
-            "key_pdf": b2_key_pdf,
-            "mime_docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "mime_pdf": "application/pdf",
-        },
+        core=core,
+        inferred_type=tipo,
+        scores=scores,
+        jurisdiction=jurisdiccion,
     )
 
     return {
-        "ok": True,
-        "kind": final_kind,
-        "asunto": tpl["asunto"],
-        "cuerpo": tpl["cuerpo"],
-        "docx": {"bucket": b2_bucket, "key": b2_key_docx},
-        "pdf": {"bucket": b2_bucket, "key": b2_key_pdf},
-        "tipo_infraccion": tipo,
-        "jurisdiccion": jurisdiccion,
+        "tpl": tpl,
+        "tipo": tipo,
+        "scores": scores,
+        "final_kind": final_kind,
+        "core": core,
+        "wrapper": wrapper,
     }
 
 
-class GenerateRequest(BaseModel):
-    case_id: str
-    interesado: Dict[str, str] = Field(default_factory=dict)
-
-
-@router.post("/generate/dgt")
 def generate_dgt(req: GenerateRequest) -> Dict[str, Any]:
     engine = get_engine()
     with engine.begin() as conn:
