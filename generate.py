@@ -2609,8 +2609,17 @@ return {
     }
 
 
+from pydantic import BaseModel
+from typing import Any, Dict, Optional
+
+class GenerateRequest(BaseModel):
+    case_id: str
+    interesado: Optional[Dict[str, Any]] = None
+
+
 def generate_dgt(req: GenerateRequest) -> Dict[str, Any]:
     engine = get_engine()
+
     with engine.begin() as conn:
         result = generate_dgt_for_case(
             conn,
@@ -2618,8 +2627,39 @@ def generate_dgt(req: GenerateRequest) -> Dict[str, Any]:
             interesado=req.interesado
         )
 
+    tpl = result.get("tpl")
+    tipo = result.get("tipo")
+    scores = result.get("scores")
+    final_kind = result.get("final_kind")
+    core = result.get("core")
+    wrapper = result.get("wrapper")
+
+    # 🔧 FIX SEGURO (SIN ROMPER)
+    tpl = ensure_tpl_dict(tpl, core)
+
+    try:
+        tpl = _upgrade_generated_template(
+            tpl.get("asunto") or "",
+            tpl.get("cuerpo") or "",
+            core=core,
+            inferred_type=tipo,
+            scores=scores,
+            jurisdiction=resolve_jurisdiction(core),
+        )
+    except TypeError:
+        tpl = _upgrade_generated_template(
+            tpl.get("asunto") or "",
+            tpl.get("cuerpo") or "",
+            core=core,
+        )
+
     return {
         "ok": True,
         "message": "Recurso generado.",
-        **result
+        "tpl": tpl,
+        "tipo": tipo,
+        "scores": scores,
+        "final_kind": final_kind,
+        "core": core,
+        "wrapper": wrapper,
     }
