@@ -1639,7 +1639,8 @@ def _build_strategic_reinforcement_block(core: Dict[str, Any], tipo: str, assess
 def _inject_strategic_legal_reinforcement(body: str, core: Dict[str, Any], tipo: str) -> str:
     txt = _safe_str(body)
     assessment = _assess_legal_strength(core, tipo)
-    block = _build_strategic_reinforcement_block(core, tipo, assessment)
+    strategy_prefix = _build_strategy_prefix(core, tipo)
+    block = "\n\n".join([x for x in [strategy_prefix, _build_strategic_reinforcement_block(core, tipo, assessment)] if _safe_str(x).strip()])
 
     if not block.strip():
         return txt
@@ -1653,6 +1654,54 @@ def _inject_strategic_legal_reinforcement(body: str, core: Dict[str, Any], tipo:
         return txt.replace(marker_alt, marker_alt + block + "\n\n", 1)
 
     return txt
+
+
+def _get_estrategia_legal(core: Dict[str, Any]) -> Dict[str, Any]:
+    data = core.get("estrategia_legal")
+    return data if isinstance(data, dict) else {}
+
+
+def _build_strategy_prefix(core: Dict[str, Any], tipo: str) -> str:
+    estrategia = _get_estrategia_legal(core)
+    nivel = _safe_str(estrategia.get("nivel")).lower().strip()
+    principales = estrategia.get("bloques_principales") or []
+    secundarios = estrategia.get("bloques_secundarios") or []
+    usar_nulidad = bool(estrategia.get("usar_nulidad"))
+
+    pieces = []
+
+    if usar_nulidad:
+        pieces.append(
+            "ALEGACIÓN DE REFUERZO — NULIDAD DE PLENO DERECHO\n\n"
+            "Con carácter principal, esta parte interesa la nulidad de pleno derecho del acto impugnado cuando el expediente prescinde de elementos esenciales de prueba o de tramitación que impiden identificar con garantías el hecho realmente sancionado y su adecuado soporte probatorio.\n"
+        )
+
+    if principales:
+        mapping = {
+            "insuficiencia_probatoria": "La Administración no aporta un soporte probatorio bastante y objetivable del hecho imputado.",
+            "fase_roja_no_acreditada": "No consta acreditada de forma objetiva la fase roja activa en el instante exacto del supuesto rebase.",
+            "secuencia_incompleta": "No se aporta secuencia íntegra o soporte completo que permita reconstruir la dinámica del hecho.",
+            "falta_motivacion": "La motivación del expediente aparece formulada en términos genéricos o estereotipados.",
+            "metrologia_no_acreditada": "No consta acreditación metrológica bastante del dispositivo de medición utilizado.",
+            "fotograma_no_aportado": "No se acompaña fotograma íntegro y legible con individualización inequívoca del vehículo.",
+            "margen_no_aplicado": "No se justifica de forma transparente el margen de corrección aplicado o aplicable.",
+            "observacion_subjetiva": "La imputación descansa esencialmente en una observación subjetiva insuficientemente circunstanciada.",
+            "falta_concrecion": "El boletín no concreta con precisión suficiente la conducta material imputada.",
+            "ausencia_riesgo_vial": "No se describe un riesgo vial objetivable que permita subsumir la conducta en el tipo aplicado.",
+            "tipicidad_debil": "La descripción fáctica no permite una subsunción típica clara e inequívoca.",
+            "falta_precision_tecnica": "No se identifica con precisión el defecto técnico o reglamentario imputado.",
+            "norma_no_identificada": "No se concreta el apartado reglamentario o exigencia técnica supuestamente incumplida.",
+            "prueba_insuficiente": "No se aporta un soporte técnico bastante para sustentar la imputación.",
+        }
+        bullets = [f"• {mapping[key]}" for key in principales if key in mapping]
+        if bullets:
+            pieces.append("ALEGACIÓN DE REFUERZO — ESTRATEGIA PRINCIPAL\n\n" + "\n".join(bullets) + "\n")
+
+    if nivel in ("agresivo", "muy_agresivo") and secundarios:
+        bullets2 = "\n".join(f"• {str(x).replace('_', ' ')}" for x in secundarios)
+        pieces.append("ALEGACIÓN DE REFUERZO — FACTORES ADICIONALES\n\n" + bullets2 + "\n")
+
+    return "\n\n".join(p.strip() for p in pieces if p.strip())
 
 
 def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> str:
