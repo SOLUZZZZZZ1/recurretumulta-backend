@@ -364,7 +364,25 @@ def _looks_like_internal_extract(text: str) -> bool:
     return any(tok in low for tok in bad_tokens)
 
 
-def get_hecho_para_recurso(core: Dict[str, Any]) -> str:
+
+
+def _prefer_analyze_family(core: Dict[str, Any]) -> str:
+    """
+    Usa SIEMPRE la familia decidida por analyze cuando exista, y solo cae a
+    reclasificación heurística si realmente no viene ninguna familia fiable.
+    """
+    candidates = [
+        core.get("familia_resuelta"),
+        core.get("template_usado"),
+        core.get("tipo_infraccion"),
+    ]
+    for value in candidates:
+        tipo = _safe_str(value).lower().strip()
+        if tipo and tipo not in ("otro", "unknown", "desconocido", "generic"):
+            return tipo
+    return ""
+
+def get_hecho_para_recurso(core: Dict[str, Any], forced_tipo: Optional[str] = None) -> str:
     raw = (
         core.get("hecho_denunciado_resumido")
         or core.get("hecho_denunciado_literal")
@@ -381,7 +399,7 @@ def get_hecho_para_recurso(core: Dict[str, Any]) -> str:
     ):
         return ""
 
-    tipo = resolve_infraction_type(core)
+    tipo = (_safe_str(forced_tipo).lower().strip() or _prefer_analyze_family(core) or resolve_infraction_type(core))
     if tipo == "velocidad":
         facts = _resolve_velocity_facts(core)
         measured = facts.get("measured")
@@ -1109,8 +1127,8 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
 
 
 def resolve_infraction_type(core: Dict[str, Any]) -> str:
-    tipo = _safe_str(core.get("tipo_infraccion")).lower().strip()
-    if tipo and tipo not in ("otro", "unknown", "desconocido", "generic"):
+    tipo = _prefer_analyze_family(core)
+    if tipo:
         return tipo
 
     # Producción blindada: primero clasificar con el hecho limpio.
@@ -1502,7 +1520,7 @@ def _assess_legal_strength(core: Dict[str, Any], tipo: str = "") -> Dict[str, An
     flags = []
     score = 0
 
-    hecho = get_hecho_para_recurso(core)
+    hecho = get_hecho_para_recurso(core, forced_tipo=tipo)
     hecho_low = _safe_str(hecho).lower().strip()
 
     if not hecho_low or len(hecho_low) < 25:
@@ -2350,11 +2368,11 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         if literal:
             core["hecho_denunciado_literal"] = literal
 
-    tipo = core.get("familia_resuelta") or resolve_infraction_type(core)
+    tipo = _prefer_analyze_family(core) or resolve_infraction_type(core)
     scores = _score_infraction_from_core(core)
     jurisdiccion = resolve_jurisdiction(core)
 
-    draft_body = get_hecho_para_recurso(core)
+    draft_body = get_hecho_para_recurso(core, forced_tipo=tipo)
     bicicleta_ctx = _is_bicicleta_context(core)
     dispatched_tpl = None if (tipo == "atencion" and bicicleta_ctx) else dispatch_deterministic_template(core, draft_body=draft_body)
 
@@ -2379,7 +2397,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     cuerpo = _inject_tipicidad_material_en_alegaciones(cuerpo, core)
     cuerpo = _inject_strategic_legal_reinforcement(cuerpo, core, tipo)
 
-    hecho = get_hecho_para_recurso(core)
+    hecho = get_hecho_para_recurso(core, forced_tipo=tipo)
     if hecho and not _looks_like_internal_extract(hecho):
         cuerpo = _integrate_extract_after_comparecencia(cuerpo, hecho, core)
 
