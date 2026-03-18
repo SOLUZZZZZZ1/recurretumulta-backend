@@ -2352,7 +2352,9 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
 
     tipo = core.get("familia_resuelta") or resolve_infraction_type(core)
 scores = _score_infraction_from_core(core)
-    jurisdiccion = resolve_jurisdiction(core)
+    tipo = core.get("familia_resuelta") or resolve_infraction_type(core)
+scores = _score_infraction_from_core(core)
+jurisdiccion = resolve_jurisdiction(core)
 
     draft_body = get_hecho_para_recurso(core)
     bicicleta_ctx = _is_bicicleta_context(core)
