@@ -2578,6 +2578,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         tpl, final_kind = _select_template(core, tipo, jurisdiccion)
 
     tpl = ensure_tpl_dict(tpl, core)
+    try:
     tpl = _upgrade_generated_template(
         tpl.get("asunto") or "",
         tpl.get("cuerpo") or "",
@@ -2586,6 +2587,13 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         scores=scores,
         jurisdiction=jurisdiccion,
     )
+except TypeError:
+    tpl = _upgrade_generated_template(
+        tpl.get("asunto") or "",
+        tpl.get("cuerpo") or "",
+        core=core,
+    )
+    
 
     return {
         "tpl": tpl,
