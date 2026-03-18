@@ -1,12 +1,5 @@
 import json
 import re
-import unicodedata
-from pydantic import BaseModel
-from typing import Any, Dict, Optional
-
-class GenerateRequest(BaseModel):
-    case_id: str
-    interesado: Optional[Dict[str, Any]] = None
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -372,10 +365,9 @@ def _looks_like_internal_extract(text: str) -> bool:
 
 def get_hecho_para_recurso(core: Dict[str, Any]) -> str:
     raw = (
-        core.get("hecho_denunciado_literal")
-        or core.get("hecho_denunciado_resumido")
+        core.get("hecho_denunciado_resumido")
+        or core.get("hecho_denunciado_literal")
         or core.get("hecho_imputado")
-        or core.get("hecho")
         or ""
     )
     txt = _clean_hecho_text(_safe_str(raw))
@@ -523,17 +515,16 @@ def resolve_jurisdiction(core: Dict[str, Any]) -> str:
 
 
 
-def _fold_text(value: Any) -> str:
-    text = _safe_str(value).lower().strip()
-    if not text:
-        return ""
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    return " ".join(text.split())
-
-
 def _normalized_blob(core: Dict[str, Any]) -> str:
-    return _fold_text(json.dumps(core or {}, ensure_ascii=False))
+    blob = json.dumps(core or {}, ensure_ascii=False).lower()
+    return (
+        blob.replace("semáforo", "semaforo")
+            .replace("línea", "linea")
+            .replace("detención", "detencion")
+            .replace("policía", "policia")
+            .replace("órdenes", "ordenes")
+            .replace("señalización", "senalizacion")
+    )
 
 
 def _focused_infraction_blob(core: Dict[str, Any]) -> str:
@@ -544,10 +535,9 @@ def _focused_infraction_blob(core: Dict[str, Any]) -> str:
     """
     core = core or {}
     parts = [
-        _safe_str(core.get("hecho_denunciado_literal")),
         _safe_str(core.get("hecho_denunciado_resumido")),
+        _safe_str(core.get("hecho_denunciado_literal")),
         _safe_str(core.get("hecho_imputado")),
-        _safe_str(core.get("hecho")),
         _safe_str(core.get("subtipo_infraccion")),
         _safe_str(core.get("tipo_infraccion")),
         _safe_str(core.get("norma_hint")),
@@ -561,8 +551,15 @@ def _focused_infraction_blob(core: Dict[str, Any]) -> str:
     if art not in (None, "") and apt not in (None, ""):
         parts.append(f"articulo {art} apartado {apt}")
 
-    blob = " ".join(p for p in parts if isinstance(p, str) and p.strip())
-    return _fold_text(blob)
+    blob = " ".join(p for p in parts if isinstance(p, str) and p.strip()).lower()
+    return (
+        blob.replace("semáforo", "semaforo")
+            .replace("línea", "linea")
+            .replace("detención", "detencion")
+            .replace("policía", "policia")
+            .replace("órdenes", "ordenes")
+            .replace("señalización", "senalizacion")
+    )
 
 
 def _has_meaningful_focus(core: Dict[str, Any]) -> bool:
@@ -1122,123 +1119,7 @@ def resolve_infraction_type(core: Dict[str, Any]) -> str:
     if not blob.strip():
         blob = full_blob
 
-    # ===============================
-    # BLINDAJE FUERTE POR FAMILIAS
-    # ===============================
-
-    # ITV
-    if any(s in blob for s in [
-        "inspeccion tecnica", "itv",
-        "itv caducada", "itv vencida", "itv expirada",
-        "sin inspeccion tecnica",
-        "no tener vigente la inspeccion tecnica",
-        "inspeccion tecnica en vigor",
-        "inspeccion tecnica actualizada",
-    ]):
-        return "itv"
-
-    # SEGURO
-    if any(s in blob for s in [
-        "seguro obligatorio", "sin seguro", "carecer de seguro",
-        "cobertura minima obligatoria",
-        "poliza obligatoria",
-        "carencia de seguro",
-        "sin tener concertado el seguro",
-    ]):
-        return "seguro"
-
-    # CASCO
-    if any(s in blob for s in [
-        "casco", "sin casco",
-        "casco no abrochado", "casco desabrochado",
-        "casco mal ajustado", "casco reglamentario",
-        "no hacer uso del casco",
-    ]):
-        return "casco"
-
-    # AURICULARES
-    if any(s in blob for s in [
-        "auriculares", "dispositivos acusticos",
-        "aparato receptor sonoro",
-        "en ambos oidos", "insertados en los oidos",
-        "reproductor de sonido", "dispositivo de audio",
-    ]):
-        return "auriculares"
-
-    # ALCOHOL - prioridad muy alta
-    if any(s in blob for s in [
-        "alcohol", "alcoholemia", "etilometro",
-        "test de alcohol", "resultado positivo",
-        "tasa de alcohol", "bajo la influencia de bebidas alcoholicas",
-        "aire espirado", "mg/l",
-    ]):
-        return "alcohol"
-
-    # CONDICIONES VEHICULO
-    if any(s in blob for s in [
-        "neumatico", "neumaticos",
-        "ruedas en mal estado", "ruedas en deficiente estado", "ruedas en deficiente estado de uso",
-        "estado de uso", "deficiente estado",
-        "componentes mecanicos defectuosos", "defectos mecanicos",
-        "deficiencias tecnicas", "deficiencias tecnicas relevantes", "deficiencias",
-        "fallo iluminacion", "fallo en el sistema de iluminacion", "sistema de iluminacion",
-        "dispositivos luminosos", "dispositivos luminosos no reglamentarios",
-        "elementos de seguridad defectuosos", "elementos de seguridad",
-        "vehiculo con defectos mecanicos",
-    ]):
-        return "condiciones_vehiculo"
-
-    # CARRIL
-    if any(s in blob for s in [
-        "carril", "posicion en la calzada",
-        "carril no habilitado", "ocupar carril",
-        "configuracion de la calzada",
-        "posicion no ajustada", "posicion no ajustada a la configuracion de la calzada",
-        "uso indebido del carril", "carril inadecuado",
-    ]):
-        return "carril"
-
-    # ATENCION
-    if any(s in blob for s in [
-        "distraccion", "no mantener la atencion",
-        "no conservar atencion", "no conservar atencion plena",
-        "atencion plena", "conducta distraida",
-        "desatencion", "comprometiendo el control del vehiculo",
-    ]):
-        return "atencion"
-
-    # MOVIL
-    if any(s in blob for s in [
-        "telefono", "movil",
-        "terminal", "dispositivo electronico",
-        "pantalla", "aparato de telecomunicaciones",
-    ]):
-        return "movil"
-
     # Blindaje duro: si el hecho limpio contiene señales semafóricas, semáforo gana.
-    if any(s in blob for s in [
-        "luz roja",
-        "fase roja",
-        "semaforo",
-        "semáforo",
-        "indicacion luminosa roja",
-        "indicación luminosa roja",
-        "senal luminosa roja",
-        "señal luminosa roja",
-        "linea de detencion",
-        "línea de detención",
-    ]):
-        return "semaforo"
-
-    # MARCAS VIALES
-    if any(s in blob for s in [
-        "linea continua", "marca vial continua", "marca vial longitudinal continua",
-        "delimitacion continua", "marca continua",
-        "marcas viales prohibidas",
-    ]):
-        return "marcas_viales"
-
-    # Blindaje duro redundante: si el hecho limpio contiene señales semafóricas, semáforo gana.
     if any(s in blob for s in [
         "luz roja",
         "fase roja",
@@ -2122,7 +2003,7 @@ def _center_text_line(text: str, width: int = 90) -> str:
     return s.center(width).rstrip()
 
 
-def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: Dict[str, Any] = None) -> Dict[str, str]:
+def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: Dict[str, Any] = None, inferred_type: str = "", scores: Dict[str, int] | None = None, jurisdiction: str = "") -> Dict[str, str]:
     core = core or {}
     asunto_out = "ESCRITO DE ALEGACIONES"
 
@@ -2451,94 +2332,11 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
-def classify(core: Any):
-    """
-    Alias compatible hacia atrás.
-    Devuelve (tipo, scores) usando siempre el core/fuente más fiable disponible.
-    """
-    if isinstance(core, dict):
-        payload = core
-    else:
-        payload = {"hecho_denunciado_literal": _safe_str(core)}
-    tipo = resolve_infraction_type(payload)
-    scores = _score_infraction_from_core(payload)
-    return tipo, scores
-
-
 def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    """
-    Genera usando la extracción del DOCUMENTO ACTUAL del caso, no simplemente la última extracción.
-    Estrategia:
-      1) localizar el último documento original del case
-      2) buscar la extracción cuyo wrapper.storage.key coincida con ese documento
-      3) si no existe, fallback a la última extracción del case
-    """
-    doc_row = conn.execute(
-        text(
-            "SELECT b2_bucket, b2_key, sha256, mime, size_bytes "
-            "FROM documents "
-            "WHERE case_id=:case_id AND kind='original' "
-            "ORDER BY created_at DESC LIMIT 1"
-        ),
+    row = conn.execute(
+        text("SELECT extracted_json FROM extractions WHERE case_id=:case_id ORDER BY created_at DESC LIMIT 1"),
         {"case_id": case_id},
     ).fetchone()
-
-    row = None
-
-    if doc_row:
-        b2_bucket = doc_row[0]
-        b2_key = doc_row[1]
-        sha256 = doc_row[2]
-        mime = doc_row[3]
-        size_bytes = doc_row[4]
-
-        row = conn.execute(
-            text(
-                "SELECT extracted_json "
-                "FROM extractions "
-                "WHERE case_id=:case_id "
-                "  AND ("
-                "       extracted_json->'storage'->>'key' = :b2_key "
-                "    OR extracted_json->'storage'->>'bucket' = :b2_bucket "
-                "    OR extracted_json->>'filename' ILIKE :filename_like"
-                "  ) "
-                "ORDER BY created_at DESC LIMIT 1"
-            ),
-            {
-                "case_id": case_id,
-                "b2_key": b2_key,
-                "b2_bucket": b2_bucket,
-                "filename_like": f"%{(b2_key or '').split('/')[-1]}%",
-            },
-        ).fetchone()
-
-        # Fallback adicional por sha/tamaño/mime si el wrapper no conserva bien el storage key
-        if not row and sha256:
-            candidate_rows = conn.execute(
-                text(
-                    "SELECT extracted_json "
-                    "FROM extractions "
-                    "WHERE case_id=:case_id "
-                    "ORDER BY created_at DESC LIMIT 10"
-                ),
-                {"case_id": case_id},
-            ).fetchall()
-
-            for cand in candidate_rows:
-                wrapper_cand = cand[0] if isinstance(cand[0], dict) else json.loads(cand[0])
-                if (
-                    (wrapper_cand.get("size_bytes") == size_bytes)
-                    and (wrapper_cand.get("mime") == mime)
-                    and (wrapper_cand.get("storage") or {}).get("key") == b2_key
-                ):
-                    row = cand
-                    break
-
-    if not row:
-        row = conn.execute(
-            text("SELECT extracted_json FROM extractions WHERE case_id=:case_id ORDER BY created_at DESC LIMIT 1"),
-            {"case_id": case_id},
-        ).fetchone()
 
     if not row:
         raise HTTPException(status_code=404, detail="No hay extracción.")
@@ -2546,25 +2344,12 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     wrapper = row[0] if isinstance(row[0], dict) else json.loads(row[0])
     core = wrapper.get("extracted") or {}
 
-    # Blindaje: usar SIEMPRE el hecho jurídico más fuerte, sin pisarlo con blobs sucios
-    hecho_fuerte = (
-        _safe_str(core.get("hecho_imputado"))
-        or _safe_str(core.get("hecho_denunciado"))
-        or _safe_str(core.get("hecho_denunciado_resumido"))
-        or _safe_str(core.get("hecho_denunciado_literal"))
-    ).strip()
-
-    if hecho_fuerte:
-        core["hecho_para_recurso"] = hecho_fuerte
-        if not _safe_str(core.get("hecho_denunciado_literal")).strip():
-            core["hecho_denunciado_literal"] = hecho_fuerte
-    else:
+    if not core.get("hecho_denunciado_literal"):
         literal = extract_hecho_denunciado_literal(core)
         if literal:
             core["hecho_denunciado_literal"] = literal
-            core["hecho_para_recurso"] = literal
 
-    tipo, scores = classify(core)
+    tipo, scores = classify(get_hecho_para_recurso(core))
     jurisdiccion = resolve_jurisdiction(core)
 
     draft_body = get_hecho_para_recurso(core)
@@ -2578,88 +2363,78 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         tpl, final_kind = _select_template(core, tipo, jurisdiccion)
 
     tpl = ensure_tpl_dict(tpl, core)
-
-try:
     tpl = _upgrade_generated_template(
         tpl.get("asunto") or "",
         tpl.get("cuerpo") or "",
-        core=core,
-        inferred_type=tipo,
-        scores=scores,
-        jurisdiction=jurisdiccion,
-    )
-except TypeError:
-    tpl = _upgrade_generated_template(
-        tpl.get("asunto") or "",
-        tpl.get("cuerpo") or "",
-        core=core,
+        tipo,
+        core,
     )
 
-return {
-    "tpl": tpl,
-    
+    cuerpo = tpl.get("cuerpo") or ""
+    if tipo == "atencion" and _is_bicicleta_context(core):
+        cuerpo = _sanitize_bicicleta_body(cuerpo)
 
-    return {
-        "tpl": tpl,
-        "tipo": tipo,
-        "scores": scores,
-        "final_kind": final_kind,
-        "core": core,
-        "wrapper": wrapper,
-    }
+    cuerpo = _inject_tipicidad_material_en_alegaciones(cuerpo, core)
+    cuerpo = _inject_strategic_legal_reinforcement(cuerpo, core, tipo)
 
+    hecho = get_hecho_para_recurso(core)
+    if hecho and not _looks_like_internal_extract(hecho):
+        cuerpo = _integrate_extract_after_comparecencia(cuerpo, hecho, core)
 
-from pydantic import BaseModel
-from typing import Any, Dict, Optional
+    cuerpo = _fix_alegaciones_numeracion(cuerpo)
+    tpl["cuerpo"] = fix_roman_headings(cuerpo)
 
-class GenerateRequest(BaseModel):
-    case_id: str
-    interesado: Optional[Dict[str, Any]] = None
+    # Dejamos el asunto vacío para que el builder no pinte el título antes de la referencia.
+    docx_bytes = build_docx("", tpl["cuerpo"])
+    b2_bucket, b2_key_docx = upload_bytes(
+        case_id,
+        "generated",
+        docx_bytes,
+        ".docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
 
+    pdf_bytes = build_pdf("", tpl["cuerpo"])
+    _, b2_key_pdf = upload_bytes(case_id, "generated", pdf_bytes, ".pdf", "application/pdf")
 
-def generate_dgt(req: GenerateRequest) -> Dict[str, Any]:
-    engine = get_engine()
-
-    with engine.begin() as conn:
-        result = generate_dgt_for_case(
-            conn,
-            req.case_id,
-            interesado=req.interesado
-        )
-
-    tpl = result.get("tpl")
-    tipo = result.get("tipo")
-    scores = result.get("scores")
-    final_kind = result.get("final_kind")
-    core = result.get("core")
-    wrapper = result.get("wrapper")
-
-    # 🔧 FIX SEGURO (SIN ROMPER)
-    tpl = ensure_tpl_dict(tpl, core)
-
-    try:
-        tpl = _upgrade_generated_template(
-            tpl.get("asunto") or "",
-            tpl.get("cuerpo") or "",
-            core=core,
-            inferred_type=tipo,
-            scores=scores,
-            jurisdiction=resolve_jurisdiction(core),
-        )
-    except TypeError:
-        tpl = _upgrade_generated_template(
-            tpl.get("asunto") or "",
-            tpl.get("cuerpo") or "",
-            core=core,
-        )
+    conn.execute(
+        text("""
+            INSERT INTO documents (case_id, kind, b2_bucket, b2_key, mime, created_at)
+            VALUES (:case_id, :kind_docx, :bucket, :key_docx, :mime_docx, NOW()),
+                   (:case_id, :kind_pdf,  :bucket, :key_pdf,  :mime_pdf,  NOW())
+        """),
+        {
+            "case_id": case_id,
+            "kind_docx": f"{final_kind}_docx",
+            "kind_pdf": f"{final_kind}_pdf",
+            "bucket": b2_bucket,
+            "key_docx": b2_key_docx,
+            "key_pdf": b2_key_pdf,
+            "mime_docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "mime_pdf": "application/pdf",
+        },
+    )
 
     return {
         "ok": True,
-        "message": "Recurso generado.",
-        "tpl": tpl,
-        "tipo": tipo,
-        "scores": scores,
-        "final_kind": final_kind,
-        "core": core,
-        "wrapper": wrapper,
+        "kind": final_kind,
+        "asunto": tpl["asunto"],
+        "cuerpo": tpl["cuerpo"],
+        "docx": {"bucket": b2_bucket, "key": b2_key_docx},
+        "pdf": {"bucket": b2_bucket, "key": b2_key_pdf},
+        "tipo_infraccion": tipo,
+        "jurisdiccion": jurisdiccion,
     }
+
+
+class GenerateRequest(BaseModel):
+    case_id: str
+    interesado: Dict[str, str] = Field(default_factory=dict)
+
+
+@router.post("/generate/dgt")
+def generate_dgt(req: GenerateRequest) -> Dict[str, Any]:
+    engine = get_engine()
+    with engine.begin() as conn:
+        result = generate_dgt_for_case(conn, req.case_id, interesado=req.interesado)
+    return {"ok": True, "message": "Recurso generado.", **result}
