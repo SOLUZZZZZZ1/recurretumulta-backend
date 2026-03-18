@@ -364,25 +364,59 @@ def _looks_like_internal_extract(text: str) -> bool:
     return any(tok in low for tok in bad_tokens)
 
 
+def _normalize_tipo_locked(value: Any) -> str:
+    tipo = _safe_str(value).strip().lower()
+    if not tipo:
+        return ""
+    aliases = {
+        "municipal_semaforo": "semaforo",
+        "atencion_bicicleta": "atencion",
+        "municipal_sentido_contrario": "marcas_viales",
+        "municipal_generic": "otro",
+        "generic": "otro",
+        "generico": "otro",
+        "genérico": "otro",
+        "unknown": "",
+        "desconocido": "",
+    }
+    tipo = aliases.get(tipo, tipo)
+    if tipo in ("otro",):
+        return ""
+    return tipo
 
 
-def _prefer_analyze_family(core: Dict[str, Any]) -> str:
-    """
-    Usa SIEMPRE la familia decidida por analyze cuando exista, y solo cae a
-    reclasificación heurística si realmente no viene ninguna familia fiable.
-    """
-    candidates = [
-        core.get("familia_resuelta"),
-        core.get("template_usado"),
-        core.get("tipo_infraccion"),
-    ]
-    for value in candidates:
-        tipo = _safe_str(value).lower().strip()
-        if tipo and tipo not in ("otro", "unknown", "desconocido", "generic"):
+def _get_locked_family(core: Dict[str, Any]) -> str:
+    for key in ("familia_resuelta", "template_usado", "tipo_infraccion"):
+        tipo = _normalize_tipo_locked(core.get(key))
+        if tipo:
             return tipo
     return ""
 
+
+def _get_locked_hecho(core: Dict[str, Any]) -> str:
+    for key in ("hecho_para_recurso", "hecho_imputado", "hecho_denunciado_resumido", "hecho_denunciado_literal"):
+        txt = _clean_hecho_text(_safe_str(core.get(key)))
+        low = txt.lower().strip()
+        if not txt:
+            continue
+        if (
+            low.startswith("tipo_sancion:")
+            or low.startswith("organismo:")
+            or low.startswith("expediente_ref:")
+            or low.startswith("hecho_imputado:")
+        ):
+            continue
+        if _looks_like_internal_extract(txt):
+            continue
+        return txt
+    return ""
+
+
 def get_hecho_para_recurso(core: Dict[str, Any], forced_tipo: Optional[str] = None) -> str:
+    locked = _get_locked_hecho(core)
+    if locked:
+        return locked
+
     raw = (
         core.get("hecho_denunciado_resumido")
         or core.get("hecho_denunciado_literal")
@@ -399,7 +433,7 @@ def get_hecho_para_recurso(core: Dict[str, Any], forced_tipo: Optional[str] = No
     ):
         return ""
 
-    tipo = (_safe_str(forced_tipo).lower().strip() or _prefer_analyze_family(core) or resolve_infraction_type(core))
+    tipo = _normalize_tipo_locked(forced_tipo) or _get_locked_family(core) or resolve_infraction_type(core)
     if tipo == "velocidad":
         facts = _resolve_velocity_facts(core)
         measured = facts.get("measured")
@@ -1127,8 +1161,12 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
 
 
 def resolve_infraction_type(core: Dict[str, Any]) -> str:
-    tipo = _prefer_analyze_family(core)
-    if tipo:
+    locked_tipo = _get_locked_family(core)
+    if locked_tipo:
+        return locked_tipo
+
+    tipo = _safe_str(core.get("tipo_infraccion")).lower().strip()
+    if tipo and tipo not in ("otro", "unknown", "desconocido", "generic"):
         return tipo
 
     # Producción blindada: primero clasificar con el hecho limpio.
@@ -2363,18 +2401,22 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     wrapper = row[0] if isinstance(row[0], dict) else json.loads(row[0])
     core = wrapper.get("extracted") or {}
 
-    if not core.get("hecho_denunciado_literal"):
+    locked_hecho = _get_locked_hecho(core)
+    if not core.get("hecho_denunciado_literal") and not locked_hecho:
         literal = extract_hecho_denunciado_literal(core)
         if literal:
             core["hecho_denunciado_literal"] = literal
 
-    tipo = _prefer_analyze_family(core) or resolve_infraction_type(core)
+    tipo_locked = _get_locked_family(core)
+    tipo = tipo_locked or resolve_infraction_type(core)
     scores = _score_infraction_from_core(core)
     jurisdiccion = resolve_jurisdiction(core)
 
     draft_body = get_hecho_para_recurso(core, forced_tipo=tipo)
     bicicleta_ctx = _is_bicicleta_context(core)
-    dispatched_tpl = None if (tipo == "atencion" and bicicleta_ctx) else dispatch_deterministic_template(core, draft_body=draft_body)
+    dispatched_tpl = None
+    if not tipo_locked and not (tipo == "atencion" and bicicleta_ctx):
+        dispatched_tpl = dispatch_deterministic_template(core, draft_body=draft_body)
 
     if isinstance(dispatched_tpl, dict) and dispatched_tpl.get("asunto") and dispatched_tpl.get("cuerpo"):
         tpl = dispatched_tpl
