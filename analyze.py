@@ -116,6 +116,66 @@ _HECHO_HEADERS = [
     "hecho infractor",
 ]
 
+
+def _extract_labeled_hecho_field(raw_text: str, labels: List[str]) -> str:
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        return ""
+
+    original_text = raw_text.replace("\r", "\n")
+    normalized_text = _normalize_for_matching(original_text)
+
+    start_idx = None
+    for h in labels:
+        m = re.search(rf"{re.escape(h)}\s*[:\-]?\s*", normalized_text, flags=re.IGNORECASE)
+        if m:
+            start_idx = m.end()
+            break
+
+    if start_idx is None:
+        return ""
+
+    tail = original_text[start_idx:].strip()
+    if not tail:
+        return ""
+
+    lines = [ln.strip() for ln in tail.split("\n") if ln.strip()]
+    if not lines:
+        return ""
+
+    current: List[str] = []
+    started = False
+
+    for ln in lines:
+        if _is_admin_line(ln):
+            if current:
+                break
+            continue
+
+        norm = _normalize_for_matching(ln)
+
+        if any(norm.startswith(_normalize_for_matching(lbl)) for lbl in _HECHO_HEADERS):
+            if current:
+                break
+            continue
+
+        if re.match(r"^\s*5[abc]\b", norm):
+            ln = re.sub(r"^\s*5[abc]\s*", "", ln, flags=re.IGNORECASE).strip()
+            norm = _normalize_for_matching(ln)
+
+        if _looks_like_narrative_line(ln):
+            started = True
+
+        if started or current:
+            current.append(ln)
+
+        joined = " ".join(current).strip()
+        if len(joined) >= 320:
+            break
+
+    return _clean_literal_text(" ".join(current))
+
+
+
 _STOP_LINE_SIGNALS = [
     "datos vehiculo",
     "datos del vehiculo",
@@ -533,9 +593,19 @@ def _extract_preferred_hecho_fields(text_blob: str, core: Optional[Dict[str, Any
     ]
 
     literal = ""
+    hecho_imputado_textual = ""
+
     for src in literal_sources:
-        literal = _extract_hecho_denunciado_literal_from_text(src)
-        if literal and len(literal) >= 20:
+        if not hecho_imputado_textual:
+            hecho_imputado_textual = _extract_labeled_hecho_field(
+                src,
+                ["hecho imputado", "hecho infringido", "hecho infractor"],
+            )
+        literal = _extract_labeled_hecho_field(
+            src,
+            ["hecho denunciado", "hecho que se notifica", "lo que se notifica"],
+        ) or _extract_hecho_denunciado_literal_from_text(src)
+        if literal and len(literal) >= 12:
             break
 
     tipo_hint = _safe_str(core.get("tipo_infraccion"))
@@ -544,6 +614,7 @@ def _extract_preferred_hecho_fields(text_blob: str, core: Optional[Dict[str, Any
     return {
         "hecho_denunciado_literal": literal or None,
         "hecho_denunciado_resumido": resumido or None,
+        "hecho_imputado_textual": hecho_imputado_textual or None,
     }
 
 
@@ -1855,7 +1926,18 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
         confidence = max(confidence, conf_override)
 
     out["tipo_infraccion"] = tipo
-    out["hecho_imputado"] = _canonical_hecho_imputado(tipo, hecho) or None
+
+    hecho_imputado_textual = _safe_str(out.get("hecho_imputado_textual"))
+    hecho_denunciado_literal = _safe_str(out.get("hecho_denunciado_literal"))
+    hecho_detectado = _safe_str(hecho)
+
+    out["hecho_imputado"] = (
+        hecho_imputado_textual
+        or hecho_denunciado_literal
+        or hecho_detectado
+        or _canonical_hecho_imputado(tipo, hecho)
+        or None
+    )
     out["facts_phrases"] = facts
     out["jurisdiccion"] = _extract_jurisdiction(text_blob, out)
     out["contexto_movilidad"] = _detect_mobility_context(text_blob, out)
