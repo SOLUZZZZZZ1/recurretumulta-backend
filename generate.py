@@ -1983,14 +1983,15 @@ def _resolve_header_destination(core: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
-def _integrate_extract_after_comparecencia(body: str, hecho: str, core: Dict[str, Any] = None) -> str:
+def _integrate_extract_after_comparecencia(body: str, hecho: str, core: Dict[str, Any] = None, forced_tipo: Optional[str] = None) -> str:
     txt = _safe_str(body)
     hecho = _safe_str(hecho).strip()
     core = core or {}
     if not hecho:
         return txt
 
-    if resolve_infraction_type(core) == "velocidad" and (_looks_like_noisy_velocity_text(hecho) or _resolve_velocity_facts(core).get("conflict")):
+    tipo = forced_tipo or _get_locked_tipo(core) or resolve_infraction_type(core)
+    if tipo == "velocidad" and (_looks_like_noisy_velocity_text(hecho) or _resolve_velocity_facts(core).get("conflict")):
         facts = _resolve_velocity_facts(core)
         measured = facts.get("measured")
         limit = facts.get("limit")
