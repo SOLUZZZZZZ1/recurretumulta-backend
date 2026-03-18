@@ -1,6 +1,12 @@
 import json
 import re
 import unicodedata
+from pydantic import BaseModel
+from typing import Any, Dict, Optional
+
+class GenerateRequest(BaseModel):
+    case_id: str
+    interesado: Optional[Dict[str, Any]] = None
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -2594,5 +2600,14 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
 def generate_dgt(req: GenerateRequest) -> Dict[str, Any]:
     engine = get_engine()
     with engine.begin() as conn:
-        result = generate_dgt_for_case(conn, req.case_id, interesado=req.interesado)
-    return {"ok": True, "message": "Recurso generado.", **result}
+        result = generate_dgt_for_case(
+            conn,
+            req.case_id,
+            interesado=req.interesado
+        )
+
+    return {
+        "ok": True,
+        "message": "Recurso generado.",
+        **result
+    }
