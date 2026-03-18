@@ -378,7 +378,7 @@ def _get_locked_tipo(core: Dict[str, Any]) -> str:
 def _has_locked_family(core: Dict[str, Any]) -> bool:
     return bool(_get_locked_tipo(core))
 
-def get_hecho_para_recurso(core: Dict[str, Any]) -> str:
+def get_hecho_para_recurso(core: Dict[str, Any], forced_tipo: Optional[str] = None) -> str:
     raw = (
         core.get("hecho_denunciado_resumido")
         or core.get("hecho_denunciado_literal")
@@ -395,7 +395,7 @@ def get_hecho_para_recurso(core: Dict[str, Any]) -> str:
     ):
         return ""
 
-    tipo = resolve_infraction_type(core)
+    tipo = forced_tipo or _get_locked_tipo(core) or resolve_infraction_type(core)
     if tipo == "velocidad":
         facts = _resolve_velocity_facts(core)
         measured = facts.get("measured")
