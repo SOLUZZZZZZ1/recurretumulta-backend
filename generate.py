@@ -2350,12 +2350,13 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         if literal:
             core["hecho_denunciado_literal"] = literal
 
-    tipo, scores = classify(get_hecho_para_recurso(core))
+    tipo = core.get("familia_resuelta") or resolve_infraction_type(core)
+scores = _score_infraction_from_core(core)
     jurisdiccion = resolve_jurisdiction(core)
 
     draft_body = get_hecho_para_recurso(core)
     bicicleta_ctx = _is_bicicleta_context(core)
-    dispatched_tpl = None if (tipo == "atencion" and bicicleta_ctx) else dispatch_deterministic_template(core, draft_body=draft_body)
+    dispatched_tpl = None if (tipo == "atencion" and bicicleta_ctx) else     dispatch_deterministic_template(core, draft_body=draft_body)
 
     if isinstance(dispatched_tpl, dict) and dispatched_tpl.get("asunto") and dispatched_tpl.get("cuerpo"):
         tpl = dispatched_tpl
