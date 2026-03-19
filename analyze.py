@@ -954,31 +954,6 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     ).strip()
 
     # -------------------------------------------------
-    # 🚦 PRIORIDAD ABSOLUTA: SEMÁFORO
-    # -------------------------------------------------
-    semaforo_hard = any(
-        s in combined for s in [
-            "semaforo",
-            "semáforo",
-            "luz roja",
-            "fase roja",
-            "fase del rojo",
-            "cruce en rojo",
-            "cruce con fase roja",
-            "cruce con fase del rojo",
-            "linea de detencion",
-            "línea de detención",
-            "articulo 146",
-            "art. 146",
-            "no respetar",
-        ]
-    )
-
-    if semaforo_hard:
-        facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
-        return ("semaforo", facts[0], facts)
-
-    # -------------------------------------------------
     # 1) CONDICIONES DEL VEHÍCULO
     # -------------------------------------------------
     vehicle_light_context = any(
