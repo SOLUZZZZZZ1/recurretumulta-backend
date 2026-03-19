@@ -1123,6 +1123,9 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
 
 
 def resolve_infraction_type(core: Dict[str, Any]) -> str:
+    locked = _get_locked_tipo(core)
+    if locked:
+        return locked
     tipo = _get_locked_tipo(core)
     if tipo:
         return tipo
@@ -1672,7 +1675,7 @@ def _build_strategy_prefix(core: Dict[str, Any], tipo: str) -> str:
 
     if usar_nulidad:
         pieces.append(
-            "ALEGACIÓN COMPLEMENTARIA — NULIDAD DE PLENO DERECHO\n\n"
+            "ALEGACIÓN — NULIDAD DE PLENO DERECHO\n\n"
             "Con carácter principal, esta parte interesa la nulidad de pleno derecho del acto impugnado cuando el expediente prescinde de elementos esenciales de prueba o de tramitación que impiden identificar con garantías el hecho realmente sancionado y su adecuado soporte probatorio.\n"
         )
 
@@ -1695,72 +1698,14 @@ def _build_strategy_prefix(core: Dict[str, Any], tipo: str) -> str:
         }
         bullets = [f"• {mapping[key]}" for key in principales if key in mapping]
         if bullets:
-            pieces.append("ALEGACIÓN COMPLEMENTARIA — INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS\n\n" + "\n".join(bullets) + "\n")
+            pieces.append("ALEGACIÓN — INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS\n\n" + "\n".join(bullets) + "\n")
 
     if nivel in ("agresivo", "muy_agresivo") and secundarios:
         bullets2 = "\n".join(f"• {str(x).replace('_', ' ')}" for x in secundarios)
-        pieces.append("ALEGACIÓN COMPLEMENTARIA — CONSIDERACIONES ADICIONALES\n\n" + bullets2 + "\n")
+        pieces.append("ALEGACIÓN — CONSIDERACIONES COMPLEMENTARIAS\n\n" + bullets2 + "\n")
 
     return "\n\n".join(p.strip() for p in pieces if p.strip())
 
-
-
-def _build_jurisprudencia_aplicable(tipo: str = "", core: Dict[str, Any] = None) -> str:
-    tipo_key = _safe_str(tipo).lower().strip()
-
-    mapping = {
-        "semaforo": (
-            "CUARTO.– La jurisprudencia exige que la Administración acredite de forma suficiente la fase roja activa y el rebase efectivo de la línea de detención. "
-            "La presunción de veracidad no desplaza la exigencia de soporte probatorio bastante cuando la constatación del hecho requiere verificación objetiva o secuencia técnica suficiente."
-        ),
-        "municipal_semaforo": (
-            "CUARTO.– En materia de semáforos y sistemas foto-roja, la exigencia jurisprudencial de prueba bastante impone acreditar la fase roja activa, el instante exacto del rebase y la integridad de la secuencia o del soporte de captación."
-        ),
-        "velocidad": (
-            "CUARTO.– La doctrina jurisprudencial exige, en sanciones por velocidad, la acreditación del correcto funcionamiento del dispositivo, su verificación metrológica vigente y la trazabilidad del dato captado, sin que baste una referencia genérica al radar utilizado."
-        ),
-        "movil": (
-            "CUARTO.– La jurisprudencia exige que la infracción por uso de teléfono móvil se apoye en una observación concreta y suficientemente circunstanciada de una manipulación real del dispositivo, no bastando referencias imprecisas o genéricas."
-        ),
-        "auriculares": (
-            "CUARTO.– La jurisprudencia exige una descripción suficiente del uso efectivo de auriculares o dispositivos análogos, sin que la mera apariencia externa permita, por sí sola, integrar válidamente el tipo infractor."
-        ),
-        "cinturon": (
-            "CUARTO.– La jurisprudencia exige que el hecho imputado aparezca descrito con claridad suficiente, de modo que pueda determinarse si se imputa ausencia total de uso, uso incorrecto o falta de abrochado del cinturón."
-        ),
-        "casco": (
-            "CUARTO.– La jurisprudencia exige una concreción bastante del incumplimiento atribuido, precisando si se imputa ausencia de casco, uso incorrecto, falta de homologación o deficiente sujeción."
-        ),
-        "atencion": (
-            "CUARTO.– La jurisprudencia recuerda que no toda conducta irregular o llamativa constituye por sí misma infracción sancionable, siendo necesaria la acreditación de una afectación real al control del vehículo o de un riesgo vial objetivable."
-        ),
-        "atencion_bicicleta": (
-            "CUARTO.– También en circulación ciclista, la jurisprudencia exige una descripción concreta de la conducta observada y de su incidencia real en la seguridad vial, no bastando fórmulas genéricas o valoraciones apodícticas."
-        ),
-        "marcas_viales": (
-            "CUARTO.– La jurisprudencia exige la identificación precisa de la marca vial afectada y de la maniobra efectivamente realizada, sin que la mera alusión genérica a una infracción horizontal resulte bastante."
-        ),
-        "seguro": (
-            "CUARTO.– La jurisprudencia exige acreditación verificable y bastante de la inexistencia de cobertura vigente en la fecha del hecho, con trazabilidad suficiente de la consulta o certificación aportada."
-        ),
-        "itv": (
-            "CUARTO.– La jurisprudencia exige acreditación documental suficiente de la situación administrativa del vehículo en la fecha del hecho, no bastando referencias imprecisas o no verificables."
-        ),
-        "condiciones_vehiculo": (
-            "CUARTO.– La jurisprudencia exige identificar de forma concreta el defecto técnico o reglamentario imputado y su exacta relación con el precepto vulnerado, especialmente cuando se trate de alumbrado, neumáticos u homologación."
-        ),
-        "carril": (
-            "CUARTO.– La jurisprudencia exige describir con precisión el contexto de la maniobra, la configuración de la calzada y la concreta infracción de la regla de circulación aplicada."
-        ),
-        "alcohol": (
-            "CUARTO.– La jurisprudencia exige acreditar la regularidad del procedimiento de medición, el aparato utilizado, el resultado obtenido y la observancia de las garantías mínimas de la prueba."
-        ),
-        "generic": (
-            "CUARTO.– La jurisprudencia exige una descripción suficiente del hecho imputado, una motivación individualizada y una base probatoria bastante para desvirtuar la presunción de inocencia del administrado."
-        ),
-    }
-
-    return mapping.get(tipo_key, mapping["generic"])
 
 def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> str:
     tipo_key = _safe_str(tipo).lower().strip()
@@ -1883,7 +1828,6 @@ def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> s
     assessment = _assess_legal_strength(core or {}, tipo)
     level = assessment.get("level", "normal")
     flags = set(assessment.get("flags") or [])
-    jurisprudencia_text = _build_jurisprudencia_aplicable(tipo, core or {})
 
     extra_tipicidad = ""
     if "tipicidad_debil" in flags or "hecho_generico" in flags or "boletin_incoherente" in flags:
@@ -1911,7 +1855,7 @@ def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> s
     sexto = ""
     if level in ("agresivo", "muy_agresivo"):
         sexto = (
-            "SÉPTIMO.– Cuando el expediente se apoya en una descripción llamativa, moral o "
+            "SEXTO.– Cuando el expediente se apoya en una descripción llamativa, moral o "
             "socialmente reprochable, pero no concreta una maniobra peligrosa ni un riesgo vial "
             "objetivable, se desdibuja el verdadero objeto del Derecho sancionador en materia de "
             "tráfico. La potestad sancionadora no puede fundarse en impresiones escandalosas o "
@@ -1933,12 +1877,11 @@ def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> s
         "mantenerse la sanción cuando quede suficientemente motivada la subsunción "
         f"de los hechos en {tipo_desc}.{extra_tipicidad}\n\n"
         f"{fundamento_tipo}\n\n"
-        f"{jurisprudencia_text}\n\n"
-        "QUINTO.– Conforme a reiterada jurisprudencia, la potestad sancionadora "
+        "CUARTO.– Conforme a reiterada jurisprudencia, la potestad sancionadora "
         "de la Administración exige una motivación suficiente del hecho imputado "
         "y una acreditación probatoria bastante que permita enervar la presunción "
         f"de inocencia del administrado.{cuarto_extra}\n\n"
-        "SEXTO.– La ausencia de prueba suficiente, la insuficiente motivación "
+        "QUINTO.– La ausencia de prueba suficiente, la insuficiente motivación "
         "del expediente o la falta de concreción del hecho imputado determinan "
         f"la improcedencia de la sanción propuesta.{quinto_extra}\n\n"
         f"{sexto}"
@@ -2483,10 +2426,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         if literal:
             core["hecho_denunciado_literal"] = literal
 
-    if locked_tipo:
-        tipo = locked_tipo
-    else:
-        tipo = resolve_infraction_type(core)
+    tipo = locked_tipo or resolve_infraction_type(core)
     scores = _score_infraction_from_core(core)
     jurisdiccion = resolve_jurisdiction(core)
 
@@ -2519,6 +2459,14 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
 
     cuerpo = _inject_tipicidad_material_en_alegaciones(cuerpo, core)
     cuerpo = _inject_strategic_legal_reinforcement(cuerpo, core, tipo)
+    # Limpieza de lenguaje interno para el documento final
+    cuerpo = re.sub(r'\bREFUERZO\s*[—-]\s*', '', cuerpo, flags=re.IGNORECASE)
+    cuerpo = re.sub(r'\bESTRATEGIA PRINCIPAL\b', 'INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS', cuerpo, flags=re.IGNORECASE)
+    cuerpo = re.sub(r'\bFACTORES ADICIONALES\b', 'CONSIDERACIONES COMPLEMENTARIAS', cuerpo, flags=re.IGNORECASE)
+    cuerpo = re.sub(r'\bCONSIDERACIONES ADICIONALES\b', 'CONSIDERACIONES COMPLEMENTARIAS', cuerpo, flags=re.IGNORECASE)
+    cuerpo = re.sub(r'\bALEGACIÓN\s+DE\s+\s*NULIDAD\s+DE\s+PLENO\s+DERECHO\b', 'ALEGACIÓN — NULIDAD DE PLENO DERECHO', cuerpo, flags=re.IGNORECASE)
+    # Limpiar duplicado de cabecera/antecedentes que a veces viene del builder base
+    cuerpo = re.sub(r'\nA la atenci[oó]n del Ayuntamiento competente,\s*\nI\. ANTECEDENTES\s*\n', '\n', cuerpo, flags=re.IGNORECASE)
 
     hecho = get_hecho_para_recurso(core, forced_tipo=tipo)
     if hecho and not _looks_like_internal_extract(hecho):
