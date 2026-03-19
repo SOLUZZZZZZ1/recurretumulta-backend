@@ -4,33 +4,6 @@ import mimetypes
 import re
 from typing import Any, Dict, List, Tuple, Optional
 
-def _is_semaforo_preferente_context(text: str) -> bool:
-    blob = (text or "").lower()
-    blob = (
-        blob.replace("semáforo", "semaforo")
-            .replace("línea", "linea")
-            .replace("detención", "detencion")
-    )
-    return (
-        "semaforo" in blob and any(
-            s in blob for s in [
-                "luz roja",
-                "fase roja",
-                "fase del rojo",
-                "no respetar",
-                "no obedecer",
-                "rebasar",
-                "rebase",
-                "linea de detencion",
-                "detencion",
-                "articulo 146",
-                "art. 146",
-            ]
-        )
-    )
-
-
-
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from sqlalchemy import text
 
@@ -979,6 +952,31 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     hecho_focus = "\n".join(
         [x for x in [hecho_literal, hecho_resumido] if x]
     ).strip()
+
+    # -------------------------------------------------
+    # 🚦 PRIORIDAD ABSOLUTA: SEMÁFORO
+    # -------------------------------------------------
+    semaforo_hard = any(
+        s in combined for s in [
+            "semaforo",
+            "semáforo",
+            "luz roja",
+            "fase roja",
+            "fase del rojo",
+            "cruce en rojo",
+            "cruce con fase roja",
+            "cruce con fase del rojo",
+            "linea de detencion",
+            "línea de detención",
+            "articulo 146",
+            "art. 146",
+            "no respetar",
+        ]
+    )
+
+    if semaforo_hard:
+        facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
+        return ("semaforo", facts[0], facts)
 
     # -------------------------------------------------
     # 1) CONDICIONES DEL VEHÍCULO
