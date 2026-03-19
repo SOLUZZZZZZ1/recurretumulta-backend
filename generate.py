@@ -2253,6 +2253,15 @@ def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
     elif tipo == "carril":
         return build_carril_strong_template(core), "carril"
     elif jurisdiccion == "municipal":
+        locked_tipo = _get_locked_tipo(core)
+        if locked_tipo:
+            if locked_tipo == "semaforo":
+                return build_municipal_semaforo_template(core), "municipal_semaforo"
+            elif locked_tipo == "velocidad":
+                return build_velocity_strong_template(core), "velocidad"
+            else:
+                return build_municipal_generic_template(core), "municipal_generic"
+
         blob = json.dumps(core, ensure_ascii=False).lower()
         if "sentido contrario" in blob or "direccion prohibida" in blob or "dirección prohibida" in blob:
             return build_municipal_sentido_contrario_template(core), "municipal_sentido_contrario"
@@ -2423,7 +2432,10 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         if literal:
             core["hecho_denunciado_literal"] = literal
 
-    tipo = locked_tipo or resolve_infraction_type(core)
+    if locked_tipo:
+        tipo = locked_tipo
+    else:
+        tipo = resolve_infraction_type(core)
     scores = _score_infraction_from_core(core)
     jurisdiccion = resolve_jurisdiction(core)
 
