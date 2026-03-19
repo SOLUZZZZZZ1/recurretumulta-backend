@@ -1708,185 +1708,137 @@ def _build_strategy_prefix(core: Dict[str, Any], tipo: str) -> str:
 
 
 def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> str:
-    tipo_key = _safe_str(tipo).lower().strip()
+    tipo = (tipo or "").lower().strip()
 
-    tipo_map = {
-        "semaforo": "la infracción semafórica imputada",
-        "municipal_semaforo": "la infracción semafórica imputada",
-        "velocidad": "la infracción por exceso de velocidad imputada",
-        "movil": "la infracción por uso manual de dispositivo móvil imputada",
-        "auriculares": "la infracción por uso de auriculares o dispositivos análogos imputada",
-        "cinturon": "la infracción relativa al cinturón de seguridad imputada",
-        "casco": "la infracción relativa al casco de protección imputada",
-        "atencion": "la infracción por falta de atención permanente a la conducción imputada",
-        "atencion_bicicleta": "la infracción por falta de atención en la circulación imputada",
-        "marcas_viales": "la infracción relativa a marcas viales imputada",
-        "seguro": "la infracción relativa al aseguramiento obligatorio imputada",
-        "itv": "la infracción relativa a la ITV imputada",
-        "condiciones_vehiculo": "la infracción relativa a las condiciones del vehículo imputada",
-        "carril": "la infracción relativa a la posición o uso del carril imputada",
-        "alcohol": "la infracción relativa a la tasa de alcohol o prueba de alcoholemia imputada",
-        "generic": "la infracción administrativa imputada",
-    }
+    fundamentos = []
 
-    fundamento_especifico_map = {
-        "semaforo": (
-            "TERCERO.– En las infracciones semafóricas, la Administración debe acreditar de forma "
-            "clara la existencia de fase roja activa en el instante exacto del hecho y, en su caso, "
-            "el rebase efectivo de la línea de detención o del punto de parada reglamentario. "
-            "No basta una referencia genérica a luz roja o señal luminosa si no se concreta con "
-            "precisión la secuencia temporal y la forma de constatación."
-        ),
-        "municipal_semaforo": (
-            "TERCERO.– En las infracciones semafóricas de ámbito municipal, la Administración debe "
-            "acreditar de forma clara la existencia de fase roja activa en el instante exacto del hecho "
-            "y, en su caso, el rebase efectivo de la línea de detención o del punto de parada "
-            "reglamentario, con identificación suficiente del cruce y del sistema de captación."
-        ),
-        "velocidad": (
-            "TERCERO.– En las infracciones por exceso de velocidad, la validez de la imputación exige "
-            "la correcta identificación del vehículo, de la velocidad medida, del límite aplicable y del "
-            "sistema de captación empleado, así como la acreditación técnica suficiente del medio de medición "
-            "y de la regularidad de la operación de control."
-        ),
-        "movil": (
-            "TERCERO.– En las infracciones por uso manual de dispositivo móvil, debe acreditarse la "
-            "manipulación efectiva del terminal durante la conducción. La mera referencia genérica al "
-            "teléfono o a su presencia no basta si no se describe una acción concreta, perceptible y "
-            "jurídicamente subsumible en el tipo aplicado."
-        ),
-        "auriculares": (
-            "TERCERO.– En las infracciones por auriculares o dispositivos análogos, debe acreditarse "
-            "el uso efectivo de auriculares, cascos conectados o aparatos receptores o reproductores "
-            "de sonido durante la conducción, sin que la mera apariencia externa o la simple presencia "
-            "de un objeto permita por sí sola tener por integrado el tipo infractor."
-        ),
-        "cinturon": (
-            "TERCERO.– En las infracciones relativas al cinturón de seguridad, la Administración debe "
-            "describir con concreción suficiente el incumplimiento observado y las condiciones materiales "
-            "de percepción del hecho, pues la afirmación genérica carente de detalle no satisface por sí "
-            "sola las exigencias del Derecho sancionador."
-        ),
-        "casco": (
-            "TERCERO.– En las infracciones relativas al casco de protección, debe precisarse si el "
-            "incumplimiento consistía en ausencia de casco, casco no homologado, casco desabrochado o "
-            "uso incorrecto, con descripción bastante del hecho y de las condiciones de observación."
-        ),
-        "atencion": (
-            "TERCERO.– En las infracciones por falta de atención a la conducción, la Administración "
-            "debe concretar qué conducta material revelaría la distracción imputada y en qué medida "
-            "afectó realmente al control del vehículo o generó un riesgo vial objetivable. No basta "
-            "una descripción llamativa o moralizante desconectada de una afectación real de la conducción."
-        ),
-        "atencion_bicicleta": (
-            "TERCERO.– En las infracciones por falta de atención en la circulación, la Administración "
-            "debe concretar qué conducta material revelaría la distracción imputada y en qué medida "
-            "afectó realmente al control del vehículo o generó un riesgo vial objetivable."
-        ),
-        "marcas_viales": (
-            "TERCERO.– En las infracciones relativas a marcas viales, debe acreditarse con precisión "
-            "la marca concreta afectada, su configuración y la maniobra efectivamente realizada, no "
-            "siendo bastante una alusión genérica a la vía o a la circulación."
-        ),
-        "seguro": (
-            "TERCERO.– En las infracciones relativas al seguro obligatorio, la Administración debe "
-            "acreditar de forma verificable que en la fecha y hora exactas del hecho no existía cobertura "
-            "vigente, con trazabilidad suficiente de la consulta o certificación negativa bastante."
-        ),
-        "itv": (
-            "TERCERO.– En las infracciones relativas a la ITV, la Administración debe acreditar "
-            "documentalmente la situación administrativa del vehículo en la fecha del hecho, sin que "
-            "baste una referencia imprecisa o carente de soporte verificable."
-        ),
-        "condiciones_vehiculo": (
-            "TERCERO.– En las infracciones relativas a las condiciones del vehículo, la Administración "
-            "debe concretar el defecto técnico o reglamentario imputado, el precepto o requisito vulnerado "
-            "y el modo objetivo de constatación, especialmente cuando se trate de alumbrado, neumáticos, "
-            "dispositivos luminosos, homologación o elementos reflectantes."
-        ),
-        "carril": (
-            "TERCERO.– En las infracciones relativas a la posición o uso del carril, la Administración "
-            "debe describir con precisión el carril utilizado, la configuración de la calzada, las "
-            "circunstancias del tráfico y la razón por la que la conducta observada sería contraria a la "
-            "norma aplicable."
-        ),
-        "alcohol": (
-            "TERCERO.– En las infracciones relativas a alcoholemia o tasa de alcohol, la Administración "
-            "debe acreditar con precisión la prueba practicada, el resultado obtenido, el aparato empleado, "
-            "la regularidad del procedimiento de medición y, en su caso, la observancia de las garantías "
-            "mínimas exigibles para la validez de la prueba."
-        ),
-        "generic": (
-            "TERCERO.– La Administración debe describir con precisión suficiente la conducta imputada y "
-            "el precepto aplicado, permitiendo una subsunción jurídica clara y una defensa efectiva."
-        ),
-    }
-
-    tipo_desc = tipo_map.get(tipo_key, "la infracción administrativa imputada")
-    fundamento_tipo = fundamento_especifico_map.get(tipo_key, fundamento_especifico_map["generic"])
-
-    assessment = _assess_legal_strength(core or {}, tipo)
-    level = assessment.get("level", "normal")
-    flags = set(assessment.get("flags") or [])
-
-    extra_tipicidad = ""
-    if "tipicidad_debil" in flags or "hecho_generico" in flags or "boletin_incoherente" in flags:
-        extra_tipicidad = (
-            " La mera formulación genérica, estereotipada o llamativa del boletín no "
-            "satisface por sí sola las exigencias de tipicidad cuando no permite identificar "
-            "con precisión la conducta verdaderamente sancionada."
-        )
-
-    cuarto_extra = ""
-    if level in ("reforzado", "agresivo", "muy_agresivo"):
-        cuarto_extra = (
-            " No basta una afirmación apodíctica o formularia del agente denunciante cuando "
-            "faltan elementos objetivos de corroboración, concreción suficiente de la observación "
-            "o datos materiales que permitan contradicción efectiva."
-        )
-
-    quinto_extra = ""
-    if "sin_prueba_objetiva" in flags or "sin_soporte_tecnico" in flags:
-        quinto_extra = (
-            " La falta de soporte objetivo, prueba técnica bastante o acreditación material "
-            "individualizada del hecho denunciado refuerza la improcedencia de la sanción."
-        )
-
-    sexto = ""
-    if level in ("agresivo", "muy_agresivo"):
-        sexto = (
-            "SEXTO.– Cuando el expediente se apoya en una descripción llamativa, moral o "
-            "socialmente reprochable, pero no concreta una maniobra peligrosa ni un riesgo vial "
-            "objetivable, se desdibuja el verdadero objeto del Derecho sancionador en materia de "
-            "tráfico. La potestad sancionadora no puede fundarse en impresiones escandalosas o "
-            "valoraciones de contexto, sino en hechos típicos, acreditados y jurídicamente "
-            "subsumibles con claridad en el precepto aplicado.\n\n"
-        )
-
-    return (
+    fundamentos.append(
         "FUNDAMENTOS DE DERECHO\n\n"
-        "PRIMERO.– Resultan de aplicación los principios generales del Derecho "
-        "Administrativo sancionador, en particular los principios de legalidad, "
-        "tipicidad, presunción de inocencia y carga de la prueba a cargo de la "
-        "Administración.\n\n"
-        "SEGUNDO.– Conforme al principio de tipicidad, la conducta imputada debe "
-        "encajar de forma clara, precisa e inequívoca en el tipo infractor aplicado "
-        "por la Administración. La descripción fáctica del boletín o denuncia debe "
-        "permitir identificar con claridad la conducta concreta sancionada y su "
-        "adecuación jurídica al precepto invocado. En consecuencia, solo puede "
-        "mantenerse la sanción cuando quede suficientemente motivada la subsunción "
-        f"de los hechos en {tipo_desc}.{extra_tipicidad}\n\n"
-        f"{fundamento_tipo}\n\n"
-        "CUARTO.– Conforme a reiterada jurisprudencia, la potestad sancionadora "
-        "de la Administración exige una motivación suficiente del hecho imputado "
-        "y una acreditación probatoria bastante que permita enervar la presunción "
-        f"de inocencia del administrado.{cuarto_extra}\n\n"
-        "QUINTO.– La ausencia de prueba suficiente, la insuficiente motivación "
-        "del expediente o la falta de concreción del hecho imputado determinan "
-        f"la improcedencia de la sanción propuesta.{quinto_extra}\n\n"
-        f"{sexto}"
+        "PRIMERO.– Resultan de aplicación los artículos 24 y 25 de la Constitución Española, "
+        "que consagran el derecho a la presunción de inocencia, la legalidad sancionadora y el principio de tipicidad."
     )
 
+    fundamentos.append(
+        "SEGUNDO.– Conforme a los artículos 53, 63 y concordantes de la Ley 39/2015, de Procedimiento Administrativo Común, "
+        "la potestad sancionadora exige la existencia de un procedimiento válido, motivación suficiente y respeto a las garantías del administrado."
+    )
+
+    fundamentos.append(
+        "TERCERO.– De acuerdo con el artículo 77 del Texto Refundido de la Ley sobre Tráfico, Circulación de Vehículos a Motor y Seguridad Vial, "
+        "corresponde a la Administración la carga de probar de forma suficiente los hechos constitutivos de la infracción."
+    )
+
+    if tipo == "velocidad":
+        fundamentos.append(
+            "CUARTO.– En materia de control de velocidad, resulta de aplicación la Orden ICT/155/2020, "
+            "que regula el control metrológico del Estado de los instrumentos de medida, exigiendo verificación periódica y correcta utilización del dispositivo."
+        )
+        fundamentos.append(
+            "QUINTO.– La jurisprudencia del Tribunal Supremo exige la acreditación técnica suficiente del cinemómetro, "
+            "incluyendo certificado de verificación, identificación del equipo y soporte probatorio completo."
+        )
+
+    elif tipo in ("semaforo", "municipal_semaforo"):
+        fundamentos.append(
+            "CUARTO.– Conforme al artículo 146 del Reglamento General de Circulación, las señales luminosas regulan la prioridad de paso, "
+            "exigiendo la detención ante luz roja no intermitente."
+        )
+        fundamentos.append(
+            "QUINTO.– La jurisprudencia exige la acreditación de la fase roja activa en el momento exacto del hecho, "
+            "así como el rebase efectivo de la línea de detención, no siendo suficiente una mera referencia genérica a la luz roja."
+        )
+
+    elif tipo == "movil":
+        fundamentos.append(
+            "CUARTO.– Conforme al artículo 18.2 del Reglamento General de Circulación, está prohibido utilizar manualmente dispositivos de telefonía móvil durante la conducción."
+        )
+        fundamentos.append(
+            "QUINTO.– La jurisprudencia exige que la infracción se base en una observación concreta de manipulación efectiva del dispositivo, "
+            "no bastando una simple apreciación genérica."
+        )
+
+    elif tipo in ("atencion", "atencion_bicicleta"):
+        fundamentos.append(
+            "CUARTO.– El artículo 3.1 del Reglamento General de Circulación establece la obligación de conducir con la diligencia necesaria para evitar riesgos propios o ajenos."
+        )
+        fundamentos.append(
+            "QUINTO.– La jurisprudencia ha reiterado que no toda conducta irregular constituye infracción sancionable, "
+            "si no se acredita una afectación real a la seguridad vial o al control del vehículo."
+        )
+
+    elif tipo == "auriculares":
+        fundamentos.append(
+            "CUARTO.– Conforme al artículo 18 del Reglamento General de Circulación, la conducción debe realizarse con la libertad de movimientos necesaria y sin dispositivos que disminuyan la atención permanente."
+        )
+        fundamentos.append(
+            "QUINTO.– La Administración debe acreditar con precisión el uso efectivo del dispositivo y su incidencia real en la conducción."
+        )
+
+    elif tipo == "cinturon":
+        fundamentos.append(
+            "CUARTO.– Resultan de aplicación los preceptos de la Ley de Seguridad Vial y del Reglamento General de Circulación relativos al uso obligatorio del cinturón de seguridad."
+        )
+        fundamentos.append(
+            "QUINTO.– La Administración debe describir con precisión el concreto incumplimiento imputado, no siendo suficiente una fórmula estereotipada o ambigua."
+        )
+
+    elif tipo == "casco":
+        fundamentos.append(
+            "CUARTO.– Resultan de aplicación los preceptos de la Ley de Seguridad Vial y del Reglamento General de Circulación relativos al uso obligatorio del casco de protección."
+        )
+        fundamentos.append(
+            "QUINTO.– La Administración debe concretar si se imputa ausencia de casco, uso incorrecto, falta de homologación o deficiente sujeción."
+        )
+
+    elif tipo == "condiciones_vehiculo":
+        fundamentos.append(
+            "CUARTO.– Conforme al Reglamento General de Vehículos y normativa técnica aplicable, la Administración debe identificar con precisión el defecto técnico imputado y el precepto reglamentario vulnerado."
+        )
+        fundamentos.append(
+            "QUINTO.– No basta una descripción genérica del estado del vehículo si no se concreta el defecto, su relevancia jurídica y el modo objetivo de constatación."
+        )
+
+    elif tipo == "itv":
+        fundamentos.append(
+            "CUARTO.– Conforme al Real Decreto 920/2017, por el que se regula la inspección técnica de vehículos, la Administración debe acreditar documentalmente la situación administrativa del vehículo en la fecha del hecho."
+        )
+
+    elif tipo == "seguro":
+        fundamentos.append(
+            "CUARTO.– Conforme al Real Decreto Legislativo 8/2004, sobre responsabilidad civil y seguro en la circulación de vehículos a motor, la inexistencia de seguro debe acreditarse de forma suficiente y verificable."
+        )
+
+    elif tipo == "marcas_viales":
+        fundamentos.append(
+            "CUARTO.– En las infracciones relativas a marcas viales, la Administración debe identificar con precisión la marca afectada, la maniobra realizada y la norma infringida."
+        )
+
+    elif tipo == "carril":
+        fundamentos.append(
+            "CUARTO.– En las infracciones relativas a la posición o uso del carril, la Administración debe describir con precisión la configuración de la calzada, el carril utilizado y la regla concreta supuestamente vulnerada."
+        )
+
+    elif tipo == "alcohol":
+        fundamentos.append(
+            "CUARTO.– En materia de alcoholemia, la Administración debe acreditar la regularidad del procedimiento de medición, el aparato utilizado, el resultado obtenido y la observancia de las garantías mínimas exigibles para la validez de la prueba."
+        )
+
+    else:
+        fundamentos.append(
+            "CUARTO.– La Administración debe describir con precisión suficiente la conducta imputada y el precepto aplicado, permitiendo una subsunción jurídica clara y una defensa efectiva."
+        )
+
+    fundamentos.append(
+        "SEXTO.– Conforme a reiterada jurisprudencia del Tribunal Supremo, la potestad sancionadora exige una motivación suficiente "
+        "y una acreditación probatoria bastante para enervar la presunción de inocencia del administrado."
+    )
+
+    fundamentos.append(
+        "SÉPTIMO.– La ausencia de prueba suficiente, la insuficiente motivación del expediente o la falta de concreción del hecho "
+        "determinan la improcedencia de la sanción propuesta."
+    )
+
+    return "\n\n".join(fundamentos)
 
 def _build_unified_suplico(tipo: str = "") -> str:
     punto_4 = (
