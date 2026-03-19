@@ -2321,30 +2321,6 @@ def _ensure_raw_fields(core: Dict[str, Any], text_content: str = "") -> Dict[str
     return out
 
 
-def _find_existing_extraction_by_sha256(conn, sha256: str) -> Optional[Dict[str, Any]]:
-    row = conn.execute(
-        text(
-            """
-            SELECT e.extracted_json, e.confidence, e.model
-            FROM documents d
-            JOIN extractions e ON e.case_id = d.case_id
-            WHERE d.kind = 'original' AND d.sha256 = :sha256
-            ORDER BY e.created_at ASC
-            LIMIT 1
-            """
-        ),
-        {"sha256": sha256},
-    ).fetchone()
-    if not row:
-        return None
-    wrapper = row[0] if isinstance(row[0], dict) else json.loads(row[0])
-    return {
-        "wrapper": wrapper,
-        "confidence": row[1],
-        "model": row[2],
-    }
-
-
 @router.post("/analyze")
 async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
     try:
@@ -2382,65 +2358,6 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                 },
             )
 
-            existing = _find_existing_extraction_by_sha256(conn, sha256)
-            if existing and existing.get("wrapper"):
-                conn.execute(
-                    text(
-                        "INSERT INTO extractions (case_id, extracted_json, confidence, model, created_at) "
-                        "VALUES (:case_id, CAST(:json AS JSONB), :confidence, :model, NOW())"
-                    ),
-                    {
-                        "case_id": case_id,
-                        "json": json.dumps(existing["wrapper"], ensure_ascii=False),
-                        "confidence": existing.get("confidence"),
-                        "model": existing.get("model"),
-                    },
-                )
-                conn.execute(
-                    text(
-                        "INSERT INTO events(case_id, type, payload, created_at) "
-                        "VALUES (:case_id, 'analyze_reused', CAST(:payload AS JSONB), NOW())"
-                    ),
-                    {
-                        "case_id": case_id,
-                        "payload": json.dumps(
-                            {
-                                "sha256": sha256,
-                                "reason": "existing_extraction_copied_to_new_case",
-                                "source_model": existing.get("model"),
-                                "source_confidence": existing.get("confidence"),
-                            }
-                        ),
-                    },
-                )
-                conn.execute(
-                    text("UPDATE cases SET status='analyzed', updated_at=NOW() WHERE id=:case_id"),
-                    {"case_id": case_id},
-                )
-                return {
-                    "ok": True,
-                    "message": "Análisis reutilizado por huella SHA-256 en un caso nuevo.",
-                    "case_id": str(case_id),
-                    "extracted": existing["wrapper"],
-                }
-
-            b2_bucket, b2_key = upload_original(str(case_id), content, file.filename, mime)
-
-            conn.execute(
-                text(
-                    "INSERT INTO documents (case_id, kind, b2_bucket, b2_key, sha256, mime, size_bytes, created_at) "
-                    "VALUES (:case_id, 'original', :b2_bucket, :b2_key, :sha256, :mime, :size_bytes, NOW())"
-                ),
-                {
-                    "case_id": case_id,
-                    "b2_bucket": b2_bucket,
-                    "b2_key": b2_key,
-                    "sha256": sha256,
-                    "mime": mime,
-                    "size_bytes": size_bytes,
-                },
-            )
-
             model_used = "mock"
             confidence = 0.1
             extracted_core: Dict[str, Any] = {}
@@ -2456,26 +2373,37 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                 text_content = extract_text_from_pdf_bytes(content)
                 _raise_if_generated_resource_text(text_content)
 
-                # FLUJO ESTABLE:
-                # - Si el PDF tiene texto suficiente, usar SOLO openai_text.
-                # - Si no, usar SOLO openai_vision.
-                # - No mezclar ambas extracciones en el mismo análisis.
+                extracted_text: Dict[str, Any] = {}
+                extracted_vision: Dict[str, Any] = {}
+
                 if has_enough_text(text_content):
-                    extracted_core = extract_from_text(text_content) or {}
-                    extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
-                    blob = _flatten_text(extracted_core, text_content=text_content)
-                    extracted_core = _enrich_with_triage(extracted_core, blob)
-                    extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
+                    extracted_text = extract_from_text(text_content) or {}
+                    extracted_text = _ensure_raw_fields(extracted_text, text_content=text_content)
                     model_used = "openai_text"
                     confidence = 0.8
                 else:
-                    extracted_core = extract_from_image_bytes(content, mime, file.filename) or {}
-                    extracted_core = _ensure_raw_fields(extracted_core, text_content="")
-                    blob = _flatten_text(extracted_core, text_content="")
-                    extracted_core = _enrich_with_triage(extracted_core, blob)
-                    extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
                     model_used = "openai_vision"
                     confidence = 0.6
+
+                extracted_vision = extract_from_image_bytes(content, mime, file.filename) or {}
+                extracted_vision = _ensure_raw_fields(extracted_vision, text_content="")
+
+                blob_text = _flatten_text(extracted_text, text_content=text_content) if extracted_text else (text_content or "")
+                triaged_text = _enrich_with_triage(extracted_text or {}, blob_text)
+
+                blob_vision = _flatten_text(extracted_vision, text_content="")
+                triaged_vision = _enrich_with_triage(extracted_vision or {}, blob_vision)
+
+                extracted_core = _merge_extracted(triaged_text, triaged_vision)
+                extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
+
+                if extracted_text and not _needs_speed_retry(extracted_core):
+                    model_used = "openai_text"
+                    confidence = 0.8
+                else:
+                    model_used = "openai_vision+text"
+                    confidence = 0.75
+
             elif mime in DOCX_MIMES:
                 text_content = extract_text_from_docx_bytes(content)
                 _raise_if_generated_resource_text(text_content)
@@ -2493,6 +2421,8 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             else:
                 extracted_core = {"observaciones": "Tipo de archivo no soportado."}
 
+            blob = _flatten_text(extracted_core, text_content=text_content)
+            extracted_core = _enrich_with_triage(extracted_core, blob)
             extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
 
             wrapper = {
