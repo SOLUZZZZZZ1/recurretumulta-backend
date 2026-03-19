@@ -953,27 +953,6 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         [x for x in [hecho_literal, hecho_resumido] if x]
     ).strip()
 
-    semaforo_preferente_context = (
-        ("semaforo" in combined or "semáforo" in combined)
-        and any(
-            s in combined
-            for s in [
-                "luz roja",
-                "fase roja",
-                "fase del rojo",
-                "no respetar",
-                "no obedecer",
-                "rebasar",
-                "rebase",
-                "linea de detencion",
-                "línea de detención",
-                "articulo 146",
-                "art. 146",
-            ]
-        )
-    )
-
-
     # -------------------------------------------------
     # 1) CONDICIONES DEL VEHÍCULO
     # -------------------------------------------------
@@ -1021,7 +1000,7 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         ]
     )
 
-    if (vehicle_light_context or visibilidad_context) and not semaforo_preferente_context:
+    if vehicle_light_context or visibilidad_context:
         facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
         return ("condiciones_vehiculo", facts[0], facts)
 
@@ -1145,10 +1124,6 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     # -------------------------------------------------
     # 6) SEMÁFORO
     # -------------------------------------------------
-    if semaforo_preferente_context:
-        facts.append("NO RESPETAR LA LUZ ROJA (SEMÁFORO)")
-        return ("semaforo", facts[0], facts)
-
     semaforo_hard_signals = [
         "semaforo",
         "semáforo",
@@ -1594,26 +1569,6 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
     ]:
         add("condiciones_vehiculo", s, pts)
 
-    if ("semaforo" in combined or "semáforo" in combined) and any(
-        s in combined for s in [
-            "luz roja",
-            "fase roja",
-            "fase del rojo",
-            "no respetar",
-            "no obedecer",
-            "rebasar",
-            "rebase",
-            "linea de detencion",
-            "línea de detención",
-            "articulo 146",
-            "art. 146",
-        ]
-    ):
-        scores["semaforo"] += 20
-        scores["condiciones_vehiculo"] = max(0, scores["condiciones_vehiculo"] - 8)
-        scores["velocidad"] = max(0, scores["velocidad"] - 6)
-        scores["atencion"] = max(0, scores["atencion"] - 6)
-
     return scores
 
 
@@ -1651,8 +1606,6 @@ def _validate_tipo_infraccion(tipo: str, hecho_focus: str) -> Tuple[str, float]:
         ]
         if any(s in hecho_focus for s in signals):
             return "semaforo", 0.98
-        if ("semaforo" in hecho_focus or "semáforo" in hecho_focus) and ("roja" in hecho_focus or "detencion" in hecho_focus):
-            return "semaforo", 0.96
         return "otro", 0.30
 
     # ITV
@@ -1987,7 +1940,7 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
                 _safe_str(out.get("hecho_imputado_textual")),
             ])
         )
-        if ("semaforo" in blob_mix or "semáforo" in blob_mix) and ("luz roja" in blob_mix or "fase roja" in blob_mix or "linea de detencion" in blob_mix):
+        if _is_semaforo_preferente_context(blob_mix):
             out["hecho_denunciado_resumido"] = "NO RESPETAR LA LUZ ROJA (SEMÁFORO)"
             out["hecho_imputado_textual"] = "NO RESPETAR LA LUZ ROJA (SEMÁFORO)"
 
