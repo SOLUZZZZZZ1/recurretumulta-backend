@@ -2321,6 +2321,47 @@ def _ensure_raw_fields(core: Dict[str, Any], text_content: str = "") -> Dict[str
     return out
 
 
+def _find_existing_case_by_sha256(conn, sha256: str):
+    row = conn.execute(
+        text(
+            """
+            SELECT d.case_id
+            FROM documents d
+            JOIN extractions e ON e.case_id = d.case_id
+            WHERE d.kind = 'original' AND d.sha256 = :sha256
+            ORDER BY e.created_at ASC
+            LIMIT 1
+            """
+        ),
+        {"sha256": sha256},
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _load_latest_extraction_for_case(conn, case_id: str) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        text(
+            """
+            SELECT extracted_json, confidence, model
+            FROM extractions
+            WHERE case_id = :case_id
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ),
+        {"case_id": case_id},
+    ).fetchone()
+    if not row:
+        return None
+
+    wrapper = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+    return {
+        "wrapper": wrapper,
+        "confidence": row[1],
+        "model": row[2],
+    }
+
+
 @router.post("/analyze")
 async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
     try:
@@ -2337,6 +2378,34 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
         engine = get_engine()
 
         with engine.begin() as conn:
+            existing_case_id = _find_existing_case_by_sha256(conn, sha256)
+            if existing_case_id:
+                existing = _load_latest_extraction_for_case(conn, str(existing_case_id))
+                if existing and existing.get("wrapper"):
+                    conn.execute(
+                        text(
+                            "INSERT INTO events(case_id, type, payload, created_at) "
+                            "VALUES (:case_id, 'analyze_reused', CAST(:payload AS JSONB), NOW())"
+                        ),
+                        {
+                            "case_id": str(existing_case_id),
+                            "payload": json.dumps(
+                                {
+                                    "sha256": sha256,
+                                    "reason": "existing_extraction_reused",
+                                    "model": existing.get("model"),
+                                    "confidence": existing.get("confidence"),
+                                }
+                            ),
+                        },
+                    )
+                    return {
+                        "ok": True,
+                        "message": "Análisis reutilizado por huella SHA-256.",
+                        "case_id": str(existing_case_id),
+                        "extracted": existing["wrapper"],
+                    }
+
             case_id = conn.execute(
                 text("INSERT INTO cases(status, created_at, updated_at) VALUES ('uploaded', NOW(), NOW()) RETURNING id")
             ).scalar()
