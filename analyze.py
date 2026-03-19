@@ -2373,37 +2373,26 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                 text_content = extract_text_from_pdf_bytes(content)
                 _raise_if_generated_resource_text(text_content)
 
-                extracted_text: Dict[str, Any] = {}
-                extracted_vision: Dict[str, Any] = {}
-
+                # FLUJO ESTABLE:
+                # - Si el PDF tiene texto suficiente, usar SOLO openai_text.
+                # - Si no, usar SOLO openai_vision.
+                # - No mezclar ambas extracciones en el mismo análisis.
                 if has_enough_text(text_content):
-                    extracted_text = extract_from_text(text_content) or {}
-                    extracted_text = _ensure_raw_fields(extracted_text, text_content=text_content)
+                    extracted_core = extract_from_text(text_content) or {}
+                    extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
+                    blob = _flatten_text(extracted_core, text_content=text_content)
+                    extracted_core = _enrich_with_triage(extracted_core, blob)
+                    extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
                     model_used = "openai_text"
                     confidence = 0.8
                 else:
+                    extracted_core = extract_from_image_bytes(content, mime, file.filename) or {}
+                    extracted_core = _ensure_raw_fields(extracted_core, text_content="")
+                    blob = _flatten_text(extracted_core, text_content="")
+                    extracted_core = _enrich_with_triage(extracted_core, blob)
+                    extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
                     model_used = "openai_vision"
                     confidence = 0.6
-
-                extracted_vision = extract_from_image_bytes(content, mime, file.filename) or {}
-                extracted_vision = _ensure_raw_fields(extracted_vision, text_content="")
-
-                blob_text = _flatten_text(extracted_text, text_content=text_content) if extracted_text else (text_content or "")
-                triaged_text = _enrich_with_triage(extracted_text or {}, blob_text)
-
-                blob_vision = _flatten_text(extracted_vision, text_content="")
-                triaged_vision = _enrich_with_triage(extracted_vision or {}, blob_vision)
-
-                extracted_core = _merge_extracted(triaged_text, triaged_vision)
-                extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
-
-                if extracted_text and not _needs_speed_retry(extracted_core):
-                    model_used = "openai_text"
-                    confidence = 0.8
-                else:
-                    model_used = "openai_vision+text"
-                    confidence = 0.75
-
             elif mime in DOCX_MIMES:
                 text_content = extract_text_from_docx_bytes(content)
                 _raise_if_generated_resource_text(text_content)
@@ -2421,8 +2410,6 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             else:
                 extracted_core = {"observaciones": "Tipo de archivo no soportado."}
 
-            blob = _flatten_text(extracted_core, text_content=text_content)
-            extracted_core = _enrich_with_triage(extracted_core, blob)
             extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
 
             wrapper = {
