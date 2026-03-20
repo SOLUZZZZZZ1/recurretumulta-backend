@@ -5,7 +5,6 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.enums import TA_LEFT, TA_CENTER
 
-
 def _escape(text):
     if not text:
         return ""
@@ -16,7 +15,6 @@ def _escape(text):
         .replace(">", "&gt;")
         .replace("\n", "<br/>")
     )
-
 
 def build_pdf(title: str, body: str) -> bytes:
     buffer = io.BytesIO()
@@ -39,79 +37,51 @@ def build_pdf(title: str, body: str) -> bytes:
         fontSize=10,
         leading=15,
         alignment=TA_LEFT,
-        spaceAfter=10,
+        spaceAfter=8,
     )
 
-    center_title_style = ParagraphStyle(
-        "CenterTitle",
+    center_style = ParagraphStyle(
+        "Center",
         parent=normal_style,
-        fontName="Helvetica-Bold",
-        fontSize=12,
         alignment=TA_CENTER,
         spaceAfter=12,
-    )
-
-    center_org_style = ParagraphStyle(
-        "CenterOrg",
-        parent=normal_style,
-        fontName="Helvetica",
-        fontSize=11,
-        alignment=TA_CENTER,
-        spaceAfter=10,
     )
 
     bold_style = ParagraphStyle(
         "Bold",
         parent=normal_style,
         fontName="Helvetica-Bold",
-        fontSize=11,
-        spaceBefore=10,
-        spaceAfter=6,
+        spaceAfter=10,
     )
 
     story = []
 
-    for raw_line in (body or "").split("\n"):
-        line = raw_line.rstrip()
-        txt = line.strip()
-        txt_upper = txt.upper()
+    for line in (body or "").split("\n"):
+        txt = line.strip().upper()
 
-        if not txt:
-            story.append(Spacer(1, 8))
+        if not line.strip():
+            story.append(Spacer(1, 10))
             continue
 
-        if txt_upper.startswith("REFERENCIA: EXPTE.") or txt_upper.startswith("EXPEDIENTE"):
-            story.append(Paragraph(_escape(txt), normal_style))
+        if "ESCRITO DE ALEGACIONES" in txt or "A LA JEFATURA PROVINCIAL DE TRÁFICO" in txt or "A LA JEFATURA PROVINCIAL DE TRAFICO" in txt:
+            story.append(Paragraph(_escape(line), center_style))
             story.append(Spacer(1, 6))
-            continue
 
-        if "ESCRITO DE ALEGACIONES" in txt_upper:
-            story.append(Paragraph(_escape(txt), center_title_style))
-            continue
-
-        if txt_upper.startswith("A LA "):
-            story.append(Paragraph(_escape(txt), center_org_style))
-            continue
-
-        if txt_upper in [
+        elif txt in [
             "ANTECEDENTES",
             "ALEGACIONES",
             "FUNDAMENTOS DE DERECHO",
             "SUPLICA",
             "S U P L I C A",
             "OTROSÍ DIGO",
-            "OTROSI DIGO",
-            "EXPONE",
-        ] or txt_upper.startswith("I. ") or txt_upper.startswith("II. ") or txt_upper.startswith("III. ") or txt_upper.startswith("IV. "):
+            "OTROSI DIGO"
+        ]:
+            story.append(Spacer(1, 6))
+            story.append(Paragraph(_escape(line), bold_style))
             story.append(Spacer(1, 4))
-            story.append(Paragraph(_escape(txt), bold_style))
-            continue
 
-        if txt_upper.startswith("ALEGACIÓN "):
-            story.append(Paragraph(_escape(txt), bold_style))
-            continue
-
-        story.append(Paragraph(_escape(txt), normal_style))
+        else:
+            story.append(Paragraph(_escape(line), normal_style))
 
     doc.build(story)
     return buffer.getvalue()

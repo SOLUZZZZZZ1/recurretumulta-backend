@@ -1,32 +1,53 @@
-# DOCX BUILDER FINAL
-
+import io
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-def build_docx(title, body):
+def build_docx(title: str, body: str) -> bytes:
     doc = Document()
 
+    # Configuración base
     style = doc.styles['Normal']
-    font = style.font
-    font.name = 'Times New Roman'
-    font.size = Pt(11)
+    style.font.name = 'Times New Roman'
+    style.font.size = Pt(12)
 
-    lines = body.split("\n")
+    for line in (body or "").splitlines():
+        p = doc.add_paragraph()
 
-    for line in lines:
-        txt = line.strip()
+        run = p.add_run(line)
 
-        p = doc.add_paragraph(txt)
+        txt = line.strip().upper()
 
-        if "EXPEDIENTE" in txt:
-            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        # Interlineado ligero (Word lo gestiona automático)
+        p.paragraph_format.space_after = Pt(8)
 
-        elif "ESCRITO DE ALEGACIONES" in txt or "A LA" in txt:
+        # TÍTULO
+        if "ESCRITO DE ALEGACIONES" in txt:
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run.bold = True
+
+        # ÓRGANO
+        elif "A LA JEFATURA PROVINCIAL DE TRÁFICO" in txt or "A LA JEFATURA PROVINCIAL DE TRAFICO" in txt:
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-        elif "ALEGACIÓN" in txt or "FUNDAMENTOS" in txt or "SUPLICO" in txt:
-            for run in p.runs:
-                run.bold = True
+        # SECCIONES IMPORTANTES
+        elif txt in [
+            "ANTECEDENTES",
+            "ALEGACIONES",
+            "FUNDAMENTOS DE DERECHO",
+            "SUPLICA",
+            "S U P L I C A",
+            "OTROSÍ DIGO",
+            "OTROSI DIGO"
+        ]:
+            run.bold = True
+            p.paragraph_format.space_before = Pt(10)
+            p.paragraph_format.space_after = Pt(6)
 
-    doc.save("output.docx")
+        # RESTO DEL TEXTO
+        else:
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
