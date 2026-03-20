@@ -1,53 +1,32 @@
-import io
+# DOCX BUILDER FINAL
+
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-def build_docx(title: str, body: str) -> bytes:
+def build_docx(title, body):
     doc = Document()
 
-    # Configuración base
     style = doc.styles['Normal']
-    style.font.name = 'Times New Roman'
-    style.font.size = Pt(12)
+    font = style.font
+    font.name = 'Times New Roman'
+    font.size = Pt(11)
 
-    for line in (body or "").splitlines():
-        p = doc.add_paragraph()
+    lines = body.split("\n")
 
-        run = p.add_run(line)
+    for line in lines:
+        txt = line.strip()
 
-        txt = line.strip().upper()
+        p = doc.add_paragraph(txt)
 
-        # Interlineado ligero (Word lo gestiona automático)
-        p.paragraph_format.space_after = Pt(8)
-
-        # TÍTULO
-        if "ESCRITO DE ALEGACIONES" in txt:
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run.bold = True
-
-        # ÓRGANO
-        elif "A LA JEFATURA PROVINCIAL DE TRÁFICO" in txt or "A LA JEFATURA PROVINCIAL DE TRAFICO" in txt:
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-        # SECCIONES IMPORTANTES
-        elif txt in [
-            "ANTECEDENTES",
-            "ALEGACIONES",
-            "FUNDAMENTOS DE DERECHO",
-            "SUPLICA",
-            "S U P L I C A",
-            "OTROSÍ DIGO",
-            "OTROSI DIGO"
-        ]:
-            run.bold = True
-            p.paragraph_format.space_before = Pt(10)
-            p.paragraph_format.space_after = Pt(6)
-
-        # RESTO DEL TEXTO
-        else:
+        if "EXPEDIENTE" in txt:
             p.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-    buf = io.BytesIO()
-    doc.save(buf)
-    return buf.getvalue()
+        elif "ESCRITO DE ALEGACIONES" in txt or "A LA" in txt:
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        elif "ALEGACIÓN" in txt or "FUNDAMENTOS" in txt or "SUPLICO" in txt:
+            for run in p.runs:
+                run.bold = True
+
+    doc.save("output.docx")

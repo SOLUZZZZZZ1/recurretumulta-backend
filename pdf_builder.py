@@ -1,87 +1,42 @@
-import io
+# PDF BUILDER FINAL
+
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.enums import TA_LEFT, TA_CENTER
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
-def _escape(text):
-    if not text:
-        return ""
-    return (
-        str(text)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace("\n", "<br/>")
-    )
-
-def build_pdf(title: str, body: str) -> bytes:
-    buffer = io.BytesIO()
-
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        leftMargin=25 * mm,
-        rightMargin=25 * mm,
-        topMargin=25 * mm,
-        bottomMargin=25 * mm,
-    )
-
+def build_pdf(title, body):
+    doc = SimpleDocTemplate("output.pdf", pagesize=A4)
     styles = getSampleStyleSheet()
 
-    normal_style = ParagraphStyle(
-        "NormalLeft",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=10,
-        leading=15,
-        alignment=TA_LEFT,
-        spaceAfter=8,
-    )
-
-    center_style = ParagraphStyle(
-        "Center",
-        parent=normal_style,
-        alignment=TA_CENTER,
-        spaceAfter=12,
-    )
-
-    bold_style = ParagraphStyle(
-        "Bold",
-        parent=normal_style,
-        fontName="Helvetica-Bold",
-        spaceAfter=10,
-    )
+    normal = ParagraphStyle("normal", fontName="Helvetica", fontSize=10, leading=14, spaceAfter=10)
+    bold = ParagraphStyle("bold", fontName="Helvetica-Bold", fontSize=11, spaceBefore=10, spaceAfter=6)
+    center = ParagraphStyle("center", fontName="Helvetica-Bold", fontSize=12, alignment=TA_CENTER, spaceAfter=12)
 
     story = []
 
-    for line in (body or "").split("\n"):
-        txt = line.strip().upper()
+    lines = body.split("\n")
 
-        if not line.strip():
-            story.append(Spacer(1, 10))
+    for line in lines:
+        txt = line.strip()
+
+        if not txt:
+            story.append(Spacer(1, 8))
             continue
 
-        if "ESCRITO DE ALEGACIONES" in txt or "A LA JEFATURA PROVINCIAL DE TRÁFICO" in txt or "A LA JEFATURA PROVINCIAL DE TRAFICO" in txt:
-            story.append(Paragraph(_escape(line), center_style))
-            story.append(Spacer(1, 6))
+        if "EXPEDIENTE" in txt:
+            story.append(Paragraph(txt, normal))
+            story.append(Spacer(1, 8))
+            continue
 
-        elif txt in [
-            "ANTECEDENTES",
-            "ALEGACIONES",
-            "FUNDAMENTOS DE DERECHO",
-            "SUPLICA",
-            "S U P L I C A",
-            "OTROSÍ DIGO",
-            "OTROSI DIGO"
-        ]:
-            story.append(Spacer(1, 6))
-            story.append(Paragraph(_escape(line), bold_style))
-            story.append(Spacer(1, 4))
+        if "ESCRITO DE ALEGACIONES" in txt or "A LA" in txt:
+            story.append(Paragraph(txt, center))
+            continue
 
-        else:
-            story.append(Paragraph(_escape(line), normal_style))
+        if "ALEGACIÓN" in txt or "FUNDAMENTOS DE DERECHO" in txt or "SUPLICO" in txt:
+            story.append(Paragraph(txt, bold))
+            continue
+
+        story.append(Paragraph(txt, normal))
 
     doc.build(story)
-    return buffer.getvalue()
