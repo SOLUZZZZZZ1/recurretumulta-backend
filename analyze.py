@@ -94,14 +94,41 @@ def _merge_extracted(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict
 def _normalize_for_matching(text: str) -> str:
     t = (text or "").lower()
     t = t.replace("\r", "\n")
-    t = t.replace("semáforo", "semaforo")
-    t = t.replace("señal", "senal")
-    t = t.replace("línea", "linea")
-    t = t.replace("teléfono", "telefono")
-    t = t.replace("móvil", "movil")
-    t = t.replace("cinemómetro", "cinemometro")
-    t = t.replace("inspección", "inspeccion")
+
+    # Correcciones OCR frecuentes sin tocar demasiado el contenido.
+    ocr_replacements = {
+        "semáforo": "semaforo",
+        "señal": "senal",
+        "línea": "linea",
+        "teléfono": "telefono",
+        "móvil": "movil",
+        "cinemómetro": "cinemometro",
+        "inspección": "inspeccion",
+        "vehícuio": "vehiculo",
+        "vehicuio": "vehiculo",
+        "teiefono": "telefono",
+        "móvii": "movil",
+        "iuz": "luz",
+        "iinea": "linea",
+        "detencíon": "detencion",
+        "visibiiidad": "visibilidad",
+        "póiiza": "poliza",
+        "asegurarniento": "aseguramiento",
+    }
+    for src, dst in ocr_replacements.items():
+        t = t.replace(src, dst)
+
     t = t.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").replace("ü", "u").replace("ñ", "n")
+
+    # Compactar OCR roto y basura visual sin destruir métricas ni referencias.
+    t = re.sub(r"[^a-z0-9/€.,:;()\-\n ]+", " ", t)
+    t = re.sub(r"\bno\s+hacer\s+uso\s+del\s+casco\b", "no utilizar casco", t)
+    t = re.sub(r"\bvehiculo\s+sin\s+asegurar\b", "vehiculo no asegurado", t)
+    t = re.sub(r"\bno\s+ocupar\s+el\s+carril\s+mas\s+a\s+la\s+derecha\b", "no circular por el carril mas a la derecha", t)
+    t = re.sub(r"\bvisibilidad\s+no\s+diafana\b", "visibilidad no diafana", t)
+    t = re.sub(r"\bluz\s+roja\s+trasera\b", "luz roja trasera", t)
+    t = re.sub(r"\bno\s+respeta\s+la\s+luz\s+roja\b", "no respetar la luz roja", t)
+
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n+", "\n", t)
     return t.strip()
@@ -323,9 +350,10 @@ def _looks_like_narrative_line(line: str) -> bool:
         "semaforo", "utilizando", "telefono", "movil", "auricular", "auriculares", "cascos",
         "bail", "palm", "golpe", "volante", "negligente", "atencion", "distraccion", "km/h",
         "velocidad", "cinemometro", "radar", "marca longitudinal", "linea continua", "itv",
-        "seguro obligatorio", "alumbrado", "destellos", "porta auricular", "oido izquierdo",
-        "oido derecho", "mordia las unas", "mordia las uñas", "libertad de movimientos",
-        "sentido contrario", "direccion prohibida",
+        "seguro obligatorio", "sin asegurar", "vehiculo no asegurado", "alumbrado", "destellos",
+        "porta auricular", "oido izquierdo", "oido derecho", "mordia las unas", "mordia las uñas",
+        "libertad de movimientos", "sentido contrario", "direccion prohibida", "visibilidad no diafana",
+        "no utilizar casco", "carril mas a la derecha", "carril más a la derecha",
     ]
     if any(s in l for s in narrative_signals):
         return True
@@ -1035,6 +1063,8 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
             "no utilizar casco",
             "no hacer uso del casco",
             "sin hacer uso del casco",
+            "no hacer uso del casco de proteccion",
+            "no hacer uso del casco de protección",
             "casco obligatorio",
             "casco reglamentario",
             "casco de proteccion",
@@ -1690,6 +1720,10 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
 
     if any(s in combined for s in ["semaforo", "semáforo", "fase roja", "linea de detencion", "línea de detención", "interseccion", "intersección", "cruce"]):
         scores["semaforo"] += 2
+
+    if any(s in combined for s in ["luz roja trasera", "parte trasera", "alumbrado trasero", "destellos rojos"]):
+        scores["condiciones_vehiculo"] += 6
+        scores["semaforo"] -= 10
 
     return scores
 
