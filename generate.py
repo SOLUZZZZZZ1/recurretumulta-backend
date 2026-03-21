@@ -155,8 +155,6 @@ def _velocity_margin_info(measured: Optional[float], radar_hint: str = "") -> Di
         return {"margin_value": None, "corrected_speed": None, "margin_label": ""}
 
     radar_low = _safe_str(radar_hint).lower()
-    # Regla orientativa de visualización: >100 km/h => 5%; en caso contrario 5 km/h.
-    # Para radares tipo Multanova/antena esto encaja con el ejemplo esperado por el usuario.
     if measured > 100:
         margin_value = round(float(measured) * 0.05, 2)
         margin_label = "5 %"
@@ -170,7 +168,6 @@ def _velocity_margin_info(measured: Optional[float], radar_hint: str = "") -> Di
         "corrected_speed": corrected_speed,
         "margin_label": margin_label,
     }
-
 
 
 def _resolve_radar_profile(core: Dict[str, Any]) -> Dict[str, Any]:
@@ -285,7 +282,6 @@ def _velocity_margin_info_from_profile(measured: Optional[float], profile: Dict[
     }
 
 
-
 def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
     measured = core.get("velocidad_medida_kmh")
     limit = core.get("velocidad_limite_kmh")
@@ -299,7 +295,6 @@ def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
     ]
     joined = "\n".join(s for s in focused_sources if s.strip())
 
-    # Solo si el foco viene vacío o muy pobre, hacemos fallback controlado al OCR completo.
     if not joined.strip() or len(joined.strip()) < 12:
         fallback_sources = [
             _safe_str(core.get("raw_text_pdf")),
@@ -364,8 +359,6 @@ def _looks_like_internal_extract(text: str) -> bool:
     return any(tok in low for tok in bad_tokens)
 
 
-
-
 def _get_locked_tipo(core: Dict[str, Any]) -> str:
     """Return the family resolved upstream by analyze, if present."""
     for key in ("familia_resuelta", "template_usado", "tipo_infraccion"):
@@ -377,6 +370,19 @@ def _get_locked_tipo(core: Dict[str, Any]) -> str:
 
 def _has_locked_family(core: Dict[str, Any]) -> bool:
     return bool(_get_locked_tipo(core))
+
+
+def _resolved_tipo_from_core(core: Dict[str, Any], fallback: str = "generic") -> str:
+    """Single source of truth: use upstream classification only."""
+    tipo = _get_locked_tipo(core)
+    if tipo:
+        return tipo
+    for key in ("tipo_infraccion", "familia_resuelta", "template_usado"):
+        val = _safe_str(core.get(key)).lower().strip()
+        if val:
+            return val
+    return fallback
+
 
 def get_hecho_para_recurso(core: Dict[str, Any], forced_tipo: Optional[str] = None) -> str:
     raw = (
@@ -395,7 +401,7 @@ def get_hecho_para_recurso(core: Dict[str, Any], forced_tipo: Optional[str] = No
     ):
         return ""
 
-    tipo = forced_tipo or _get_locked_tipo(core) or resolve_infraction_type(core)
+    tipo = forced_tipo or _resolved_tipo_from_core(core)
     if tipo == "velocidad":
         facts = _resolve_velocity_facts(core)
         measured = facts.get("measured")
@@ -493,7 +499,7 @@ def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
                     "itv",
                     "seguro",
                     "alumbrado",
-                                "detención",
+                    "detención",
                 ]
             ):
                 started = True
@@ -529,7 +535,6 @@ def resolve_jurisdiction(core: Dict[str, Any]) -> str:
     return "desconocida"
 
 
-
 def _normalized_blob(core: Dict[str, Any]) -> str:
     blob = json.dumps(core or {}, ensure_ascii=False).lower()
     return (
@@ -543,11 +548,6 @@ def _normalized_blob(core: Dict[str, Any]) -> str:
 
 
 def _focused_infraction_blob(core: Dict[str, Any]) -> str:
-    """
-    Blob conservador para clasificar la familia.
-    Prioriza SOLO el hecho denunciado / resumido / imputado y evita contaminarse
-    con OCR global, PDFs reconstruidos o textos internos del expediente.
-    """
     core = core or {}
     parts = [
         _safe_str(core.get("hecho_denunciado_resumido")),
@@ -623,7 +623,6 @@ def _semaforo_positive_signals(blob: str) -> int:
 def _semaforo_blockers(blob: str) -> int:
     score = 0
 
-    # Casos que suelen ser órdenes de agentes / no detenerse
     agent_tokens = [
         "ordenes de los agentes",
         "ordenes del agente",
@@ -641,7 +640,6 @@ def _semaforo_blockers(blob: str) -> int:
         if tok in blob:
             score += 3
 
-    # Casos de bici/patinete/alumbrado que no deben saltar a semáforo por una roja
     bike_tokens = [
         "bicicleta",
         "ciclista",
@@ -661,7 +659,6 @@ def _semaforo_blockers(blob: str) -> int:
         if tok in blob:
             score += 3
 
-    # Casos de atención / temeraria / art. 3.1
     attention_tokens = [
         "temeraria",
         "conducir de forma temeraria",
@@ -720,20 +717,15 @@ def _looks_like_semaforo(core: Dict[str, Any]) -> bool:
     positive = _semaforo_positive_signals(blob)
     blockers = _semaforo_blockers(blob)
 
-    # Regla conservadora:
-    # - Semáforo solo con evidencia fuerte
-    # - Si hay fuerte señal de agentes / art. 3.1 / bici-patinete-alumbrado, no forzar semáforo
     if positive >= 6 and positive >= blockers + 3:
         return True
-
-    # Caso clarísimo y expreso
     if "cruce con fase roja del semaforo" in blob:
         return True
-
     return False
 
 
 def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
+    """Kept for diagnostics / non-critical builders, but not used to decide family anymore."""
     blob = _focused_infraction_blob(core)
     if not blob.strip():
         blob = _normalized_blob(core)
@@ -758,363 +750,24 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             if s in blob:
                 scores[tipo] += points
 
-    add(
-        "velocidad",
-        [
-            "km/h",
-            "radar",
-            "cinemometro",
-            "exceso de velocidad",
-            "limitada la velocidad a",
-            "multanova",
-            "velolaser",
-            "pegasus",
-            "tramo",
-            "velocidad medida",
-            "velocidad detectada",
-            "velocidad maxima",
-            "velocidad maxima permitida",
-            "superar velocidad",
-        ],
-        3,
-    )
-
+    add("velocidad", ["km/h", "radar", "cinemometro", "exceso de velocidad"], 3)
     scores["semaforo"] += _semaforo_positive_signals(blob)
     scores["semaforo"] -= _semaforo_blockers(blob)
-
-    if any(s in blob for s in ["luz roja", "fase roja", "semaforo", "senal luminosa roja", "linea de detencion"]):
-        scores["velocidad"] = 0
-
-    add(
-        "movil",
-        [
-            "telefono movil",
-            "teléfono móvil",
-            "telefono",
-            "teléfono",
-            "movil",
-            "móvil",
-            "telefono movil durante la conduccion",
-            "teléfono móvil durante la conducción",
-            "manipular telefono movil durante la conduccion",
-            "manipular teléfono móvil durante la conducción",
-            "manipular telefono movil",
-            "manipular teléfono móvil",
-            "manipular telefono",
-            "manipular teléfono",
-            "telefono movil con la mano",
-            "teléfono móvil con la mano",
-            "dispositivo movil",
-            "dispositivo móvil",
-            "dispositivo movil con la mano",
-            "dispositivo móvil con la mano",
-            "con la mano",
-            "sujetar el telefono movil",
-            "sujetar el teléfono móvil",
-            "pantalla del telefono",
-            "pantalla del teléfono",
-            "interactuar con la pantalla",
-            "interactuar con la pantalla del telefono",
-            "interactuar con la pantalla del teléfono",
-            "uso manual",
-            "manipulando el movil",
-            "manipulando el móvil",
-            "sujetando con la mano el dispositivo",
-            "utilizar dispositivo movil",
-            "utilizar dispositivo móvil",
-            "terminal movil",
-            "terminal móvil",
-            "terminal telefonico",
-            "terminal telefónico",
-            "terminal portatil",
-            "terminal portátil",
-            "uso del telefono movil",
-            "uso del teléfono móvil",
-            "dispositivo de comunicacion manual",
-            "dispositivo de comunicación manual",
-            "dispositivo electronico portatil",
-            "dispositivo electrónico portátil",
-            "dispositivo electronico",
-            "dispositivo electrónico",
-            "manipular dispositivo electronico en marcha",
-            "manipular dispositivo electrónico en marcha",
-            "uso de dispositivo durante la conduccion",
-            "uso de dispositivo durante la conducción",
-            "aparato de telecomunicaciones",
-            "pantalla de terminal",
-            "pantalla digital",
-            "dispositivo portatil",
-            "dispositivo portátil",
-            "whatsapp",
-            "llamada telefónica",
-            "llamada telefonica",
-        ],
-        3,
-    )
-
-    add(
-        "auriculares",
-        [
-            "auricular",
-            "auriculares",
-            "cascos conectados",
-            "reproductores de sonido",
-            "porta auricular",
-            "bluetooth",
-            "intercomunicador",
-            "aparatos receptores",
-            "aparatos reproductores",
-            "dispositivo de audio",
-            "reproductor de musica",
-            "reproductor de música",
-            "oido izquierdo",
-            "oido derecho",
-        ],
-        3,
-    )
-
-    add(
-        "cinturon",
-        [
-            "cinturon de seguridad",
-            "sin cinturon",
-            "sin cinturón",
-            "correctamente abrochado",
-            "no utilizar el cinturon",
-            "no utilizar el cinturón",
-            "sin llevar abrochado el cinturon",
-            "ocupante del vehiculo sin cinturon",
-            "ocupante del vehículo sin cinturón",
-        ],
-        3,
-    )
-
-    add(
-        "casco",
-        [
-            "sin casco",
-            "no llevar casco",
-            "casco de proteccion",
-            "casco de protección",
-            "casco homologado",
-            "casco no homologado",
-            "casco desabrochado",
-            "casco mal abrochado",
-            "casco incorrectamente abrochado",
-            "llevar el casco incorrectamente abrochado",
-        ],
-        3,
-    )
-
-    add(
-        "atencion",
-        [
-            "atencion permanente",
-            "atención permanente",
-            "no mantener la atencion permanente",
-            "no mantener la atención permanente",
-            "no mantener la atencion permanente a la conduccion",
-            "no mantener la atención permanente a la conducción",
-            "sin la atencion necesaria",
-            "sin la atención necesaria",
-            "conducir sin la atencion necesaria",
-            "conducir sin la atención necesaria",
-            "falta de atencion",
-            "falta de atención",
-            "diligencia debida",
-            "debida atencion",
-            "debida atención",
-            "atencion a la via",
-            "atención a la vía",
-            "conducta distraida",
-            "conducta distraída",
-            "atencion suficiente al trafico",
-            "atención suficiente al tráfico",
-            "sin atencion suficiente",
-            "sin atención suficiente",
-            "conducir sin atencion suficiente",
-            "conducir sin atención suficiente",
-            "atencion al volante",
-            "atención al volante",
-            "comprometen la atencion al volante",
-            "comprometen la atención al volante",
-            "disminuyen la atencion",
-            "disminuyen la atención",
-            "interior del vehiculo",
-            "interior del vehículo",
-            "limitan el control del vehiculo",
-            "limitan el control del vehículo",
-            "conduccion negligente",
-            "conducir de forma negligente",
-            "distraccion",
-            "temeraria",
-            "conducir de forma temeraria",
-            "sin la diligencia necesaria",
-            "manipulan objetos",
-            "soltar ambas manos",
-            "ambas manos del volante",
-            "bailando",
-            "mordia las uñas",
-            "mordia las unas",
-            "morderse las uñas",
-            "morderse las unas",
-            "se muerde las uñas",
-            "se muerde las unas",
-            "mientras se muerde las uñas",
-            "mientras se muerde las unas",
-            "conducir mientras se muerde las uñas",
-            "conducir mientras se muerde las unas",
-            "conducir mientras se mordia las uñas",
-            "conducir mientras se mordia las unas",
-            "mirando repetidamente al acompañante",
-            "mirando repetidamente al acompanante",
-            "mirando repetidamente",
-            "come y manipula objetos",
-            "comiendo y manipulando objetos",
-            "sin la atencion necesaria",
-            "fumando",
-            "comiendo",
-            "bebiendo",
-            "sin mirar la carretera",
-            "mirando al acompanante",
-            "mirando al copiloto",
-            "mirando hacia el interior del vehiculo",
-            "manipulando objetos",
-            "manipulando comida",
-            "manipulando bebida",
-            "libertad de movimientos",
-            "no se para",
-            "ordenes de los agentes",
-            "orden del agente",
-            "no respeta las ordenes",
-            "no respeta las ordenes de los agentes",
-            "no obedece",
-            "agente",
-            "agentes",
-            "policia",
-            "articulo 3",
-            "art. 3",
-            "riesgo",
-            "peligro",
-        ],
-        3,
-    )
-
+    add("movil", ["telefono movil", "teléfono móvil", "whatsapp"], 3)
+    add("auriculares", ["auricular", "auriculares", "dispositivo de audio"], 3)
+    add("cinturon", ["cinturon de seguridad", "sin cinturon", "sin cinturón"], 3)
+    add("casco", ["sin casco", "casco desabrochado", "casco mal abrochado"], 3)
+    add("atencion", ["atencion permanente", "distraccion", "conduccion negligente"], 3)
     add("marcas_viales", ["linea continua", "marca vial", "marca longitudinal continua"], 3)
-    add("seguro", ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "8/2004", "fiva"], 3)
+    add("seguro", ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "8/2004"], 3)
     add("itv", ["itv", "inspeccion tecnica", "itv caducada"], 3)
+    add("alcohol", ["alcohol", "alcoholemia", "etilometro", "mg/l"], 5)
+    add("condiciones_vehiculo", ["alumbrado", "senalizacion optica", "dispositivo luminoso", "destellos"], 3)
+    add("carril", ["carril derecho", "carril izquierdo", "carril central", "posicion en la calzada"], 4)
 
-    add(
-        "alcohol",
-        [
-            "alcohol",
-            "tasa de alcohol",
-            "alcoholemia",
-            "etilometro",
-            "etilometro evidencial",
-            "aire espirado",
-            "mg/l",
-            "miligramos por litro",
-            "control de alcoholemia",
-            "prueba de alcoholemia",
-            "resultado positivo",
-            "prueba de deteccion alcoholica",
-            "prueba de deteccion de alcohol",
-        ],
-        5,
-    )
-
-    add(
-        "condiciones_vehiculo",
-        [
-            "condiciones reglamentarias",
-            "luces no reglamentarias",
-            "alumbrado",
-            "senalizacion optica",
-            "dispositivo luminoso",
-            "panel luminoso",
-            "homolog",
-            "reflectante",
-            "luz roja intermitente",
-            "luz trasera roja",
-            "destellos",
-            "intermitente",
-            "catadioptrico",
-            "deslumbramiento",
-            "deslumbrar",
-            "neumatico",
-            "neumático",
-            "neumaticos",
-            "neumáticos",
-            "neumaticos en mal estado",
-            "neumáticos en mal estado",
-            "neumatico en mal estado",
-            "neumático en mal estado",
-            "neumatico liso",
-            "neumático liso",
-            "circular con neumatico liso",
-            "circular con neumático liso",
-            "neumaticos lisos",
-            "neumáticos lisos",
-            "elementos del vehiculo en deficiente estado",
-            "elementos del vehículo en deficiente estado",
-            "deficiencias tecnicas en el vehiculo",
-            "deficiencias técnicas en el vehículo",
-            "alteracion de elementos luminosos",
-            "alteración de elementos luminosos",
-            "vehiculo con defectos mecanicos",
-            "vehículo con defectos mecánicos",
-            "ruedas en mal estado",
-            "fallo en sistema de iluminacion",
-            "fallo en sistema de iluminación",
-            "elementos de seguridad defectuosos",
-            "neumaticicos en mal estado",
-            "banda de rodadura",
-            "parte trasera pulida",
-            "reflejandose como un espejo",
-            "como un espejo",
-            "dibujo inferior",
-            "1,6 mm",
-            "neumatico liso",
-            "neumaticos lisos",
-            "neumatico en mal estado",
-            "no autorizado",
-            "modificacion no autorizada",
-        ],
-        3,
-    )
-
-    add(
-        "carril",
-        [
-            "carril distinto del situado mas a la derecha",
-            "carril distinto del sitio mas a la derecha",
-            "carril distinto",
-            "carril derecho",
-            "carril izquierdo",
-            "calzada de varios carriles",
-            "calzada con mas de un carril",
-            "sentido de la marcha",
-            "carril central",
-            "posicion en la via",
-            "posición en la vía",
-            "posicion en la calzada",
-            "posición en la calzada",
-            "posicion correcta en la calzada",
-            "posición correcta en la calzada",
-            "no respetar la posicion correcta en la calzada",
-            "no respetar la posición correcta en la calzada",
-            "sin adelantar",
-            "adelantar por la derecha",
-        ],
-        4,
-    )
-
-    # Bloqueadores cruzados
     if _looks_like_bike_light_case(core):
         scores["semaforo"] -= 6
         scores["condiciones_vehiculo"] += 4
-
     if _looks_like_agent_order_case(core):
         scores["semaforo"] -= 6
         scores["atencion"] += 4
@@ -1123,321 +776,8 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
 
 
 def resolve_infraction_type(core: Dict[str, Any]) -> str:
-    locked = _get_locked_tipo(core)
-    if locked:
-        return locked
-    tipo = _get_locked_tipo(core)
-    if tipo:
-        return tipo
-
-    # Producción blindada: primero clasificar con el hecho limpio.
-    blob = _focused_infraction_blob(core)
-    full_blob = _normalized_blob(core)
-
-    if not blob.strip():
-        blob = full_blob
-
-    # Blindaje duro: si el hecho limpio contiene señales semafóricas, semáforo gana.
-    if any(s in blob for s in [
-        "luz roja",
-        "fase roja",
-        "semaforo",
-        "semáforo",
-        "indicacion luminosa roja",
-        "indicación luminosa roja",
-        "senal luminosa roja",
-        "señal luminosa roja",
-        "linea de detencion",
-        "línea de detención",
-    ]):
-        return "semaforo"
-
-    # Casos expresos que no deben saltar a semáforo por ruido contextual
-    if _looks_like_bike_light_case(core):
-        scores = _score_infraction_from_core(core)
-        if scores.get("condiciones_vehiculo", 0) > 0:
-            return "condiciones_vehiculo"
-
-    if _looks_like_agent_order_case(core):
-        scores = _score_infraction_from_core(core)
-        if scores.get("atencion", 0) > 0:
-            return "atencion"
-
-    # Semáforo solo con evidencia fuerte y margen suficiente
-    if _looks_like_semaforo(core):
-        return "semaforo"
-
-    # Si el hecho limpio ya apunta a semáforo, no dejamos que OCR con km/h
-    # arrastre el caso hacia velocidad.
-    if any(s in blob for s in ["fase roja", "luz roja", "semaforo", "senal luminosa roja", "linea de detencion"]):
-        return "semaforo"
-
-    if any(s in blob for s in ["bicicleta", "ciclistas", "ciclista"]) and any(s in blob for s in ["atencion permanente", "conduccion negligente", "distraccion"]):
-        return "atencion"
-
-    if any(s in blob for s in [
-        "tasa de alcohol",
-        "alcoholemia",
-        "etilometro",
-        "aire espirado",
-        "mg/l",
-        "control de alcoholemia",
-        "prueba de alcoholemia",
-    ]):
-        return "alcohol"
-
-    if (
-        any(s in blob for s in [
-            "maniobra peligrosa",
-            "sin justificacion",
-            "sin justificación",
-            "maniobra incorrecta",
-        ])
-        and not any(s in blob for s in [
-            "atencion", "atención", "distraccion", "distracción",
-            "mirando", "interior del vehiculo", "interior del vehículo",
-            "libertad de movimientos", "mordia las uñas", "mordia las unas",
-            "morderse las uñas", "morderse las unas"
-        ])
-    ):
-        return "generic"
-
-    if any(s in blob for s in [
-        "no mantener la atencion",
-        "no mantener la atención",
-        "atencion permanente",
-        "atención permanente",
-        "no mantener la atencion permanente a la conduccion",
-        "no mantener la atención permanente a la conducción",
-        "conduccion negligente",
-        "conducir de forma negligente",
-        "sin la diligencia necesaria",
-        "sin la atencion necesaria",
-        "sin la atención necesaria",
-        "conducir sin la atencion necesaria",
-        "conducir sin la atención necesaria",
-        "falta de atencion",
-        "falta de atención",
-        "diligencia debida",
-        "debida atencion",
-        "debida atención",
-        "atencion a la via",
-        "atención a la vía",
-        "conducta distraida",
-        "conducta distraída",
-        "atencion suficiente al trafico",
-        "atención suficiente al tráfico",
-        "atencion al volante",
-        "atención al volante",
-        "comprometen la atencion",
-        "comprometen la atención",
-        "disminuyen la atencion",
-        "disminuyen la atención",
-        "interior del vehiculo",
-        "interior del vehículo",
-        "limitan el control del vehiculo",
-        "limitan el control del vehículo",
-        "libertad de movimientos",
-        "mordia las uñas",
-        "mordia las unas",
-        "morderse las uñas",
-        "morderse las unas",
-        "se muerde las uñas",
-        "se muerde las unas",
-        "mientras se muerde las uñas",
-        "mientras se muerde las unas",
-        "conducir mientras se muerde las uñas",
-        "conducir mientras se muerde las unas",
-        "conducir mientras se mordia las uñas",
-        "conducir mientras se mordia las unas",
-        "bailando",
-        "soltar ambas manos",
-        "mirando repetidamente al acompañante",
-        "mirando repetidamente al acompanante",
-        "come y manipula objetos",
-        "fumando",
-        "comiendo",
-        "bebiendo",
-        "sin mirar la carretera",
-        "mirando al acompanante",
-        "mirando al copiloto",
-        "mirando hacia el interior del vehiculo",
-        "manipulando objetos",
-        "manipulando comida",
-        "manipulando bebida",
-    ]):
-        return "atencion"
-
-    if (
-        any(s in blob for s in [
-            "roja", "luz roja", "fase roja", "semaforo", "semáforo",
-            "interseccion", "intersección", "cruce",
-            "indicacion luminosa roja", "indicación luminosa roja",
-            "señal luminosa en fase roja", "reguladora del trafico", "reguladora del tráfico",
-            "dispositivo luminoso en rojo"
-        ])
-        and not any(s in blob for s in [
-            "trasera intermitente", "parte trasera", "destellos", "dispositivo luminoso no autorizado"
-        ])
-    ):
-        return "semaforo"
-
-    if any(s in blob for s in [
-        "telefono movil",
-        "teléfono móvil",
-        "movil",
-        "móvil",
-        "manipular telefono movil",
-        "manipular teléfono móvil",
-        "sujetar el telefono movil",
-        "sujetar el teléfono móvil",
-        "pantalla del telefono",
-        "pantalla del teléfono",
-        "whatsapp",
-        "terminal movil",
-        "terminal móvil",
-        "terminal telefonico",
-        "terminal telefónico",
-        "terminal portatil",
-        "terminal portátil",
-        "dispositivo de comunicacion manual",
-        "dispositivo de comunicación manual",
-        "dispositivo electronico portatil",
-        "dispositivo electrónico portátil",
-        "aparato de telecomunicaciones",
-        "pantalla de terminal",
-        "pantalla digital",
-        "dispositivo portatil",
-        "dispositivo portátil",
-        "dispositivo electronico",
-        "dispositivo electrónico",
-        "manipular dispositivo electronico en marcha",
-        "manipular dispositivo electrónico en marcha",
-        "uso de dispositivo durante la conduccion",
-        "uso de dispositivo durante la conducción",
-    ]):
-        return "movil"
-
-    if any(s in blob for s in [
-        "neumatico",
-        "neumático",
-        "neumaticos",
-        "neumáticos",
-        "neumatico liso",
-        "neumático liso",
-        "neumaticos en mal estado",
-        "neumáticos en mal estado",
-        "banda de rodadura",
-        "dibujo inferior",
-        "1,6 mm",
-        "elementos del vehiculo en deficiente estado",
-        "elementos del vehículo en deficiente estado",
-        "deficiencias tecnicas en el vehiculo",
-        "deficiencias técnicas en el vehículo",
-        "alteracion de elementos luminosos",
-        "alteración de elementos luminosos",
-        "vehiculo con defectos mecanicos",
-        "vehículo con defectos mecánicos",
-        "ruedas en mal estado",
-        "fallo en sistema de iluminacion",
-        "fallo en sistema de iluminación",
-        "elementos de seguridad defectuosos",
-    ]):
-        return "condiciones_vehiculo"
-
-    if any(s in blob for s in [
-        "bajo la influencia de bebidas alcoholicas",
-        "bajo la influencia de bebidas alcohólicas",
-        "tasa de alcohol",
-        "alcoholemia",
-        "test de alcohol",
-        "presencia de alcohol en sangre",
-        "efectos del alcohol",
-    ]):
-        return "alcohol"
-
-    if any(s in blob for s in [
-        "tasa superior a la permitida",
-        "conducir con tasa superior a la permitida",
-    ]):
-        return "alcohol"
-
-    if any(s in blob for s in [
-        "casco reglamentario",
-        "no hacer uso del casco reglamentario",
-        "casco mal ajustado",
-        "casco incorrectamente ajustado",
-    ]):
-        return "casco"
-
-    if any(s in blob for s in [
-        "uso de dispositivos de audio",
-        "dispositivos de audio en marcha",
-        "dispositivo de audio",
-        "dispositivos de audio en ambos oidos",
-        "dispositivos de audio en ambos oídos",
-        "utilizar dispositivos de audio en ambos oidos",
-        "utilizar dispositivos de audio en ambos oídos",
-    ]):
-        return "auriculares"
-
-    if any(s in blob for s in [
-        "inspeccion tecnica en vigor",
-        "inspección técnica en vigor",
-        "inspeccion tecnica caducada",
-        "inspección técnica caducada",
-        "sin inspeccion tecnica",
-        "sin inspección técnica",
-    ]):
-        return "itv"
-
-    if any(s in blob for s in [
-        "carencia de seguro",
-        "carencia de seguro del vehiculo",
-        "carencia de seguro del vehículo",
-    ]):
-        return "seguro"
-
-    if any(s in blob for s in [
-        "marcas viales prohibidas",
-        "zona de marcas viales prohibidas",
-        "invadir zona de marcas viales",
-    ]):
-        return "marcas_viales"
-
-    if any(s in blob for s in [
-        "carril derecho",
-        "carril izquierdo",
-        "carril central",
-        "carril incorrecto",
-        "circular por carril incorrecto",
-        "posicion correcta en la calzada",
-        "posición correcta en la calzada",
-        "posicion en la calzada",
-        "posición en la calzada",
-        "posicion en calzada",
-        "posición en calzada",
-        "posicion incorrecta en la calzada",
-        "posición incorrecta en la calzada",
-        "no respetar posicion en calzada",
-        "no respetar posición en calzada",
-    ]):
-        return "carril"
-
-    scores = _score_infraction_from_core(core)
-    best = max(scores.items(), key=lambda kv: kv[1])
-    sorted_scores = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-    second_score = sorted_scores[1][1] if len(sorted_scores) > 1 else 0
-
-    # Semáforo solo si realmente gana con margen claro
-    if best[0] == "semaforo":
-        if best[1] >= 6 and best[1] >= second_score + 3:
-            return "semaforo"
-        return "generic"
-
-    if best[1] > 0:
-        return best[0]
-    return "generic"
+    """V5 bloqueada: generate.py no reclasifica; solo respeta analyze.py."""
+    return _resolved_tipo_from_core(core, fallback="generic")
 
 
 def fix_roman_headings(text: str) -> str:
@@ -1450,7 +790,6 @@ def fix_roman_headings(text: str) -> str:
     for pattern, repl in replacements.items():
         out = re.sub(pattern, repl, out, flags=re.IGNORECASE)
     return out
-
 
 
 def _fix_alegaciones_numeracion(text: str) -> str:
@@ -1840,6 +1179,7 @@ def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> s
 
     return "\n\n".join(fundamentos)
 
+
 def _build_unified_suplico(tipo: str = "") -> str:
     punto_4 = (
         "4) Subsidiariamente, que se imponga en su caso la sanción mínima legalmente\n"
@@ -1994,7 +1334,7 @@ def _integrate_extract_after_comparecencia(body: str, hecho: str, core: Dict[str
     if not hecho:
         return txt
 
-    tipo = forced_tipo or _get_locked_tipo(core) or resolve_infraction_type(core)
+    tipo = forced_tipo or _resolved_tipo_from_core(core)
     if tipo == "velocidad" and (_looks_like_noisy_velocity_text(hecho) or _resolve_velocity_facts(core).get("conflict")):
         facts = _resolve_velocity_facts(core)
         measured = facts.get("measured")
@@ -2259,6 +1599,8 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     radar_focus = radar_profile.get("attack_focus") or ""
 
     tech_lines = []
+    margin_txt = ""
+    corrected_txt = ""
     if measured:
         tech_lines.append(f"• Velocidad medida: {int(measured)} km/h")
     if limit:
@@ -2364,10 +1706,6 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     wrapper = row[0] if isinstance(row[0], dict) else json.loads(row[0])
     core = wrapper.get("extracted") or {}
 
-    locked_tipo = _get_locked_tipo(core)
-
-    # Solo extraer "hecho literal" desde OCR como último recurso cuando analyze
-    # no haya dejado ya un hecho útil.
     if (
         not core.get("hecho_denunciado_literal")
         and not core.get("hecho_para_recurso")
@@ -2378,24 +1716,13 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         if literal:
             core["hecho_denunciado_literal"] = literal
 
-    tipo = locked_tipo or resolve_infraction_type(core)
-    scores = _score_infraction_from_core(core)
+    tipo = _resolved_tipo_from_core(core, fallback="generic")
     jurisdiccion = resolve_jurisdiction(core)
 
-    draft_body = get_hecho_para_recurso(core, forced_tipo=tipo)
     bicicleta_ctx = _is_bicicleta_context(core)
 
-    # Si la familia viene cerrada desde analyze, no dejamos que un segundo
-    # despachador heurístico la vuelva a reinterpretar.
-    dispatched_tpl = None
-    if not locked_tipo:
-        dispatched_tpl = None if (tipo == "atencion" and bicicleta_ctx) else dispatch_deterministic_template(core, draft_body=draft_body)
-
-    if isinstance(dispatched_tpl, dict) and dispatched_tpl.get("asunto") and dispatched_tpl.get("cuerpo"):
-        tpl = dispatched_tpl
-        final_kind = tipo or "deterministic"
-    else:
-        tpl, final_kind = _select_template(core, tipo, jurisdiccion)
+    # V5 bloqueada: no redispatch heurístico si ya hay familia resuelta upstream.
+    tpl, final_kind = _select_template(core, tipo, jurisdiccion)
 
     tpl = ensure_tpl_dict(tpl, core)
     tpl = _upgrade_generated_template(
@@ -2406,18 +1733,16 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     )
 
     cuerpo = tpl.get("cuerpo") or ""
-    if tipo == "atencion" and _is_bicicleta_context(core):
+    if tipo == "atencion" and bicicleta_ctx:
         cuerpo = _sanitize_bicicleta_body(cuerpo)
 
     cuerpo = _inject_tipicidad_material_en_alegaciones(cuerpo, core)
     cuerpo = _inject_strategic_legal_reinforcement(cuerpo, core, tipo)
-    # Limpieza de lenguaje interno para el documento final
     cuerpo = re.sub(r'\bREFUERZO\s*[—-]\s*', '', cuerpo, flags=re.IGNORECASE)
     cuerpo = re.sub(r'\bESTRATEGIA PRINCIPAL\b', 'INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS', cuerpo, flags=re.IGNORECASE)
     cuerpo = re.sub(r'\bFACTORES ADICIONALES\b', 'CONSIDERACIONES COMPLEMENTARIAS', cuerpo, flags=re.IGNORECASE)
     cuerpo = re.sub(r'\bCONSIDERACIONES ADICIONALES\b', 'CONSIDERACIONES COMPLEMENTARIAS', cuerpo, flags=re.IGNORECASE)
     cuerpo = re.sub(r'\bALEGACIÓN\s+DE\s+\s*NULIDAD\s+DE\s+PLENO\s+DERECHO\b', 'ALEGACIÓN — NULIDAD DE PLENO DERECHO', cuerpo, flags=re.IGNORECASE)
-    # Limpiar duplicado de cabecera/antecedentes que a veces viene del builder base
     cuerpo = re.sub(r'\nA la atenci[oó]n del Ayuntamiento competente,\s*\nI\. ANTECEDENTES\s*\n', '\n', cuerpo, flags=re.IGNORECASE)
 
     hecho = get_hecho_para_recurso(core, forced_tipo=tipo)
@@ -2427,7 +1752,6 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     cuerpo = _fix_alegaciones_numeracion(cuerpo)
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
 
-    # Dejamos el asunto vacío para que el builder no pinte el título antes de la referencia.
     docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
         case_id,
