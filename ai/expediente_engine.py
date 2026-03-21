@@ -1,6 +1,5 @@
 import json
 import os
-import re
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import text
@@ -132,11 +131,11 @@ def _detect_capture_mode(docs: List[Dict[str, Any]], extraction_core: Optional[D
     auto_signals = [
         "cámara", "camara", "fotograma", "fotogramas", "secuencia", "foto", "fotografía", "fotografia",
         "captación automática", "captacion automatica", "sistema automático", "sistema automatico",
-        "dispositivo", "sensor", "instalación", "instalacion", "vídeo", "video"
+        "dispositivo", "sensor", "instalación", "instalacion", "vídeo", "video",
     ]
     agent_signals = [
         "agente", "policía", "policia", "guardia civil", "denunciante", "observó", "observo",
-        "manifestó", "manifesto", "presencial", "in situ"
+        "manifestó", "manifesto", "presencial", "in situ",
     ]
 
     auto_score = sum(1 for s in auto_signals if s in blob)
@@ -166,6 +165,7 @@ ARTICLE_TYPE_MAP = {
     },
 }
 
+
 def _norma_key_from_hint(extraction_core: Dict[str, Any]) -> str:
     hint = (extraction_core or {}).get("norma_hint") or ""
     h = str(hint).upper()
@@ -174,6 +174,7 @@ def _norma_key_from_hint(extraction_core: Dict[str, Any]) -> str:
     if "RGC" in h or "REGLAMENTO GENERAL DE CIRCUL" in h:
         return "RGC"
     return ""
+
 
 def _get_article_num(extraction_core: Dict[str, Any]) -> Optional[int]:
     art = (extraction_core or {}).get("articulo_infringido_num")
@@ -186,12 +187,14 @@ def _get_article_num(extraction_core: Dict[str, Any]) -> Optional[int]:
             return None
     return None
 
+
 def _expected_type_from_article(extraction_core: Dict[str, Any]) -> Optional[str]:
     norma_key = _norma_key_from_hint(extraction_core or {})
     art = _get_article_num(extraction_core or {})
     if not norma_key or art is None:
         return None
     return (ARTICLE_TYPE_MAP.get(norma_key) or {}).get(art)
+
 
 def _strict_tipicity_check(extraction_core: Dict[str, Any], inferred_type: str) -> Dict[str, Any]:
     expected = _expected_type_from_article(extraction_core or {})
@@ -200,8 +203,23 @@ def _strict_tipicity_check(extraction_core: Dict[str, Any], inferred_type: str) 
     inferred = (inferred_type or "").lower().strip()
     exp = (expected or "").lower().strip()
     if not expected or not inferred:
-        return {"ok": False, "match": None, "expected": expected, "inferred": inferred_type, "article": art, "norma_key": norma_key}
-    return {"ok": True, "match": (exp == inferred), "expected": expected, "inferred": inferred_type, "article": art, "norma_key": norma_key}
+        return {
+            "ok": False,
+            "match": None,
+            "expected": expected,
+            "inferred": inferred_type,
+            "article": art,
+            "norma_key": norma_key,
+        }
+    return {
+        "ok": True,
+        "match": (exp == inferred),
+        "expected": expected,
+        "inferred": inferred_type,
+        "article": art,
+        "norma_key": norma_key,
+    }
+
 
 def _apply_tipicity_strict(attack_plan: Dict[str, Any], extraction_core: Dict[str, Any]) -> Dict[str, Any]:
     plan = dict(attack_plan or {})
@@ -220,7 +238,7 @@ def _apply_tipicity_strict(attack_plan: Dict[str, Any], extraction_core: Dict[st
             "points": [
                 "El Derecho sancionador exige subsunción exacta entre el hecho descrito y el precepto aplicado (principio de tipicidad y legalidad sancionadora).",
                 "Si el artículo citado no se corresponde con la conducta efectivamente imputada, la sanción carece de cobertura típica suficiente y genera indefensión.",
-                "Procede el ARCHIVO por ausencia de adecuada subsunción normativa, sin perjuicio de la práctica de prueba y aportación íntegra del expediente."
+                "Procede el ARCHIVO por ausencia de adecuada subsunción normativa, sin perjuicio de la práctica de prueba y aportación íntegra del expediente.",
             ],
         }
 
@@ -228,9 +246,9 @@ def _apply_tipicity_strict(attack_plan: Dict[str, Any], extraction_core: Dict[st
         pr += [
             "Copia íntegra del expediente administrativo (denuncia/boletín, propuesta y resolución, si existieran).",
             "Identificación expresa del precepto aplicado (artículo/apartado) y motivación del encaje con el hecho descrito.",
-            "Aportación de la norma aplicable y fundamentos jurídicos utilizados."
+            "Aportación de la norma aplicable y fundamentos jurídicos utilizados.",
         ]
-        # unique
+
         seen = set()
         pr2 = []
         for x in pr:
@@ -243,191 +261,19 @@ def _apply_tipicity_strict(attack_plan: Dict[str, Any], extraction_core: Dict[st
 
 
 # ==========================
-# Infraction type (soft) desde extraction_core / classify facts_phrases
+# Attack plan (V5 bloqueada)
 # ==========================
-
-
-def _has_any(text: str, signals: List[str]) -> bool:
-    return any(s in (text or "") for s in signals)
-
-
-SEMAFORO_STRONG_SIGNALS = [
-    "semaforo", "semáforo", "fase roja", "fase del rojo",
-    "luz roja no intermitente", "cruce en rojo", "cruce con fase del rojo",
-    "articulo 146", "art. 146", "t/s roja", "ts roja",
-]
-
-SEMAFORO_FALSE_FRIENDS = [
-    "ordenarle la detencion",
-    "al ordenarle la detencion",
-    "orden de detencion",
-    "no se para en el lugar",
-    "no se para",
-    "parar en el lugar",
-    "detencion policial",
-]
-
-VEHICLE_LIGHT_SIGNALS = [
-    "dispositivos de alumbrado",
-    "dispositivos de señalizacion",
-    "dispositivos de senalizacion",
-    "senalizacion optica",
-    "señalizacion optica",
-    "luz en la parte trasera",
-    "parte trasera",
-    "destellos",
-    "anexo i",
-    "reglamentacion del anexo",
-    "reglamentación del anexo",
-    "alumbrado",
-]
-
-ATENCION_TEMERARIA_SIGNALS = [
-    "conducir de forma temeraria",
-    "conduccion temeraria",
-    "conducción temeraria",
-    "conducir de forma negligente",
-    "no mantener la atencion",
-    "no mantener la atención",
-    "atencion permanente",
-    "atención permanente",
-    "temeraria",
-    "temerario",
-]
-
-def _looks_like_semaforo_context(text: str) -> bool:
-    t = (text or "").lower()
-    if _has_any(t, VEHICLE_LIGHT_SIGNALS):
-        return False
-    if _has_any(t, ATENCION_TEMERARIA_SIGNALS):
-        return False
-    if _has_any(t, SEMAFORO_FALSE_FRIENDS) and not _has_any(
-        t,
-        [
-            "articulo 146", "art. 146", "semaforo", "semáforo",
-            "fase roja", "fase del rojo", "luz roja no intermitente",
-            "cruce en rojo", "cruce con fase del rojo",
-        ],
-    ):
-        return False
-    return _has_any(t, SEMAFORO_STRONG_SIGNALS)
-
-def _infer_infraction_from_facts_phrases(classify: Dict[str, Any]) -> Optional[str]:
-    phrases = (classify or {}).get("facts_phrases") or []
-    if not phrases:
-        return None
-
-    joined = "\n".join([str(p) for p in phrases if p]).lower()
-
-    if _has_any(joined, VEHICLE_LIGHT_SIGNALS):
-        return "condiciones_vehiculo"
-
-    if _has_any(joined, ATENCION_TEMERARIA_SIGNALS):
-        return "atencion"
-
-    if _looks_like_semaforo_context(joined):
-        return "semaforo"
-
-    movil_signals = [
-        "uso manual del teléfono móvil",
-        "uso manual del telefono movil",
-        "uso manual del teléfono",
-        "uso manual del telefono",
-        "manipulando el móvil",
-        "manipulando el movil",
-        "interactuando con la pantalla",
-        "sujetando con la mano el dispositivo",
-        "utilizando manualmente el teléfono móvil",
-        "utilizando manualmente el telefono movil",
-    ]
-    if any(s in joined for s in movil_signals):
-        return "movil"
-
-    if any(s in joined for s in ["velocidad", "km/h", "radar", "cinemómetro", "cinemometro", "exceso de velocidad"]):
-        return "velocidad"
-
-    return None
-
-    joined = "\n".join([str(p) for p in phrases if p]).lower()
-
-    semaforo_signals = [
-        "semáforo", "semaforo", "fase roja", "fase del rojo", "luz roja",
-        "luz roja no intermitente", "t/s roja", "ts roja", "cruce en rojo",
-        "cruce con fase del rojo", "articulo 146", "art. 146",
-    ]
-    if any(s in joined for s in semaforo_signals):
-        return "semaforo"
-
-    movil_signals = [
-        "uso manual del teléfono móvil",
-        "uso manual del telefono movil",
-        "uso manual del teléfono",
-        "uso manual del telefono",
-        "manipulando el móvil",
-        "manipulando el movil",
-        "interactuando con la pantalla",
-        "sujetando con la mano el dispositivo",
-        "utilizando manualmente el teléfono móvil",
-        "utilizando manualmente el telefono movil",
-    ]
-    if any(s in joined for s in movil_signals):
-        return "movil"
-
-    if any(s in joined for s in ["velocidad", "km/h", "radar", "cinemómetro", "cinemometro", "exceso de velocidad"]):
-        return "velocidad"
-
-    return None
-
-
-def _infer_infraction_from_extraction(extraction_core: Dict[str, Any]) -> str:
-    extraction_core = extraction_core or {}
-
-    # CONFIAR PRIMERO en analyze.py si ya clasificó el caso
-    tipo = extraction_core.get("tipo_infraccion")
-    if isinstance(tipo, str) and tipo.strip() and tipo.strip().lower() not in ("", "otro", "generic", "unknown"):
-        return tipo.strip().lower()
-
-    t = ""
-    try:
-        t = json.dumps(extraction_core, ensure_ascii=False).lower()
-    except Exception:
-        t = ""
-
-    if _has_any(t, VEHICLE_LIGHT_SIGNALS):
-        return "condiciones_vehiculo"
-
-    if _has_any(t, ATENCION_TEMERARIA_SIGNALS):
-        return "atencion"
-
-    if _looks_like_semaforo_context(t):
-        return "semaforo"
-
-    movil_strong_signals = [
-        "telefono movil",
-        "teléfono móvil",
-        "uso manual del movil",
-        "uso manual del móvil",
-        "uso manual del telefono",
-        "uso manual del teléfono",
-        "manipulando el movil",
-        "manipulando el móvil",
-        "interactuando con la pantalla",
-        "sujetando con la mano el dispositivo",
-        "utilizando manualmente",
-    ]
-    if any(s in t for s in movil_strong_signals):
-        return "movil"
-
-    if any(s in t for s in ["km/h", "radar", "cinemómetro", "cinemometro", "exceso de velocidad"]):
-        return "velocidad"
-
-    return "generic"
-
-
 def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extraction_core: Dict[str, Any]) -> Dict[str, Any]:
-    inferred = str((extraction_core or {}).get("tipo_infraccion") or "").strip().lower()
-if inferred in ("", "otro", "unknown"):
-    inferred = "generic"
+    """
+    V5 BLOQUEADA:
+    - expediente_engine NO reclasifica
+    - usa exclusivamente el tipo ya resuelto por analyze.py
+    """
+    extraction_core = extraction_core or {}
+    inferred = str(extraction_core.get("tipo_infraccion") or "").strip().lower()
+
+    if inferred in ("", "otro", "unknown", "generic", None):
+        inferred = "generic"
 
     plan: Dict[str, Any] = {
         "infraction_type": inferred,
@@ -480,7 +326,6 @@ def _compute_context_intensity(timeline: Dict[str, Any], extraction_core: Dict[s
     if has_lsoa and has_speed:
         return "critico"
 
-    # antigüedad
     dates: List[str] = []
     tl = (timeline or {}).get("timeline") or []
     for ev in tl:
@@ -556,24 +401,28 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         admissibility["required_constraints"] = admissibility.get("required_constraints") or []
         admissibility["override_applied"] = True
         admissibility["override_mode"] = override_mode
-        _save_event(case_id, "test_override_applied", {"flags": flags, "override_mode": override_mode, "original_admissibility": original_adm})
+        _save_event(
+            case_id,
+            "test_override_applied",
+            {
+                "flags": flags,
+                "override_mode": override_mode,
+                "original_admissibility": original_adm,
+            },
+        )
 
-    # Attack plan (soft)
     attack_plan = _build_attack_plan(classify, timeline, extraction_core or {})
-    # Tipicidad strict transversal
     attack_plan = _apply_tipicity_strict(attack_plan, extraction_core or {})
 
     facts_summary = _build_facts_summary(extraction_core, attack_plan)
     context_intensity = _compute_context_intensity(timeline, extraction_core, classify)
 
-    # Si mismatch strict, subimos intensidad
     try:
         if (attack_plan or {}).get("meta", {}).get("tipicity_mismatch_strict"):
             context_intensity = "critico"
     except Exception:
         pass
 
-    # Draft (IA) — el texto final determinista de tráfico se decide en generate.py / módulos
     draft = None
     if bool(admissibility.get("can_generate_draft")) or (admissibility.get("admissibility") or "").upper() == "ADMISSIBLE":
         interested_data = _load_interested_data(case_id)
@@ -591,7 +440,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
                 "attack_plan": attack_plan,
                 "facts_summary": facts_summary,
                 "context_intensity": context_intensity,
-                "velocity_calc": {},  # generate.py/módulos lo calculan determinista
+                "velocity_calc": {},
                 "sandbox": {
                     "override_applied": bool(admissibility.get("override_applied")),
                     "override_mode": admissibility.get("override_mode"),
@@ -614,7 +463,7 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         "velocity_calc": {},
         "extraction_debug": {
             "wrapper_keys": list(extraction_wrapper.keys()) if isinstance(extraction_wrapper, dict) else [],
-            "core_keys": list(extraction_core.keys()) if isinstance(extraction_wrapper, dict) else [],
+            "core_keys": list(extraction_core.keys()) if isinstance(extraction_core, dict) else [],
         },
     }
 
