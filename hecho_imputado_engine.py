@@ -507,7 +507,7 @@ def _select_best_candidate(raw_text: str) -> str:
         score = _candidate_specificity_score(c)
         scored.append((score, len(c), c))
 
-    scored.sort(key=lambda x: (x[0], -abs(len(x[2]) - 70))), reverse=True)
+    scored.sort(key=lambda x: (x[0], -abs(len(x[2]) - 70)), reverse=True)
     best = scored[0][2]
 
     # si el mejor es genérico pero existe uno específico mejor por señales, preferirlo
