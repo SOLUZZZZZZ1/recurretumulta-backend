@@ -139,6 +139,7 @@ SAFE_REPLACEMENTS = {
     "atencion": "atención",
     "senal luminosa": "señal luminosa",
     "senalizacion": "señalización",
+    "prioridad de paso": "prioridad de paso",
 }
 
 FAMILY_HINTS = {
@@ -182,6 +183,10 @@ FAMILY_HINTS = {
     ],
     "alcohol": [
         "alcohol", "alcoholemia", "etilometro", "etilómetro", "mg/l",
+    ],
+    "prioridad_paso": [
+        "prioridad de paso", "ceder el paso", "paso de peatones", "paso a peatones",
+        "no respetar el paso", "prioridad",
     ],
 }
 
@@ -361,7 +366,7 @@ def _cleanup_text(text: str) -> str:
     txt = re.sub(r"[|]+", " ", txt)
     txt = re.sub(r"\[\s*ilegible\s*\]", " ", txt, flags=re.IGNORECASE)
     txt = re.sub(r"[_]{2,}", " ", txt)
-    txt = re.sub(r"\s+([,.;:])", r"\1", txt)
+    txt = re.sub(r"\s+([,.;:/])", r"\1", txt)
     txt = txt.strip(" :-\t")
     txt = re.sub(r'^[\"“”]+|[\"“”]+$', "", txt).strip()
     return txt
@@ -380,6 +385,9 @@ def _safe_reconstruct(text: str) -> str:
     out = re.sub(r"\bintermit\w*\b", "intermitente", out, flags=re.IGNORECASE)
     out = re.sub(r"\bdetenc\w*\b", "detencion", out, flags=re.IGNORECASE)
     out = re.sub(r"\btelefon\w*\s+movil\b", "telefono movil", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bpriorida\w*\b", "prioridad", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bpasos?\s+a\b", "paso a", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bpasos?\b", "paso", out, flags=re.IGNORECASE)
     out = re.sub(r"\s+", " ", out).strip()
 
     for src, dst in SAFE_REPLACEMENTS.items():
@@ -409,7 +417,6 @@ def _candidate_specificity_score(text: str) -> int:
     blob = _normalize_for_search(text)
     s = 0
 
-    # semáforo: prioridad muy fuerte
     if "semaforo" in blob:
         s += 10
     if "luz roja" in blob:
@@ -425,7 +432,15 @@ def _candidate_specificity_score(text: str) -> int:
     if "no respetar" in blob and ("semaforo" in blob or "luz roja" in blob):
         s += 8
 
-    # otras familias específicas
+    if "prioridad de paso" in blob:
+        s += 11
+    if "ceder el paso" in blob:
+        s += 10
+    if "paso de peatones" in blob or "paso a peatones" in blob:
+        s += 9
+    if "no respetar" in blob and ("prioridad" in blob or "paso" in blob):
+        s += 8
+
     if "telefono movil" in blob or "movil" in blob or "pantalla" in blob:
         s += 8
     if "sin casco" in blob or "casco" in blob:
@@ -441,7 +456,6 @@ def _candidate_specificity_score(text: str) -> int:
     if "parabrisas" in blob or "luz de freno" in blob or "piloto trasero" in blob:
         s += 5
 
-    # verbo típico de infracción
     if any(v in blob for v in [
         "no respetar", "utilizar", "conducir", "circular", "rebasar",
         "franquear", "cruzar", "atravesar", "invadir", "traspasar",
@@ -449,19 +463,15 @@ def _candidate_specificity_score(text: str) -> int:
     ]):
         s += 3
 
-    # castigo por genérico
     for bad in GENERIC_BAD_PHRASES:
         if _strip_accents(bad.lower()) in blob:
             s -= 14
 
-    # castigo por demasiado abstracto
     word_count = len(blob.split())
     if word_count < 4:
         s -= 3
     if word_count > 35:
         s -= 4
-
-    # bonus por longitud razonable
     if 5 <= word_count <= 18:
         s += 2
 
@@ -486,7 +496,6 @@ def _split_candidates(text: str) -> List[str]:
         if c and c not in candidates:
             candidates.append(c)
 
-    # también subfrases con comas
     comma_chunks = []
     for c in list(candidates):
         comma_chunks.extend([_cleanup_text(x) for x in c.split(",") if _cleanup_text(x)])
@@ -495,6 +504,49 @@ def _split_candidates(text: str) -> List[str]:
             candidates.append(c)
 
     return candidates
+
+
+def _normalize_hecho_final(text: str) -> str:
+    blob = _normalize_for_search(text)
+    clean = _cleanup_text(text)
+
+    # Semáforo
+    if ("luz roja" in blob and "semaforo" in blob) or ("fase roja" in blob and "semaforo" in blob):
+        return "No respetar la luz roja del semáforo"
+    if "linea de detencion" in blob and ("roja" in blob or "semaforo" in blob):
+        return "Rebasar la línea de detención con el semáforo en rojo"
+
+    # Prioridad de paso
+    if "prioridad de paso" in blob:
+        return "No respetar la prioridad de paso"
+    if "ceder el paso" in blob:
+        return "No respetar la obligación de ceder el paso"
+    if ("paso" in blob or "pasos" in blob) and "no respetar" in blob:
+        return "No respetar la prioridad de paso"
+    if "paso de peatones" in blob and "no respetar" in blob:
+        return "No respetar la prioridad de paso en paso de peatones"
+
+    # Móvil
+    if "telefono movil" in blob and any(x in blob for x in ["utilizar", "manipular", "sostener", "llevar", "portar"]):
+        return "Utilizar el teléfono móvil durante la conducción"
+
+    # Casco
+    if "casco" in blob and "sin casco" in blob:
+        return "Circular sin hacer uso del casco"
+
+    # Seguro
+    if any(x in blob for x in ["seguro obligatorio", "poliza", "aseguramiento"]) and any(x in blob for x in ["sin", "carece", "carecer", "vencido", "caducado"]):
+        return "Circular con el vehículo careciendo de seguro obligatorio en vigor"
+
+    # Limpieza final de basura residual
+    clean = re.sub(r"\barticulo\s*:\s*\d+\b.*$", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\bapariencia\s*:\s*.*$", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\bcirc\w*\s*:\s*.*$", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\bpuntos?\s*:\s*.*$", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\bimporte\b.*$", "", clean, flags=re.IGNORECASE)
+    clean = _cleanup_text(clean)
+
+    return clean
 
 
 def _select_best_candidate(raw_text: str) -> str:
@@ -509,9 +561,8 @@ def _select_best_candidate(raw_text: str) -> str:
 
     scored.sort(key=lambda x: (x[0], -abs(len(x[2]) - 70)), reverse=True)
     best = scored[0][2]
-
-    # si el mejor es genérico pero existe uno específico mejor por señales, preferirlo
     best_score = scored[0][0]
+
     for score, _, cand in scored:
         if score >= best_score and not any(_strip_accents(b.lower()) in _normalize_for_search(cand) for b in GENERIC_BAD_PHRASES):
             best = cand
@@ -614,7 +665,8 @@ def extract_hecho_imputado(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     best_raw = _select_best_candidate(raw_chunk)
     reconstructed = _safe_reconstruct(best_raw)
-    clean = _cleanup_text(reconstructed)
+    normalized_final = _normalize_hecho_final(reconstructed)
+    clean = _cleanup_text(normalized_final)
 
     confidence, reason, family = _assess_confidence(
         header_name,
