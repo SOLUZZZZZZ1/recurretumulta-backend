@@ -425,9 +425,9 @@ def _infer_infraction_from_extraction(extraction_core: Dict[str, Any]) -> str:
 
 
 def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extraction_core: Dict[str, Any]) -> Dict[str, Any]:
-    inferred = _infer_infraction_from_facts_phrases(classify) or _infer_infraction_from_extraction(extraction_core)
-    if inferred in ("", "otro", "unknown"):
-        inferred = "generic"
+    inferred = str((extraction_core or {}).get("tipo_infraccion") or "").strip().lower()
+if inferred in ("", "otro", "unknown"):
+    inferred = "generic"
 
     plan: Dict[str, Any] = {
         "infraction_type": inferred,
