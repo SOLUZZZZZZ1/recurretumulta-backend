@@ -212,6 +212,18 @@ SPLIT_SEPARATORS = [
     r"\s{2,}",
 ]
 
+VALID_ACTION_HINTS = [
+    "no respetar", "circular", "circulaba", "conducir", "utilizar", "usar",
+    "rebasar", "franquear", "cruzar", "atravesar", "invadir", "traspasar",
+    "manipular", "portar", "llevar", "marchar", "carecer de", "carece de",
+    "no mantener", "no obedecer",
+]
+
+GIBBERISH_HINTS = [
+    "artq", "alzabent", "circ9ie", "pareja demonte", "cliente rima",
+    "he infrac", "apariencia:", "localizacion:", "localización:",
+]
+
 
 def _safe_str(v: Any) -> str:
     if v is None:
@@ -225,10 +237,7 @@ def _safe_str(v: Any) -> str:
 def _strip_accents(text: str) -> str:
     if not text:
         return ""
-    return "".join(
-        ch for ch in unicodedata.normalize("NFD", text)
-        if unicodedata.category(ch) != "Mn"
-    )
+    return "".join(ch for ch in unicodedata.normalize("NFD", text) if unicodedata.category(ch) != "Mn")
 
 
 def _normalize_for_search(text: str) -> str:
@@ -236,8 +245,7 @@ def _normalize_for_search(text: str) -> str:
     txt = re.sub(r"[ \t]+", " ", txt)
     txt = re.sub(r"\n{2,}", "\n", txt)
     txt = txt.lower()
-    txt = _strip_accents(txt)
-    return txt
+    return _strip_accents(txt)
 
 
 def _normalize_preserve(text: str) -> str:
@@ -376,7 +384,6 @@ def _safe_reconstruct(text: str) -> str:
     if not text:
         return ""
     out = _normalize_for_search(" " + text + " ")
-
     for src, dst in SAFE_REPLACEMENTS.items():
         src_norm = _strip_accents(src.lower())
         out = re.sub(rf"\b{re.escape(src_norm)}\b", _strip_accents(dst.lower()), out, flags=re.IGNORECASE)
@@ -392,12 +399,12 @@ def _safe_reconstruct(text: str) -> str:
 
     for src, dst in SAFE_REPLACEMENTS.items():
         out = re.sub(rf"\b{re.escape(_strip_accents(src.lower()))}\b", dst.lower(), out, flags=re.IGNORECASE)
+
     out = out.replace("semaforo", "semáforo").replace("detencion", "detención")
     out = out.replace("telefono movil", "teléfono móvil").replace("vehiculo", "vehículo")
     out = out.replace("matricula", "matrícula").replace("conduccion", "conducción")
     out = out.replace("atencion", "atención")
     out = out.replace("senalizacion", "señalización").replace("senal", "señal")
-
     if out:
         out = out[0].upper() + out[1:]
     return out
@@ -416,7 +423,6 @@ def _family_scores(text: str) -> Dict[str, int]:
 def _candidate_specificity_score(text: str) -> int:
     blob = _normalize_for_search(text)
     s = 0
-
     if "semaforo" in blob:
         s += 10
     if "luz roja" in blob:
@@ -455,12 +461,7 @@ def _candidate_specificity_score(text: str) -> int:
         s += 5
     if "parabrisas" in blob or "luz de freno" in blob or "piloto trasero" in blob:
         s += 5
-
-    if any(v in blob for v in [
-        "no respetar", "utilizar", "conducir", "circular", "rebasar",
-        "franquear", "cruzar", "atravesar", "invadir", "traspasar",
-        "no mantener", "carecer de"
-    ]):
+    if any(v in blob for v in VALID_ACTION_HINTS):
         s += 3
 
     for bad in GENERIC_BAD_PHRASES:
@@ -474,7 +475,6 @@ def _candidate_specificity_score(text: str) -> int:
         s -= 4
     if 5 <= word_count <= 18:
         s += 2
-
     return s
 
 
@@ -482,7 +482,6 @@ def _split_candidates(text: str) -> List[str]:
     txt = _cleanup_text(text)
     if not txt:
         return []
-
     candidates = [txt]
     chunks = [txt]
     for sep in SPLIT_SEPARATORS:
@@ -502,7 +501,6 @@ def _split_candidates(text: str) -> List[str]:
     for c in comma_chunks:
         if c and c not in candidates:
             candidates.append(c)
-
     return candidates
 
 
@@ -510,13 +508,11 @@ def _normalize_hecho_final(text: str) -> str:
     blob = _normalize_for_search(text)
     clean = _cleanup_text(text)
 
-    # Semáforo
     if ("luz roja" in blob and "semaforo" in blob) or ("fase roja" in blob and "semaforo" in blob):
         return "No respetar la luz roja del semáforo"
     if "linea de detencion" in blob and ("roja" in blob or "semaforo" in blob):
         return "Rebasar la línea de detención con el semáforo en rojo"
 
-    # Prioridad de paso
     if "prioridad de paso" in blob:
         return "No respetar la prioridad de paso"
     if "ceder el paso" in blob:
@@ -526,27 +522,21 @@ def _normalize_hecho_final(text: str) -> str:
     if "paso de peatones" in blob and "no respetar" in blob:
         return "No respetar la prioridad de paso en paso de peatones"
 
-    # Móvil
     if "telefono movil" in blob and any(x in blob for x in ["utilizar", "manipular", "sostener", "llevar", "portar"]):
         return "Utilizar el teléfono móvil durante la conducción"
 
-    # Casco
     if "casco" in blob and "sin casco" in blob:
         return "Circular sin hacer uso del casco"
 
-    # Seguro
     if any(x in blob for x in ["seguro obligatorio", "poliza", "aseguramiento"]) and any(x in blob for x in ["sin", "carece", "carecer", "vencido", "caducado"]):
         return "Circular con el vehículo careciendo de seguro obligatorio en vigor"
 
-    # Limpieza final de basura residual
     clean = re.sub(r"\barticulo\s*:\s*\d+\b.*$", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\bapariencia\s*:\s*.*$", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\bcirc\w*\s*:\s*.*$", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\bpuntos?\s*:\s*.*$", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\bimporte\b.*$", "", clean, flags=re.IGNORECASE)
-    clean = _cleanup_text(clean)
-
-    return clean
+    return _cleanup_text(clean)
 
 
 def _select_best_candidate(raw_text: str) -> str:
@@ -567,8 +557,43 @@ def _select_best_candidate(raw_text: str) -> str:
         if score >= best_score and not any(_strip_accents(b.lower()) in _normalize_for_search(cand) for b in GENERIC_BAD_PHRASES):
             best = cand
             break
-
     return _cleanup_text(best)
+
+
+def _is_hecho_irrecuperable(raw: str, clean: str) -> bool:
+    blob = _normalize_for_search(clean or raw)
+
+    if not blob.strip():
+        return True
+
+    words = blob.split()
+    if len(words) < 4:
+        return True
+
+    if not any(v in blob for v in VALID_ACTION_HINTS):
+        return True
+
+    family_scores = _family_scores(clean)
+    if max(family_scores.values(), default=0) == 0:
+        return True
+
+    gib_count = sum(1 for g in GIBBERISH_HINTS if g in blob)
+    if gib_count >= 2:
+        return True
+
+    odd_tokens = re.findall(r"\b[a-z]*\d+[a-z\d]*\b", blob)
+    if len(odd_tokens) >= 2:
+        return True
+
+    alpha_words = [w for w in words if re.search(r"[a-záéíóúñ]", w)]
+    short_noise_ratio = 0.0
+    if alpha_words:
+        strange = [w for w in alpha_words if len(w) <= 3 and w not in {"no", "la", "el", "al", "de", "del", "por", "con", "sin"}]
+        short_noise_ratio = len(strange) / max(1, len(alpha_words))
+    if short_noise_ratio > 0.45 and max(family_scores.values(), default=0) < 2:
+        return True
+
+    return False
 
 
 def _assess_confidence(start_header: str, start_verb: str, stop_header: str, raw: str, clean: str) -> Tuple[float, str, Optional[str]]:
@@ -623,6 +648,10 @@ def _assess_confidence(start_header: str, start_verb: str, stop_header: str, raw
         reason = (reason + "; " if reason else "") + "texto demasiado genérico"
         score -= 0.15
 
+    if _is_hecho_irrecuperable(raw, clean):
+        reason = (reason + "; " if reason else "") + "hecho_irrecuperable"
+        score = min(score, 0.20)
+
     score = max(0.0, min(0.99, round(score, 2)))
     return score, reason.strip("; "), detected_family
 
@@ -654,6 +683,8 @@ def extract_hecho_imputado(payload: Dict[str, Any]) -> Dict[str, Any]:
             "confianza": 0.0,
             "motivo_baja_confianza": "no se detectó un inicio fiable",
             "familia_sugerida": None,
+            "needs_operator_review": True,
+            "bloqueado": True,
         }
 
     end_idx, end_detected = _find_next_stop(search, start_idx)
@@ -676,6 +707,15 @@ def extract_hecho_imputado(payload: Dict[str, Any]) -> Dict[str, Any]:
         clean,
     )
 
+    bloqueado = _is_hecho_irrecuperable(best_raw, clean) or confidence < 0.25
+    needs_operator_review = bloqueado or confidence < 0.75
+
+    if bloqueado:
+        clean = ""
+        family = None
+        if "hecho_irrecuperable" not in reason:
+            reason = (reason + "; " if reason else "") + "hecho_irrecuperable"
+
     return {
         "hecho_crudo": raw_chunk,
         "hecho_reconstruido": reconstructed,
@@ -685,4 +725,6 @@ def extract_hecho_imputado(payload: Dict[str, Any]) -> Dict[str, Any]:
         "confianza": confidence,
         "motivo_baja_confianza": reason,
         "familia_sugerida": family,
+        "needs_operator_review": needs_operator_review,
+        "bloqueado": bloqueado,
     }
