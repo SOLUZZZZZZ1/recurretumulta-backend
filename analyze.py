@@ -95,104 +95,74 @@ def _normalize_for_matching(text: str) -> str:
     t = (text or "").lower()
     t = t.replace("\r", "\n")
 
-    # Correcciones OCR frecuentes sin tocar demasiado el contenido.
-    ocr_replacements = {
+    replacements = {
         "semáforo": "semaforo",
         "señal": "senal",
-        "señalización": "senalizacion",
         "línea": "linea",
         "teléfono": "telefono",
         "móvil": "movil",
         "cinemómetro": "cinemometro",
         "inspección": "inspeccion",
+        "póliza": "poliza",
+        "sujeción": "sujeccion",
         "protección": "proteccion",
-        "posición": "posicion",
+        "diáfana": "diafana",
         "vehícuio": "vehiculo",
         "vehicuio": "vehiculo",
+        "asegurarniento": "aseguramiento",
         "teiefono": "telefono",
         "móvii": "movil",
         "iuz": "luz",
-        "iinea": "linea",
+        "iínea": "linea",
         "detencíon": "detencion",
         "visibiiidad": "visibilidad",
-        "póiiza": "poliza",
-        "asegurarniento": "aseguramiento",
-        "interseccíon": "interseccion",
     }
-    for src, dst in ocr_replacements.items():
+    for src, dst in replacements.items():
         t = t.replace(src, dst)
 
-    t = (
-        t.replace("á", "a")
-         .replace("é", "e")
-         .replace("í", "i")
-         .replace("ó", "o")
-         .replace("ú", "u")
-         .replace("ü", "u")
-         .replace("ñ", "n")
-    )
+    t = t.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").replace("ü", "u").replace("ñ", "n")
 
-    t = re.sub(r"[^a-z0-9/€.,:;()\-\n ]+", " ", t)
-
-    phrase_rules = [
+    phrase_replacements = [
         (r"\bno\s+hacer\s+uso\s+del\s+casco\b", "no utilizar casco"),
-        (r"\bsin\s+hacer\s+uso\s+del\s+casco\b", "sin casco"),
-        (r"\bno\s+hacer\s+uso\s+del\s+casco\s+obligatorio\b", "no utilizar casco obligatorio"),
-        (r"\bno\s+utilizar\s+el\s+casco\s+obligatorio\b", "no utilizar casco obligatorio"),
-        (r"\bcasco\s+de\s+proteccion\s+obligatorio\b", "casco de proteccion obligatorio"),
+        (r"\bcircular\s+sin\s+hacer\s+uso\s+del\s+casco\b", "circular sin casco"),
+        (r"\bconduciendo\s+sin\s+casco\b", "conducir sin casco"),
+        (r"\bmanejando\s+sin\s+casco\b", "conducir sin casco"),
+        (r"\bcasco\s+sin\s+poner\b", "sin casco"),
+        (r"\bsin\s+proteccion\s+en\s+la\s+cabeza\b", "sin casco"),
+        (r"\bcasco\s+sin\s+anclar\b", "casco mal anclado"),
+        (r"\bcasco\s+con\s+mala\s+sujeccion\b", "casco mal anclado"),
         (r"\bvehiculo\s+sin\s+asegurar\b", "vehiculo no asegurado"),
-        (r"\bcon\s+vehiculo\s+sin\s+asegurar\b", "con vehiculo no asegurado"),
-        (r"\bcircular\s+con\s+vehiculo\s+sin\s+asegurar\b", "circular con vehiculo no asegurado"),
-        (r"\bconducir\s+vehiculo\s+sin\s+asegurar\b", "conducir vehiculo no asegurado"),
-        (r"\bsin\s+tener\s+asegurado\s+el\s+vehiculo\b", "vehiculo no asegurado"),
+        (r"\bcon\s+vehiculo\s+sin\s+asegurar\b", "vehiculo no asegurado"),
+        (r"\bconducir\s+vehiculo\s+sin\s+asegurar\b", "vehiculo no asegurado"),
+        (r"\bcircular\s+sin\s+tener\s+asegurado\s+el\s+vehiculo\b", "vehiculo no asegurado"),
         (r"\bsin\s+aseguramiento\s+obligatorio\b", "sin seguro obligatorio"),
-        (r"\bausencia\s+de\s+poliza\s+de\s+seguro\b", "sin poliza de seguro"),
-        (r"\bvehiculo\s+sin\s+cobertura\s+de\s+seguro\b", "vehiculo sin cobertura de seguro"),
-        (r"\bcare[nc]ia\s+de\s+seguro\s+en\s+el\s+vehiculo\b", "carece de seguro obligatorio"),
-        (r"\bno\s+ocupar\s+el\s+carril\s+mas\s+a\s+la\s+derecha\b", "no circular por el carril mas a la derecha"),
-        (r"\bno\s+ocupar\s+el\s+carril\s+mas\s+a\s+la\s+derecha\s+posible\b", "no circular por el carril mas a la derecha posible"),
+        (r"\bvehiculo\s+sin\s+cobertura\s+de\s+seguro\b", "vehiculo sin seguro"),
+        (r"\bcarente\s+de\s+seguro\b", "sin seguro"),
+        (r"\bcarente\s+de\s+poliza\s+obligatoria\b", "sin poliza obligatoria"),
+        (r"\bseguro\s+vencido\b", "seguro caducado"),
+        (r"\bseguro\s+obsoleto\b", "seguro caducado"),
+        (r"\bseguro\s+no\s+renovado\b", "seguro caducado"),
+        (r"\bpoliza\s+sin\s+renovar\b", "poliza caducada"),
+        (r"\bno\s+ocupar\s+el\s+carril\s+mas\s+a\s+la\s+derecha\s+posible\b", "no circular por el carril mas a la derecha"),
         (r"\bno\s+circular\s+por\s+el\s+carril\s+mas\s+a\s+la\s+derecha\b", "no circular por el carril mas a la derecha"),
-        (r"\bno\s+utilizar\s+el\s+carril\s+mas\s+a\s+la\s+derecha\s+disponible\b", "no utilizar el carril mas a la derecha disponible"),
-        (r"\bno\s+respetar\s+la\s+posicion\s+a\s+la\s+derecha\s+en\s+la\s+calzada\b", "posicion a la derecha incorrecta"),
-        (r"\bcircular\s+fuera\s+de\s+posicion\s+correcta\s+en\s+calzada\b", "fuera de posicion correcta en calzada"),
+        (r"\bno\s+utilizar\s+el\s+carril\s+mas\s+a\s+la\s+derecha\s+disponible\b", "no circular por el carril mas a la derecha"),
+        (r"\bno\s+respetar\s+la\s+posicion\s+a\s+la\s+derecha\b", "posicion a la derecha"),
         (r"\bvisibilidad\s+no\s+diafana\b", "visibilidad no diafana"),
         (r"\bsuperficie\s+acristalada\s+que\s+no\s+permite\s+visibilidad\s+diafana\b", "superficie acristalada visibilidad no diafana"),
-        (r"\bobjetos\s+adheridos\s+al\s+parabrisas\s+que\s+impiden\s+visibilidad\b", "objetos adheridos parabrisas visibilidad del conductor"),
-        (r"\belementos\s+que\s+reducen\s+la\s+visibilidad\s+del\s+conductor\b", "elementos no autorizados visibilidad del conductor"),
-        (r"\bcolocacion\s+de\s+laminas\s*,?\s*adhesivos\s*o\s*cortinillas\s+no\s+autorizadas\b", "laminas adhesivas cortinillas no autorizadas"),
-        (r"\bcolocacion\s+de\s+laminas\s+adhesivas\s+no\s+autorizadas\b", "laminas adhesivas no autorizadas"),
-        (r"\bllevar\s+cortinillas\s+no\s+autorizadas\s+en\s+el\s+vehiculo\b", "cortinillas no autorizadas"),
-        (r"\bpanel\s+rectangular\s+que\s+emite\s+luz\s+azul(?:\s+en\s+la\s+parte\s+baja\s+del\s+parabrisas)?\b", "panel rectangular luz azul parabrisas"),
-        (r"\bluces\s+azules\s+no\s+autorizadas\s+en\s+el\s+vehiculo\b", "luces azules no autorizadas"),
-        (r"\bsenalizacion\s+optica\s+no\s+reglamentaria\b", "senalizacion optica no reglamentaria"),
+        (r"\bco?locacion\s+de\s+laminas\s+adhesivas\s+no\s+autorizadas\b", "laminas adhesivas no autorizadas"),
+        (r"\bllevar\s+cortinillas\s+no\s+autorizadas\b", "cortinillas no autorizadas"),
+        (r"\belementos\s+que\s+impiden\s+visibilidad\s+del\s+conductor\b", "visibilidad del conductor reducida"),
         (r"\bluz\s+roja\s+trasera\b", "luz roja trasera"),
         (r"\bluz\s+roja\s+posterior\b", "luz roja posterior"),
-        (r"\bluz\s+trasera\s+roja\b", "luz roja trasera"),
-        (r"\bdispositivo\s+rojo\s+en\s+parte\s+trasera\s+del\s+vehiculo\b", "dispositivo rojo parte trasera vehiculo"),
-        (r"\bdispositivo\s+luminoso\s+rojo\s+en\s+la\s+parte\s+trasera\b", "dispositivo luminoso rojo parte trasera"),
-        (r"\bsenal(?:izacion)?\s+trasera\s+roja\s+en\s+destellos\b", "senalizacion trasera roja destellos"),
-        (r"\bluz\s+roja\s+no\s+fija\s+en\s+parte\s+trasera\b", "luz roja trasera intermitente"),
-        (r"\bluz\s+trasera\s+roja\s+oscilante\b", "luz roja trasera oscilante"),
-        (r"\bsenal\s+luminosa\s+roja\s+en\s+vehiculo\s+con\s+destellos\b", "luz roja vehiculo destellos"),
-        (r"\bemision\s+de\s+luz\s+roja\s+intermitente\s+desde\s+el\s+vehiculo\b", "luz roja intermitente vehiculo"),
+        (r"\bno\s+respeta\s+la\s+luz\s+roja\b", "no respetar la luz roja"),
     ]
-    for pat, repl in phrase_rules:
+    for pat, repl in phrase_replacements:
         t = re.sub(pat, repl, t)
 
+    t = re.sub(r"[^a-z0-9/€.,:;()\-\n ]+", " ", t)
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n+", "\n", t)
     return t.strip()
-
-
-_HECHO_HEADERS = [
-    "hecho denunciado",
-    "hecho que se notifica",
-    "lo que se notifica",
-    "hecho imputado",
-    "hecho infringido",
-    "hecho infractor",
-]
-
 
 def _extract_labeled_hecho_field(raw_text: str, labels: List[str]) -> str:
     if not isinstance(raw_text, str) or not raw_text.strip():
@@ -400,19 +370,17 @@ def _looks_like_narrative_line(line: str) -> bool:
         "semaforo", "utilizando", "telefono", "movil", "auricular", "auriculares", "cascos",
         "bail", "palm", "golpe", "volante", "negligente", "atencion", "distraccion", "km/h",
         "velocidad", "cinemometro", "radar", "marca longitudinal", "linea continua", "itv",
-        "seguro obligatorio", "alumbrado", "destellos", "porta auricular", "oido izquierdo",
-        "oido derecho", "mordia las unas", "mordia las uñas", "libertad de movimientos",
-        "sentido contrario", "direccion prohibida",
+        "seguro obligatorio", "sin asegurar", "vehiculo no asegurado", "poliza", "cobertura de seguro",
+        "alumbrado", "destellos", "porta auricular", "oido izquierdo", "oido derecho",
+        "mordia las unas", "mordia las uñas", "libertad de movimientos", "sentido contrario",
+        "direccion prohibida", "visibilidad no diafana", "laminas adhesivas", "cortinillas",
+        "casco", "sin casco", "casco mal anclado", "carril mas a la derecha", "carril derecho"
     ]
     if any(s in l for s in narrative_signals):
         return True
     if re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+\d{2,3}\s*km", l):
         return True
     return False
-
-
-
-
 
 def _looks_like_vehicle_ficha(text: str) -> bool:
     l = _normalize_for_matching(text)
@@ -1061,10 +1029,6 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
             "luces azules",
             "luz azul",
             "panel rectangular",
-            "luces instaladas sin homologacion",
-            "modificacion de alumbrado no permitida",
-            "dispositivo rojo parte trasera vehiculo",
-            "dispositivo luminoso rojo parte trasera",
             "no cumplan las exigencias",
             "condiciones reglamentarias",
             "homologacion",
@@ -1074,6 +1038,23 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
             "espejo",
             "no homologada",
             "no homologado",
+            "luces azules no autorizadas",
+            "panel luminoso azul en parabrisas",
+            "dispositivo rojo intermitente trasero",
+            "alumbrado trasero rojo no reglamentario",
+            "luz roja trasera del vehiculo",
+            "luz roja oscilante en parte trasera",
+            "luz roja posterior no homologada",
+            "senal luminosa roja en vehiculo con destellos",
+            "emision de luz roja intermitente desde el vehiculo",
+            "dispositivo luminoso rojo en la parte trasera",
+            "senalizacion trasera roja en destellos",
+            "luz roja en vehiculo que emite destellos",
+            "alumbrado trasero no reglamentario rojo",
+            "luz roja no fija en parte trasera",
+            "senalizacion optica roja intermitente",
+            "dispositivo rojo en parte trasera del vehiculo",
+            "luz trasera roja oscilante",
         ]
     )
 
@@ -1098,17 +1079,19 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
             "visibilidad suficiente",
             "visibilidad directa",
             "visibilidad del conductor",
-            "visibilidad no diafana por elementos en el vehiculo",
-            "laminas adhesivas no autorizadas",
-            "laminas adhesivas cortinillas no autorizadas",
-            "cortinillas no autorizadas",
+            "visibilidad del conductor reducida",
             "elementos que reducen la visibilidad del conductor",
-            "objetos adheridos parabrisas visibilidad del conductor",
-            "panel rectangular luz azul parabrisas",
-            "luces azules no autorizadas",
-            "senalizacion optica no reglamentaria",
+            "elementos que impiden visibilidad del conductor",
+            "objetos adheridos al parabrisas que impiden visibilidad",
         ]
     )
+
+    if (
+        ("luz roja" in combined or "senal luminosa roja" in combined)
+        and any(s in combined for s in ["trasera", "posterior", "parte trasera", "vehiculo", "alumbrado", "destellos", "intermitente", "oscilante", "parabrisas"])
+    ):
+        facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
+        return ("condiciones_vehiculo", facts[0], facts)
 
     if vehicle_light_context or visibilidad_context:
         facts.append("INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO")
@@ -1125,11 +1108,6 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
             "no utilizar casco",
             "no hacer uso del casco",
             "sin hacer uso del casco",
-            "no utilizar casco obligatorio",
-            "no utilizar el casco obligatorio",
-            "no hacer uso del casco obligatorio",
-            "circular sin hacer uso del casco",
-            "no hacer uso del casco durante la marcha",
             "casco obligatorio",
             "casco reglamentario",
             "casco de proteccion",
@@ -1148,6 +1126,31 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
             "cámara en casco",
             "ciclomotor sin casco",
             "motociclista sin casco",
+            "casco sin poner",
+            "sin llevar puesto el casco",
+            "casco desabrochado",
+            "casco sin abrochar",
+            "casco no abrochado",
+            "casco mal abrochado",
+            "casco sin anclar",
+            "casco mal anclado",
+            "casco con mala sujeccion",
+            "casco en la mano izquierda",
+            "casco en la mano derecha",
+            "con el casco en la mano",
+            "portando el casco en la mano",
+            "sin proteccion en la cabeza",
+            "casco inadecuado",
+            "uso inadecuado del casco",
+            "casco deteriorado",
+            "casco en mal estado",
+            "casco defectuoso",
+            "casco no reglamentario",
+            "casco no homologado",
+            "casco no apto",
+            "casco tipo trial",
+            "casco sin fijar",
+            "casco suelto",
         ]
     )
 
@@ -1367,11 +1370,6 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
                 "vehículo sin asegurar",
                 "sin asegurar",
                 "sin tener asegurado",
-                "vehiculo sin cobertura de seguro",
-                "vehiculo sin seguro en vigor",
-                "ausencia de poliza de seguro",
-                "sin poliza de seguro",
-                "carece de seguro obligatorio",
                 "vehiculo carece de seguro",
                 "vehículo carece de seguro",
                 "poliza de seguro",
@@ -1381,6 +1379,23 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
                 "fiva",
                 "responsabilidad civil derivada de su circulacion",
                 "responsabilidad civil derivada de su circulación",
+                "vehiculo reseñado",
+                "del vehiculo reseñado",
+                "seguro de responsabilidad civil",
+                "seguro del automovil",
+                "seguro de la motocicleta",
+                "seguro del camion",
+                "seguro caducado",
+                "seguro vencido",
+                "seguro no renovado",
+                "poliza caducada",
+                "poliza sin renovar",
+                "sin poliza",
+                "sin poliza obligatoria",
+                "carente de seguro",
+                "carente de poliza obligatoria",
+                "vehiculo sin seguro en vigor",
+                "carencia de seguro",
             ]
         )
     )
@@ -1449,16 +1464,10 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
             "no circular por el carril más a la derecha",
             "no utilizar el carril mas a la derecha disponible",
             "no utilizar el carril más a la derecha disponible",
-            "no circular por el carril mas a la derecha posible",
-            "no circular por el carril más a la derecha posible",
-            "no circular por el carril derecho",
-            "no mantenerse en el carril derecho",
-            "carril derecho",
             "posicion en la via",
             "posición en la vía",
             "posicion a la derecha",
             "posición a la derecha",
-            "posicion a la derecha incorrecta",
             "posicion correcta en calzada",
             "posición correcta en calzada",
             "fuera de posicion correcta en calzada",
@@ -1472,6 +1481,14 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
             "por parte del arcen",
             "por parte del arcén",
             "carril derecho libre",
+            "mas a la derecha posible",
+            "más a la derecha posible",
+            "no mantenerse en el carril derecho",
+            "posicion incorrecta en calzada",
+            "no respetar la posicion a la derecha",
+            "circular fuera de posicion correcta en calzada",
+            "circular por carril izquierdo sin necesidad",
+            "circular por el centro existiendo carril derecho libre",
         ]
     )
 
@@ -1623,10 +1640,6 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
         ("no utilizar casco", 6),
         ("no hacer uso del casco", 7),
         ("sin hacer uso del casco", 7),
-        ("no hacer uso del casco obligatorio", 8),
-        ("no utilizar casco obligatorio", 8),
-        ("circular sin hacer uso del casco", 8),
-        ("no hacer uso del casco durante la marcha", 8),
         ("casco obligatorio", 6),
         ("casco reglamentario", 5),
         ("casco de proteccion", 5),
@@ -1635,6 +1648,28 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
         ("debidamente abrochado", 2),
         ("ciclomotor sin casco", 5),
         ("motociclista sin casco", 5),
+        ("casco sin poner", 7),
+        ("sin llevar puesto el casco", 7),
+        ("casco desabrochado", 6),
+        ("casco sin abrochar", 6),
+        ("casco no abrochado", 6),
+        ("casco mal abrochado", 6),
+        ("casco sin anclar", 6),
+        ("casco mal anclado", 6),
+        ("casco con mala sujeccion", 6),
+        ("sin proteccion en la cabeza", 7),
+        ("casco en la mano", 6),
+        ("casco en la mano izquierda", 6),
+        ("casco en la mano derecha", 6),
+        ("casco inadecuado", 5),
+        ("uso inadecuado del casco", 5),
+        ("casco deteriorado", 4),
+        ("casco en mal estado", 4),
+        ("casco defectuoso", 4),
+        ("casco no reglamentario", 5),
+        ("casco no homologado", 5),
+        ("casco no apto", 5),
+        ("casco tipo trial", 5),
     ]:
         add("casco", s, pts)
 
@@ -1671,11 +1706,6 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
         ("conducir vehiculo sin asegurar", 8),
         ("conducir vehículo sin asegurar", 8),
         ("sin tener asegurado", 7),
-        ("vehiculo sin cobertura de seguro", 7),
-        ("sin poliza de seguro", 6),
-        ("ausencia de poliza de seguro", 7),
-        ("vehiculo sin seguro en vigor", 7),
-        ("carece de seguro obligatorio", 7),
         ("poliza de seguro", 4),
         ("póliza de seguro", 4),
         ("cobertura de seguro", 4),
@@ -1683,6 +1713,21 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
         ("fiva", 4),
         ("8/2004", 4),
         ("responsabilidad civil", 3),
+        ("seguro caducado", 6),
+        ("seguro vencido", 6),
+        ("seguro no renovado", 6),
+        ("poliza caducada", 6),
+        ("poliza sin renovar", 6),
+        ("sin poliza", 6),
+        ("sin poliza obligatoria", 7),
+        ("carente de seguro", 7),
+        ("carente de poliza obligatoria", 7),
+        ("seguro de responsabilidad civil", 4),
+        ("seguro del automovil", 4),
+        ("seguro de la motocicleta", 4),
+        ("seguro del camion", 4),
+        ("vehiculo sin seguro en vigor", 7),
+        ("carencia de seguro", 6),
     ]:
         add("seguro", s, pts)
 
@@ -1721,18 +1766,22 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
         ("no circular por el carril más a la derecha", 7),
         ("no ocupar el carril mas a la derecha", 7),
         ("no ocupar el carril más a la derecha", 7),
-        ("no circular por el carril mas a la derecha posible", 7),
-        ("no circular por el carril mas a la derecha", 7),
-        ("no mantenerse en el carril derecho", 6),
+        ("no utilizar el carril mas a la derecha disponible", 7),
+        ("no utilizar el carril más a la derecha disponible", 7),
         ("posicion en la via", 4),
         ("posición en la vía", 4),
         ("posicion a la derecha", 4),
         ("posición a la derecha", 4),
-        ("posicion a la derecha incorrecta", 5),
         ("posicion correcta en calzada", 4),
         ("posición correcta en calzada", 4),
         ("fuera de posicion correcta en calzada", 4),
         ("fuera de posición correcta en calzada", 4),
+        ("posicion incorrecta en calzada", 5),
+        ("no respetar la posicion a la derecha", 5),
+        ("no mantenerse en el carril derecho", 5),
+        ("carril derecho libre", 4),
+        ("circular por carril izquierdo sin necesidad", 5),
+        ("circular por el centro existiendo carril derecho libre", 5),
         ("adelantar por la derecha", 5),
         ("por parte del arcen", 4),
         ("por parte del arcén", 4),
@@ -1768,6 +1817,7 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
         ("superficie acristalada", 7),
         ("visibilidad diafana", 7),
         ("visibilidad diáfana", 7),
+        ("visibilidad no diafana", 8),
         ("visibilidad", 4),
         ("laminas", 6),
         ("láminas", 6),
@@ -1777,12 +1827,7 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
         ("cortinillas", 6),
         ("parabrisas", 4),
         ("panel rectangular", 5),
-        ("panel rectangular luz azul parabrisas", 9),
-        ("luces azules no autorizadas", 8),
-        ("cortinillas no autorizadas", 8),
-        ("laminas adhesivas no autorizadas", 8),
-        ("visibilidad no diafana", 8),
-        ("objetos adheridos parabrisas visibilidad del conductor", 9),
+        ("panel luminoso azul", 7),
         ("luz azul", 6),
         ("luces azules", 6),
         ("dispositivos luminosos no autorizados", 7),
@@ -1798,6 +1843,9 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
         ("señalización trasera", 5),
         ("no homologada", 4),
         ("no homologado", 4),
+        ("objetos adheridos", 5),
+        ("elementos que reducen la visibilidad", 6),
+        ("elementos no autorizados", 4),
     ]:
         add("condiciones_vehiculo", s, pts)
 
@@ -1813,20 +1861,19 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
         scores["condiciones_vehiculo"] += 8
         scores["semaforo"] -= 8
 
-    if any(s in combined for s in ["semaforo", "semáforo", "fase roja", "linea de detencion", "línea de detención", "interseccion", "intersección", "cruce"]):
-        scores["semaforo"] += 2
-
     if (
-        any(s in combined for s in [
-            "luz roja trasera", "luz roja posterior", "luz roja trasera oscilante",
-            "luz roja trasera intermitente", "dispositivo rojo parte trasera vehiculo",
-            "dispositivo luminoso rojo parte trasera", "senalizacion trasera roja destellos",
-            "alumbrado trasero rojo intermitente", "dispositivo trasero rojo intermitente",
-            "luz roja vehiculo destellos", "luz roja intermitente vehiculo",
+        "luz roja" in combined
+        and any(s in combined for s in [
+            "trasera", "posterior", "parte trasera", "vehiculo", "vehículo",
+            "alumbrado", "dispositivo trasero", "senalizacion trasera", "señalizacion trasera",
+            "destellos", "intermitente", "oscilante", "no homologada", "no homologado"
         ])
     ):
-        scores["condiciones_vehiculo"] += 10
+        scores["condiciones_vehiculo"] += 12
         scores["semaforo"] -= 12
+
+    if any(s in combined for s in ["semaforo", "semáforo", "fase roja", "linea de detencion", "línea de detención", "interseccion", "intersección", "cruce"]):
+        scores["semaforo"] += 2
 
     return scores
 
@@ -1834,10 +1881,6 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
 def _pick_best_infraction(scores: Dict[str, int]) -> Tuple[str, float]:
     if not scores:
         return "otro", 0.0
-    if scores.get("condiciones_vehiculo", 0) > 0 and scores.get("semaforo", 0) > 0:
-        if scores["condiciones_vehiculo"] >= scores["semaforo"]:
-            scores = dict(scores)
-            scores["semaforo"] = min(scores["semaforo"], scores["condiciones_vehiculo"] - 1)
     ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     best_type, best_score = ordered[0]
     second = ordered[1][1] if len(ordered) > 1 else 0
@@ -1855,13 +1898,6 @@ def _validate_tipo_infraccion(tipo: str, hecho_focus: str) -> Tuple[str, float]:
 
     # SEMÁFORO
     if tipo == "semaforo":
-        vehicle_red_flags = [
-            "trasera", "posterior", "parte trasera", "vehiculo", "alumbrado",
-            "destellos", "intermitente", "oscilante", "dispositivo", "senalizacion optica",
-            "parabrisas",
-        ]
-        if "luz roja" in hecho_focus and any(s in hecho_focus for s in vehicle_red_flags):
-            return "otro", 0.15
         signals = [
             "semaforo",
             "fase roja",
