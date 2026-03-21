@@ -185,6 +185,28 @@ FAMILY_HINTS = {
     ],
 }
 
+GENERIC_BAD_PHRASES = [
+    "incumplimiento de condiciones reglamentarias",
+    "condiciones reglamentarias del vehiculo",
+    "condiciones reglamentarias del vehículo",
+    "conducta incorrecta",
+    "maniobra irregular",
+    "obligacion del conductor",
+    "obligación del conductor",
+    "incumplimiento reglamentario",
+    "incumplimiento de obligaciones",
+    "condiciones del vehiculo",
+    "condiciones del vehículo",
+    "incumplimiento de condiciones",
+]
+
+SPLIT_SEPARATORS = [
+    r"\.\s+",
+    r"\s+\-\s+",
+    r"\s+\|\s+",
+    r"\s{2,}",
+]
+
 
 def _safe_str(v: Any) -> str:
     if v is None:
@@ -284,8 +306,8 @@ def _slice_candidate(original_text: str, start_idx: int, end_idx: Optional[int])
         return ""
     chunk = original_text[start_idx:] if end_idx is None else original_text[start_idx:end_idx]
     chunk = chunk.strip()
-    if len(chunk) > 1400:
-        chunk = chunk[:1400]
+    if len(chunk) > 1800:
+        chunk = chunk[:1800]
     return chunk.strip()
 
 
@@ -360,14 +382,13 @@ def _safe_reconstruct(text: str) -> str:
     out = re.sub(r"\btelefon\w*\s+movil\b", "telefono movil", out, flags=re.IGNORECASE)
     out = re.sub(r"\s+", " ", out).strip()
 
-    # Recupera tildes de forma muy conservadora
     for src, dst in SAFE_REPLACEMENTS.items():
         out = re.sub(rf"\b{re.escape(_strip_accents(src.lower()))}\b", dst.lower(), out, flags=re.IGNORECASE)
     out = out.replace("semaforo", "semáforo").replace("detencion", "detención")
     out = out.replace("telefono movil", "teléfono móvil").replace("vehiculo", "vehículo")
     out = out.replace("matricula", "matrícula").replace("conduccion", "conducción")
-    out = out.replace("atencion", "atención").replace("senal", "señal")
-    out = out.replace("senalizacion", "señalización")
+    out = out.replace("atencion", "atención")
+    out = out.replace("senalizacion", "señalización").replace("senal", "señal")
 
     if out:
         out = out[0].upper() + out[1:]
@@ -382,6 +403,121 @@ def _family_scores(text: str) -> Dict[str, int]:
             if _strip_accents(h.lower()) in blob:
                 scores[family] += 1
     return scores
+
+
+def _candidate_specificity_score(text: str) -> int:
+    blob = _normalize_for_search(text)
+    s = 0
+
+    # semáforo: prioridad muy fuerte
+    if "semaforo" in blob:
+        s += 10
+    if "luz roja" in blob:
+        s += 10
+    if "fase roja" in blob:
+        s += 10
+    if "linea de detencion" in blob:
+        s += 8
+    if "cruce" in blob:
+        s += 4
+    if "interseccion" in blob:
+        s += 4
+    if "no respetar" in blob and ("semaforo" in blob or "luz roja" in blob):
+        s += 8
+
+    # otras familias específicas
+    if "telefono movil" in blob or "movil" in blob or "pantalla" in blob:
+        s += 8
+    if "sin casco" in blob or "casco" in blob:
+        s += 7
+    if "seguro obligatorio" in blob or "poliza" in blob or "aseguramiento" in blob:
+        s += 7
+    if "linea continua" in blob or "marca vial" in blob:
+        s += 7
+    if "alcoholemia" in blob or "etilometro" in blob or "tasa de alcohol" in blob:
+        s += 8
+    if "carril" in blob or "calzada" in blob:
+        s += 5
+    if "parabrisas" in blob or "luz de freno" in blob or "piloto trasero" in blob:
+        s += 5
+
+    # verbo típico de infracción
+    if any(v in blob for v in [
+        "no respetar", "utilizar", "conducir", "circular", "rebasar",
+        "franquear", "cruzar", "atravesar", "invadir", "traspasar",
+        "no mantener", "carecer de"
+    ]):
+        s += 3
+
+    # castigo por genérico
+    for bad in GENERIC_BAD_PHRASES:
+        if _strip_accents(bad.lower()) in blob:
+            s -= 14
+
+    # castigo por demasiado abstracto
+    word_count = len(blob.split())
+    if word_count < 4:
+        s -= 3
+    if word_count > 35:
+        s -= 4
+
+    # bonus por longitud razonable
+    if 5 <= word_count <= 18:
+        s += 2
+
+    return s
+
+
+def _split_candidates(text: str) -> List[str]:
+    txt = _cleanup_text(text)
+    if not txt:
+        return []
+
+    candidates = [txt]
+    chunks = [txt]
+    for sep in SPLIT_SEPARATORS:
+        new_chunks = []
+        for c in chunks:
+            new_chunks.extend(re.split(sep, c))
+        chunks = new_chunks
+
+    for c in chunks:
+        c = _cleanup_text(c)
+        if c and c not in candidates:
+            candidates.append(c)
+
+    # también subfrases con comas
+    comma_chunks = []
+    for c in list(candidates):
+        comma_chunks.extend([_cleanup_text(x) for x in c.split(",") if _cleanup_text(x)])
+    for c in comma_chunks:
+        if c and c not in candidates:
+            candidates.append(c)
+
+    return candidates
+
+
+def _select_best_candidate(raw_text: str) -> str:
+    candidates = _split_candidates(raw_text)
+    if not candidates:
+        return ""
+
+    scored: List[Tuple[int, int, str]] = []
+    for c in candidates:
+        score = _candidate_specificity_score(c)
+        scored.append((score, len(c), c))
+
+    scored.sort(key=lambda x: (x[0], -abs(len(x[2]) - 70))), reverse=True)
+    best = scored[0][2]
+
+    # si el mejor es genérico pero existe uno específico mejor por señales, preferirlo
+    best_score = scored[0][0]
+    for score, _, cand in scored:
+        if score >= best_score and not any(_strip_accents(b.lower()) in _normalize_for_search(cand) for b in GENERIC_BAD_PHRASES):
+            best = cand
+            break
+
+    return _cleanup_text(best)
 
 
 def _assess_confidence(start_header: str, start_verb: str, stop_header: str, raw: str, clean: str) -> Tuple[float, str, Optional[str]]:
@@ -407,6 +543,14 @@ def _assess_confidence(start_header: str, start_verb: str, stop_header: str, raw
     if raw and len(raw) > len(clean) and len(clean) > 0:
         score += 0.05
 
+    spec_score = _candidate_specificity_score(clean)
+    if spec_score >= 12:
+        score += 0.12
+    elif spec_score >= 7:
+        score += 0.07
+    elif spec_score <= 0:
+        reason = (reason + "; " if reason else "") + "hecho poco específico"
+
     scores = _family_scores(clean)
     ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     if ordered and ordered[0][1] > 0:
@@ -423,6 +567,10 @@ def _assess_confidence(start_header: str, start_verb: str, stop_header: str, raw
     if len(clean) < 12:
         reason = (reason + "; " if reason else "") + "hecho demasiado corto"
         score -= 0.25
+
+    if any(_strip_accents(b.lower()) in _normalize_for_search(clean) for b in GENERIC_BAD_PHRASES):
+        reason = (reason + "; " if reason else "") + "texto demasiado genérico"
+        score -= 0.15
 
     score = max(0.0, min(0.99, round(score, 2)))
     return score, reason.strip("; "), detected_family
@@ -464,14 +612,15 @@ def extract_hecho_imputado(payload: Dict[str, Any]) -> Dict[str, Any]:
     raw_chunk = _trim_after_sentence_end(raw_chunk)
     raw_chunk = _cleanup_text(raw_chunk)
 
-    reconstructed = _safe_reconstruct(raw_chunk)
+    best_raw = _select_best_candidate(raw_chunk)
+    reconstructed = _safe_reconstruct(best_raw)
     clean = _cleanup_text(reconstructed)
 
     confidence, reason, family = _assess_confidence(
         header_name,
         "" if header_name else verb_name,
         end_detected,
-        raw_chunk,
+        best_raw,
         clean,
     )
 
