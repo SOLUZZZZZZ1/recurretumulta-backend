@@ -955,40 +955,12 @@ def _resolve_strategy_mode(core: Dict[str, Any]) -> str:
 
 
 def _apply_strategy_mode_to_body(body: str, core: Dict[str, Any], tipo: str) -> str:
+    """
+    El motor estratégico sigue operando internamente, pero no muestra etiquetas
+    ni títulos internos en el texto final del recurso.
+    """
     txt = _safe_str(body)
-    if not txt:
-        return ""
-
-    mode = _resolve_strategy_mode(core)
-
-    if mode == "agresivo":
-        intro = (
-            "ALEGACIÓN DE APERTURA — ENFOQUE ESTRATÉGICO DEL RECURSO\n\n"
-            "La presente defensa se articula en clave de **máxima contradicción jurídica**, al apreciarse una "
-            "base probatoria insuficiente, falta de motivación bastante o ausencia de soporte objetivo bastante "
-            "para sostener con rigor la sanción propuesta.\n\n"
-        )
-    elif mode == "tecnico":
-        intro = (
-            "ALEGACIÓN DE APERTURA — ENFOQUE ESTRATÉGICO DEL RECURSO\n\n"
-            "La presente defensa se formula en clave **técnico-probatoria**, centrando la impugnación en la "
-            "consistencia del expediente, la suficiencia de la prueba y la correcta motivación del acto sancionador.\n\n"
-        )
-    else:
-        intro = (
-            "ALEGACIÓN DE APERTURA — ENFOQUE ESTRATÉGICO DEL RECURSO\n\n"
-            "La presente defensa se formula con carácter **prudente y revisor**, interesando una revisión íntegra "
-            "del expediente y la comprobación estricta de la suficiencia probatoria y de la motivación administrativa.\n\n"
-        )
-
-    marker = "I. ALEGACIONES\n\n"
-    if marker in txt and intro.strip() not in txt:
-        txt = txt.replace(marker, marker + intro, 1)
-    elif "II. ALEGACIONES\n\n" in txt and intro.strip() not in txt:
-        txt = txt.replace("II. ALEGACIONES\n\n", "II. ALEGACIONES\n\n" + intro, 1)
-
     return txt
-
 
 def _fix_alegacion_titles(text: str) -> str:
     txt = _safe_str(text)
@@ -1004,64 +976,36 @@ def _fix_alegacion_titles(text: str) -> str:
         txt,
         flags=re.IGNORECASE,
     )
-    txt = re.sub(
-        r"^(ALEGACIÓN\s+PRIMERA)(\s+)([A-ZÁÉÍÓÚÑ])",
-        r"\1 — \3",
-        txt,
-        flags=re.MULTILINE,
-    )
-    txt = re.sub(
-        r"^(ALEGACIÓN\s+SEGUNDA)(\s+)([A-ZÁÉÍÓÚÑ])",
-        r"\1 — \3",
-        txt,
-        flags=re.MULTILINE,
-    )
-    txt = re.sub(
-        r"^(ALEGACIÓN\s+TERCERA)(\s+)([A-ZÁÉÍÓÚÑ])",
-        r"\1 — \3",
-        txt,
-        flags=re.MULTILINE,
-    )
-    txt = re.sub(
-        r"^(ALEGACIÓN\s+CUARTA)(\s+)([A-ZÁÉÍÓÚÑ])",
-        r"\1 — \3",
-        txt,
-        flags=re.MULTILINE,
-    )
-    txt = re.sub(
-        r"^(ALEGACIÓN\s+QUINTA)(\s+)([A-ZÁÉÍÓÚÑ])",
-        r"\1 — \3",
-        txt,
-        flags=re.MULTILINE,
-    )
-    txt = re.sub(
-        r"^(ALEGACIÓN\s+SEXTA)(\s+)([A-ZÁÉÍÓÚÑ])",
-        r"\1 — \3",
-        txt,
-        flags=re.MULTILINE,
-    )
-    return txt
+    txt = re.sub(r"^ALEGACIÓN ADICIONAL\s+—", "ALEGACIÓN SEXTA —", txt, flags=re.MULTILINE)
 
+    for label in ["PRIMERA", "SEGUNDA", "TERCERA", "CUARTA", "QUINTA", "SEXTA"]:
+        txt = re.sub(
+            rf"^(ALEGACIÓN\s+{label})(\s+)([A-ZÁÉÍÓÚÑ])",
+            rf"\1 — \3",
+            txt,
+            flags=re.MULTILINE,
+        )
+    return txt
 
 def _upgrade_bullets(text: str) -> str:
     txt = _safe_str(text)
 
-    mapping = {
-        "• posicion agente no acreditada": "• No consta acreditada la posición exacta del agente denunciante ni las condiciones de observación.",
-        "• posición agente no acreditada": "• No consta acreditada la posición exacta del agente denunciante ni las condiciones de observación.",
-        "• insuficiencia probatoria": "• La prueba aportada resulta insuficiente para desvirtuar la presunción de inocencia del interesado.",
-        "• visibilidad no acreditada": "• No constan descritas de forma suficiente las condiciones de visibilidad concurrentes en el momento de los hechos.",
-        "• distancia no acreditada": "• No se precisa la distancia exacta desde la que se habría realizado la observación.",
-        "• duracion observacion no acreditada": "• No se concreta la duración de la observación atribuida al agente denunciante.",
-        "• duracion de observacion no acreditada": "• No se concreta la duración de la observación atribuida al agente denunciante.",
-        "• duración observación no acreditada": "• No se concreta la duración de la observación atribuida al agente denunciante.",
-    }
+    replacements = [
+        (r"•\s*\*\*insuficiencia probatoria\*\*", "• La prueba aportada resulta insuficiente para desvirtuar la presunción de inocencia del interesado."),
+        (r"•\s*insuficiencia probatoria", "• La prueba aportada resulta insuficiente para desvirtuar la presunción de inocencia del interesado."),
+        (r"•\s*posicion agente no acreditada", "• No consta acreditada la posición exacta del agente denunciante ni las condiciones de observación."),
+        (r"•\s*posición agente no acreditada", "• No consta acreditada la posición exacta del agente denunciante ni las condiciones de observación."),
+        (r"•\s*visibilidad no acreditada", "• No constan descritas de forma suficiente las condiciones de visibilidad concurrentes en el momento de los hechos."),
+        (r"•\s*distancia no acreditada", "• No se precisa la distancia exacta desde la que se habría realizado la observación."),
+        (r"•\s*duracion observacion no acreditada", "• No se concreta la duración de la observación atribuida al agente denunciante."),
+        (r"•\s*duracion de observacion no acreditada", "• No se concreta la duración de la observación atribuida al agente denunciante."),
+        (r"•\s*duración observación no acreditada", "• No se concreta la duración de la observación atribuida al agente denunciante."),
+    ]
 
-    for k, v in mapping.items():
-        txt = re.sub(re.escape(k), v, txt, flags=re.IGNORECASE)
+    for patt, repl in replacements:
+        txt = re.sub(patt, repl, txt, flags=re.IGNORECASE)
 
     return txt
-
 
 def _replace_hecho_imputado_line_with_clean(body: str, hecho_limpio: str) -> str:
     txt = _safe_str(body)
