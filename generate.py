@@ -937,6 +937,62 @@ def _apply_premium_legal_formatting(text: str) -> str:
     return txt
 
 
+def _fix_alegacion_titles(text: str) -> str:
+    txt = _safe_str(text)
+    txt = re.sub(
+        r"ALEGACIÓN\s+—\s*\*\*insuficiencia probatoria\*\*\s+Y\s+VULNERACIÓN\s+DE\s+GARANTÍAS",
+        "ALEGACIÓN — INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS",
+        txt,
+        flags=re.IGNORECASE,
+    )
+    txt = re.sub(
+        r"ALEGACIÓN\s+—\s*insuficiencia probatoria\s+Y\s+VULNERACIÓN\s+DE\s+GARANTÍAS",
+        "ALEGACIÓN — INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS",
+        txt,
+        flags=re.IGNORECASE,
+    )
+    txt = re.sub(
+        r"ALEGACIÓN\s+—\s*CONSIDERACIONES\s+COMPLEMENTARIAS",
+        "ALEGACIÓN — CONSIDERACIONES COMPLEMENTARIAS",
+        txt,
+        flags=re.IGNORECASE,
+    )
+    return txt
+
+
+def _upgrade_bullets(text: str) -> str:
+    txt = _safe_str(text)
+
+    mapping = {
+        "• posicion agente no acreditada": "• No consta acreditada la posición exacta del agente denunciante ni las condiciones de observación.",
+        "• posición agente no acreditada": "• No consta acreditada la posición exacta del agente denunciante ni las condiciones de observación.",
+        "• insuficiencia probatoria": "• La prueba aportada resulta insuficiente para desvirtuar la presunción de inocencia del interesado.",
+        "• visibilidad no acreditada": "• No constan descritas de forma suficiente las condiciones de visibilidad concurrentes en el momento de los hechos.",
+        "• distancia no acreditada": "• No se precisa la distancia exacta desde la que se habría realizado la observación.",
+        "• duracion observacion no acreditada": "• No se concreta la duración de la observación atribuida al agente denunciante.",
+        "• duracion de observacion no acreditada": "• No se concreta la duración de la observación atribuida al agente denunciante.",
+        "• duración observación no acreditada": "• No se concreta la duración de la observación atribuida al agente denunciante.",
+    }
+
+    for k, v in mapping.items():
+        txt = re.sub(re.escape(k), v, txt, flags=re.IGNORECASE)
+
+    return txt
+
+
+def _replace_hecho_imputado_line_with_clean(body: str, hecho_limpio: str) -> str:
+    txt = _safe_str(body)
+    if not hecho_limpio:
+        return txt
+    return re.sub(
+        r"(3\)\s+Hecho\s+imputado:\s*).+",
+        lambda m: m.group(1) + hecho_limpio,
+        txt,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+
 def _detect_boletin_incoherente(core: Dict[str, Any]) -> bool:
     blob = json.dumps(core or {}, ensure_ascii=False).lower()
 
@@ -1881,8 +1937,11 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     if hecho and not _looks_like_internal_extract(hecho):
         cuerpo = _integrate_extract_after_comparecencia(cuerpo, hecho, core, forced_tipo=tipo)
 
+    cuerpo = _replace_hecho_imputado_line_with_clean(cuerpo, hecho)
     cuerpo = _fix_alegaciones_numeracion(cuerpo)
     cuerpo = _apply_premium_legal_formatting(cuerpo)
+    cuerpo = _fix_alegacion_titles(cuerpo)
+    cuerpo = _upgrade_bullets(cuerpo)
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
 
     docx_bytes = build_docx("", tpl["cuerpo"])
