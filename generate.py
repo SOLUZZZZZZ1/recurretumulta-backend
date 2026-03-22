@@ -37,99 +37,6 @@ from ai.infractions.dispatch import dispatch_deterministic_template
 router = APIRouter(tags=["generate"])
 
 
-_PREMIUM_BOLD_RULES = [
-    r"nulidad de pleno derecho",
-    r"presuncion de inocencia",
-    r"presunción de inocencia",
-    r"insuficiencia probatoria",
-    r"vulneracion de garantias",
-    r"vulneración de garantías",
-    r"falta de motivacion",
-    r"falta de motivación",
-    r"archivo del expediente",
-    r"expediente integro",
-    r"expediente íntegro",
-    r"prueba tecnica",
-    r"prueba técnica",
-    r"metrologia",
-    r"metrología",
-    r"cadena de custodia",
-    r"fase roja activa",
-    r"rebase efectivo",
-    r"secuencia integra",
-    r"secuencia íntegra",
-    r"motivacion individualizada",
-    r"motivación individualizada",
-    r"presunto exceso de velocidad",
-]
-
-def _premium_inline_bold(text: str) -> str:
-    if not text:
-        return ""
-    out = str(text)
-    for pattern in _PREMIUM_BOLD_RULES:
-        out = re.sub(
-            rf"(?i)\b({pattern})\b",
-            lambda m: f"**{m.group(1)}**",
-            out,
-        )
-    return out
-
-def _premium_format_body(body: str) -> str:
-    lines = []
-    for raw_line in (body or "").splitlines():
-        line = raw_line.rstrip()
-        stripped = line.strip()
-        upper = stripped.upper()
-
-        if not stripped:
-            lines.append("")
-            continue
-
-        if stripped.startswith("Extracto literal del boletín:") or stripped.startswith("Extracto literal del boletin:"):
-            lines.append("**Extracto literal del boletín:**")
-            continue
-
-        if stripped.startswith("“") and stripped.endswith("”"):
-            lines.append(f"**{stripped}**")
-            continue
-
-        if re.match(r"^(ALEGACIÓN(?:ES)?(?:\s+[A-ZÁÉÍÓÚÑ]+)?\s*[—-].+)$", stripped, flags=re.IGNORECASE):
-            lines.append(f"**{stripped}**")
-            continue
-
-        if re.match(r"^(I+\.|PRIMERO\.?|SEGUNDO\.?|TERCERO\.?|CUARTO\.?|QUINTO\.?|SEXTO\.?|SÉPTIMO\.?|SEPTIMO\.?)", stripped, flags=re.IGNORECASE):
-            lines.append(f"**{_premium_inline_bold(stripped)}**")
-            continue
-
-        if stripped.startswith("•"):
-            bullet = stripped[1:].strip()
-            if "—" in bullet:
-                head, tail = bullet.split("—", 1)
-                lines.append(f"• **{head.strip()}** — {tail.strip()}")
-            elif ":" in bullet:
-                head, tail = bullet.split(":", 1)
-                lines.append(f"• **{head.strip()}:** {tail.strip()}")
-            else:
-                words = bullet.split()
-                head = " ".join(words[:5]) if len(words) > 5 else bullet
-                tail = bullet[len(head):].strip()
-                if tail:
-                    lines.append(f"• **{head}** {tail}")
-                else:
-                    lines.append(f"• **{bullet}**")
-            continue
-
-        if re.match(r"^\d+\)", stripped):
-            num, rest = stripped.split(")", 1)
-            lines.append(f"**{num})** {_premium_inline_bold(rest.strip())}")
-            continue
-
-        lines.append(_premium_inline_bold(line))
-    return "\n".join(lines)
-
-
-
 _ADMIN_PREFIXES = [
     "organismo:",
     "expediente_ref:",
@@ -206,6 +113,114 @@ def _clean_hecho_text(text: str) -> str:
     t = re.sub(r"^(5a|5b|5c)\s+", "", t, flags=re.IGNORECASE)
     return t
 
+
+
+def _cleanup_ocr_noise(text: str) -> str:
+    txt = _safe_str(text)
+    if not txt:
+        return ""
+
+    replacements = {
+        "contral": "contra el",
+        "del ": "del ",
+        "vehicuio": "vehículo",
+        "vehicu1o": "vehículo",
+        "rumor": "",
+        "situacion": "situación",
+        "atencion": "atención",
+        "conduccion": "conducción",
+        "via": "vía",
+        "demas": "demás",
+        "asi ": "así ",
+    }
+
+    out = txt
+    for bad, good in replacements.items():
+        out = re.sub(rf"\b{re.escape(bad)}\b", good, out, flags=re.IGNORECASE)
+
+    out = re.sub(r"\[ilegable\]|\[ilegible\]", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s+", " ", out).strip(" .:-\t")
+    return out.strip()
+
+
+def _compress_long_hecho(text: str, max_len: int = 220) -> str:
+    txt = _safe_str(text).strip()
+    if len(txt) <= max_len:
+        return txt
+    cut = txt[:max_len]
+    if "." in cut:
+        cut = cut[:cut.rfind(".") + 1]
+    else:
+        cut = cut.rsplit(" ", 1)[0].strip() + "."
+    return cut.strip()
+
+
+def _premium_hecho_rewrite(text: str, tipo: str = "") -> str:
+    raw = _cleanup_ocr_noise(text)
+    low = raw.lower()
+
+    if tipo in ("atencion", "atencion_bicicleta"):
+        if any(x in low for x in ["bailando", "tocando las palmas", "golpeando", "tambor"]):
+            return "Conducir de forma negligente realizando conductas incompatibles con la atención debida a la conducción"
+        if any(x in low for x in ["bicicleta", "ciclista", "ciclistas", "circula de a tres", "ocupando parte del carril derecho"]):
+            return "Circular en bicicleta sin mantener la atención permanente a la conducción, ocupando indebidamente parte del carril"
+
+    if tipo == "velocidad":
+        facts = {
+            "measured": None,
+            "limit": None,
+        }
+        # la resolución principal la hace _resolve_velocity_facts; aquí solo pulimos el literal
+        m = re.search(r"(\d{2,3})\s*km/?h", low)
+        if m:
+            facts["measured"] = m.group(1)
+        m2 = re.search(r"(?:limitad[ao]a?|limite|límite|velocidad maxima|velocidad máxima)[^\d]{0,30}(\d{2,3})", low)
+        if m2:
+            facts["limit"] = m2.group(1)
+        if facts["measured"] and facts["limit"]:
+            return f"Presunto exceso de velocidad con medición consignada de {facts['measured']} km/h en tramo limitado a {facts['limit']} km/h"
+
+    if tipo == "semaforo":
+        if any(x in low for x in ["fase roja", "luz roja", "semaforo en rojo", "semáforo en rojo", "linea de detencion", "línea de detención"]):
+            return "No respetar la luz roja del semáforo"
+
+    if tipo == "movil":
+        if any(x in low for x in ["telefono movil", "teléfono móvil", "pantalla", "whatsapp", "manipulando"]):
+            return "Utilizar manualmente el teléfono móvil durante la conducción"
+
+    if tipo == "cinturon":
+        return "No utilizar correctamente el cinturón de seguridad"
+
+    if tipo == "auriculares":
+        return "Utilizar auriculares o cascos conectados durante la conducción"
+
+    if tipo == "casco":
+        return "No utilizar el casco de protección en las condiciones exigidas"
+
+    if tipo == "seguro":
+        return "Circular con el vehículo careciendo de seguro obligatorio en vigor"
+
+    if tipo == "itv":
+        return "Circular con la inspección técnica del vehículo no vigente"
+
+    cleaned = _compress_long_hecho(raw)
+    if cleaned:
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned
+
+
+def _clean_hecho_para_recurso(text: str, tipo: str = "", core: Optional[Dict[str, Any]] = None) -> str:
+    core = core or {}
+    cleaned = _premium_hecho_rewrite(text, tipo=tipo)
+
+    if tipo == "velocidad":
+        facts = _resolve_velocity_facts(core)
+        measured = facts.get("measured")
+        limit = facts.get("limit")
+        if measured and limit:
+            return f"Presunto exceso de velocidad con medición consignada de {int(measured)} km/h en tramo limitado a {int(limit)} km/h"
+
+    return _compress_long_hecho(cleaned, 220)
 
 def _extract_speed_candidates(text: str) -> list[int]:
     txt = _safe_str(text)
@@ -505,7 +520,7 @@ def get_hecho_para_recurso(core: Dict[str, Any], forced_tipo: Optional[str] = No
             return "Presunto exceso de velocidad"
         if measured and limit and "km/h" not in low:
             return f"Presunto exceso de velocidad con medición consignada de {int(measured)} km/h en tramo limitado a {int(limit)} km/h"
-    return txt
+    return _clean_hecho_para_recurso(txt, tipo=tipo, core=core)
 
 
 def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
@@ -896,6 +911,30 @@ def _fix_alegaciones_numeracion(text: str) -> str:
         return out
 
     return re.sub(r"ALEGACIÓN\s+[A-ZÁÉÍÓÚÑ]+", repl, text)
+
+
+def _apply_premium_legal_formatting(text: str) -> str:
+    txt = _safe_str(text)
+    if not txt:
+        return ""
+
+    replacements = [
+        ("presunción de inocencia", "**presunción de inocencia**"),
+        ("insuficiencia probatoria", "**insuficiencia probatoria**"),
+        ("falta de motivación", "**falta de motivación**"),
+        ("motivación suficiente", "**motivación suficiente**"),
+        ("nulidad de pleno derecho", "**nulidad de pleno derecho**"),
+        ("archivo del expediente", "**ARCHIVO DEL EXPEDIENTE**"),
+        ("expediente íntegro", "**expediente íntegro**"),
+        ("prueba completa", "**prueba completa**"),
+        ("carga probatoria", "**carga probatoria**"),
+    ]
+
+    for src, dst in replacements:
+        txt = re.sub(rf"\b{re.escape(src)}\b", dst, txt, flags=re.IGNORECASE)
+
+    txt = re.sub(r"\*\*\*+", "**", txt)
+    return txt
 
 
 def _detect_boletin_incoherente(core: Dict[str, Any]) -> bool:
@@ -1838,12 +1877,13 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     cuerpo = re.sub(r'\bALEGACIÓN\s+DE\s+\s*NULIDAD\s+DE\s+PLENO\s+DERECHO\b', 'ALEGACIÓN — NULIDAD DE PLENO DERECHO', cuerpo, flags=re.IGNORECASE)
     cuerpo = re.sub(r'\nA la atenci[oó]n del Ayuntamiento competente,\s*\nI\. ANTECEDENTES\s*\n', '\n', cuerpo, flags=re.IGNORECASE)
 
-    hecho = get_hecho_para_recurso(core, forced_tipo=tipo)
+    hecho = _clean_hecho_para_recurso(get_hecho_para_recurso(core, forced_tipo=tipo), tipo=tipo, core=core)
     if hecho and not _looks_like_internal_extract(hecho):
         cuerpo = _integrate_extract_after_comparecencia(cuerpo, hecho, core, forced_tipo=tipo)
 
     cuerpo = _fix_alegaciones_numeracion(cuerpo)
-    tpl["cuerpo"] = _premium_format_body(fix_roman_headings(cuerpo))
+    cuerpo = _apply_premium_legal_formatting(cuerpo)
+    tpl["cuerpo"] = fix_roman_headings(cuerpo)
 
     docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
