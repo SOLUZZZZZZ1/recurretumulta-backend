@@ -2218,6 +2218,137 @@ def _build_legal_strategy(out: Dict[str, Any], tipo: str, subtipo: str, evidence
     }
 
 
+
+def _resolve_tipo_deterministico(text_blob: str, core: Optional[Dict[str, Any]] = None) -> Tuple[str, float]:
+    """
+    Clasificación estable y reproducible.
+    Regla de oro:
+    - prioridad fija por familia
+    - semáforo prevalece sobre velocidad si aparecen señales fuertes
+    - hecho_engine nunca sobrescribe esta familia
+    """
+    core = core or {}
+    focused = "\n".join([
+        _safe_str(core.get("hecho_denunciado_literal")),
+        _safe_str(core.get("hecho_denunciado_resumido")),
+        _safe_str(core.get("hecho_imputado_textual")),
+        _safe_str(core.get("hecho_imputado")),
+        _safe_str(core.get("hecho_crudo")),
+        _safe_str(core.get("hecho_reconstruido")),
+        _safe_str(text_blob),
+    ])
+    blob = _normalize_for_matching(focused)
+
+    def has_any(tokens: List[str]) -> bool:
+        return any(tok in blob for tok in tokens)
+
+    # SEMÁFORO primero para evitar desvíos a velocidad por cifras o importes.
+    semaforo_tokens = [
+        "semaforo", "semáforo", "fase roja", "fase del rojo", "luz roja",
+        "luz roja no intermitente", "cruce con fase roja", "cruce con fase del rojo",
+        "linea de detencion", "línea de detención", "rebase la linea de detencion",
+        "rebasar la linea de detencion", "articulo 146", "art. 146",
+        "no respetar el conductor de un vehiculo la luz roja",
+        "no respetar el conductor de un vehículo la luz roja",
+    ]
+    if has_any(semaforo_tokens):
+        return "semaforo", 0.99
+
+    movil_tokens = [
+        "telefono movil", "teléfono móvil", "uso manual del movil", "uso manual del móvil",
+        "uso manual del telefono", "uso manual del teléfono", "whatsapp",
+        "interactuando con la pantalla", "manipulando el movil", "manipulando el móvil",
+        "sujetando con la mano el dispositivo",
+    ]
+    if has_any(movil_tokens):
+        return "movil", 0.98
+
+    auriculares_tokens = [
+        "auricular", "auriculares", "cascos conectados", "cascos o auriculares",
+        "reproductores de sonido", "porta auricular", "bluetooth instalado en casco",
+    ]
+    if has_any(auriculares_tokens):
+        return "auriculares", 0.98
+
+    cinturon_tokens = [
+        "cinturon de seguridad", "cinturón de seguridad", "sin cinturon", "sin cinturón",
+        "no utilizar el cinturon", "no utilizar el cinturón",
+        "no llevar abrochado el cinturon", "no llevar abrochado el cinturón",
+        "correctamente abrochado",
+    ]
+    if has_any(cinturon_tokens):
+        return "cinturon", 0.98
+
+    casco_tokens = [
+        "sin casco", "no llevar casco", "no utilizar casco",
+        "no hacer uso del casco", "sin hacer uso del casco",
+        "casco de proteccion", "casco de protección", "casco obligatorio",
+    ]
+    if has_any(casco_tokens):
+        return "casco", 0.98
+
+    seguro_tokens = [
+        "seguro obligatorio", "sin seguro", "vehiculo no asegurado", "vehículo no asegurado",
+        "vehiculo sin asegurar", "vehículo sin asegurar", "circular sin asegurar",
+        "sin tener asegurado", "poliza de seguro", "póliza de seguro", "8/2004", "fiva",
+    ]
+    if has_any(seguro_tokens):
+        return "seguro", 0.98
+
+    itv_tokens = [
+        "itv", "inspeccion tecnica", "inspección técnica", "itv caducada", "caducidad de itv",
+    ]
+    if has_any(itv_tokens):
+        return "itv", 0.97
+
+    marcas_tokens = [
+        "linea continua", "línea continua", "marca longitudinal continua", "marca vial",
+        "senalizacion horizontal", "señalización horizontal", "articulo 167", "art. 167",
+    ]
+    if has_any(marcas_tokens):
+        return "marcas_viales", 0.97
+
+    carril_tokens = [
+        "carril distinto del situado mas a la derecha", "carril distinto del situado más a la derecha",
+        "carril mas a la derecha", "carril más a la derecha", "no ocupar el carril mas a la derecha",
+        "no ocupar el carril más a la derecha", "no circular por el carril mas a la derecha",
+        "no circular por el carril más a la derecha", "adelantar por la derecha",
+        "posicion en la via", "posición en la vía",
+    ]
+    if has_any(carril_tokens):
+        return "carril", 0.97
+
+    atencion_tokens = [
+        "no mantener la atencion", "no mantener la atención", "atencion permanente",
+        "atención permanente", "conduccion negligente", "conducción negligente",
+        "conducir de forma negligente", "conducir de forma temeraria",
+        "distraccion", "distracción", "libertad de movimientos",
+    ]
+    if has_any(atencion_tokens):
+        return "atencion", 0.96
+
+    condiciones_tokens = [
+        "alumbrado", "senalizacion optica", "señalizacion optica",
+        "condiciones reglamentarias", "superficie acristalada",
+        "visibilidad diafana", "visibilidad diáfana", "laminas adhesivas",
+        "láminas adhesivas", "cortinillas", "parabrisas", "luces azules",
+        "luz azul", "dispositivos luminosos no autorizados",
+    ]
+    if has_any(condiciones_tokens):
+        return "condiciones_vehiculo", 0.96
+
+    velocidad_tokens = [
+        "km/h", "velocidad", "radar", "cinemometro", "cinemómetro", "multanova",
+        "exceso de velocidad", "limitada la velocidad a", "teniendo limitada la velocidad a",
+        "velocidad maxima", "velocidad máxima", "circular a", "circulaba a",
+    ]
+    if has_any(velocidad_tokens):
+        return "velocidad", 0.95
+
+    return "otro", 0.0
+
+
+
 def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
     out = dict(extracted_core or {})
 
@@ -2231,6 +2362,7 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     tipo, hecho, facts = _detect_facts_and_type(text_blob, out)
     score_map = _score_infraction_families(text_blob, out)
     best_tipo, confidence = _pick_best_infraction(score_map)
+    tipo_deterministico, conf_det = _resolve_tipo_deterministico(text_blob, out)
 
     hecho_focus = _normalize_for_matching(
         "\n".join([
@@ -2239,14 +2371,16 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
         ])
     )
 
-    if tipo in ("otro", "", None) and best_tipo not in ("", "otro"):
-        tipo = best_tipo
-
-    tipo_validado, conf_override = _validate_tipo_infraccion(tipo, hecho_focus)
-
-    if tipo_validado != "otro":
-        tipo = tipo_validado
-        confidence = max(confidence, conf_override)
+    if tipo_deterministico not in ("", "otro"):
+        tipo = tipo_deterministico
+        confidence = max(confidence, conf_det)
+    else:
+        if tipo in ("otro", "", None) and best_tipo not in ("", "otro"):
+            tipo = best_tipo
+        tipo_validado, conf_override = _validate_tipo_infraccion(tipo, hecho_focus)
+        if tipo_validado != "otro":
+            tipo = tipo_validado
+            confidence = max(confidence, conf_override)
 
     out["tipo_infraccion"] = tipo
 

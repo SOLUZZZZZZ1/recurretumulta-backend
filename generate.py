@@ -37,6 +37,99 @@ from ai.infractions.dispatch import dispatch_deterministic_template
 router = APIRouter(tags=["generate"])
 
 
+_PREMIUM_BOLD_RULES = [
+    r"nulidad de pleno derecho",
+    r"presuncion de inocencia",
+    r"presunción de inocencia",
+    r"insuficiencia probatoria",
+    r"vulneracion de garantias",
+    r"vulneración de garantías",
+    r"falta de motivacion",
+    r"falta de motivación",
+    r"archivo del expediente",
+    r"expediente integro",
+    r"expediente íntegro",
+    r"prueba tecnica",
+    r"prueba técnica",
+    r"metrologia",
+    r"metrología",
+    r"cadena de custodia",
+    r"fase roja activa",
+    r"rebase efectivo",
+    r"secuencia integra",
+    r"secuencia íntegra",
+    r"motivacion individualizada",
+    r"motivación individualizada",
+    r"presunto exceso de velocidad",
+]
+
+def _premium_inline_bold(text: str) -> str:
+    if not text:
+        return ""
+    out = str(text)
+    for pattern in _PREMIUM_BOLD_RULES:
+        out = re.sub(
+            rf"(?i)\b({pattern})\b",
+            lambda m: f"**{m.group(1)}**",
+            out,
+        )
+    return out
+
+def _premium_format_body(body: str) -> str:
+    lines = []
+    for raw_line in (body or "").splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        upper = stripped.upper()
+
+        if not stripped:
+            lines.append("")
+            continue
+
+        if stripped.startswith("Extracto literal del boletín:") or stripped.startswith("Extracto literal del boletin:"):
+            lines.append("**Extracto literal del boletín:**")
+            continue
+
+        if stripped.startswith("“") and stripped.endswith("”"):
+            lines.append(f"**{stripped}**")
+            continue
+
+        if re.match(r"^(ALEGACIÓN(?:ES)?(?:\s+[A-ZÁÉÍÓÚÑ]+)?\s*[—-].+)$", stripped, flags=re.IGNORECASE):
+            lines.append(f"**{stripped}**")
+            continue
+
+        if re.match(r"^(I+\.|PRIMERO\.?|SEGUNDO\.?|TERCERO\.?|CUARTO\.?|QUINTO\.?|SEXTO\.?|SÉPTIMO\.?|SEPTIMO\.?)", stripped, flags=re.IGNORECASE):
+            lines.append(f"**{_premium_inline_bold(stripped)}**")
+            continue
+
+        if stripped.startswith("•"):
+            bullet = stripped[1:].strip()
+            if "—" in bullet:
+                head, tail = bullet.split("—", 1)
+                lines.append(f"• **{head.strip()}** — {tail.strip()}")
+            elif ":" in bullet:
+                head, tail = bullet.split(":", 1)
+                lines.append(f"• **{head.strip()}:** {tail.strip()}")
+            else:
+                words = bullet.split()
+                head = " ".join(words[:5]) if len(words) > 5 else bullet
+                tail = bullet[len(head):].strip()
+                if tail:
+                    lines.append(f"• **{head}** {tail}")
+                else:
+                    lines.append(f"• **{bullet}**")
+            continue
+
+        if re.match(r"^\d+\)", stripped):
+            num, rest = stripped.split(")", 1)
+            lines.append(f"**{num})** {_premium_inline_bold(rest.strip())}")
+            continue
+
+        lines.append(_premium_inline_bold(line))
+    return "\n".join(lines)
+
+
+
 _ADMIN_PREFIXES = [
     "organismo:",
     "expediente_ref:",
@@ -1750,7 +1843,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         cuerpo = _integrate_extract_after_comparecencia(cuerpo, hecho, core, forced_tipo=tipo)
 
     cuerpo = _fix_alegaciones_numeracion(cuerpo)
-    tpl["cuerpo"] = fix_roman_headings(cuerpo)
+    tpl["cuerpo"] = _premium_format_body(fix_roman_headings(cuerpo))
 
     docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
