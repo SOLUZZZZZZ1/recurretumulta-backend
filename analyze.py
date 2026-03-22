@@ -621,6 +621,7 @@ def _extract_preferred_hecho_fields(text_blob: str, core: Optional[Dict[str, Any
 
 
 
+
 def _apply_hecho_engine(out: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(out or {})
     hecho_data = extract_hecho_imputado(out)
@@ -638,6 +639,9 @@ def _apply_hecho_engine(out: Dict[str, Any]) -> Dict[str, Any]:
         if not out.get("hecho_denunciado_literal"):
             out["hecho_denunciado_literal"] = hecho_data["hecho_limpio"]
 
+    out["needs_operator_review"] = bool(hecho_data.get("needs_operator_review"))
+    out["hecho_bloqueado"] = bool(hecho_data.get("bloqueado"))
+
     conf = float(hecho_data.get("confianza") or 0.0)
     family_hint = _safe_str(hecho_data.get("familia_sugerida")).strip().lower()
     current_tipo = _safe_str(out.get("tipo_infraccion")).strip().lower()
@@ -651,8 +655,9 @@ def _apply_hecho_engine(out: Dict[str, Any]) -> Dict[str, Any]:
         reasons.append(_safe_str(hecho_data.get("motivo_baja_confianza")))
 
     out["operator_review_reasons"] = reasons
-    out["needs_operator_review"] = bool(reasons)
+    out["needs_operator_review"] = bool(out["needs_operator_review"] or reasons)
     return out
+
 
 def _extract_precepts(text_blob: str) -> Dict[str, Any]:
     t = _normalize_for_matching(text_blob)
