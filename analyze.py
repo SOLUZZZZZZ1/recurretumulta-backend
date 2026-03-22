@@ -621,7 +621,6 @@ def _extract_preferred_hecho_fields(text_blob: str, core: Optional[Dict[str, Any
 
 
 
-
 def _apply_hecho_engine(out: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(out or {})
     hecho_data = extract_hecho_imputado(out)
@@ -639,6 +638,7 @@ def _apply_hecho_engine(out: Dict[str, Any]) -> Dict[str, Any]:
         if not out.get("hecho_denunciado_literal"):
             out["hecho_denunciado_literal"] = hecho_data["hecho_limpio"]
 
+    # El motor de hecho NO debe sobrescribir la familia resuelta por analyze.py.
     out["needs_operator_review"] = bool(hecho_data.get("needs_operator_review"))
     out["hecho_bloqueado"] = bool(hecho_data.get("bloqueado"))
 
@@ -657,8 +657,6 @@ def _apply_hecho_engine(out: Dict[str, Any]) -> Dict[str, Any]:
     out["operator_review_reasons"] = reasons
     out["needs_operator_review"] = bool(out["needs_operator_review"] or reasons)
     return out
-
-
 def _extract_precepts(text_blob: str) -> Dict[str, Any]:
     t = _normalize_for_matching(text_blob)
 
