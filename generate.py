@@ -937,6 +937,59 @@ def _apply_premium_legal_formatting(text: str) -> str:
     return txt
 
 
+def _resolve_strategy_mode(core: Dict[str, Any]) -> str:
+    viability = _safe_str(core.get("case_viability")).lower().strip()
+    level = _safe_str((core.get("estrategia_legal") or {}).get("nivel")).lower().strip()
+    error_score = core.get("error_score") or 0
+
+    try:
+        error_score = int(error_score)
+    except Exception:
+        error_score = 0
+
+    if viability == "alta" or level in ("agresivo", "muy_agresivo") or error_score >= 70:
+        return "agresivo"
+    if viability == "media" or level in ("reforzado", "tecnico", "técnico") or error_score >= 40:
+        return "tecnico"
+    return "prudente"
+
+
+def _apply_strategy_mode_to_body(body: str, core: Dict[str, Any], tipo: str) -> str:
+    txt = _safe_str(body)
+    if not txt:
+        return ""
+
+    mode = _resolve_strategy_mode(core)
+
+    if mode == "agresivo":
+        intro = (
+            "ALEGACIÓN DE APERTURA — ENFOQUE ESTRATÉGICO DEL RECURSO\n\n"
+            "La presente defensa se articula en clave de **máxima contradicción jurídica**, al apreciarse una "
+            "base probatoria insuficiente, falta de motivación bastante o ausencia de soporte objetivo bastante "
+            "para sostener con rigor la sanción propuesta.\n\n"
+        )
+    elif mode == "tecnico":
+        intro = (
+            "ALEGACIÓN DE APERTURA — ENFOQUE ESTRATÉGICO DEL RECURSO\n\n"
+            "La presente defensa se formula en clave **técnico-probatoria**, centrando la impugnación en la "
+            "consistencia del expediente, la suficiencia de la prueba y la correcta motivación del acto sancionador.\n\n"
+        )
+    else:
+        intro = (
+            "ALEGACIÓN DE APERTURA — ENFOQUE ESTRATÉGICO DEL RECURSO\n\n"
+            "La presente defensa se formula con carácter **prudente y revisor**, interesando una revisión íntegra "
+            "del expediente y la comprobación estricta de la suficiencia probatoria y de la motivación administrativa.\n\n"
+        )
+
+    marker = "I. ALEGACIONES\n\n"
+    if marker in txt and intro.strip() not in txt:
+        txt = txt.replace(marker, marker + intro, 1)
+    elif "II. ALEGACIONES\n\n" in txt and intro.strip() not in txt:
+        txt = txt.replace("II. ALEGACIONES\n\n", "II. ALEGACIONES\n\n" + intro, 1)
+
+    return txt
+
+
 def _fix_alegacion_titles(text: str) -> str:
     txt = _safe_str(text)
     txt = re.sub(
@@ -952,10 +1005,40 @@ def _fix_alegacion_titles(text: str) -> str:
         flags=re.IGNORECASE,
     )
     txt = re.sub(
-        r"ALEGACIÓN\s+—\s*CONSIDERACIONES\s+COMPLEMENTARIAS",
-        "ALEGACIÓN — CONSIDERACIONES COMPLEMENTARIAS",
+        r"^(ALEGACIÓN\s+PRIMERA)(\s+)([A-ZÁÉÍÓÚÑ])",
+        r"\1 — \3",
         txt,
-        flags=re.IGNORECASE,
+        flags=re.MULTILINE,
+    )
+    txt = re.sub(
+        r"^(ALEGACIÓN\s+SEGUNDA)(\s+)([A-ZÁÉÍÓÚÑ])",
+        r"\1 — \3",
+        txt,
+        flags=re.MULTILINE,
+    )
+    txt = re.sub(
+        r"^(ALEGACIÓN\s+TERCERA)(\s+)([A-ZÁÉÍÓÚÑ])",
+        r"\1 — \3",
+        txt,
+        flags=re.MULTILINE,
+    )
+    txt = re.sub(
+        r"^(ALEGACIÓN\s+CUARTA)(\s+)([A-ZÁÉÍÓÚÑ])",
+        r"\1 — \3",
+        txt,
+        flags=re.MULTILINE,
+    )
+    txt = re.sub(
+        r"^(ALEGACIÓN\s+QUINTA)(\s+)([A-ZÁÉÍÓÚÑ])",
+        r"\1 — \3",
+        txt,
+        flags=re.MULTILINE,
+    )
+    txt = re.sub(
+        r"^(ALEGACIÓN\s+SEXTA)(\s+)([A-ZÁÉÍÓÚÑ])",
+        r"\1 — \3",
+        txt,
+        flags=re.MULTILINE,
     )
     return txt
 
@@ -1938,6 +2021,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         cuerpo = _integrate_extract_after_comparecencia(cuerpo, hecho, core, forced_tipo=tipo)
 
     cuerpo = _replace_hecho_imputado_line_with_clean(cuerpo, hecho)
+    cuerpo = _apply_strategy_mode_to_body(cuerpo, core, tipo)
     cuerpo = _fix_alegaciones_numeracion(cuerpo)
     cuerpo = _apply_premium_legal_formatting(cuerpo)
     cuerpo = _fix_alegacion_titles(cuerpo)
