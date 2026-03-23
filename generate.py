@@ -22,7 +22,6 @@ from ai.infractions.carril import build_carril_strong_template
 from ai.infractions.generic import build_generic_body
 from ai.infractions.municipal_semaforo import build_municipal_semaforo_template
 from ai.infractions.casco import build_casco_strong_template
-from ai.infractions.tacografo import build_tacografo_strong_template
 from ai.infractions.municipal_sentido_contrario import build_municipal_sentido_contrario_template
 from ai.infractions.municipal_generic import build_municipal_generic_template
 from ai.infractions.velocidad import (
@@ -114,6 +113,114 @@ def _clean_hecho_text(text: str) -> str:
     t = re.sub(r"^(5a|5b|5c)\s+", "", t, flags=re.IGNORECASE)
     return t
 
+
+
+def _cleanup_ocr_noise(text: str) -> str:
+    txt = _safe_str(text)
+    if not txt:
+        return ""
+
+    replacements = {
+        "contral": "contra el",
+        "del ": "del ",
+        "vehicuio": "vehículo",
+        "vehicu1o": "vehículo",
+        "rumor": "",
+        "situacion": "situación",
+        "atencion": "atención",
+        "conduccion": "conducción",
+        "via": "vía",
+        "demas": "demás",
+        "asi ": "así ",
+    }
+
+    out = txt
+    for bad, good in replacements.items():
+        out = re.sub(rf"\b{re.escape(bad)}\b", good, out, flags=re.IGNORECASE)
+
+    out = re.sub(r"\[ilegable\]|\[ilegible\]", "", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s+", " ", out).strip(" .:-\t")
+    return out.strip()
+
+
+def _compress_long_hecho(text: str, max_len: int = 220) -> str:
+    txt = _safe_str(text).strip()
+    if len(txt) <= max_len:
+        return txt
+    cut = txt[:max_len]
+    if "." in cut:
+        cut = cut[:cut.rfind(".") + 1]
+    else:
+        cut = cut.rsplit(" ", 1)[0].strip() + "."
+    return cut.strip()
+
+
+def _premium_hecho_rewrite(text: str, tipo: str = "") -> str:
+    raw = _cleanup_ocr_noise(text)
+    low = raw.lower()
+
+    if tipo in ("atencion", "atencion_bicicleta"):
+        if any(x in low for x in ["bailando", "tocando las palmas", "golpeando", "tambor"]):
+            return "Conducir de forma negligente realizando conductas incompatibles con la atención debida a la conducción"
+        if any(x in low for x in ["bicicleta", "ciclista", "ciclistas", "circula de a tres", "ocupando parte del carril derecho"]):
+            return "Circular en bicicleta sin mantener la atención permanente a la conducción, ocupando indebidamente parte del carril"
+
+    if tipo == "velocidad":
+        facts = {
+            "measured": None,
+            "limit": None,
+        }
+        # la resolución principal la hace _resolve_velocity_facts; aquí solo pulimos el literal
+        m = re.search(r"(\d{2,3})\s*km/?h", low)
+        if m:
+            facts["measured"] = m.group(1)
+        m2 = re.search(r"(?:limitad[ao]a?|limite|límite|velocidad maxima|velocidad máxima)[^\d]{0,30}(\d{2,3})", low)
+        if m2:
+            facts["limit"] = m2.group(1)
+        if facts["measured"] and facts["limit"]:
+            return f"Presunto exceso de velocidad con medición consignada de {facts['measured']} km/h en tramo limitado a {facts['limit']} km/h"
+
+    if tipo == "semaforo":
+        if any(x in low for x in ["fase roja", "luz roja", "semaforo en rojo", "semáforo en rojo", "linea de detencion", "línea de detención"]):
+            return "No respetar la luz roja del semáforo"
+
+    if tipo == "movil":
+        if any(x in low for x in ["telefono movil", "teléfono móvil", "pantalla", "whatsapp", "manipulando"]):
+            return "Utilizar manualmente el teléfono móvil durante la conducción"
+
+    if tipo == "cinturon":
+        return "No utilizar correctamente el cinturón de seguridad"
+
+    if tipo == "auriculares":
+        return "Utilizar auriculares o cascos conectados durante la conducción"
+
+    if tipo == "casco":
+        return "No utilizar el casco de protección en las condiciones exigidas"
+
+    if tipo == "seguro":
+        return "Circular con el vehículo careciendo de seguro obligatorio en vigor"
+
+    if tipo == "itv":
+        return "Circular con la inspección técnica del vehículo no vigente"
+
+    cleaned = _compress_long_hecho(raw)
+    if cleaned:
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned
+
+
+def _clean_hecho_para_recurso(text: str, tipo: str = "", core: Optional[Dict[str, Any]] = None) -> str:
+    core = core or {}
+    cleaned = _premium_hecho_rewrite(text, tipo=tipo)
+
+    if tipo == "velocidad":
+        facts = _resolve_velocity_facts(core)
+        measured = facts.get("measured")
+        limit = facts.get("limit")
+        if measured and limit:
+            return f"Presunto exceso de velocidad con medición consignada de {int(measured)} km/h en tramo limitado a {int(limit)} km/h"
+
+    return _compress_long_hecho(cleaned, 220)
 
 def _extract_speed_candidates(text: str) -> list[int]:
     txt = _safe_str(text)
@@ -413,7 +520,7 @@ def get_hecho_para_recurso(core: Dict[str, Any], forced_tipo: Optional[str] = No
             return "Presunto exceso de velocidad"
         if measured and limit and "km/h" not in low:
             return f"Presunto exceso de velocidad con medición consignada de {int(measured)} km/h en tramo limitado a {int(limit)} km/h"
-    return txt
+    return _clean_hecho_para_recurso(txt, tipo=tipo, core=core)
 
 
 def extract_hecho_denunciado_literal(core: Dict[str, Any]) -> str:
@@ -744,6 +851,7 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
         "condiciones_vehiculo": 0,
         "carril": 0,
         "alcohol": 0,
+        "tacografo": 0,
     }
 
     def add(tipo: str, signals, points: int) -> None:
@@ -766,6 +874,33 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
     add("condiciones_vehiculo", ["alumbrado", "senalizacion optica", "dispositivo luminoso", "destellos"], 3)
     add("carril", ["carril derecho", "carril izquierdo", "carril central", "posicion en la calzada"], 4)
 
+    add(
+        "tacografo",
+        [
+            "tacografo",
+            "tacógrafo",
+            "tiempos de conduccion",
+            "tiempos de conducción",
+            "tiempos maximos de conduccion",
+            "tiempos máximos de conducción",
+            "periodos de descanso obligatorios",
+            "períodos de descanso obligatorios",
+            "tiempos de descanso",
+            "descanso obligatorio",
+            "registro tacografo",
+            "registro tacógrafo",
+            "tarjeta del conductor",
+            "tarjeta conductor",
+            "conductor profesional",
+            "manipulacion del tacografo",
+            "manipulación del tacógrafo",
+            "sin introducir la tarjeta del conductor",
+            "no se aportan los registros del tacografo",
+            "no se aportan los registros del tacógrafo",
+        ],
+        6,
+    )
+
     if _looks_like_bike_light_case(core):
         scores["semaforo"] -= 6
         scores["condiciones_vehiculo"] += 4
@@ -777,8 +912,37 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
 
 
 def resolve_infraction_type(core: Dict[str, Any]) -> str:
-    """V5 bloqueada: generate.py no reclasifica; solo respeta analyze.py."""
-    return _resolved_tipo_from_core(core, fallback="generic")
+    """
+    En producción respeta analyze.py.
+    En baterías simples o tests con solo "hecho", hace un fallback determinista
+    para no devolver generic por ausencia de triage previo.
+    """
+    locked = _resolved_tipo_from_core(core, fallback="")
+    if locked and locked != "generic":
+        return locked
+
+    blob = _focused_infraction_blob(core)
+    if not blob.strip():
+        blob = _normalized_blob(core)
+
+    tacografo_tokens = [
+        "tacografo", "tacógrafo", "tiempos de conduccion", "tiempos de conducción",
+        "tiempos maximos de conduccion", "tiempos máximos de conducción",
+        "periodos de descanso obligatorios", "períodos de descanso obligatorios",
+        "tiempos de descanso", "descanso obligatorio", "registro tacografo",
+        "registro tacógrafo", "tarjeta del conductor", "tarjeta conductor",
+        "conductor profesional", "manipulacion del tacografo",
+        "manipulación del tacógrafo", "sin introducir la tarjeta del conductor",
+        "no se aportan los registros del tacografo", "no se aportan los registros del tacógrafo",
+    ]
+    if any(tok in blob for tok in tacografo_tokens):
+        return "tacografo"
+
+    scores = _score_infraction_from_core(core)
+    ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    if ordered and ordered[0][1] > 0:
+        return ordered[0][0]
+    return "generic"
 
 
 def fix_roman_headings(text: str) -> str:
@@ -804,6 +968,169 @@ def _fix_alegaciones_numeracion(text: str) -> str:
         return out
 
     return re.sub(r"ALEGACIÓN\s+[A-ZÁÉÍÓÚÑ]+", repl, text)
+
+
+def _apply_premium_legal_formatting(text: str) -> str:
+    txt = _safe_str(text)
+    if not txt:
+        return ""
+
+    replacements = [
+        ("presunción de inocencia", "**presunción de inocencia**"),
+        ("insuficiencia probatoria", "**insuficiencia probatoria**"),
+        ("falta de motivación", "**falta de motivación**"),
+        ("motivación suficiente", "**motivación suficiente**"),
+        ("nulidad de pleno derecho", "**nulidad de pleno derecho**"),
+        ("archivo del expediente", "**ARCHIVO DEL EXPEDIENTE**"),
+        ("expediente íntegro", "**expediente íntegro**"),
+        ("prueba completa", "**prueba completa**"),
+        ("carga probatoria", "**carga probatoria**"),
+    ]
+
+    for src, dst in replacements:
+        txt = re.sub(rf"\b{re.escape(src)}\b", dst, txt, flags=re.IGNORECASE)
+
+    txt = re.sub(r"\*\*\*+", "**", txt)
+    return txt
+
+
+def _resolve_strategy_mode(core: Dict[str, Any]) -> str:
+    viability = _safe_str(core.get("case_viability")).lower().strip()
+    level = _safe_str((core.get("estrategia_legal") or {}).get("nivel")).lower().strip()
+    error_score = core.get("error_score") or 0
+
+    try:
+        error_score = int(error_score)
+    except Exception:
+        error_score = 0
+
+    if viability == "alta" or level in ("agresivo", "muy_agresivo") or error_score >= 70:
+        return "agresivo"
+    if viability == "media" or level in ("reforzado", "tecnico", "técnico") or error_score >= 40:
+        return "tecnico"
+    return "prudente"
+
+
+def _apply_strategy_mode_to_body(body: str, core: Dict[str, Any], tipo: str) -> str:
+    txt = _safe_str(body)
+    if not txt:
+        return ""
+
+    mode = _resolve_strategy_mode(core)
+
+    if mode == "agresivo":
+        intro = (
+            "ALEGACIÓN DE APERTURA — ENFOQUE ESTRATÉGICO DEL RECURSO\n\n"
+            "La presente defensa se articula en clave de **máxima contradicción jurídica**, al apreciarse una "
+            "base probatoria insuficiente, falta de motivación bastante o ausencia de soporte objetivo bastante "
+            "para sostener con rigor la sanción propuesta.\n\n"
+        )
+    elif mode == "tecnico":
+        intro = (
+            "ALEGACIÓN DE APERTURA — ENFOQUE ESTRATÉGICO DEL RECURSO\n\n"
+            "La presente defensa se formula en clave **técnico-probatoria**, centrando la impugnación en la "
+            "consistencia del expediente, la suficiencia de la prueba y la correcta motivación del acto sancionador.\n\n"
+        )
+    else:
+        intro = (
+            "ALEGACIÓN DE APERTURA — ENFOQUE ESTRATÉGICO DEL RECURSO\n\n"
+            "La presente defensa se formula con carácter **prudente y revisor**, interesando una revisión íntegra "
+            "del expediente y la comprobación estricta de la suficiencia probatoria y de la motivación administrativa.\n\n"
+        )
+
+    marker = "I. ALEGACIONES\n\n"
+    if marker in txt and intro.strip() not in txt:
+        txt = txt.replace(marker, marker + intro, 1)
+    elif "II. ALEGACIONES\n\n" in txt and intro.strip() not in txt:
+        txt = txt.replace("II. ALEGACIONES\n\n", "II. ALEGACIONES\n\n" + intro, 1)
+
+    return txt
+
+
+def _fix_alegacion_titles(text: str) -> str:
+    txt = _safe_str(text)
+    txt = re.sub(
+        r"ALEGACIÓN\s+—\s*\*\*insuficiencia probatoria\*\*\s+Y\s+VULNERACIÓN\s+DE\s+GARANTÍAS",
+        "ALEGACIÓN — INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS",
+        txt,
+        flags=re.IGNORECASE,
+    )
+    txt = re.sub(
+        r"ALEGACIÓN\s+—\s*insuficiencia probatoria\s+Y\s+VULNERACIÓN\s+DE\s+GARANTÍAS",
+        "ALEGACIÓN — INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS",
+        txt,
+        flags=re.IGNORECASE,
+    )
+    txt = re.sub(
+        r"^(ALEGACIÓN\s+PRIMERA)(\s+)([A-ZÁÉÍÓÚÑ])",
+        r"\1 — \3",
+        txt,
+        flags=re.MULTILINE,
+    )
+    txt = re.sub(
+        r"^(ALEGACIÓN\s+SEGUNDA)(\s+)([A-ZÁÉÍÓÚÑ])",
+        r"\1 — \3",
+        txt,
+        flags=re.MULTILINE,
+    )
+    txt = re.sub(
+        r"^(ALEGACIÓN\s+TERCERA)(\s+)([A-ZÁÉÍÓÚÑ])",
+        r"\1 — \3",
+        txt,
+        flags=re.MULTILINE,
+    )
+    txt = re.sub(
+        r"^(ALEGACIÓN\s+CUARTA)(\s+)([A-ZÁÉÍÓÚÑ])",
+        r"\1 — \3",
+        txt,
+        flags=re.MULTILINE,
+    )
+    txt = re.sub(
+        r"^(ALEGACIÓN\s+QUINTA)(\s+)([A-ZÁÉÍÓÚÑ])",
+        r"\1 — \3",
+        txt,
+        flags=re.MULTILINE,
+    )
+    txt = re.sub(
+        r"^(ALEGACIÓN\s+SEXTA)(\s+)([A-ZÁÉÍÓÚÑ])",
+        r"\1 — \3",
+        txt,
+        flags=re.MULTILINE,
+    )
+    return txt
+
+
+def _upgrade_bullets(text: str) -> str:
+    txt = _safe_str(text)
+
+    mapping = {
+        "• posicion agente no acreditada": "• No consta acreditada la posición exacta del agente denunciante ni las condiciones de observación.",
+        "• posición agente no acreditada": "• No consta acreditada la posición exacta del agente denunciante ni las condiciones de observación.",
+        "• insuficiencia probatoria": "• La prueba aportada resulta insuficiente para desvirtuar la presunción de inocencia del interesado.",
+        "• visibilidad no acreditada": "• No constan descritas de forma suficiente las condiciones de visibilidad concurrentes en el momento de los hechos.",
+        "• distancia no acreditada": "• No se precisa la distancia exacta desde la que se habría realizado la observación.",
+        "• duracion observacion no acreditada": "• No se concreta la duración de la observación atribuida al agente denunciante.",
+        "• duracion de observacion no acreditada": "• No se concreta la duración de la observación atribuida al agente denunciante.",
+        "• duración observación no acreditada": "• No se concreta la duración de la observación atribuida al agente denunciante.",
+    }
+
+    for k, v in mapping.items():
+        txt = re.sub(re.escape(k), v, txt, flags=re.IGNORECASE)
+
+    return txt
+
+
+def _replace_hecho_imputado_line_with_clean(body: str, hecho_limpio: str) -> str:
+    txt = _safe_str(body)
+    if not hecho_limpio:
+        return txt
+    return re.sub(
+        r"(3\)\s+Hecho\s+imputado:\s*).+",
+        lambda m: m.group(1) + hecho_limpio,
+        txt,
+        count=1,
+        flags=re.IGNORECASE,
+    )
 
 
 def _detect_boletin_incoherente(core: Dict[str, Any]) -> bool:
@@ -1141,14 +1468,6 @@ def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> s
     elif tipo == "itv":
         fundamentos.append(
             "CUARTO.– Conforme al Real Decreto 920/2017, por el que se regula la inspección técnica de vehículos, la Administración debe acreditar documentalmente la situación administrativa del vehículo en la fecha del hecho."
-        )
-
-    elif tipo == "tacografo":
-        fundamentos.append(
-            "CUARTO.– Resultan de aplicación el Reglamento (CE) 561/2006, relativo a los tiempos de conducción y descanso, y el Reglamento (UE) 165/2014, relativo al tacógrafo en el transporte por carretera."
-        )
-        fundamentos.append(
-            "QUINTO.– La Administración debe aportar los registros completos del tacógrafo, identificar de forma inequívoca al conductor y acreditar la trazabilidad e integridad de los datos utilizados para sustentar la imputación."
         )
 
     elif tipo == "seguro":
@@ -1552,8 +1871,6 @@ def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
         return build_seguro_strong_template(core), "seguro"
     elif tipo == "itv":
         return build_itv_strong_template(core), "itv"
-    elif tipo == "tacografo":
-        return build_tacografo_strong_template(core), "tacografo"
     elif tipo == "condiciones_vehiculo":
         return build_condiciones_vehiculo_strong_template(core), "condiciones_vehiculo"
     elif tipo == "carril":
@@ -1756,11 +2073,16 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     cuerpo = re.sub(r'\bALEGACIÓN\s+DE\s+\s*NULIDAD\s+DE\s+PLENO\s+DERECHO\b', 'ALEGACIÓN — NULIDAD DE PLENO DERECHO', cuerpo, flags=re.IGNORECASE)
     cuerpo = re.sub(r'\nA la atenci[oó]n del Ayuntamiento competente,\s*\nI\. ANTECEDENTES\s*\n', '\n', cuerpo, flags=re.IGNORECASE)
 
-    hecho = get_hecho_para_recurso(core, forced_tipo=tipo)
+    hecho = _clean_hecho_para_recurso(get_hecho_para_recurso(core, forced_tipo=tipo), tipo=tipo, core=core)
     if hecho and not _looks_like_internal_extract(hecho):
         cuerpo = _integrate_extract_after_comparecencia(cuerpo, hecho, core, forced_tipo=tipo)
 
+    cuerpo = _replace_hecho_imputado_line_with_clean(cuerpo, hecho)
+    cuerpo = _apply_strategy_mode_to_body(cuerpo, core, tipo)
     cuerpo = _fix_alegaciones_numeracion(cuerpo)
+    cuerpo = _apply_premium_legal_formatting(cuerpo)
+    cuerpo = _fix_alegacion_titles(cuerpo)
+    cuerpo = _upgrade_bullets(cuerpo)
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
 
     docx_bytes = build_docx("", tpl["cuerpo"])
