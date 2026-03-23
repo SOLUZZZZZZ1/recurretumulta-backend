@@ -698,6 +698,10 @@ def _semaforo_positive_signals(blob: str) -> int:
         ("cruce fase roja", 6),
         ("semaforo en fase roja", 6),
         ("luz roja del semaforo", 6),
+        ("no respetar luz roja", 8),
+        ("no respetar la luz roja", 8),
+        ("luz roja en interseccion", 7),
+        ("luz roja en intersección", 7),
         ("semaforo en rojo", 5),
         ("cruce en rojo", 5),
         ("señal luminosa roja", 7),
@@ -738,7 +742,6 @@ def _semaforo_blockers(blob: str) -> int:
         "no se para",
         "no detiene el vehiculo",
         "no detenerse",
-        "no obedecer",
         "agente",
         "agentes",
         "policia",
@@ -793,7 +796,6 @@ def _looks_like_agent_order_case(core: Dict[str, Any]) -> bool:
         "orden del agente",
         "no se para",
         "no detiene el vehiculo",
-        "no obedecer",
         "alto",
         "agente",
         "agentes",
@@ -870,17 +872,61 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
     add("velocidad", ["km/h", "radar", "cinemometro", "cinemómetro", "exceso de velocidad"], 3)
     scores["semaforo"] += _semaforo_positive_signals(blob)
     scores["semaforo"] -= _semaforo_blockers(blob)
-    add("movil", ["telefono movil", "teléfono móvil", "whatsapp"], 3)
-    add("auriculares", ["auricular", "auriculares", "dispositivo de audio"], 3)
+    add("movil", [
+        "telefono movil", "teléfono móvil", "whatsapp",
+        "movil al volante", "móvil al volante",
+        "uso manual del telefono", "uso manual del teléfono",
+        "manipular el telefono", "manipular el teléfono",
+        "interactuar con la pantalla", "pantalla del telefono", "pantalla del teléfono",
+        "sujetar telefono movil", "sujetar teléfono móvil",
+        "consultando whatsapp", "manipulando el movil", "manipulando el móvil",
+    ], 3)
+    add("auriculares", [
+        "auricular", "auriculares", "dispositivo de audio",
+        "cascos o auriculares", "llevar puestos auriculares",
+        "portar auriculares", "usar dispositivos de audio",
+        "ambos oidos", "ambos oídos", "reproductor de sonido",
+    ], 3)
     add("cinturon", ["cinturon de seguridad", "sin cinturon", "sin cinturón"], 3)
-    add("casco", ["sin casco", "casco desabrochado", "casco mal abrochado"], 3)
-    add("atencion", ["atencion permanente", "atención permanente", "distraccion", "distracción", "conduccion negligente", "conducción negligente"], 3)
-    add("marcas_viales", ["linea continua", "línea continua", "marca vial", "marca longitudinal continua"], 3)
-    add("seguro", ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "vehículo no asegurado", "8/2004"], 3)
+    add("casco", [
+        "sin casco", "casco desabrochado", "casco mal abrochado",
+        "no utilizar casco", "no utilizar casco reglamentario",
+        "no hacer uso del casco", "no hacer uso del casco obligatorio",
+        "casco reglamentario", "casco obligatorio", "casco de proteccion", "casco de protección",
+        "ciclomotor sin casco", "motociclista sin casco",
+    ], 3)
+    add("atencion", [
+        "atencion permanente", "atención permanente", "distraccion", "distracción",
+        "conduccion negligente", "conducción negligente", "sin la diligencia necesaria",
+        "mirando reiteradamente al acompanante", "mirando reiteradamente al acompañante",
+        "sin mantener la atencion", "sin mantener la atención",
+    ], 3)
+    add("marcas_viales", [
+        "linea continua", "línea continua", "marca vial", "marca longitudinal continua",
+        "marcas viales", "zona de marcas viales", "franquear marca vial continua",
+    ], 3)
+    add("seguro", [
+        "seguro obligatorio", "sin seguro", "vehiculo no asegurado", "vehículo no asegurado", "8/2004",
+        "vehiculo sin asegurar", "vehículo sin asegurar", "sin asegurar",
+        "carencia de seguro", "carece de seguro", "ausencia de seguro",
+        "sin cobertura de seguro", "sin cobertura",
+    ], 3)
     add("itv", ["itv", "inspeccion tecnica", "inspección técnica", "itv caducada"], 3)
     add("alcohol", ["alcohol", "alcoholemia", "etilometro", "etilómetro", "mg/l"], 5)
-    add("condiciones_vehiculo", ["alumbrado", "senalizacion optica", "señalización óptica", "dispositivo luminoso", "destellos"], 3)
-    add("carril", ["carril derecho", "carril izquierdo", "carril central", "posicion en la calzada", "posición en la calzada"], 4)
+    add("condiciones_vehiculo", [
+        "alumbrado", "senalizacion optica", "señalización óptica", "dispositivo luminoso", "destellos",
+        "deficiencias tecnicas", "deficiencias técnicas", "luces no reglamentarias",
+        "luces no reglamentarias instaladas", "luces no reglamentarias en el vehiculo",
+        "superficie acristalada", "visibilidad diafana", "visibilidad diáfana",
+        "laminas", "láminas", "adhesivos", "cortinillas", "parabrisas",
+        "luz azul", "panel rectangular", "deslumbramiento",
+    ], 3)
+    add("carril", [
+        "carril derecho", "carril izquierdo", "carril central", "posicion en la calzada", "posición en la calzada",
+        "carril distinto del situado mas a la derecha", "carril distinto del situado más a la derecha",
+        "no ocupar el carril mas a la derecha", "no ocupar el carril más a la derecha",
+        "mas a la derecha posible", "más a la derecha posible",
+    ], 4)
 
     # Camiones / transporte profesional
     add("tacografo", [
