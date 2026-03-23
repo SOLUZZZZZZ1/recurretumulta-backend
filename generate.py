@@ -23,8 +23,7 @@ from ai.infractions.generic import build_generic_body
 from ai.infractions.municipal_semaforo import build_municipal_semaforo_template
 from ai.infractions.casco import build_casco_strong_template
 from ai.infractions.tacografo import build_tacografo_strong_template
-from ai.infractions.municipal_sentido_contrario import
-build_municipal_sentido_contrario_template
+from ai.infractions.municipal_sentido_contrario import build_municipal_sentido_contrario_template
 from ai.infractions.municipal_generic import build_municipal_generic_template
 from ai.infractions.velocidad import (
     build_velocity_calc_paragraph,
@@ -1354,6 +1353,15 @@ def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> s
             "QUINTO.– No basta una descripción genérica del estado del vehículo si no se concreta el defecto, su relevancia jurídica y el modo objetivo de constatación."
         )
 
+
+    elif tipo == "tacografo":
+        fundamentos.append(
+            "CUARTO.– Resultan de aplicación el Reglamento (CE) 561/2006, relativo a los tiempos de conducción y descanso, y el Reglamento (UE) 165/2014, relativo al tacógrafo en el transporte por carretera."
+        )
+        fundamentos.append(
+            "QUINTO.– La Administración debe aportar los registros completos del tacógrafo, identificar de forma inequívoca al conductor y acreditar la trazabilidad e integridad de los datos utilizados para sustentar la imputación."
+        )
+
     elif tipo == "itv":
         fundamentos.append(
             "CUARTO.– Conforme al Real Decreto 920/2017, por el que se regula la inspección técnica de vehículos, la Administración debe acreditar documentalmente la situación administrativa del vehículo en la fecha del hecho."
@@ -1761,7 +1769,7 @@ def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
     elif tipo == "itv":
         return build_itv_strong_template(core), "itv"
     elif tipo == "tacografo":
-    return build_tacografo_strong_template(core), "tacografo"
+        return build_tacografo_strong_template(core), "tacografo"
     elif tipo == "condiciones_vehiculo":
         return build_condiciones_vehiculo_strong_template(core), "condiciones_vehiculo"
     elif tipo == "carril":
