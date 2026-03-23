@@ -832,11 +832,13 @@ def _looks_like_semaforo(core: Dict[str, Any]) -> bool:
     return False
 
 
+
 def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
-    """Kept for diagnostics / non-critical builders, but not used to decide family anymore."""
+    """Scoring de diagnóstico usado por /debug/test-classifier."""
     blob = _focused_infraction_blob(core)
     if not blob.strip():
         blob = _normalized_blob(core)
+
     scores = {
         "velocidad": 0,
         "semaforo": 0,
@@ -851,6 +853,13 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
         "condiciones_vehiculo": 0,
         "carril": 0,
         "alcohol": 0,
+        "tacografo": 0,
+        "estiba": 0,
+        "neumaticos": 0,
+        "peso": 0,
+        "documentacion_transporte": 0,
+        "limitador_velocidad": 0,
+        "adr": 0,
     }
 
     def add(tipo: str, signals, points: int) -> None:
@@ -858,20 +867,76 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
             if s in blob:
                 scores[tipo] += points
 
-    add("velocidad", ["km/h", "radar", "cinemometro", "exceso de velocidad"], 3)
+    add("velocidad", ["km/h", "radar", "cinemometro", "cinemómetro", "exceso de velocidad"], 3)
     scores["semaforo"] += _semaforo_positive_signals(blob)
     scores["semaforo"] -= _semaforo_blockers(blob)
     add("movil", ["telefono movil", "teléfono móvil", "whatsapp"], 3)
     add("auriculares", ["auricular", "auriculares", "dispositivo de audio"], 3)
     add("cinturon", ["cinturon de seguridad", "sin cinturon", "sin cinturón"], 3)
     add("casco", ["sin casco", "casco desabrochado", "casco mal abrochado"], 3)
-    add("atencion", ["atencion permanente", "distraccion", "conduccion negligente"], 3)
-    add("marcas_viales", ["linea continua", "marca vial", "marca longitudinal continua"], 3)
-    add("seguro", ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "8/2004"], 3)
-    add("itv", ["itv", "inspeccion tecnica", "itv caducada"], 3)
-    add("alcohol", ["alcohol", "alcoholemia", "etilometro", "mg/l"], 5)
-    add("condiciones_vehiculo", ["alumbrado", "senalizacion optica", "dispositivo luminoso", "destellos"], 3)
-    add("carril", ["carril derecho", "carril izquierdo", "carril central", "posicion en la calzada"], 4)
+    add("atencion", ["atencion permanente", "atención permanente", "distraccion", "distracción", "conduccion negligente", "conducción negligente"], 3)
+    add("marcas_viales", ["linea continua", "línea continua", "marca vial", "marca longitudinal continua"], 3)
+    add("seguro", ["seguro obligatorio", "sin seguro", "vehiculo no asegurado", "vehículo no asegurado", "8/2004"], 3)
+    add("itv", ["itv", "inspeccion tecnica", "inspección técnica", "itv caducada"], 3)
+    add("alcohol", ["alcohol", "alcoholemia", "etilometro", "etilómetro", "mg/l"], 5)
+    add("condiciones_vehiculo", ["alumbrado", "senalizacion optica", "señalización óptica", "dispositivo luminoso", "destellos"], 3)
+    add("carril", ["carril derecho", "carril izquierdo", "carril central", "posicion en la calzada", "posición en la calzada"], 4)
+
+    # Camiones / transporte profesional
+    add("tacografo", [
+        "tacografo", "tacógrafo",
+        "tiempos de conduccion", "tiempos de conducción",
+        "tiempo de conduccion", "tiempo de conducción",
+        "tiempos de descanso", "descanso obligatorio",
+        "descanso diario", "descanso semanal",
+        "horas de conduccion", "horas de conducción",
+        "registro tacografo", "registro tacógrafo",
+        "registros del tacografo", "registros del tacógrafo",
+        "tarjeta del conductor", "tarjeta conductor",
+        "manipulacion del tacografo", "manipulación del tacógrafo",
+        "descarga de datos del tacografo", "descarga de datos del tacógrafo",
+        "disco diagrama",
+    ], 10)
+
+    add("estiba", [
+        "estiba", "sujecion de carga", "sujeción de carga",
+        "sujecion de la carga", "sujeción de la carga",
+        "trincaje", "amarre de la carga",
+        "carga mal colocada", "carga desplazada",
+        "desplazamiento de la carga", "estabilidad de la carga",
+        "cinchas",
+    ], 10)
+
+    add("neumaticos", [
+        "neumaticos", "neumáticos",
+        "desgaste", "profundidad del dibujo",
+        "cubierta", "cubiertas", "banda de rodadura",
+        "eje directriz", "neumatico", "neumático",
+    ], 10)
+
+    add("peso", [
+        "sobrepeso", "sobrecarga",
+        "masa maxima", "masa máxima",
+        "masa maxima autorizada", "masa máxima autorizada",
+        "mma", "pesaje", "bascula", "báscula",
+        "peso por eje",
+    ], 10)
+
+    add("documentacion_transporte", [
+        "carta de porte", "documento de control",
+        "licencia comunitaria", "permiso comunitario",
+        "documentacion del transporte", "documentación del transporte",
+        "autorizacion de transporte", "autorización de transporte",
+    ], 10)
+
+    add("limitador_velocidad", [
+        "limitador de velocidad", "limitador",
+    ], 10)
+
+    add("adr", [
+        "adr", "mercancias peligrosas", "mercancías peligrosas",
+        "panel naranja", "cisterna",
+    ], 10)
 
     if _looks_like_bike_light_case(core):
         scores["semaforo"] -= 6

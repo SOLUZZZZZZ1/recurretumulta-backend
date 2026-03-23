@@ -1,13 +1,13 @@
 # debug_test_classifier.py
-# Endpoint admin para probar clasificación masiva de hechos denunciados.
 import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from analyze import _score_infraction_families
-from generate import resolve_infraction_type, get_hecho_para_recurso
+from generate import resolve_infraction_type, get_hecho_para_recurso, _score_infraction_from_core
+
+router = APIRouter(prefix="/debug", tags=["debug"])
 
 
 class ClassifierTestCase(BaseModel):
@@ -41,10 +41,7 @@ class ClassifierTestResponse(BaseModel):
 def _require_admin_token(x_admin_token: str | None) -> None:
     expected = os.getenv("ADMIN_TOKEN", "").strip()
     if not expected:
-        raise HTTPException(
-            status_code=500,
-            detail="ADMIN_TOKEN no está configurado en el backend.",
-        )
+        raise HTTPException(status_code=500, detail="ADMIN_TOKEN no está configurado en el backend.")
     if not x_admin_token or x_admin_token.strip() != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -55,6 +52,10 @@ def _build_core_from_case(caso: ClassifierTestCase) -> Dict[str, Any]:
         "hecho_denunciado_literal": caso.hecho,
         "hecho_denunciado_resumido": caso.hecho,
         "raw_text_blob": caso.hecho,
+        # para que generate.resolve_infraction_type pueda respetar una familia si el test la fuerza
+        "tipo_infraccion": "",
+        "familia_resuelta": "",
+        "template_usado": "",
     }
     if caso.extra_core:
         core.update(caso.extra_core)
@@ -75,7 +76,7 @@ def debug_test_classifier(
         core = _build_core_from_case(caso)
         familia_detectada = resolve_infraction_type(core)
         hecho_para_recurso = get_hecho_para_recurso(core)
-        scores = _score_infraction_families(caso.hecho, core)
+        scores = _score_infraction_from_core(core)
         correcto = familia_detectada == caso.familia_esperada
 
         if correcto:
