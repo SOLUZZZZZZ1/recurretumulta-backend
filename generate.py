@@ -1352,6 +1352,19 @@ def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> s
             "QUINTO.– No basta una descripción genérica del estado del vehículo si no se concreta el defecto, su relevancia jurídica y el modo objetivo de constatación."
         )
 
+    elif tipo == "transporte_profesional":
+        fundamentos.append(
+            "CUARTO.– En materia de transporte profesional y vehículos pesados, la Administración debe identificar "
+            "con precisión la norma sectorial concreta supuestamente vulnerada, así como la concreta conducta técnica "
+            "atribuida y el soporte objetivo que la acredita."
+        )
+        fundamentos.append(
+            "QUINTO.– Cuando la imputación se refiere a tacógrafo, tiempos de conducción y descanso, estiba, neumáticos, "
+            "peso o documentación de transporte, resulta imprescindible la aportación del acta de inspección completa, "
+            "registro, descarga, medición, ticket o documento técnico correspondiente, sin que baste una formulación "
+            "genérica o estandarizada."
+        )
+
     elif tipo == "itv":
         fundamentos.append(
             "CUARTO.– Conforme al Real Decreto 920/2017, por el que se regula la inspección técnica de vehículos, la Administración debe acreditar documentalmente la situación administrativa del vehículo en la fecha del hecho."
@@ -1733,6 +1746,125 @@ def _sanitize_bicicleta_body(body: str) -> str:
     return txt
 
 
+
+
+def build_camion_template(core: Dict[str, Any]) -> Dict[str, str]:
+    expediente = core.get("expediente_ref") or core.get("numero_expediente") or "[EXPEDIENTE]"
+    organo = core.get("organo") or core.get("organismo") or "No consta acreditado."
+    hecho = get_hecho_para_recurso(core, forced_tipo="transporte_profesional") or "INFRACCIÓN EN TRANSPORTE PROFESIONAL"
+    subtipo = _safe_str(core.get("subtipo_infraccion")).lower().strip()
+
+    subtipo_title = "TRANSPORTE PROFESIONAL"
+    subtipo_text = (
+        "La denuncia se refiere a una presunta infracción en materia de transporte profesional, "
+        "sector sometido a normativa técnica específica y a un estándar reforzado de motivación y prueba."
+    )
+    requisitos = [
+        "La norma sectorial concreta supuestamente vulnerada.",
+        "El acta de inspección o documento de control completo.",
+        "La identificación precisa del vehículo y, en su caso, del conductor.",
+        "La prueba técnica u objetiva que sustenta la imputación.",
+        "La motivación individualizada de la conducta y su encaje en el tipo aplicado.",
+    ]
+
+    if subtipo == "camion_tacografo":
+        subtipo_title = "TACÓGRAFO / TIEMPOS DE CONDUCCIÓN Y DESCANSO"
+        subtipo_text = (
+            "La imputación exige identificar con precisión la concreta irregularidad atribuida al tacógrafo, "
+            "a los tiempos de conducción o a los descansos, así como aportar la descarga, impresión o registro "
+            "íntegro que permita contradicción real."
+        )
+        requisitos += [
+            "La descarga completa del tacógrafo o la impresión original utilizada.",
+            "La identificación de la tarjeta del conductor o disco-diagrama afectado.",
+            "La concreta franja temporal analizada y el criterio normativo aplicado.",
+        ]
+    elif subtipo == "camion_estiba":
+        subtipo_title = "ESTIBA / SUJECIÓN DE LA CARGA"
+        subtipo_text = (
+            "En materia de estiba no basta una afirmación genérica sobre el riesgo. Debe constar una descripción "
+            "técnica concreta de la carga, su forma de sujeción, los puntos de anclaje, la supuesta deficiencia observada "
+            "y el soporte objetivo que documente la situación real."
+        )
+        requisitos += [
+            "Reportaje fotográfico o soporte objetivo de la estiba observada.",
+            "Descripción concreta del defecto de sujeción y del riesgo apreciado.",
+            "Referencia normativa sectorial aplicada a la concreta carga transportada.",
+        ]
+    elif subtipo == "camion_neumaticos":
+        subtipo_title = "NEUMÁTICOS"
+        subtipo_text = (
+            "Si la imputación se funda en el estado de los neumáticos, la Administración debe acreditar mediante "
+            "medición o constatación técnica objetiva cuál era la profundidad del dibujo, el neumático afectado "
+            "y por qué ese estado infringía exactamente la norma sectorial aplicable."
+        )
+        requisitos += [
+            "Medición concreta de profundidad o defecto apreciado.",
+            "Identificación del eje y neumático afectados.",
+            "Soporte fotográfico o técnico suficientemente legible.",
+        ]
+    elif subtipo == "camion_peso":
+        subtipo_title = "PESAJE / SOBRECARGA"
+        subtipo_text = (
+            "Las infracciones por exceso de peso requieren una acreditación muy rigurosa del sistema de pesaje, "
+            "de la fecha, del ticket emitido y del concreto peso total o por eje atribuido al vehículo."
+        )
+        requisitos += [
+            "Ticket o acta oficial de pesaje.",
+            "Identificación del sistema de báscula utilizado y su validez.",
+            "Detalle del peso total o por eje y de la MMA aplicable.",
+        ]
+    elif subtipo == "camion_documentacion":
+        subtipo_title = "DOCUMENTACIÓN DEL TRANSPORTE"
+        subtipo_text = (
+            "Cuando la imputación se refiere a documentación del transporte, debe concretarse con precisión qué documento "
+            "faltaba, estaba caducado o era insuficiente, y cuál era la obligación jurídica exacta incumplida."
+        )
+    elif subtipo == "camion_limitador":
+        subtipo_title = "LIMITADOR DE VELOCIDAD"
+        subtipo_text = (
+            "Las infracciones relativas al limitador de velocidad exigen identificación técnica del equipo, del defecto "
+            "detectado y del método de comprobación utilizado."
+        )
+    elif subtipo == "camion_adr":
+        subtipo_title = "MERCANCÍAS PELIGROSAS / ADR"
+        subtipo_text = (
+            "En materia ADR la Administración debe concretar con especial precisión la obligación infringida, el tipo de "
+            "mercancía, el vehículo afectado y la prueba objetiva del incumplimiento."
+        )
+
+    bullets = "\n".join(f"{i+1}) {r}" for i, r in enumerate(requisitos[:8]))
+
+    cuerpo = (
+        "A la atención del órgano competente.\n\n"
+        "I. ANTECEDENTES\n"
+        f"1) Órgano: {organo}\n"
+        f"2) Identificación expediente: {expediente}\n"
+        f"3) Hecho imputado: {hecho}\n\n"
+        "II. ALEGACIONES\n\n"
+        f"ALEGACIÓN PRIMERA — {subtipo_title}: FALTA DE PRECISIÓN TÉCNICA Y NORMATIVA\n\n"
+        f"{subtipo_text}\n\n"
+        "No consta acreditado en el expediente, de forma completa y verificable:\n"
+        f"{bullets}\n\n"
+        "ALEGACIÓN SEGUNDA — INSUFICIENCIA PROBATORIA Y CARGA DE LA PRUEBA\n\n"
+        "La Administración no puede sostener válidamente una sanción de contenido técnico con una mera referencia "
+        "genérica a la existencia de una infracción. Resulta imprescindible aportar prueba objetiva bastante, acta "
+        "de inspección completa y motivación individualizada que permita contradicción real.\n\n"
+        "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA\n\n"
+        "Se solicita la aportación íntegra del expediente, incluyendo el acta o boletín de control, la normativa "
+        "sectorial exacta aplicada, los documentos técnicos utilizados para la imputación y cualquier fotografía, "
+        "medición, descarga, ticket o soporte objetivo en que la Administración pretenda fundar la sanción.\n\n"
+        "III. SOLICITO\n"
+        "1) Que se tengan por formuladas las presentes alegaciones.\n"
+        "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de concreción técnica suficiente.\n"
+        "3) Subsidiariamente, que se aporte expediente íntegro y prueba técnica completa para contradicción efectiva.\n"
+    )
+
+    return {
+        "asunto": "ESCRITO DE ALEGACIONES — TRANSPORTE PROFESIONAL",
+        "cuerpo": fix_roman_headings(cuerpo),
+    }
+
 def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
     if tipo == "semaforo" and jurisdiccion == "municipal":
         return build_municipal_semaforo_template(core), "municipal_semaforo"
@@ -1762,6 +1894,8 @@ def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
         return build_condiciones_vehiculo_strong_template(core), "condiciones_vehiculo"
     elif tipo == "carril":
         return build_carril_strong_template(core), "carril"
+    elif tipo == "transporte_profesional":
+        return build_camion_template(core), "camiones"
     elif jurisdiccion == "municipal":
         blob = json.dumps(core, ensure_ascii=False).lower()
         if "sentido contrario" in blob or "direccion prohibida" in blob or "dirección prohibida" in blob:

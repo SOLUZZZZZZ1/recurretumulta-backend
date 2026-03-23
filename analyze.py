@@ -548,6 +548,22 @@ def _build_hecho_denunciado_resumido(literal: str, tipo_infraccion: str = "") ->
 
     tipo = _normalize_for_matching(tipo_infraccion)
 
+    if tipo == "transporte_profesional":
+        strategy.append("insuficiencia_probatoria")
+        strategy.append("falta_precision_tecnica")
+        strategy.append("normativa_sectorial")
+        if subtipo == "camion_tacografo":
+            strategy.append("descarga_tacografo")
+        elif subtipo == "camion_estiba":
+            strategy.append("estiba_no_documentada")
+        elif subtipo == "camion_neumaticos":
+            strategy.append("medicion_neumaticos")
+        elif subtipo == "camion_peso":
+            strategy.append("pesaje_oficial")
+        if "solicitud_expediente_integro" not in strategy:
+            strategy.append("solicitud_expediente_integro")
+        return strategy
+
     if tipo == "velocidad":
         norm = _normalize_for_matching(text)
         m1 = re.search(r"\b(?:circular|circulaba|circulando)\s+a\s+(\d{2,3})\s*km", norm)
@@ -1285,40 +1301,61 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     if movil_context and not semaforo_context:
         facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
+
     # -------------------------------------------------
-    # TRANSPORTE PROFESIONAL (CAMIONES)
+    # 6B) TRANSPORTE PROFESIONAL / CAMIONES
     # -------------------------------------------------
-    camion_signals = [
-        "tacografo", "tacógrafo",
-        "tiempos de conduccion", "tiempos de conducción",
-        "descanso diario", "descanso semanal",
-        "estiba", "sujecion de carga", "sujeción de carga",
-        "carga mal colocada", "carga desplazada",
-        "neumaticos", "neumáticos", "desgaste",
-        "peso", "masa maxima", "mma",
-        "transporte de mercancias", "transporte de mercancías",
-        "vehiculo pesado", "vehículo pesado",
-        "camion", "camión", "articulado", "remolque",
-    ]
+    transporte_profesional_context = any(
+        s in combined
+        for s in [
+            "tacografo", "tacógrafo", "tiempos de conduccion", "tiempos de conducción",
+            "descanso diario", "descanso semanal", "tarjeta del conductor", "disco diagrama",
+            "estiba", "sujecion de carga", "sujeción de carga", "amarre de la carga",
+            "carga mal colocada", "carga desplazada", "trincaje", "estabilidad de la carga",
+            "neumaticos", "neumáticos", "desgaste", "profundidad del dibujo", "cubierta",
+            "peso por eje", "sobrecarga", "sobrepeso", "masa maxima", "masa máxima",
+            "masa máxima autorizada", "mma", "pesaje", "bascula", "báscula",
+            "transporte de mercancias", "transporte de mercancías", "vehiculo pesado",
+            "vehículo pesado", "camion", "camión", "tractor", "tractora", "semirremolque",
+            "remolque", "permiso comunitario", "licencia comunitaria", "carta de porte",
+            "documento de control", "adr", "mercancias peligrosas", "mercancías peligrosas",
+            "limitador de velocidad",
+        ]
+    )
 
-    camion_context = any(s in combined for s in camion_signals)
-
-    if camion_context:
-        # SUBTIPO
-        if any(s in combined for s in ["tacografo", "tacógrafo", "tiempos de conduccion"]):
-            facts.append("INCUMPLIMIENTO TACÓGRAFO / TIEMPOS DE CONDUCCIÓN")
+    if transporte_profesional_context:
+        if any(s in combined for s in [
+            "tacografo", "tacógrafo", "tiempos de conduccion", "tiempos de conducción",
+            "descanso diario", "descanso semanal", "tarjeta del conductor", "disco diagrama",
+        ]):
+            facts.append("INCUMPLIMIENTO DE TACÓGRAFO / TIEMPOS DE CONDUCCIÓN Y DESCANSO")
             return ("transporte_profesional", facts[0], facts)
 
-        if any(s in combined for s in ["estiba", "sujecion de carga", "carga mal colocada"]):
-            facts.append("ESTIBA INCORRECTA DE LA CARGA")
+        if any(s in combined for s in [
+            "estiba", "sujecion de carga", "sujeción de carga", "amarre de la carga",
+            "carga mal colocada", "carga desplazada", "trincaje", "estabilidad de la carga",
+        ]):
+            facts.append("ESTIBA O SUJECIÓN INCORRECTA DE LA CARGA")
             return ("transporte_profesional", facts[0], facts)
 
-        if any(s in combined for s in ["neumaticos", "neumáticos", "desgaste"]):
-            facts.append("NEUMÁTICOS EN MAL ESTADO")
+        if any(s in combined for s in [
+            "neumaticos", "neumáticos", "desgaste", "profundidad del dibujo", "cubierta",
+        ]):
+            facts.append("DEFICIENCIAS EN NEUMÁTICOS DEL VEHÍCULO PESADO")
             return ("transporte_profesional", facts[0], facts)
 
-        if any(s in combined for s in ["peso", "mma", "masa maxima"]):
-            facts.append("EXCESO DE PESO")
+        if any(s in combined for s in [
+            "peso por eje", "sobrecarga", "sobrepeso", "masa maxima", "masa máxima",
+            "mma", "pesaje", "bascula", "báscula",
+        ]):
+            facts.append("EXCESO DE PESO O SOBRECARGA EN TRANSPORTE PROFESIONAL")
+            return ("transporte_profesional", facts[0], facts)
+
+        if any(s in combined for s in [
+            "carta de porte", "documentacion del transporte", "documentación del transporte",
+            "permiso comunitario", "licencia comunitaria", "documento de control",
+        ]):
+            facts.append("INCUMPLIMIENTO DOCUMENTAL EN TRANSPORTE PROFESIONAL")
             return ("transporte_profesional", facts[0], facts)
 
         facts.append("INFRACCIÓN EN TRANSPORTE PROFESIONAL")
@@ -1753,6 +1790,52 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
     ]:
         add("condiciones_vehiculo", s, pts)
 
+    # Transporte profesional
+    for s, pts in [
+        ("tacografo", 9),
+        ("tacógrafo", 9),
+        ("tiempos de conduccion", 9),
+        ("tiempos de conducción", 9),
+        ("descanso diario", 7),
+        ("descanso semanal", 7),
+        ("tarjeta del conductor", 8),
+        ("disco diagrama", 7),
+        ("estiba", 8),
+        ("sujecion de carga", 8),
+        ("sujeción de carga", 8),
+        ("amarre de la carga", 7),
+        ("carga mal colocada", 8),
+        ("carga desplazada", 8),
+        ("trincaje", 7),
+        ("neumaticos", 7),
+        ("neumáticos", 7),
+        ("desgaste", 5),
+        ("profundidad del dibujo", 6),
+        ("sobrepeso", 7),
+        ("sobrecarga", 7),
+        ("masa maxima", 6),
+        ("masa máxima", 6),
+        ("mma", 6),
+        ("pesaje", 7),
+        ("bascula", 6),
+        ("báscula", 6),
+        ("camion", 5),
+        ("camión", 5),
+        ("vehiculo pesado", 5),
+        ("vehículo pesado", 5),
+        ("semirremolque", 4),
+        ("remolque", 3),
+        ("carta de porte", 6),
+        ("documento de control", 6),
+        ("permiso comunitario", 5),
+        ("licencia comunitaria", 5),
+        ("limitador de velocidad", 6),
+        ("adr", 5),
+        ("mercancias peligrosas", 5),
+        ("mercancías peligrosas", 5),
+    ]:
+        add("transporte_profesional", s, pts)
+
     # Prioridad: luz roja trasera/destellos/alumbrado = vehículo, no semáforo
     if "luz roja" in combined and any(
         s in combined for s in [
@@ -1822,6 +1905,23 @@ def _validate_tipo_infraccion(tipo: str, hecho_focus: str) -> Tuple[str, float]:
         return "otro", 0.25
 
     # CINTURÓN
+    if tipo == "transporte_profesional":
+        if not any(s in blob for s in ["acta de inspeccion", "acta de inspección", "boletin de control", "boletín de control", "informe tecnico", "informe técnico"]):
+            gaps.append("acta_inspeccion_no_aportada")
+        if not any(s in blob for s in ["reglamento", "norma", "ce ", "ue ", "adr", "561/2006", "165/2014"]):
+            gaps.append("norma_especifica_no_identificada")
+        if not any(s in blob for s in ["fotografia", "fotografía", "video", "vídeo", "medicion", "medición", "lectura", "ticket", "ticket de pesaje", "impresion", "impresión", "descarga"]):
+            gaps.append("prueba_tecnica_no_aportada")
+        subtipo_tp = _resolve_transporte_profesional_subtype(text_blob, core)
+        if subtipo_tp == "camion_tacografo" and not any(s in blob for s in ["descarga", "tarjeta del conductor", "registro", "disco diagrama", "impresion del tacografo", "impresión del tacógrafo"]):
+            gaps.append("descarga_tacografo_no_aportada")
+        if subtipo_tp == "camion_estiba" and not any(s in blob for s in ["fotografia", "fotografía", "croquis", "amarre", "punto de anclaje", "inspeccion visual"]):
+            gaps.append("estiba_no_documentada")
+        if subtipo_tp == "camion_neumaticos" and not any(s in blob for s in ["profundidad", "milimetros", "milímetros", "calibre", "medicion", "medición"]):
+            gaps.append("medicion_neumaticos_no_aportada")
+        if subtipo_tp == "camion_peso" and not any(s in blob for s in ["pesaje", "bascula", "báscula", "ticket", "peso por eje"]):
+            gaps.append("pesaje_no_acreditado")
+
     if tipo == "cinturon":
         signals = ["cinturon", "cinturón"]
         if any(s in hecho_focus for s in signals):
@@ -1856,6 +1956,66 @@ def _resolve_cinturon_subtype(text_blob: str, core: Optional[Dict[str, Any]] = N
     return "cinturon_generico"
 
 
+
+
+def _resolve_transporte_profesional_subtype(text_blob: str, core: Optional[Dict[str, Any]] = None) -> str:
+    core = core or {}
+    combined = _normalize_for_matching(
+        "\n".join([
+            _safe_str(text_blob),
+            _safe_str(core.get("hecho_denunciado_literal")),
+            _safe_str(core.get("hecho_denunciado_resumido")),
+            _safe_str(core.get("raw_text_blob")),
+        ])
+    )
+
+    if any(s in combined for s in [
+        "tacografo", "tacógrafo", "tiempos de conduccion", "tiempos de conducción",
+        "tiempo de descanso", "descanso diario", "descanso semanal", "disco diagrama",
+        "tarjeta del conductor", "registrador", "registro tacografo", "registro tacógrafo",
+    ]):
+        return "camion_tacografo"
+
+    if any(s in combined for s in [
+        "estiba", "sujecion de la carga", "sujeción de la carga", "amarre de la carga",
+        "carga mal colocada", "carga desplazada", "carga no asegurada", "trincaje",
+        "estabilidad de la carga", "estiba deficiente",
+    ]):
+        return "camion_estiba"
+
+    if any(s in combined for s in [
+        "neumaticos", "neumáticos", "desgaste", "dibujo del neumatico", "dibujo del neumático",
+        "profundidad del dibujo", "cubierta", "cubiertas", "reventon", "reventón",
+        "eje directriz", "lona del neumatico", "lona del neumático",
+    ]):
+        return "camion_neumaticos"
+
+    if any(s in combined for s in [
+        "exceso de peso", "sobrepeso", "mma", "masa maxima", "masa máxima",
+        "masa máxima autorizada", "pesaje", "bascula", "báscula", "tara",
+        "peso por eje", "sobrecarga",
+    ]):
+        return "camion_peso"
+
+    if any(s in combined for s in [
+        "carta de porte", "documentacion del transporte", "documentación del transporte",
+        "titulo habilitante", "autorizacion de transporte", "autorización de transporte",
+        "permiso comunitario", "licencia comunitaria", "documento de control",
+    ]):
+        return "camion_documentacion"
+
+    if any(s in combined for s in [
+        "limitador de velocidad", "limitador", "velocidad limitada del vehiculo", "velocidad limitada del vehículo",
+    ]):
+        return "camion_limitador"
+
+    if any(s in combined for s in [
+        "mercancias peligrosas", "mercancías peligrosas", "adr", "cisterna", "panel naranja",
+        "extintor reglamentario", "transporte adr",
+    ]):
+        return "camion_adr"
+
+    return "camion_generico"
 def _detect_evidence_gaps(text_blob: str, core: Optional[Dict[str, Any]] = None, tipo: str = "") -> List[str]:
     core = core or {}
     blob = _normalize_for_matching(
@@ -1923,6 +2083,24 @@ def _score_attack_routes(tipo: str, subtipo: str, evidence_gaps: List[str], core
     if gap_count:
         add("insuficiencia_probatoria", min(95, 45 + gap_count * 10))
         add("solicitud_expediente_integro", min(70, 20 + gap_count * 8))
+
+    if tipo == "transporte_profesional":
+        add("falta_precision_tecnica", 70)
+        add("normativa_sectorial", 60)
+        if "acta_inspeccion_no_aportada" in evidence_gaps:
+            add("insuficiencia_probatoria", 15)
+        if "norma_especifica_no_identificada" in evidence_gaps:
+            add("falta_precision_tecnica", 20)
+        if "prueba_tecnica_no_aportada" in evidence_gaps:
+            add("insuficiencia_probatoria", 20)
+        if "descarga_tacografo_no_aportada" in evidence_gaps:
+            add("descarga_tacografo", 30)
+        if "estiba_no_documentada" in evidence_gaps:
+            add("estiba_no_documentada", 30)
+        if "medicion_neumaticos_no_aportada" in evidence_gaps:
+            add("medicion_neumaticos", 30)
+        if "pesaje_no_acreditado" in evidence_gaps:
+            add("pesaje_oficial", 30)
 
     if tipo == "velocidad":
         add("prueba_tecnica_radar", 70)
@@ -2070,6 +2248,17 @@ def _infer_modelo_defensa(tipo: str, subtipo: str, expediente_errors: List[str],
     if tipo == "casco":
         return "no_uso_casco_no_acreditado"
 
+    if tipo == "transporte_profesional":
+        if subtipo == "camion_tacografo":
+            return "tacografo_no_acreditado"
+        if subtipo == "camion_estiba":
+            return "estiba_no_documentada"
+        if subtipo == "camion_neumaticos":
+            return "medicion_neumaticos_no_acreditada"
+        if subtipo == "camion_peso":
+            return "pesaje_no_acreditado"
+        return "infraccion_transporte_no_concretada"
+
     return "defensa_general_sancionador"
 
 HECHO_CANONICO = {
@@ -2085,6 +2274,7 @@ HECHO_CANONICO = {
     "condiciones_vehiculo": "INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO",
     "carril": "POSICIÓN INCORRECTA EN LA VÍA / USO INDEBIDO DEL CARRIL",
     "atencion": "NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN",
+    "transporte_profesional": "INFRACCIÓN EN TRANSPORTE PROFESIONAL",
 }
 
 
@@ -2200,6 +2390,43 @@ def _build_legal_strategy(out: Dict[str, Any], tipo: str, subtipo: str, evidence
             "situacion_administrativa_no_acreditada",
             "falta_documentacion",
         ]
+
+    elif tipo == "transporte_profesional":
+        blocks_main = [
+            "falta_precision_tecnica",
+            "norma_no_identificada",
+            "prueba_insuficiente",
+        ]
+        if subtipo == "camion_tacografo":
+            blocks_secondary.append("descarga_tacografo_no_aportada")
+        elif subtipo == "camion_estiba":
+            blocks_secondary.append("estiba_no_documentada")
+        elif subtipo == "camion_neumaticos":
+            blocks_secondary.append("medicion_neumaticos_no_aportada")
+        elif subtipo == "camion_peso":
+            blocks_secondary.append("pesaje_no_acreditado")
+        if "norma_especifica_no_identificada" in gap_set:
+            usar_nulidad = True
+            motivo_nulidad.append("norma_tecnica_no_identificada")
+        if "prueba_tecnica_no_aportada" in gap_set:
+            blocks_secondary.append("insuficiencia_probatoria")
+
+    elif tipo == "transporte_profesional":
+        if "norma_especifica_no_identificada" in gap_set:
+            expediente_errors.append("norma_especifica_no_identificada")
+            critical_errors.append("norma_especifica_no_identificada")
+        if "prueba_tecnica_no_aportada" in gap_set:
+            expediente_errors.append("prueba_tecnica_no_aportada")
+        if "acta_inspeccion_no_aportada" in gap_set:
+            expediente_errors.append("acta_inspeccion_no_aportada")
+        if "descarga_tacografo_no_aportada" in gap_set:
+            expediente_errors.append("descarga_tacografo_no_aportada")
+        if "estiba_no_documentada" in gap_set:
+            expediente_errors.append("estiba_no_documentada")
+        if "medicion_neumaticos_no_aportada" in gap_set:
+            expediente_errors.append("medicion_neumaticos_no_aportada")
+        if "pesaje_no_acreditado" in gap_set:
+            expediente_errors.append("pesaje_no_acreditado")
 
     elif tipo == "atencion":
         blocks_main = [
@@ -2375,6 +2602,20 @@ def _resolve_tipo_deterministico(text_blob: str, core: Optional[Dict[str, Any]] 
     if has_any(condiciones_tokens):
         return "condiciones_vehiculo", 0.96
 
+    transporte_profesional_tokens = [
+        "tacografo", "tacógrafo", "tiempos de conduccion", "tiempos de conducción",
+        "descanso diario", "descanso semanal", "tarjeta del conductor", "disco diagrama",
+        "estiba", "sujecion de carga", "sujeción de carga", "amarre de la carga",
+        "carga mal colocada", "carga desplazada", "trincaje",
+        "neumaticos", "neumáticos", "profundidad del dibujo", "sobrepeso", "sobrecarga",
+        "masa maxima", "masa máxima", "mma", "pesaje", "bascula", "báscula",
+        "camion", "camión", "vehiculo pesado", "vehículo pesado", "semirremolque",
+        "carta de porte", "documento de control", "permiso comunitario", "licencia comunitaria",
+        "limitador de velocidad", "adr", "mercancias peligrosas", "mercancías peligrosas",
+    ]
+    if has_any(transporte_profesional_tokens):
+        return "transporte_profesional", 0.99
+
     velocidad_tokens = [
         "km/h", "velocidad", "radar", "cinemometro", "cinemómetro", "multanova",
         "exceso de velocidad", "limitada la velocidad a", "teniendo limitada la velocidad a",
@@ -2442,6 +2683,8 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     subtipo = ""
     if tipo == "cinturon":
         subtipo = _resolve_cinturon_subtype(text_blob, out)
+    elif tipo == "transporte_profesional":
+        subtipo = _resolve_transporte_profesional_subtype(text_blob, out)
     out["subtipo_infraccion"] = subtipo or None
 
     evidence_gaps = _detect_evidence_gaps(text_blob, out, tipo=tipo)
