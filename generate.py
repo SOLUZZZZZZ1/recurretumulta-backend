@@ -22,7 +22,9 @@ from ai.infractions.carril import build_carril_strong_template
 from ai.infractions.generic import build_generic_body
 from ai.infractions.municipal_semaforo import build_municipal_semaforo_template
 from ai.infractions.casco import build_casco_strong_template
-from ai.infractions.municipal_sentido_contrario import build_municipal_sentido_contrario_template
+from ai.infractions.tacografo import build_tacografo_strong_template
+from ai.infractions.municipal_sentido_contrario import
+build_municipal_sentido_contrario_template
 from ai.infractions.municipal_generic import build_municipal_generic_template
 from ai.infractions.velocidad import (
     build_velocity_calc_paragraph,
@@ -1758,6 +1760,8 @@ def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
         return build_seguro_strong_template(core), "seguro"
     elif tipo == "itv":
         return build_itv_strong_template(core), "itv"
+    elif tipo == "tacografo":
+    return build_tacografo_strong_template(core), "tacografo"
     elif tipo == "condiciones_vehiculo":
         return build_condiciones_vehiculo_strong_template(core), "condiciones_vehiculo"
     elif tipo == "carril":
