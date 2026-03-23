@@ -33,6 +33,7 @@ from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
 from ai.infractions.dispatch import dispatch_deterministic_template
+from infraction_classifier_clean import classify_infraction_text
 
 router = APIRouter(tags=["generate"])
 
@@ -767,11 +768,10 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
         "tacografo", "tacógrafo", "tiempos de conduccion", "tiempos de conducción",
         "tiempos maximos de conduccion", "tiempos máximos de conducción",
         "tiempos de descanso", "periodos de descanso obligatorios", "períodos de descanso obligatorios",
-        "descanso obligatorio", "registro tacografo", "registro tacógrafo",
-        "tarjeta del conductor", "tarjeta conductor", "conductor profesional",
-        "manipulacion del tacografo", "manipulación del tacógrafo",
-        "sin introducir la tarjeta del conductor", "no se aportan los registros del tacografo",
-        "no se aportan los registros del tacógrafo"
+        "descanso obligatorio", "registro tacografo", "registro tacógrafo", "tarjeta del conductor",
+        "tarjeta conductor", "conductor profesional", "manipulacion del tacografo",
+        "manipulación del tacógrafo", "sin introducir la tarjeta del conductor",
+        "no se aportan los registros del tacografo", "no se aportan los registros del tacógrafo"
     ], 6)
     add("condiciones_vehiculo", ["alumbrado", "senalizacion optica", "dispositivo luminoso", "destellos"], 3)
     add("carril", ["carril derecho", "carril izquierdo", "carril central", "posicion en la calzada"], 4)
@@ -786,39 +786,13 @@ def _score_infraction_from_core(core: Dict[str, Any]) -> Dict[str, int]:
     return scores
 
 
-
 def resolve_infraction_type(core: Dict[str, Any]) -> str:
-    """
-    En producción respeta analyze.py.
-    En baterías simples o tests con solo "hecho", hace un fallback determinista
-    para no devolver generic por ausencia de triage previo.
-    """
     locked = _resolved_tipo_from_core(core, fallback="")
     if locked and locked != "generic":
         return locked
-
-    blob = _focused_infraction_blob(core)
-    if not blob.strip():
-        blob = _normalized_blob(core)
-
-    tacografo_tokens = [
-        "tacografo", "tacógrafo", "tiempos de conduccion", "tiempos de conducción",
-        "tiempos maximos de conduccion", "tiempos máximos de conducción",
-        "periodos de descanso obligatorios", "períodos de descanso obligatorios",
-        "tiempos de descanso", "descanso obligatorio", "registro tacografo",
-        "registro tacógrafo", "tarjeta del conductor", "tarjeta conductor",
-        "conductor profesional", "manipulacion del tacografo",
-        "manipulación del tacógrafo", "sin introducir la tarjeta del conductor",
-        "no se aportan los registros del tacografo", "no se aportan los registros del tacógrafo",
-    ]
-    if any(tok in blob for tok in tacografo_tokens):
-        return "tacografo"
-
-    scores = _score_infraction_from_core(core)
-    ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-    if ordered and ordered[0][1] > 0:
-        return ordered[0][0]
-    return "generic"
+    cls = classify_infraction_text("", core)
+    tipo = _safe_str(cls.get("tipo")).strip().lower()
+    return tipo or "generic"
 
 def fix_roman_headings(text: str) -> str:
     replacements = {
@@ -1591,8 +1565,6 @@ def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
         return build_seguro_strong_template(core), "seguro"
     elif tipo == "itv":
         return build_itv_strong_template(core), "itv"
-    elif tipo == "tacografo":
-        return build_tacografo_strong_template(core), "tacografo"
     elif tipo == "condiciones_vehiculo":
         return build_condiciones_vehiculo_strong_template(core), "condiciones_vehiculo"
     elif tipo == "carril":
@@ -1855,12 +1827,3 @@ def generate_dgt(req: GenerateRequest) -> Dict[str, Any]:
     with engine.begin() as conn:
         result = generate_dgt_for_case(conn, req.case_id, interesado=req.interesado)
     return {"ok": True, "message": "Recurso generado.", **result}
-def _apply_strategy_mode_to_body(body: str, core: Dict[str, Any], tipo: str) -> str:
-    """
-    El motor estratégico sigue operando internamente, pero no muestra etiquetas
-    ni títulos internos en el texto final del recurso.
-    """
-    txt = _safe_str(body)
-    return txt
-
-

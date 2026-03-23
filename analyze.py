@@ -17,6 +17,7 @@ from text_extractors import (
 )
 from openai_text import extract_from_text
 from hecho_imputado_engine import extract_hecho_imputado
+from infraction_classifier_clean import classify_infraction_text, score_infraction_text
 
 router = APIRouter(tags=["analyze"])
 
@@ -621,7 +622,6 @@ def _extract_preferred_hecho_fields(text_blob: str, core: Optional[Dict[str, Any
 
 
 
-
 def _apply_hecho_engine(out: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(out or {})
     hecho_data = extract_hecho_imputado(out)
@@ -639,7 +639,7 @@ def _apply_hecho_engine(out: Dict[str, Any]) -> Dict[str, Any]:
         if not out.get("hecho_denunciado_literal"):
             out["hecho_denunciado_literal"] = hecho_data["hecho_limpio"]
 
-    # El motor de hecho NO debe sobrescribir la familia resuelta por analyze.py.
+    # El motor de hecho no debe sobrescribir la familia resuelta por analyze.
     out["needs_operator_review"] = bool(hecho_data.get("needs_operator_review"))
     out["hecho_bloqueado"] = bool(hecho_data.get("bloqueado"))
 
@@ -963,14 +963,13 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     Devuelve:
       (tipo_infraccion, hecho_imputado_canonico, facts_phrases)
 
-    13 familias principales:
+    12 familias principales:
       1) condiciones_vehiculo
       2) casco
       3) auriculares
       4) cinturon
       5) movil
       6) semaforo
-      6.5) tacografo
       7) velocidad
       8) seguro
       9) itv
@@ -1290,41 +1289,6 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         return ("movil", facts[0], facts)
 
     # -------------------------------------------------
-    # 6.5) TACÓGRAFO / TRANSPORTE PROFESIONAL
-    # -------------------------------------------------
-    tacografo_context = any(
-        s in combined
-        for s in [
-            "tacografo",
-            "tacógrafo",
-            "tiempos de conduccion",
-            "tiempos de conducción",
-            "tiempos maximos de conduccion",
-            "tiempos máximos de conducción",
-            "tiempos de descanso",
-            "periodos de descanso obligatorios",
-            "períodos de descanso obligatorios",
-            "descanso obligatorio",
-            "horas de conduccion",
-            "horas de conducción",
-            "registro tacografo",
-            "registro tacógrafo",
-            "tarjeta del conductor",
-            "tarjeta conductor",
-            "conductor profesional",
-            "manipulacion del tacografo",
-            "manipulación del tacógrafo",
-            "sin introducir la tarjeta del conductor",
-            "no se aportan los registros del tacografo",
-            "no se aportan los registros del tacógrafo",
-        ]
-    )
-
-    if tacografo_context:
-        facts.append("INCUMPLIMIENTO DE NORMATIVA DE TACÓGRAFO")
-        return ("tacografo", facts[0], facts)
-
-    # -------------------------------------------------
     # 7) VELOCIDAD
     # -------------------------------------------------
     if velocity_context:
@@ -1526,7 +1490,6 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
         "marcas_viales": 0,
         "carril": 0,
         "atencion": 0,
-        "tacografo": 0,
     }
 
     def add(tipo: str, signal: str, points: int) -> None:
@@ -1649,30 +1612,6 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
     ]:
         add("seguro", s, pts)
 
-    # TACÓGRAFO
-    if tipo == "tacografo":
-        signals = [
-            "tacografo",
-            "tacógrafo",
-            "tiempos de conduccion",
-            "tiempos de conducción",
-            "tiempos maximos de conduccion",
-            "tiempos máximos de conducción",
-            "tiempos de descanso",
-            "periodos de descanso obligatorios",
-            "períodos de descanso obligatorios",
-            "descanso obligatorio",
-            "horas de conduccion",
-            "horas de conducción",
-            "registro tacografo",
-            "registro tacógrafo",
-            "tarjeta del conductor",
-            "conductor profesional",
-        ]
-        if any(s in hecho_focus for s in signals):
-            return "tacografo", 0.98
-        return "otro", 0.30
-
     # ITV
     for s, pts in [
         ("itv", 6),
@@ -1777,33 +1716,6 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
         ("no homologado", 4),
     ]:
         add("condiciones_vehiculo", s, pts)
-
-    # Tacógrafo
-    for s, pts in [
-        ("tacografo", 10),
-        ("tacógrafo", 10),
-        ("tiempos de conduccion", 9),
-        ("tiempos de conducción", 9),
-        ("tiempos maximos de conduccion", 10),
-        ("tiempos máximos de conducción", 10),
-        ("tiempos de descanso", 9),
-        ("periodos de descanso obligatorios", 10),
-        ("períodos de descanso obligatorios", 10),
-        ("descanso obligatorio", 8),
-        ("horas de conduccion", 8),
-        ("horas de conducción", 8),
-        ("registro tacografo", 9),
-        ("registro tacógrafo", 9),
-        ("tarjeta del conductor", 9),
-        ("tarjeta conductor", 8),
-        ("conductor profesional", 6),
-        ("manipulacion del tacografo", 12),
-        ("manipulación del tacógrafo", 12),
-        ("sin introducir la tarjeta del conductor", 10),
-        ("no se aportan los registros del tacografo", 10),
-        ("no se aportan los registros del tacógrafo", 10),
-    ]:
-        add("tacografo", s, pts)
 
     # Prioridad: luz roja trasera/destellos/alumbrado = vehículo, no semáforo
     if "luz roja" in combined and any(
@@ -2035,13 +1947,6 @@ def _infer_expediente_strength(evidence_gaps: List[str], tipo: str = "") -> str:
             return "medio"
         return "fuerte"
 
-    if tipo == "tacografo":
-        if gap_count >= 2:
-            return "debil"
-        if gap_count >= 1:
-            return "medio"
-        return "fuerte"
-
     if gap_count >= 4:
         return "debil"
     if gap_count >= 2:
@@ -2053,7 +1958,7 @@ def _infer_recommended_tone(expediente_strength: str, attack_routes: List[Dict[s
     primary = attack_routes[0]["route"] if attack_routes else ""
     if expediente_strength == "debil":
         return "agresivo"
-    if primary in ("prueba_tecnica_radar", "secuencia_y_sincronizacion", "prueba_tecnica_tacografo"):
+    if primary in ("prueba_tecnica_radar", "secuencia_y_sincronizacion"):
         return "tecnico"
     if expediente_strength == "medio":
         return "tecnico"
@@ -2352,27 +2257,14 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
 
     out = _apply_hecho_engine(out)
 
-    tipo, hecho, facts = _detect_facts_and_type(text_blob, out)
-    score_map = _score_infraction_families(text_blob, out)
-    best_tipo, confidence = _pick_best_infraction(score_map)
+    cls = classify_infraction_text(text_blob, out)
+    tipo = cls.get("tipo") or "otro"
+    hecho = cls.get("hecho_canonico") or ""
+    facts = cls.get("facts") or []
+    score_map = cls.get("scores") or score_infraction_text(text_blob, out)
+    confidence = float(cls.get("confidence") or 0.0)
 
-    hecho_focus = _normalize_for_matching(
-        "\n".join([
-            _safe_str(out.get("hecho_denunciado_literal")),
-            _safe_str(out.get("hecho_denunciado_resumido")),
-        ])
-    )
 
-    if tipo in ("otro", "", None) and best_tipo not in ("", "otro"):
-        tipo = best_tipo
-
-    tipo_validado, conf_override = _validate_tipo_infraccion(tipo, hecho_focus)
-
-    if tipo_validado != "otro":
-        tipo = tipo_validado
-        confidence = max(confidence, conf_override)
-
-    out["tipo_infraccion"] = tipo
 
     hecho_imputado_textual = _safe_str(out.get("hecho_imputado_textual"))
     hecho_denunciado_literal = _safe_str(out.get("hecho_denunciado_literal"))
