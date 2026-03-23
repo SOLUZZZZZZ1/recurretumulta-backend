@@ -1285,6 +1285,44 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     if movil_context and not semaforo_context:
         facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
+    # -------------------------------------------------
+    # TRANSPORTE PROFESIONAL (CAMIONES)
+    # -------------------------------------------------
+    camion_signals = [
+        "tacografo", "tacógrafo",
+        "tiempos de conduccion", "tiempos de conducción",
+        "descanso diario", "descanso semanal",
+        "estiba", "sujecion de carga", "sujeción de carga",
+        "carga mal colocada", "carga desplazada",
+        "neumaticos", "neumáticos", "desgaste",
+        "peso", "masa maxima", "mma",
+        "transporte de mercancias", "transporte de mercancías",
+        "vehiculo pesado", "vehículo pesado",
+        "camion", "camión", "articulado", "remolque",
+    ]
+
+    camion_context = any(s in combined for s in camion_signals)
+
+    if camion_context:
+        # SUBTIPO
+        if any(s in combined for s in ["tacografo", "tacógrafo", "tiempos de conduccion"]):
+            facts.append("INCUMPLIMIENTO TACÓGRAFO / TIEMPOS DE CONDUCCIÓN")
+            return ("transporte_profesional", facts[0], facts)
+
+        if any(s in combined for s in ["estiba", "sujecion de carga", "carga mal colocada"]):
+            facts.append("ESTIBA INCORRECTA DE LA CARGA")
+            return ("transporte_profesional", facts[0], facts)
+
+        if any(s in combined for s in ["neumaticos", "neumáticos", "desgaste"]):
+            facts.append("NEUMÁTICOS EN MAL ESTADO")
+            return ("transporte_profesional", facts[0], facts)
+
+        if any(s in combined for s in ["peso", "mma", "masa maxima"]):
+            facts.append("EXCESO DE PESO")
+            return ("transporte_profesional", facts[0], facts)
+
+        facts.append("INFRACCIÓN EN TRANSPORTE PROFESIONAL")
+        return ("transporte_profesional", facts[0], facts)
 
     # -------------------------------------------------
     # 7) VELOCIDAD
