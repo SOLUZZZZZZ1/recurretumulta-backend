@@ -95,6 +95,8 @@ def _merge_extracted(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict
 def _normalize_for_matching(text: str) -> str:
     t = (text or "").lower()
     t = t.replace("\r", "\n")
+
+    # Normalización específica
     t = t.replace("semáforo", "semaforo")
     t = t.replace("señal", "senal")
     t = t.replace("línea", "linea")
@@ -102,12 +104,23 @@ def _normalize_for_matching(text: str) -> str:
     t = t.replace("móvil", "movil")
     t = t.replace("cinemómetro", "cinemometro")
     t = t.replace("inspección", "inspeccion")
-    t = t.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").replace("ü", "u").replace("ñ", "n")
+
+    # 🔥 CAMIONES (CLAVE)
+    t = t.replace("tacógrafo", "tacografo")
+
+    # Normalización general
+    t = t.replace("á", "a")
+    t = t.replace("é", "e")
+    t = t.replace("í", "i")
+    t = t.replace("ó", "o")
+    t = t.replace("ú", "u")
+    t = t.replace("ü", "u")
+    t = t.replace("ñ", "n")
+
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n+", "\n", t)
+
     return t.strip()
-
-
 _HECHO_HEADERS = [
     "hecho denunciado",
     "hecho que se notifica",
@@ -1557,6 +1570,7 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
         "cinturon": 0,
         "movil": 0,
         "semaforo": 0,
+        "transporte_profesional": 0,
         "velocidad": 0,
         "seguro": 0,
         "itv": 0,
