@@ -1285,7 +1285,28 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
     if movil_context and not semaforo_context:
         facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
+        # -------------------------------------------------
+    # 6.5) TACÓGRAFO / TRANSPORTE PROFESIONAL
+    # -------------------------------------------------
+    tacografo_context = any(
+        s in combined
+        for s in [
+            "tacografo",
+            "tacógrafo",
+            "tiempos de conduccion",
+            "tiempos de conducción",
+            "tiempos de descanso",
+            "descanso obligatorio",
+            "horas de conduccion",
+            "registro tacografo",
+            "registro tacógrafo",
+            "conductor profesional",
+        ]
+    )
 
+    if tacografo_context:
+        facts.append("INCUMPLIMIENTO DE NORMATIVA DE TACÓGRAFO")
+        return ("tacografo", facts[0], facts)
     # -------------------------------------------------
     # 7) VELOCIDAD
     # -------------------------------------------------
