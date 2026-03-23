@@ -6,9 +6,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from generate import resolve_infraction_type, get_hecho_para_recurso, _score_infraction_from_core
-
-router = APIRouter(prefix="/debug", tags=["debug"])
+from analyze import _score_infraction_families
+from generate import resolve_infraction_type, get_hecho_para_recurso
 
 
 class ClassifierTestCase(BaseModel):
@@ -76,7 +75,7 @@ def debug_test_classifier(
         core = _build_core_from_case(caso)
         familia_detectada = resolve_infraction_type(core)
         hecho_para_recurso = get_hecho_para_recurso(core)
-        scores = _score_infraction_from_core(core)
+        scores = _score_infraction_families(caso.hecho, core)
         correcto = familia_detectada == caso.familia_esperada
 
         if correcto:
