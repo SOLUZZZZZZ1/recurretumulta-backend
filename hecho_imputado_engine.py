@@ -184,6 +184,18 @@ FAMILY_HINTS = {
     "alcohol": [
         "alcohol", "alcoholemia", "etilometro", "etilómetro", "mg/l",
     ],
+    "tacografo": [
+        "tacografo", "tacógrafo",
+        "tiempos de conduccion", "tiempos de conducción",
+        "tiempos de descanso",
+        "descanso obligatorio",
+        "horas de conduccion", "horas de conducción",
+        "registro tacografo", "registro tacógrafo",
+        "tarjeta del conductor", "tarjeta conductor",
+        "conductor profesional",
+        "manipulacion del tacografo", "manipulación del tacógrafo",
+        "descarga de datos del tacografo", "descarga de datos del tacógrafo",
+    ],
     "prioridad_paso": [
         "prioridad de paso", "ceder el paso", "paso de peatones", "paso a peatones",
         "no respetar el paso", "prioridad",
