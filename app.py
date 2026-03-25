@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from schemas import HealthResponse
 from database import get_engine, ping_db
+from sqlalchemy import text
 
 from admin_migrate import router as admin_migrate_router
 from analyze import router as analyze_router
