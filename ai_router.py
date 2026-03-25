@@ -38,15 +38,19 @@ def run_ai(req: RunExpedienteAI):
 
             # 3) MODO DIOS → GENERAR (flag global o modo prueba)
             if always_generate or (test_mode and override_deadlines):
-                generate_dgt_for_case(conn, req.case_id)
+    try:
+        generate_dgt_for_case(conn, req.case_id)
 
-                # dejamos el caso en generated para que OPS lo muestre con claridad
-                conn.execute(
-                    text("UPDATE cases SET status='generated', updated_at=NOW() WHERE id=:id"),
-                    {"id": req.case_id},
-                )
+        conn.execute(
+            text("UPDATE cases SET status='generated', updated_at=NOW() WHERE id=:id"),
+            {"id": req.case_id},
+        )
 
-                result["note"] = "Modo Dios: recurso generado para revisión (sin presentar)"
+        result["note"] = "Modo Dios: recurso generado para revisión (sin presentar)"
+
+    except Exception as gen_err:
+        # 🔴 IMPORTANTE: NO romper IA
+        result["warning"] = f"Generación falló: {gen_err}"
 
         return result
 
