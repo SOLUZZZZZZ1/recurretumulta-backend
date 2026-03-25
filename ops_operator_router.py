@@ -6,8 +6,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 # Ajusta estos imports a tu proyecto real
-from database import get_db
+
 from models import Case, CaseEvent
+from database import get_engine
+from sqlalchemy import text
 
 router = APIRouter(prefix="/ops/cases", tags=["ops-operator"])
 
@@ -209,7 +211,7 @@ def override_family(case_id: str, body: OverrideFamilyBody, db: Session = Depend
     return GenericOk(case_id=case_id, status=_get_status(case))
 
 @router.post("/{case_id}/submit", response_model=SubmitDGTOut)
-def submit_to_dgt(case_id: str, body: SubmitDGTBody, db: Session = Depends(get_db), _: str = Depends(require_operator_token)):
+def submit_to_dgt(case_id: str, body: SubmitDGTBody,  _: str = Depends(require_operator_token)):
     case = _get_case_or_404(db, case_id)
     current_status = _get_status(case)
 
