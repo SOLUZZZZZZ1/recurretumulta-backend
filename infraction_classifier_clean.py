@@ -198,12 +198,21 @@ def score_infraction_text(text_blob: str = "", core: Optional[Dict[str, Any]] = 
     return scores
 
 def pick_best(scores: Dict[str, int]) -> Tuple[str, float]:
+
+    # PRIORIDAD ABSOLUTA SEMÁFORO
+    if scores.get("semaforo", 0) >= 8:
+        return "semaforo", 0.99
+
     ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+
     if not ordered or ordered[0][1] <= 0:
-        return "otro", 0.0
+        return "generic", 0.0
+
     best_type, best_score = ordered[0]
     second = ordered[1][1] if len(ordered) > 1 else 0
+
     confidence = round(best_score / max(best_score + second, 1), 4)
+
     return best_type, confidence
 
 def classify_infraction_text(text_blob: str = "", core: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
