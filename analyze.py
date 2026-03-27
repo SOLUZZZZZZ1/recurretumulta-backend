@@ -1185,6 +1185,69 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN")
         return ("atencion", facts[0], facts)
 
+# -------------------------------------------------
+# 6.5) TRANSPORTE PROFESIONAL (CAMIONES)
+# -------------------------------------------------
+
+# PESO
+peso_context = any(
+    s in combined
+    for s in [
+        "exceso de peso",
+        "sobrecarga",
+        "sobrepeso",
+        "masa maxima",
+        "masa máxima",
+        "mma",
+        "pesaje",
+        "bascula",
+        "báscula",
+    ]
+)
+if peso_context:
+    facts.append("EXCESO DE PESO O SOBRECARGA EN TRANSPORTE PROFESIONAL")
+    return ("peso", facts[0], facts)
+
+# ESTIBA
+estiba_context = any(
+    s in combined
+    for s in [
+        "estiba",
+        "carga mal sujeta",
+        "carga mal asegurada",
+        "sujecion de carga",
+        "sujeción de carga",
+        "amarre de la carga",
+        "trincaje",
+        "carga desplazada",
+        "mercancia mal estibada",
+        "mercancía mal estibada",
+    ]
+)
+if estiba_context:
+    facts.append("ESTIBA O SUJECIÓN INCORRECTA DE LA CARGA")
+    return ("estiba", facts[0], facts)
+
+# DOCUMENTACIÓN TRANSPORTE
+doc_transporte_context = any(
+    s in combined
+    for s in [
+        "documentacion de transporte",
+        "documentación de transporte",
+        "carece de documentacion",
+        "carece de documentación",
+        "sin documentacion",
+        "sin documentación",
+        "carta de porte",
+        "documento de control",
+        "permiso comunitario",
+        "licencia comunitaria",
+    ]
+)
+if doc_transporte_context:
+    facts.append("INCUMPLIMIENTO DOCUMENTAL EN TRANSPORTE PROFESIONAL")
+    return ("documentacion_transporte", facts[0], facts)
+
     # -------------------------------------------------
     # 6) SEMÁFORO
     # -------------------------------------------------
