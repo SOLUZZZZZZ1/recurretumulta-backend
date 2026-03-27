@@ -2005,16 +2005,7 @@ def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
         return build_condiciones_vehiculo_strong_template(core), "condiciones_vehiculo"
     elif tipo == "carril":
         return build_carril_strong_template(core), "carril"
-    elif tipo in (
-        "transporte_profesional",
-        "peso",
-        "estiba",
-        "documentacion_transporte",
-        "limitador_velocidad",
-        "adr",
-        "neumaticos",
-        "tacografo",
-    ):
+    elif tipo == "transporte_profesional":
         return build_camion_template(core), "camiones"
     elif jurisdiccion == "municipal":
         blob = json.dumps(core, ensure_ascii=False).lower()
