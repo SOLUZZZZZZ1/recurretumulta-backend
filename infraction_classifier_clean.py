@@ -102,7 +102,7 @@ TOKEN_WEIGHTS: Dict[str, List[Tuple[str, int]]] = {
         ("casco de protección", 8), ("casco homologado", 7), ("desabrochado", 5),
     ],
     "peso": [
-        ("exceso de peso", 14),
+        ("exceso de peso", 99),
         ("sobrecarga", 12),
         ("sobrepeso", 12),
         ("masa maxima", 11),
