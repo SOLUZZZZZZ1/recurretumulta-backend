@@ -1185,69 +1185,6 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         facts.append("NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN")
         return ("atencion", facts[0], facts)
 
-# -------------------------------------------------
-# 6.5) TRANSPORTE PROFESIONAL (CAMIONES)
-# -------------------------------------------------
-
-# PESO
-peso_context = any(
-    s in combined
-    for s in [
-        "exceso de peso",
-        "sobrecarga",
-        "sobrepeso",
-        "masa maxima",
-        "masa máxima",
-        "mma",
-        "pesaje",
-        "bascula",
-        "báscula",
-    ]
-)
-if peso_context:
-    facts.append("EXCESO DE PESO O SOBRECARGA EN TRANSPORTE PROFESIONAL")
-    return ("peso", facts[0], facts)
-
-# ESTIBA
-estiba_context = any(
-    s in combined
-    for s in [
-        "estiba",
-        "carga mal sujeta",
-        "carga mal asegurada",
-        "sujecion de carga",
-        "sujeción de carga",
-        "amarre de la carga",
-        "trincaje",
-        "carga desplazada",
-        "mercancia mal estibada",
-        "mercancía mal estibada",
-    ]
-)
-if estiba_context:
-    facts.append("ESTIBA O SUJECIÓN INCORRECTA DE LA CARGA")
-    return ("estiba", facts[0], facts)
-
-# DOCUMENTACIÓN TRANSPORTE
-doc_transporte_context = any(
-    s in combined
-    for s in [
-        "documentacion de transporte",
-        "documentación de transporte",
-        "carece de documentacion",
-        "carece de documentación",
-        "sin documentacion",
-        "sin documentación",
-        "carta de porte",
-        "documento de control",
-        "permiso comunitario",
-        "licencia comunitaria",
-    ]
-)
-if doc_transporte_context:
-    facts.append("INCUMPLIMIENTO DOCUMENTAL EN TRANSPORTE PROFESIONAL")
-    return ("documentacion_transporte", facts[0], facts)
-
     # -------------------------------------------------
     # 6) SEMÁFORO
     # -------------------------------------------------
@@ -1348,6 +1285,66 @@ if doc_transporte_context:
     if movil_context and not semaforo_context:
         facts.append("USO MANUAL DEL TELÉFONO MÓVIL")
         return ("movil", facts[0], facts)
+
+    # -------------------------------------------------
+    # 6.5) TRANSPORTE PROFESIONAL (CAMIONES)
+    # -------------------------------------------------
+    peso_context = any(
+        s in combined
+        for s in [
+            "exceso de peso",
+            "sobrecarga",
+            "sobrepeso",
+            "masa maxima",
+            "masa máxima",
+            "mma",
+            "pesaje",
+            "bascula",
+            "báscula",
+        ]
+    )
+    if peso_context:
+        facts.append("EXCESO DE PESO O SOBRECARGA EN TRANSPORTE PROFESIONAL")
+        return ("peso", facts[0], facts)
+
+    estiba_context = any(
+        s in combined
+        for s in [
+            "estiba",
+            "carga mal sujeta",
+            "carga mal asegurada",
+            "sujecion de carga",
+            "sujeción de carga",
+            "amarre de la carga",
+            "trincaje",
+            "carga desplazada",
+            "mercancia mal estibada",
+            "mercancía mal estibada",
+        ]
+    )
+    if estiba_context:
+        facts.append("ESTIBA O SUJECIÓN INCORRECTA DE LA CARGA")
+        return ("estiba", facts[0], facts)
+
+    doc_transporte_context = any(
+        s in combined
+        for s in [
+            "documentacion de transporte",
+            "documentación de transporte",
+            "carece de documentacion",
+            "carece de documentación",
+            "sin documentacion",
+            "sin documentación",
+            "carta de porte",
+            "documento de control",
+            "permiso comunitario",
+            "licencia comunitaria",
+        ]
+    )
+    if doc_transporte_context:
+        facts.append("INCUMPLIMIENTO DOCUMENTAL EN TRANSPORTE PROFESIONAL")
+        return ("documentacion_transporte", facts[0], facts)
+
 
     # -------------------------------------------------
     # 7) VELOCIDAD
@@ -1551,13 +1548,6 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
         "marcas_viales": 0,
         "carril": 0,
         "atencion": 0,
-        "tacografo": 0,
-        "estiba": 0,
-        "neumaticos": 0,
-        "peso": 0,
-        "documentacion_transporte": 0,
-        "limitador_velocidad": 0,
-        "adr": 0,
     }
 
     def add(tipo: str, signal: str, points: int) -> None:
@@ -1784,113 +1774,6 @@ def _score_infraction_families(text_blob: str, core: Optional[Dict[str, Any]] = 
         ("no homologado", 4),
     ]:
         add("condiciones_vehiculo", s, pts)
-
-
-    # Transporte profesional / camiones
-    for s, pts in [
-        ("tacografo", 12),
-        ("tacógrafo", 12),
-        ("tiempos de conduccion", 12),
-        ("tiempos de conducción", 12),
-        ("tiempos maximos de conduccion", 14),
-        ("tiempos máximos de conducción", 14),
-        ("periodos de descanso", 12),
-        ("periodos de descanso obligatorios", 14),
-        ("descanso diario", 10),
-        ("descanso semanal", 10),
-        ("tarjeta del conductor", 12),
-        ("disco diagrama", 10),
-        ("registro de tacografo", 12),
-        ("registros del tacografo", 14),
-        ("registros del tacógrafo", 14),
-        ("manipulacion del tacografo", 16),
-        ("manipulación del tacógrafo", 16),
-        ("sin introducir la tarjeta", 15),
-
-        ("estiba", 10),
-        ("sujecion de carga", 10),
-        ("sujeción de carga", 10),
-        ("amarre de la carga", 9),
-        ("carga mal colocada", 10),
-        ("carga desplazada", 10),
-        ("trincaje", 9),
-        ("carga mal sujeta", 12),
-        ("carga mal asegurada", 12),
-
-        ("neumaticos", 10),
-        ("neumáticos", 10),
-        ("desgaste", 7),
-        ("profundidad del dibujo", 9),
-
-        ("sobrepeso", 10),
-        ("sobrecarga", 10),
-        ("masa maxima", 9),
-        ("masa máxima", 9),
-        ("mma", 8),
-        ("pesaje", 10),
-        ("bascula", 9),
-        ("báscula", 9),
-        ("exceso de peso", 12),
-
-        ("camion", 5),
-        ("camión", 5),
-        ("vehiculo pesado", 5),
-        ("vehículo pesado", 5),
-        ("semirremolque", 4),
-        ("remolque", 3),
-
-        ("carta de porte", 10),
-        ("documento de control", 10),
-        ("permiso comunitario", 9),
-        ("licencia comunitaria", 9),
-        ("documentacion de transporte", 12),
-        ("documentación de transporte", 12),
-        ("carece de documentacion", 12),
-        ("carece de documentación", 12),
-        ("sin documentacion", 12),
-        ("sin documentación", 12),
-
-        ("limitador de velocidad", 10),
-
-        ("adr", 10),
-        ("mercancias peligrosas", 10),
-        ("mercancías peligrosas", 10),
-    ]:
-        if s in combined:
-            if s in (
-                "tacografo", "tacógrafo", "tiempos de conduccion", "tiempos de conducción",
-                "tiempos maximos de conduccion", "tiempos máximos de conducción",
-                "periodos de descanso", "periodos de descanso obligatorios",
-                "descanso diario", "descanso semanal", "tarjeta del conductor",
-                "disco diagrama", "registro de tacografo", "registros del tacografo",
-                "registros del tacógrafo", "manipulacion del tacografo",
-                "manipulación del tacógrafo", "sin introducir la tarjeta"
-            ):
-                scores["tacografo"] += pts
-            elif s in (
-                "estiba", "sujecion de carga", "sujeción de carga", "amarre de la carga",
-                "carga mal colocada", "carga desplazada", "trincaje",
-                "carga mal sujeta", "carga mal asegurada"
-            ):
-                scores["estiba"] += pts
-            elif s in ("neumaticos", "neumáticos", "desgaste", "profundidad del dibujo"):
-                scores["neumaticos"] += pts
-            elif s in (
-                "sobrepeso", "sobrecarga", "masa maxima", "masa máxima",
-                "mma", "pesaje", "bascula", "báscula", "exceso de peso"
-            ):
-                scores["peso"] += pts
-            elif s in (
-                "carta de porte", "documento de control", "permiso comunitario",
-                "licencia comunitaria", "documentacion de transporte",
-                "documentación de transporte", "carece de documentacion",
-                "carece de documentación", "sin documentacion", "sin documentación"
-            ):
-                scores["documentacion_transporte"] += pts
-            elif s in ("limitador de velocidad",):
-                scores["limitador_velocidad"] += pts
-            elif s in ("adr", "mercancias peligrosas", "mercancías peligrosas"):
-                scores["adr"] += pts
 
     # Prioridad: luz roja trasera/destellos/alumbrado = vehículo, no semáforo
     if "luz roja" in combined and any(
