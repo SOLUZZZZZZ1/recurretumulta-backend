@@ -1,7 +1,4 @@
 # -*- coding: utf-8 -*-
-# recurreTuMulta - scoring afinado v3 (sinónimos + protecciones)
-# Sustituye tu módulo de scoring por este contenido
-
 import re
 
 def normalize(text: str) -> str:
@@ -9,90 +6,138 @@ def normalize(text: str) -> str:
         return ""
     return re.sub(r"\s+", " ", text.lower())
 
-# --- Diccionario ampliado de señales ---
+# --- DICCIONARIO COMPLETO ---
 KEYWORDS = {
+
+    # =====================
+    # COCHES
+    # =====================
+
     "itv": [
-        "itv", "inspeccion tecnica", "inspección técnica", "revision tecnica",
-        "caducada", "sin itv", "no tener vigente la inspeccion",
-        "carecer de inspeccion tecnica", "inspeccion tecnica del vehiculo",
-        "inspección técnica del vehículo"
+        "itv", "inspeccion tecnica", "inspección técnica",
+        "caducada", "sin itv"
     ],
+
     "seguro": [
-        "seguro obligatorio", "sin seguro", "carecer de seguro",
-        "poliza", "póliza", "cobertura obligatoria", "sin cobertura",
-        "no tener concertado", "seguro en vigor", "seguro obligatorio del vehiculo"
+        "seguro obligatorio", "sin seguro",
+        "poliza", "póliza"
     ],
+
     "casco": [
-        "casco", "sin casco", "no utilizar casco",
-        "casco desabrochado", "casco mal ajustado",
-        "no hacer uso del casco", "casco no debidamente"
+        "casco", "sin casco"
     ],
+
     "condiciones_vehiculo": [
-        "defectos mecanicos", "deficiencias tecnicas", "ruedas en mal estado",
-        "neumaticos en mal estado", "componentes mecanicos defectuosos",
-        "fallo sistema iluminacion", "dispositivos luminosos no reglamentarios",
-        "deficiencias relevantes", "vehiculo defectuoso"
+        "deficiencias", "alumbrado", "vehiculo defectuoso"
     ],
+
     "carril": [
-        "carril", "posicion en la calzada", "posición en la calzada",
-        "carril derecho", "carril izquierdo", "carril no habilitado",
-        "posicion no ajustada", "posición no ajustada"
+        "carril", "calzada"
     ],
+
     "atencion": [
-        "distraccion", "distracción", "sin atencion", "desatencion",
-        "no conservar atencion", "mantener distraccion",
-        "conducta distraida", "conducta distraída"
+        "distraccion", "distracción", "negligente"
     ],
+
     "auriculares": [
-        "auriculares", "cascos", "oidos", "oídos",
-        "dispositivo de audio", "aparato sonoro", "receptor sonoro"
+        "auriculares", "cascos"
     ],
+
     "alcohol": [
-        "alcohol", "alcoholemia", "positivo", "tasa",
-        "etilometro", "etilómetro", "test de alcohol",
-        "resultado positivo"
+        "alcohol", "alcoholemia"
     ],
+
     "velocidad": [
-        "km/h", "velocidad", "radar", "cinemometro", "cinemómetro",
-        "multanova", "velolaser", "pegasus"
+        "km/h", "velocidad", "radar"
     ],
+
     "semaforo": [
-        "luz roja", "fase roja", "semaforo", "semáforo",
-        "indicacion luminosa", "señal luminosa"
+        "luz roja", "fase roja", "semaforo", "semáforo"
     ],
+
     "marcas_viales": [
-        "linea continua", "línea continua", "marca vial",
-        "marcas viales", "delimitacion continua", "delimitación continua"
+        "linea continua", "línea continua"
+    ],
+
+    # =====================
+    # CAMIONES (CLAVE)
+    # =====================
+
+    "peso": [
+        "exceso de peso",
+        "sobrecarga",
+        "sobrepeso",
+        "masa maxima",
+        "masa máxima",
+        "mma",
+        "bascula",
+        "báscula"
+    ],
+
+    "estiba": [
+        "carga mal sujeta",
+        "carga mal asegurada",
+        "estiba",
+        "trincaje",
+        "amarre"
+    ],
+
+    "documentacion_transporte": [
+        "documentacion de transporte",
+        "documentación de transporte",
+        "carece de documentacion",
+        "carece de documentación",
+        "sin documentacion",
+        "sin documentación",
+        "carta de porte",
+        "documento de control"
+    ],
+
+    "tacografo": [
+        "tacografo",
+        "tacógrafo",
+        "tiempos de conduccion",
+        "tiempos de descanso"
+    ],
+
+    "limitador_velocidad": [
+        "limitador de velocidad"
+    ],
+
+    "adr": [
+        "adr",
+        "mercancias peligrosas",
+        "mercancías peligrosas"
+    ],
+
+    "neumaticos": [
+        "neumaticos",
+        "neumáticos",
+        "desgaste"
     ],
 }
 
 def score_text(text: str):
     t = normalize(text)
-    scores = {k: 0 for k in KEYWORDS.keys()}
+    scores = {k: 0 for k in KEYWORDS}
 
     for family, words in KEYWORDS.items():
         for w in words:
             if w in t:
-                scores[family] += 3
+                scores[family] += 5
 
-    # --- PROTECCIONES ---
-    # Si hay alcohol, evitar que "agentes" o ruido suba atención
-    if scores["alcohol"] > 0:
-        scores["atencion"] = 0
-
-    # Si hay semáforo, eliminar velocidad
+    # --- PRIORIDADES IMPORTANTES ---
     if scores["semaforo"] > 0:
-        scores["velocidad"] = 0
-
-    # Si hay km/h pero no "velocidad" real → bajar peso
-    if "km/h" in t and scores["velocidad"] <= 3:
         scores["velocidad"] = 0
 
     return scores
 
 def classify(text: str):
     scores = score_text(text)
+
     best = max(scores, key=scores.get)
+
     if scores[best] == 0:
         return "generic", scores
+
     return best, scores
