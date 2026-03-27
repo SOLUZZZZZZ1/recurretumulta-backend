@@ -22,6 +22,7 @@ FAMILY_ORDER = [
     "atencion",
     "condiciones_vehiculo",
     "velocidad",
+    "peso",
 ]
 
 CANONICAL_HECHO = {
