@@ -2007,6 +2007,16 @@ def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
         return build_carril_strong_template(core), "carril"
     elif tipo == "transporte_profesional":
         return build_camion_template(core), "camiones"
+    elif tipo in (
+    "peso",
+    "estiba",
+    "documentacion_transporte",
+    "limitador_velocidad",
+    "adr",
+    "neumaticos",
+    "tacografo"
+):
+    return build_camion_template(core), "camiones"
     elif jurisdiccion == "municipal":
         blob = json.dumps(core, ensure_ascii=False).lower()
         if "sentido contrario" in blob or "direccion prohibida" in blob or "dirección prohibida" in blob:
