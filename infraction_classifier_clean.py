@@ -22,7 +22,7 @@ FAMILY_ORDER = [
     "atencion",
     "condiciones_vehiculo",
     "velocidad",
-    "peso",
+]
 ]
 
 CANONICAL_HECHO = {
@@ -45,6 +45,7 @@ CANONICAL_HECHO = {
     "atencion": "NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN",
     "condiciones_vehiculo": "INCUMPLIMIENTO DE CONDICIONES REGLAMENTARIAS DEL VEHÍCULO",
     "velocidad": "EXCESO DE VELOCIDAD",
+
 }
 
 TOKEN_WEIGHTS: Dict[str, List[Tuple[str, int]]] = {
@@ -103,7 +104,7 @@ TOKEN_WEIGHTS: Dict[str, List[Tuple[str, int]]] = {
         ("casco de protección", 8), ("casco homologado", 7), ("desabrochado", 5),
     ],
     "peso": [
-        ("exceso de peso", 99),
+        ("exceso de peso", 14),
         ("sobrecarga", 12),
         ("sobrepeso", 12),
         ("masa maxima", 11),
