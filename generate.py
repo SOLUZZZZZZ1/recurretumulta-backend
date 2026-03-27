@@ -2003,13 +2003,13 @@ def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
     return build_itv_strong_template(core), "itv"
 
     elif tipo == "condiciones_vehiculo":
-    return build_condiciones_vehiculo_strong_template(core), "condiciones_vehiculo"
+        return build_condiciones_vehiculo_strong_template(core), "condiciones_vehiculo"
 
     elif tipo == "carril":
-    return build_carril_strong_template(core), "carril"
+        return build_carril_strong_template(core), "carril"
 
     elif tipo == "transporte_profesional":
-    return build_camion_template(core), "camiones"
+        return build_camion_template(core), "camiones"
 
     elif tipo in (
     "peso",
@@ -2019,10 +2019,9 @@ def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
     "adr",
     "neumaticos",
     "tacografo",
-    ):
-    return build_camion_template(core), "camiones"
+):
+       return build_camion_template(core), "camiones"
 
-    
     elif jurisdiccion == "municipal":
         blob = json.dumps(core, ensure_ascii=False).lower()
         if "sentido contrario" in blob or "direccion prohibida" in blob or "dirección prohibida" in blob:
