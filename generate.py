@@ -2176,7 +2176,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         if literal:
             core["hecho_denunciado_literal"] = literal
 
-    tipo = _resolved_tipo_from_core(core, fallback="generic")
+    tipo = forced_tipo or _resolved_tipo_from_core(core, fallback="generic")
     jurisdiccion = resolve_jurisdiction(core)
 
     bicicleta_ctx = _is_bicicleta_context(core)
@@ -2262,15 +2262,12 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
 class GenerateRequest(BaseModel):
     case_id: str
     interesado: Dict[str, str] = Field(default_factory=dict)
+    tipo: Optional[str] = None
 
 
 @router.post("/generate/dgt")
 def generate_dgt(req: GenerateRequest) -> Dict[str, Any]:
     engine = get_engine()
     with engine.begin() as conn:
-        result = generate_dgt_for_case(
-    conn,
-    req.case_id,
-    interesado=req.interesado,
-    forced_tipo=getattr(req, "tipo", None)
-)
+        result = generate_dgt_for_case(conn, req.case_id, interesado=req.interesado, forced_tipo=req.tipo)
+    return {"ok": True, "message": "Recurso generado.", **result}
