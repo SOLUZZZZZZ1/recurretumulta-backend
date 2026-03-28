@@ -2268,5 +2268,9 @@ class GenerateRequest(BaseModel):
 def generate_dgt(req: GenerateRequest) -> Dict[str, Any]:
     engine = get_engine()
     with engine.begin() as conn:
-        result = generate_dgt_for_case(conn, req.case_id, interesado=req.interesado)
-    return {"ok": True, "message": "Recurso generado.", **result}
+        result = generate_dgt_for_case(
+    conn,
+    req.case_id,
+    interesado=req.interesado,
+    forced_tipo=getattr(req, "tipo", None)
+)
