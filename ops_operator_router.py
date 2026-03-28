@@ -286,29 +286,9 @@ def override_family_and_regenerate(
             },
         )
 
-        nuevo_texto = f"""RECURSO REGENERADO
-
-Familia corregida: {body.familia}
-Motivo: {body.motivo}
-
-Este recurso ha sido regenerado con la familia correcta indicada por el operador.
-"""
-
-        _set_status(conn, case_id, "edited")
-
-        try:
-            conn.execute(
-                text(
-                    """
-                    UPDATE cases
-                    SET recurso_texto = :texto, updated_at = NOW()
-                    WHERE id = :id
-                    """
-                ),
-                {"id": case_id, "texto": nuevo_texto},
-            )
-        except Exception:
-            pass
+        # Placeholder seguro para regeneración.
+        # Más adelante aquí conectaremos tu generate real con familia forzada.
+        _set_status(conn, case_id, "generated")
 
         _append_event(
             conn,
@@ -318,6 +298,7 @@ Este recurso ha sido regenerado con la familia correcta indicada por el operador
                 "familia": body.familia,
                 "motivo": body.motivo,
                 "at": _utcnow().isoformat(),
+                "mode": "placeholder",
             },
         )
 
