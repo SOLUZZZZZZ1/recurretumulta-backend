@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from database import get_engine
+from generate import GenerateRequest, generate_dgt
 
 router = APIRouter(prefix="/ops/cases", tags=["ops-operator"])
 
@@ -115,6 +116,17 @@ def _append_event(conn, case_id: str, event_type: str, payload: Optional[Dict[st
             "payload": json.dumps(payload or {}),
         },
     )
+
+
+def _load_interesado(conn, case_id: str) -> Dict[str, Any]:
+    row = conn.execute(
+        text("SELECT COALESCE(interested_data,'{}'::jsonb) FROM cases WHERE id = :id"),
+        {"id": case_id},
+    ).fetchone()
+    if not row or not row[0]:
+        return {}
+    data = row[0]
+    return data if isinstance(data, dict) else {}
 
 
 @router.get("/{case_id}")
@@ -272,9 +284,9 @@ def override_family_and_regenerate(
     require_operator_token(x_operator_token)
     engine = get_engine()
 
+    # 1) Guardar override como evento
     with engine.begin() as conn:
         _case_or_404(conn, case_id)
-
         _append_event(
             conn,
             case_id,
@@ -285,11 +297,21 @@ def override_family_and_regenerate(
                 "at": _utcnow().isoformat(),
             },
         )
+        interesado = _load_interesado(conn, case_id)
 
-        # Placeholder seguro para regeneración.
-        # Más adelante aquí conectaremos tu generate real con familia forzada.
+    # 2) Regenerar de verdad usando tu pipeline actual
+    try:
+        req = GenerateRequest(case_id=case_id, interesado=interesado, tipo=body.familia)
+        generate_dgt(req)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error regenerando recurso: {e}")
+
+    # 3) Registrar evento final y dejar el caso en generated
+    with engine.begin() as conn:
+        _case_or_404(conn, case_id)
         _set_status(conn, case_id, "generated")
-
         _append_event(
             conn,
             case_id,
@@ -298,10 +320,9 @@ def override_family_and_regenerate(
                 "familia": body.familia,
                 "motivo": body.motivo,
                 "at": _utcnow().isoformat(),
-                "mode": "placeholder",
+                "mode": "generate_dgt",
             },
         )
-
         status = _get_status(conn, case_id)
 
     return {
