@@ -54,6 +54,12 @@ class OverrideAndRegenerateBody(BaseModel):
     motivo: str = Field(..., min_length=3)
 
 
+class RewriteHechoBody(BaseModel):
+    hecho: str = Field(..., min_length=5)
+    motivo: str = Field(..., min_length=3)
+    familia: Optional[str] = None
+
+
 class SubmitDGTBody(BaseModel):
     document_url: Optional[str] = None
     force: bool = False
@@ -358,6 +364,123 @@ def override_family_and_regenerate(
         "case_id": case_id,
         "status": status,
         "familia_correcta": body.familia,
+    }
+
+
+@router.post("/{case_id}/rewrite-hecho-and-regenerate")
+def rewrite_hecho_and_regenerate(
+    case_id: str,
+    body: RewriteHechoBody,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+):
+    require_operator_token(x_operator_token)
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        _case_or_404(conn, case_id)
+
+        conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET interested_data = jsonb_set(
+                    jsonb_set(
+                        COALESCE(interested_data, '{}'::jsonb),
+                        '{manual_hecho_denunciado}',
+                        to_jsonb(:hecho::text),
+                        true
+                    ),
+                    '{manual_hecho_motivo}',
+                    to_jsonb(:motivo::text),
+                    true
+                ),
+                updated_at = NOW()
+                WHERE id = :id
+                """
+            ),
+            {"id": case_id, "hecho": body.hecho, "motivo": body.motivo},
+        )
+
+        interesado = _load_interesado(conn, case_id)
+
+        _append_event(
+            conn,
+            case_id,
+            "operator_rewrite_hecho",
+            {
+                "hecho": body.hecho,
+                "motivo": body.motivo,
+                "familia": body.familia,
+                "at": _utcnow().isoformat(),
+            },
+        )
+
+    interesado = dict(interesado or {})
+    interesado["manual_hecho_denunciado"] = body.hecho
+    interesado["manual_hecho_motivo"] = body.motivo
+
+    try:
+        req = GenerateRequest(
+            case_id=case_id,
+            interesado=interesado,
+            tipo=body.familia,
+        )
+        generate_dgt(req)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error regenerando desde hecho corregido: {e}")
+
+    with engine.begin() as conn:
+        _case_or_404(conn, case_id)
+        _set_status(conn, case_id, "generated")
+
+        _append_event(
+            conn,
+            case_id,
+            "ai_expediente_result",
+            {
+                "classifier_result": {
+                    "family": body.familia or "manual_hecho",
+                    "confidence": 1.0,
+                },
+                "arguments": {
+                    "hecho": body.hecho,
+                },
+                "admissibility": {
+                    "admissibility": "REGENERATED",
+                },
+                "phase": {
+                    "recommended_action": {
+                        "action": "REVIEW_AND_SUBMIT",
+                    }
+                },
+                "source": "manual_hecho",
+                "at": _utcnow().isoformat(),
+            },
+        )
+
+        _append_event(
+            conn,
+            case_id,
+            "resource_regenerated_from_hecho",
+            {
+                "hecho": body.hecho,
+                "motivo": body.motivo,
+                "familia": body.familia,
+                "at": _utcnow().isoformat(),
+                "mode": "generate_dgt",
+            },
+        )
+
+        status = _get_status(conn, case_id)
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "status": status,
+        "hecho_final": body.hecho,
+        "familia_forzada": body.familia,
     }
 
 
