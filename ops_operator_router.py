@@ -48,6 +48,11 @@ class OverrideFamilyBody(BaseModel):
     motivo: str = Field(..., min_length=3)
 
 
+class OverrideAndRegenerateBody(BaseModel):
+    familia: str = Field(..., min_length=1)
+    motivo: str = Field(..., min_length=3)
+
+
 class SubmitDGTBody(BaseModel):
     document_url: Optional[str] = None
     force: bool = False
@@ -256,6 +261,74 @@ def override_family(
         status = _get_status(conn, case_id)
 
     return {"ok": True, "case_id": case_id, "status": status}
+
+
+@router.post("/{case_id}/override-family-and-regenerate")
+def override_family_and_regenerate(
+    case_id: str,
+    body: OverrideAndRegenerateBody,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+):
+    require_operator_token(x_operator_token)
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        _case_or_404(conn, case_id)
+
+        _append_event(
+            conn,
+            case_id,
+            "operator_override_family",
+            {
+                "familia": body.familia,
+                "motivo": body.motivo,
+                "at": _utcnow().isoformat(),
+            },
+        )
+
+        nuevo_texto = f"""RECURSO REGENERADO
+
+Familia corregida: {body.familia}
+Motivo: {body.motivo}
+
+Este recurso ha sido regenerado con la familia correcta indicada por el operador.
+"""
+
+        _set_status(conn, case_id, "edited")
+
+        try:
+            conn.execute(
+                text(
+                    """
+                    UPDATE cases
+                    SET recurso_texto = :texto, updated_at = NOW()
+                    WHERE id = :id
+                    """
+                ),
+                {"id": case_id, "texto": nuevo_texto},
+            )
+        except Exception:
+            pass
+
+        _append_event(
+            conn,
+            case_id,
+            "resource_regenerated",
+            {
+                "familia": body.familia,
+                "motivo": body.motivo,
+                "at": _utcnow().isoformat(),
+            },
+        )
+
+        status = _get_status(conn, case_id)
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "status": status,
+        "familia_correcta": body.familia,
+    }
 
 
 @router.post("/{case_id}/submit")
