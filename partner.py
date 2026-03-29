@@ -173,3 +173,52 @@ async def create_partner_case(
         _event(conn, case_id, "client_authorization_requested", {"channel": "email", "to": str(client_email).strip().lower()})
 
     return {"ok": True, "case_id": case_id, "uploaded": uploaded}
+# =========================
+# SOLICITUD DE ALTA ASESORÍA
+# =========================
+class PartnerSignupRequest(BaseModel):
+    empresa: str
+    contacto: str
+    email: EmailStr
+    telefono: Optional[str] = None
+    provincia: Optional[str] = None
+    volumen: Optional[str] = None
+    mensaje: Optional[str] = None
+
+
+@router.post("/signup")
+def partner_signup(payload: PartnerSignupRequest):
+    try:
+        import smtplib
+        from email.message import EmailMessage
+
+        msg = EmailMessage()
+        msg["Subject"] = "Nueva solicitud de alta asesoría"
+        msg["From"] = os.getenv("SMTP_FROM")
+        msg["To"] = "soporte@recurretumulta.eu"
+
+        body = f"""
+Nueva solicitud de asesoría:
+
+Empresa: {payload.empresa}
+Contacto: {payload.contacto}
+Email: {payload.email}
+Teléfono: {payload.telefono}
+Provincia: {payload.provincia}
+Volumen: {payload.volumen}
+
+Mensaje:
+{payload.mensaje}
+        """
+
+        msg.set_content(body)
+
+        with smtplib.SMTP(os.getenv("SMTP_HOST"), int(os.getenv("SMTP_PORT", "587"))) as server:
+            server.starttls()
+            server.login(os.getenv("SMTP_USER"), os.getenv("SMTP_PASS"))
+            server.send_message(msg)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error enviando email: {e}")
+
+    return {"ok": True}
