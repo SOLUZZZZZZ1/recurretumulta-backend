@@ -13,7 +13,7 @@ from b2_storage import upload_bytes
 
 # Import interno del engine (Modo Dios)
 from ai.expediente_engine import run_expediente_ai
-from services.authorization_pdf import ensure_authorization_pdf, get_request_ip
+from authorization_pdf import ensure_authorization_pdf, get_request_ip
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
