@@ -4,7 +4,7 @@ import smtplib
 from email.message import EmailMessage
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi import APIRouter, HTTPException, UploadFile, File, BackgroundTasks, Request
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import text
 
@@ -13,6 +13,7 @@ from b2_storage import upload_bytes
 
 # Import interno del engine (Modo Dios)
 from ai.expediente_engine import run_expediente_ai
+from services.authorization_pdf import ensure_authorization_pdf, get_request_ip
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
@@ -312,3 +313,71 @@ def public_status(case_id: str):
         "contact_name": contact_name,
         "contact_email": contact_email,
     }
+
+# =========================
+# AUTORIZACION DEL EXPEDIENTE + PDF
+# =========================
+@router.post("/{case_id}/authorize")
+def authorize_case(case_id: str, request: Request):
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        _case_exists(conn, case_id)
+
+        # Marcar autorizado
+        conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET authorized = TRUE,
+                    authorized_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = :id
+                """
+            ),
+            {"id": case_id},
+        )
+
+        # Capturar IP real
+        ip = get_request_ip(request)
+
+        # Evento de autorización
+        conn.execute(
+            text(
+                """
+                INSERT INTO events(case_id, type, payload, created_at)
+                VALUES (:id, 'case_authorized', CAST(:payload AS JSONB), NOW())
+                """
+            ),
+            {
+                "id": case_id,
+                "payload": json.dumps(
+                    {
+                        "ip": ip,
+                        "version": "v1_dgt_homologado",
+                    }
+                ),
+            },
+        )
+
+        # Generar y guardar PDF de autorización
+        try:
+            auth_doc = ensure_authorization_pdf(
+                conn,
+                case_id=case_id,
+                request=request,
+                version="v1_dgt_homologado",
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Autorización registrada, pero falló el PDF: {e}",
+            )
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "authorized": True,
+        "authorization_pdf": auth_doc.get("document"),
+    }
+
