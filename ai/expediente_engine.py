@@ -16,9 +16,6 @@ from ai.prompts.draft_recurso_v2 import PROMPT as PROMPT_DRAFT
 MAX_EXCERPT_CHARS = 12000
 
 
-# ==========================
-# LLM JSON helper
-# ==========================
 def _llm_json(prompt: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     resp = client.chat.completions.create(
@@ -33,9 +30,6 @@ def _llm_json(prompt: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     return json.loads(resp.choices[0].message.content)
 
 
-# ==========================
-# DB helpers
-# ==========================
 def _save_event(case_id: str, event_type: str, payload: Dict[str, Any]) -> None:
     engine = get_engine()
     with engine.begin() as conn:
@@ -44,7 +38,7 @@ def _save_event(case_id: str, event_type: str, payload: Dict[str, Any]) -> None:
                 "INSERT INTO events(case_id, type, payload, created_at) "
                 "VALUES (:case_id, :type, CAST(:payload AS JSONB), NOW())"
             ),
-            {"case_id": case_id, "type": event_type, "payload": json.dumps(payload)},
+            {"case_id": case_id, "type": event_type, "payload": json.dumps(payload, ensure_ascii=False)},
         )
 
 
@@ -111,9 +105,15 @@ def _load_case_documents(case_id: str) -> List[Dict[str, Any]]:
     return docs
 
 
-# ==========================
-# Capture mode (se usa como señal contextual; no decide redacción final)
-# ==========================
+def _safe_str(v: Any) -> str:
+    if v is None:
+        return ""
+    try:
+        return str(v)
+    except Exception:
+        return ""
+
+
 def _detect_capture_mode(docs: List[Dict[str, Any]], extraction_core: Optional[Dict[str, Any]]) -> str:
     blob_parts: List[str] = []
     try:
@@ -148,9 +148,6 @@ def _detect_capture_mode(docs: List[Dict[str, Any]], extraction_core: Optional[D
     return "UNKNOWN"
 
 
-# ==========================
-# Tipicidad strict transversal (artículo ↔ tipo esperado)
-# ==========================
 ARTICLE_TYPE_MAP = {
     "RGC": {
         48: "velocidad",
@@ -232,7 +229,6 @@ def _apply_tipicity_strict(attack_plan: Dict[str, Any], extraction_core: Dict[st
         plan["meta"]["tipicity_mismatch_strict"] = True
         plan["meta"]["expected_type"] = check.get("expected")
         plan["meta"]["inferred_type"] = check.get("inferred")
-
         plan["primary"] = {
             "title": "Vulneración del principio de tipicidad y errónea subsunción normativa",
             "points": [
@@ -241,14 +237,12 @@ def _apply_tipicity_strict(attack_plan: Dict[str, Any], extraction_core: Dict[st
                 "Procede el ARCHIVO por ausencia de adecuada subsunción normativa, sin perjuicio de la práctica de prueba y aportación íntegra del expediente.",
             ],
         }
-
         pr = list(plan.get("proof_requests") or [])
         pr += [
             "Copia íntegra del expediente administrativo (denuncia/boletín, propuesta y resolución, si existieran).",
             "Identificación expresa del precepto aplicado (artículo/apartado) y motivación del encaje con el hecho descrito.",
             "Aportación de la norma aplicable y fundamentos jurídicos utilizados.",
         ]
-
         seen = set()
         pr2 = []
         for x in pr:
@@ -260,22 +254,13 @@ def _apply_tipicity_strict(attack_plan: Dict[str, Any], extraction_core: Dict[st
     return plan
 
 
-# ==========================
-# Attack plan (V5 bloqueada)
-# ==========================
 def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extraction_core: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    V5 BLOQUEADA:
-    - expediente_engine NO reclasifica
-    - usa exclusivamente el tipo ya resuelto por analyze.py
-    """
     extraction_core = extraction_core or {}
     inferred = str(extraction_core.get("tipo_infraccion") or "").strip().lower()
-
     if inferred in ("", "otro", "unknown", "generic", None):
         inferred = "generic"
 
-    plan: Dict[str, Any] = {
+    return {
         "infraction_type": inferred,
         "primary": {
             "title": "Insuficiencia probatoria específica",
@@ -292,7 +277,6 @@ def _build_attack_plan(classify: Dict[str, Any], timeline: Dict[str, Any], extra
         },
         "meta": {},
     }
-    return plan
 
 
 def _build_facts_summary(extraction_core: Optional[Dict[str, Any]], attack_plan: Dict[str, Any]) -> str:
@@ -350,6 +334,74 @@ def _override_mode() -> str:
     if m not in ("TEST_REALISTA", "SANDBOX_DEMO"):
         m = "TEST_REALISTA"
     return m
+
+
+def _build_panel_fields(extraction_core: Dict[str, Any], classify: Dict[str, Any], phase: Dict[str, Any], admissibility: Dict[str, Any]) -> Dict[str, Any]:
+    extraction_core = extraction_core or {}
+    classify = classify or {}
+    phase = phase or {}
+    admissibility = admissibility or {}
+
+    familia = (
+        extraction_core.get("familia_resuelta")
+        or extraction_core.get("tipo_infraccion")
+        or classify.get("family")
+        or classify.get("familia")
+        or ""
+    )
+
+    hecho = (
+        extraction_core.get("hecho_para_recurso")
+        or extraction_core.get("hecho_imputado")
+        or extraction_core.get("hecho_limpio")
+        or extraction_core.get("hecho_reconstruido")
+        or extraction_core.get("hecho_denunciado_literal")
+        or extraction_core.get("hecho_denunciado_resumido")
+        or ""
+    )
+
+    confianza = (
+        extraction_core.get("tipo_infraccion_confidence")
+        or classify.get("confidence")
+        or classify.get("score")
+        or 0
+    )
+
+    accion_raw = (
+        phase.get("recommended_action")
+        or phase.get("action")
+        or phase.get("accion")
+        or ""
+    )
+    if isinstance(accion_raw, dict):
+        accion = (
+            accion_raw.get("action")
+            or accion_raw.get("accion")
+            or accion_raw.get("name")
+            or json.dumps(accion_raw, ensure_ascii=False)
+        )
+    else:
+        accion = _safe_str(accion_raw)
+
+    adm = (
+        admissibility.get("admissibility")
+        or admissibility.get("admisibilidad")
+        or ""
+    )
+
+    try:
+        confianza_num = float(confianza)
+    except Exception:
+        confianza_num = 0.0
+
+    return {
+        "familia_resuelta": _safe_str(familia),
+        "tipo_infraccion": _safe_str(familia),
+        "hecho_imputado": _safe_str(hecho),
+        "tipo_infraccion_confidence": confianza_num,
+        "accion_panel": _safe_str(accion),
+        "admissibility_panel": _safe_str(adm),
+    }
 
 
 def run_expediente_ai(case_id: str) -> Dict[str, Any]:
@@ -448,6 +500,8 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
             },
         )
 
+    panel_fields = _build_panel_fields(extraction_core, classify, phase, admissibility)
+
     result = {
         "ok": True,
         "case_id": case_id,
@@ -461,9 +515,18 @@ def run_expediente_ai(case_id: str) -> Dict[str, Any]:
         "facts_summary": facts_summary,
         "context_intensity": context_intensity,
         "velocity_calc": {},
+        "familia_resuelta": panel_fields["familia_resuelta"],
+        "tipo_infraccion": panel_fields["tipo_infraccion"],
+        "hecho_imputado": panel_fields["hecho_imputado"],
+        "tipo_infraccion_confidence": panel_fields["tipo_infraccion_confidence"],
+        "accion_panel": panel_fields["accion_panel"],
+        "admissibility_panel": panel_fields["admissibility_panel"],
         "extraction_debug": {
             "wrapper_keys": list(extraction_wrapper.keys()) if isinstance(extraction_wrapper, dict) else [],
             "core_keys": list(extraction_core.keys()) if isinstance(extraction_core, dict) else [],
+            "familia_resuelta": panel_fields["familia_resuelta"],
+            "hecho_imputado": panel_fields["hecho_imputado"],
+            "tipo_infraccion_confidence": panel_fields["tipo_infraccion_confidence"],
         },
     }
 
