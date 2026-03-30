@@ -25,11 +25,29 @@ def run_ai(req: RunExpedienteAI):
 
         # 🔥 2️⃣ GUARDAR RESULTADO PARA EL PANEL
         ai_payload = {
-            "familia": result.get("familia_resuelta") or result.get("tipo_infraccion"),
-            "confianza": result.get("tipo_infraccion_confidence"),
-            "hecho": result.get("hecho_para_recurso") or result.get("hecho_imputado"),
-            "admisibilidad": result.get("resultado_estrategico"),
-            "accion": result.get("modelo_defensa"),
+    "familia": (
+        result.get("familia_resuelta")
+        or result.get("tipo_infraccion")
+        or (result.get("classification") or {}).get("family")
+    ),
+    "confianza": (
+        result.get("tipo_infraccion_confidence")
+        or (result.get("classification") or {}).get("confidence")
+    ),
+    "hecho": (
+        result.get("hecho_para_recurso")
+        or result.get("hecho_imputado")
+        or (result.get("arguments") or {}).get("hecho")
+    ),
+    "admisibilidad": (
+        result.get("resultado_estrategico")
+        or (result.get("phase") or {}).get("admissibility")
+    ),
+    "accion": (
+        result.get("modelo_defensa")
+        or (result.get("phase") or {}).get("recommended_action", {}).get("action")
+    ),
+}
         }
 
         with engine.begin() as conn:
