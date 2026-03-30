@@ -87,23 +87,38 @@ async def analyze_expediente(files: List[UploadFile] = File(...)) -> Dict[str, A
                 },
             )
 
-    # 3) Evento + update case
-    with engine.begin() as conn:
-        conn.execute(
-            text(
-                """INSERT INTO events(case_id, type, payload, created_at)
-                   VALUES (:case_id, 'expediente_uploaded', CAST(:payload AS JSONB), NOW())"""
-            ),
-            {"case_id": case_id, "payload": json.dumps({"documents": uploaded_docs})},
-        )
-        conn.execute(
-            text("UPDATE cases SET status='uploaded', updated_at=NOW() WHERE id=:case_id"),
-            {"case_id": case_id},
-        )
+    # 3) Evento + update case + RESULTADO IA
 
-    return {
-        "ok": True,
-        "case_id": case_id,
-        "documents": uploaded_docs,
-        "message": "Expediente creado. Ya puedes continuar al resumen.",
-    }
+# ⚡ AQUÍ GENERAMOS RESULTADO SIMULADO (PUENTE TEMPORAL)
+# Luego esto vendrá de tu motor real
+ai_payload = {
+    "familia": "vehiculo",
+    "confianza": 0.85,
+    "hecho": "Incumplimiento de condiciones reglamentarias del vehículo",
+    "admisibilidad": "ADMISSIBLE",
+    "accion": "presentar alegaciones"
+}
+
+with engine.begin() as conn:
+    # Evento subida expediente
+    conn.execute(
+        text(
+            """INSERT INTO events(case_id, type, payload, created_at)
+               VALUES (:case_id, 'expediente_uploaded', CAST(:payload AS JSONB), NOW())"""
+        ),
+        {"case_id": case_id, "payload": json.dumps({"documents": uploaded_docs})},
+    )
+
+    # 🔥 EVENTO CLAVE QUE FALTA
+    conn.execute(
+        text(
+            """INSERT INTO events(case_id, type, payload, created_at)
+               VALUES (:case_id, 'ai_expediente_result', CAST(:payload AS JSONB), NOW())"""
+        ),
+        {"case_id": case_id, "payload": json.dumps(ai_payload)},
+    )
+
+    conn.execute(
+        text("UPDATE cases SET status='analyzed', updated_at=NOW() WHERE id=:case_id"),
+        {"case_id": case_id},
+    )
