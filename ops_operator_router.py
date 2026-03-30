@@ -65,14 +65,20 @@ class SubmitDGTBody(BaseModel):
     force: bool = False
 
 
+class SaveAiOverridesBody(BaseModel):
+    familia: Optional[str] = None
+    hecho: Optional[str] = None
+    motivo: str = Field(..., min_length=3)
+
+
 def _case_or_404(conn, case_id: str):
     row = conn.execute(
         text(
-            """
+            '''
             SELECT id, status, updated_at
             FROM cases
             WHERE id = :id
-            """
+            '''
         ),
         {"id": case_id},
     ).fetchone()
@@ -98,11 +104,11 @@ def _get_status(conn, case_id: str) -> str:
 def _set_status(conn, case_id: str, status: str):
     conn.execute(
         text(
-            """
+            '''
             UPDATE cases
             SET status = :status, updated_at = NOW()
             WHERE id = :id
-            """
+            '''
         ),
         {"id": case_id, "status": status},
     )
@@ -111,10 +117,10 @@ def _set_status(conn, case_id: str, status: str):
 def _append_event(conn, case_id: str, event_type: str, payload: Optional[Dict[str, Any]] = None):
     conn.execute(
         text(
-            """
+            '''
             INSERT INTO events(case_id, type, payload, created_at)
             VALUES (:case_id, :type, CAST(:payload AS JSONB), NOW())
-            """
+            '''
         ),
         {
             "case_id": case_id,
@@ -135,6 +141,63 @@ def _load_interesado(conn, case_id: str) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _save_ai_overrides_in_interested_data(
+    conn,
+    case_id: str,
+    *,
+    familia: Optional[str] = None,
+    hecho: Optional[str] = None,
+    motivo: Optional[str] = None,
+):
+    current = _load_interesado(conn, case_id)
+    current = dict(current or {})
+
+    ai_overrides = dict(current.get("ai_overrides") or {})
+    if familia is not None:
+        ai_overrides["familia"] = familia
+        current["manual_family"] = familia
+    if hecho is not None:
+        ai_overrides["hecho"] = hecho
+        current["manual_hecho_denunciado"] = hecho
+    if motivo is not None:
+        ai_overrides["motivo"] = motivo
+        current["manual_hecho_motivo"] = motivo
+
+    ai_overrides["saved_at"] = _utcnow().isoformat()
+    current["ai_overrides"] = ai_overrides
+
+    conn.execute(
+        text(
+            '''
+            UPDATE cases
+            SET interested_data = CAST(:data AS JSONB),
+                updated_at = NOW()
+            WHERE id = :id
+            '''
+        ),
+        {"id": case_id, "data": json.dumps(current)},
+    )
+
+    return ai_overrides
+
+
+def _load_ai_overrides(conn, case_id: str) -> Dict[str, Any]:
+    interesado = _load_interesado(conn, case_id)
+    overrides = dict((interesado or {}).get("ai_overrides") or {})
+
+    familia = overrides.get("familia") or (interesado or {}).get("manual_family")
+    hecho = overrides.get("hecho") or (interesado or {}).get("manual_hecho_denunciado")
+    motivo = overrides.get("motivo") or (interesado or {}).get("manual_hecho_motivo")
+    saved_at = overrides.get("saved_at")
+
+    return {
+        "familia": familia,
+        "hecho": hecho,
+        "motivo": motivo,
+        "saved_at": saved_at,
+    }
+
+
 @router.get("/{case_id}")
 def get_case_detail(
     case_id: str,
@@ -147,13 +210,13 @@ def get_case_detail(
 
         evs = conn.execute(
             text(
-                """
+                '''
                 SELECT payload
                 FROM events
                 WHERE case_id = :id AND type = 'ai_expediente_result'
                 ORDER BY created_at DESC
                 LIMIT 1
-                """
+                '''
             ),
             {"id": case_id},
         ).fetchone()
@@ -162,21 +225,29 @@ def get_case_detail(
         if not isinstance(payload, dict):
             payload = {}
 
+        overrides = _load_ai_overrides(conn, case_id)
+
         familia = (
-            payload.get("classifier_result", {}).get("family")
+            overrides.get("familia")
+            or payload.get("familia_resuelta")
+            or payload.get("tipo_infraccion")
+            or payload.get("classifier_result", {}).get("family")
             or payload.get("familia_detectada")
             or payload.get("familia")
             or payload.get("family")
         )
         confianza = (
-            payload.get("classifier_result", {}).get("confidence")
+            payload.get("tipo_infraccion_confidence")
+            or payload.get("classifier_result", {}).get("confidence")
             or payload.get("confianza")
             or payload.get("confidence")
         )
         hecho = (
-            payload.get("arguments", {}).get("hecho")
+            overrides.get("hecho")
+            or payload.get("hecho_imputado")
             or payload.get("hecho")
             or payload.get("hecho_para_recurso")
+            or payload.get("arguments", {}).get("hecho")
             or payload.get("facts")
             or payload.get("detected_facts")
         )
@@ -187,8 +258,64 @@ def get_case_detail(
             "familia_detectada": familia,
             "confianza": confianza,
             "hecho": hecho,
+            "ai_overrides": overrides,
             "updated_at": case["updated_at"],
         }
+
+
+@router.get("/{case_id}/ai-overrides")
+def get_ai_overrides(
+    case_id: str,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+):
+    require_operator_token(x_operator_token)
+    engine = get_engine()
+    with engine.begin() as conn:
+        _case_or_404(conn, case_id)
+        overrides = _load_ai_overrides(conn, case_id)
+
+    return {"ok": True, "case_id": case_id, "overrides": overrides}
+
+
+@router.post("/{case_id}/save-ai-overrides")
+def save_ai_overrides(
+    case_id: str,
+    body: SaveAiOverridesBody,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+):
+    require_operator_token(x_operator_token)
+    engine = get_engine()
+    with engine.begin() as conn:
+        _case_or_404(conn, case_id)
+
+        overrides = _save_ai_overrides_in_interested_data(
+            conn,
+            case_id,
+            familia=body.familia,
+            hecho=body.hecho,
+            motivo=body.motivo,
+        )
+
+        _append_event(
+            conn,
+            case_id,
+            "operator_ai_override_saved",
+            {
+                "familia": overrides.get("familia"),
+                "hecho": overrides.get("hecho"),
+                "motivo": overrides.get("motivo"),
+                "saved_at": overrides.get("saved_at"),
+            },
+        )
+
+        status = _get_status(conn, case_id)
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "status": status,
+        "overrides": overrides,
+    }
 
 
 @router.post("/{case_id}/approve")
@@ -266,6 +393,14 @@ def override_family(
     engine = get_engine()
     with engine.begin() as conn:
         _case_or_404(conn, case_id)
+
+        overrides = _save_ai_overrides_in_interested_data(
+            conn,
+            case_id,
+            familia=body.familia,
+            motivo=body.motivo,
+        )
+
         _append_event(
             conn,
             case_id,
@@ -273,12 +408,13 @@ def override_family(
             {
                 "familia": body.familia,
                 "motivo": body.motivo,
+                "saved_at": overrides.get("saved_at"),
                 "at": _utcnow().isoformat(),
             },
         )
         status = _get_status(conn, case_id)
 
-    return {"ok": True, "case_id": case_id, "status": status}
+    return {"ok": True, "case_id": case_id, "status": status, "overrides": overrides}
 
 
 @router.post("/{case_id}/override-family-and-regenerate")
@@ -292,6 +428,14 @@ def override_family_and_regenerate(
 
     with engine.begin() as conn:
         _case_or_404(conn, case_id)
+
+        overrides = _save_ai_overrides_in_interested_data(
+            conn,
+            case_id,
+            familia=body.familia,
+            motivo=body.motivo,
+        )
+
         _append_event(
             conn,
             case_id,
@@ -299,6 +443,7 @@ def override_family_and_regenerate(
             {
                 "familia": body.familia,
                 "motivo": body.motivo,
+                "saved_at": overrides.get("saved_at"),
                 "at": _utcnow().isoformat(),
             },
         )
@@ -329,6 +474,9 @@ def override_family_and_regenerate(
                     "family": body.familia,
                     "confidence": 1.0,
                 },
+                "familia_resuelta": body.familia,
+                "tipo_infraccion": body.familia,
+                "hecho_imputado": _load_ai_overrides(conn, case_id).get("hecho"),
                 "arguments": {
                     "hecho": f"Recurso regenerado manualmente. Motivo: {body.motivo}",
                 },
@@ -379,26 +527,12 @@ def rewrite_hecho_and_regenerate(
     with engine.begin() as conn:
         _case_or_404(conn, case_id)
 
-        conn.execute(
-            text(
-                """
-                UPDATE cases
-                SET interested_data = jsonb_set(
-                    jsonb_set(
-                        COALESCE(interested_data, '{}'::jsonb),
-                        '{manual_hecho_denunciado}',
-                        to_jsonb(:hecho::text),
-                        true
-                    ),
-                    '{manual_hecho_motivo}',
-                    to_jsonb(:motivo::text),
-                    true
-                ),
-                updated_at = NOW()
-                WHERE id = :id
-                """
-            ),
-            {"id": case_id, "hecho": body.hecho, "motivo": body.motivo},
+        overrides = _save_ai_overrides_in_interested_data(
+            conn,
+            case_id,
+            familia=body.familia,
+            hecho=body.hecho,
+            motivo=body.motivo,
         )
 
         interesado = _load_interesado(conn, case_id)
@@ -411,6 +545,7 @@ def rewrite_hecho_and_regenerate(
                 "hecho": body.hecho,
                 "motivo": body.motivo,
                 "familia": body.familia,
+                "saved_at": overrides.get("saved_at"),
                 "at": _utcnow().isoformat(),
             },
         )
@@ -418,6 +553,8 @@ def rewrite_hecho_and_regenerate(
     interesado = dict(interesado or {})
     interesado["manual_hecho_denunciado"] = body.hecho
     interesado["manual_hecho_motivo"] = body.motivo
+    if body.familia:
+        interesado["manual_family"] = body.familia
 
     try:
         req = GenerateRequest(
@@ -444,6 +581,9 @@ def rewrite_hecho_and_regenerate(
                     "family": body.familia or "manual_hecho",
                     "confidence": 1.0,
                 },
+                "familia_resuelta": body.familia or _load_ai_overrides(conn, case_id).get("familia"),
+                "tipo_infraccion": body.familia or _load_ai_overrides(conn, case_id).get("familia"),
+                "hecho_imputado": body.hecho,
                 "arguments": {
                     "hecho": body.hecho,
                 },
