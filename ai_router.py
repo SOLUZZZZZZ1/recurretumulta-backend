@@ -30,6 +30,120 @@ def _pick(mapping, *paths):
     return None
 
 
+def _as_string(value):
+    if value in (None, "", [], {}):
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _as_confidence(value):
+    if value in (None, "", [], {}):
+        return 0
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        return float(value)
+    except Exception:
+        return 0
+
+
+def _normalize_ai_payload(result):
+    familia = _pick(
+        result,
+        "familia_resuelta",
+        "tipo_infraccion",
+        "classification.family",
+        "classification.familia",
+        "classifier_result.family",
+        "classifier_result.familia",
+        "arguments.family",
+        "arguments.familia",
+        "result.family",
+        "result.familia",
+        "extracted.tipo_infraccion",
+        "extracted.familia_resuelta",
+    )
+
+    confianza = _pick(
+        result,
+        "tipo_infraccion_confidence",
+        "classification.confidence",
+        "classification.confianza",
+        "classifier_result.confidence",
+        "classifier_result.score",
+        "arguments.confidence",
+        "arguments.score",
+        "result.confidence",
+        "result.confianza",
+        "extracted.tipo_infraccion_confidence",
+    )
+
+    hecho = _pick(
+        result,
+        "hecho_para_recurso",
+        "hecho_imputado",
+        "hecho_limpio",
+        "hecho_reconstruido",
+        "hecho_crudo",
+        "arguments.hecho",
+        "arguments.hecho_imputado",
+        "arguments.fact",
+        "arguments.facts",
+        "result.hecho",
+        "result.fact",
+        "extracted.hecho_para_recurso",
+        "extracted.hecho_imputado",
+        "extracted.hecho_limpio",
+        "extracted.hecho_denunciado_literal",
+        "extracted.hecho_denunciado_resumido",
+    )
+
+    admisibilidad = _pick(
+        result,
+        "resultado_estrategico",
+        "admissibility.admissibility",
+        "phase.admissibility",
+        "result.admissibility",
+        "result.admisibilidad",
+        "extracted.resultado_estrategico",
+        "extracted.admissibility.admissibility",
+    )
+
+    accion_raw = _pick(
+        result,
+        "phase.recommended_action",
+        "recommended_action",
+        "phase.recommended_action.action",
+        "recommended_action.action",
+        "result.recommended_action",
+        "result.accion_recomendada",
+        "modelo_defensa",
+        "extracted.modelo_defensa",
+    )
+
+    if isinstance(accion_raw, dict):
+        accion = _pick(
+            {"x": accion_raw},
+            "x.action",
+            "x.accion",
+            "x.name",
+            "x.tipo",
+        ) or _as_string(accion_raw)
+    else:
+        accion = _as_string(accion_raw)
+
+    return {
+        "familia": _as_string(familia),
+        "confianza": _as_confidence(confianza),
+        "hecho": _as_string(hecho),
+        "admisibilidad": _as_string(admisibilidad),
+        "accion": accion,
+        "raw_result": result,
+    }
+
+
 @router.post("/expediente/run")
 def run_ai(req: RunExpedienteAI):
     try:
@@ -40,72 +154,7 @@ def run_ai(req: RunExpedienteAI):
         engine = get_engine()
         always_generate = (os.getenv("ALWAYS_GENERATE_ON_AI_RUN") or "").strip() == "1"
 
-        familia = _pick(
-            result,
-            "familia_resuelta",
-            "tipo_infraccion",
-            "classification.family",
-            "classification.familia",
-            "classifier_result.family",
-            "classifier_result.familia",
-            "arguments.family",
-            "arguments.familia",
-            "result.family",
-            "result.familia",
-        )
-
-        confianza = _pick(
-            result,
-            "tipo_infraccion_confidence",
-            "classification.confidence",
-            "classification.confianza",
-            "classifier_result.confidence",
-            "classifier_result.score",
-            "arguments.confidence",
-            "arguments.score",
-            "result.confidence",
-            "result.confianza",
-        )
-
-        hecho = _pick(
-            result,
-            "hecho_para_recurso",
-            "hecho_imputado",
-            "hecho_limpio",
-            "arguments.hecho",
-            "arguments.hecho_imputado",
-            "arguments.fact",
-            "arguments.facts",
-            "result.hecho",
-            "result.fact",
-        )
-
-        admisibilidad = _pick(
-            result,
-            "resultado_estrategico",
-            "admissibility.admissibility",
-            "phase.admissibility",
-            "result.admissibility",
-            "result.admisibilidad",
-        )
-
-        accion = _pick(
-            result,
-            "modelo_defensa",
-            "phase.recommended_action.action",
-            "recommended_action.action",
-            "result.recommended_action",
-            "result.accion_recomendada",
-        )
-
-        ai_payload = {
-            "familia": familia or "",
-            "confianza": confianza if confianza is not None else "",
-            "hecho": hecho or "",
-            "admisibilidad": admisibilidad or "",
-            "accion": accion or "",
-            "raw_result": result,
-        }
+        ai_payload = _normalize_ai_payload(result)
 
         with engine.begin() as conn:
             conn.execute(
@@ -154,7 +203,12 @@ def run_ai(req: RunExpedienteAI):
                 except Exception as gen_err:
                     result["warning"] = f"Generación falló: {gen_err}"
 
-        return result
+        return {
+            "ok": True,
+            "case_id": req.case_id,
+            "ai_payload": ai_payload,
+            "result": result,
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error IA: {e}")
