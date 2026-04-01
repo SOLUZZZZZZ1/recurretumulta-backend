@@ -1,4 +1,4 @@
-# admin_migrate.py — migraciones admin (init + ampliaciones)
+# admin_migrate.py — migraciones admin (init + ampliaciones + autorización reforzada)
 import os
 from typing import List, Tuple
 from fastapi import APIRouter, Header, HTTPException
@@ -109,7 +109,7 @@ def migrate_init(x_admin_token: str | None = Header(default=None, alias="x-admin
 
 
 # =========================================================
-# MIGRACIÓN: DATOS INTERESADO + AUTORIZACIÓN
+# MIGRACIÓN: DATOS INTERESADO + AUTORIZACIÓN BASE
 # =========================================================
 
 @router.post("/cases_details", response_model=MigrateResponse)
@@ -129,6 +129,35 @@ def migrate_cases_details(x_admin_token: str | None = Header(default=None, alias
 
 
 # =========================================================
+# MIGRACIÓN: AUTORIZACIÓN REFORZADA
+# =========================================================
+
+@router.post("/authorization_full", response_model=MigrateResponse)
+def migrate_authorization_full(x_admin_token: str | None = Header(default=None, alias="x-admin-token")):
+    _require_admin_token(x_admin_token)
+    from database import get_engine
+    engine = get_engine()
+
+    ddl = [
+        ("cases_authorization_version", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS authorization_version TEXT;"),
+        ("cases_authorization_ip", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS authorization_ip TEXT;"),
+        ("cases_authorization_user_agent", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS authorization_user_agent TEXT;"),
+        ("cases_authorization_full_name", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS authorization_full_name TEXT;"),
+        ("cases_authorization_dni_nie", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS authorization_dni_nie TEXT;"),
+        ("cases_authorization_address", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS authorization_address TEXT;"),
+        ("cases_authorization_email", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS authorization_email TEXT;"),
+        ("cases_authorization_phone", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS authorization_phone TEXT;"),
+        ("cases_authorization_checks", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS authorization_checks JSONB;"),
+        ("cases_authorization_snapshot", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS authorization_snapshot JSONB;"),
+        ("idx_cases_authorized", "CREATE INDEX IF NOT EXISTS idx_cases_authorized ON cases(authorized);"),
+        ("idx_cases_authorized_at", "CREATE INDEX IF NOT EXISTS idx_cases_authorized_at ON cases(authorized_at);"),
+    ]
+
+    applied = _run(engine, ddl)
+    return MigrateResponse(ok=True, message="Migración authorization_full aplicada.", created=applied)
+
+
+# =========================================================
 # MIGRACIÓN: PARTNERS + CANAL
 # =========================================================
 
@@ -140,7 +169,6 @@ def migrate_partners_channel(x_admin_token: str | None = Header(default=None, al
     engine = get_engine()
 
     ddl = [
-        # Crear tabla si no existe (sin billing todavía)
         (
             "partners_table",
             """CREATE TABLE IF NOT EXISTS partners (
@@ -155,8 +183,6 @@ def migrate_partners_channel(x_admin_token: str | None = Header(default=None, al
               updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );""",
         ),
-
-        # Añadir columnas billing si no existen
         (
             "partners_billing_mode",
             "ALTER TABLE partners ADD COLUMN IF NOT EXISTS billing_mode TEXT NOT NULL DEFAULT 'monthly';",
@@ -165,32 +191,26 @@ def migrate_partners_channel(x_admin_token: str | None = Header(default=None, al
             "partners_billing_status",
             "ALTER TABLE partners ADD COLUMN IF NOT EXISTS billing_status TEXT NOT NULL DEFAULT 'current';",
         ),
-
-        # Índices
-        ("idx_partners_email", "CREATE INDEX IF NOT EXISTS idx_partners_email ON partners(email);"),
-        ("idx_cases_partner", "CREATE INDEX IF NOT EXISTS idx_cases_partner ON cases(partner_id);"),
-        ("idx_partners_billing_status", "CREATE INDEX IF NOT EXISTS idx_partners_billing_status ON partners(billing_status);"),
-
-        # Canal en cases
         ("cases_channel", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'direct';"),
         ("cases_partner_id", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS partner_id UUID NULL REFERENCES partners(id);"),
         ("cases_partner_name", "ALTER TABLE cases ADD COLUMN IF NOT EXISTS partner_name TEXT;"),
+        ("idx_partners_email", "CREATE INDEX IF NOT EXISTS idx_partners_email ON partners(email);"),
+        ("idx_partners_billing_status", "CREATE INDEX IF NOT EXISTS idx_partners_billing_status ON partners(billing_status);"),
+        ("idx_cases_partner", "CREATE INDEX IF NOT EXISTS idx_cases_partner ON cases(partner_id);"),
     ]
 
     applied = _run(engine, ddl)
     return MigrateResponse(ok=True, message="Migración partners_channel aplicada.", created=applied)
-# =========================
+
+
+# =========================================================
 # MIGRACIÓN: partners must_change_password
-# =========================
+# =========================================================
 
 @router.post("/partners_must_change_password", response_model=MigrateResponse)
 def migrate_partners_must_change_password(
     x_admin_token: str | None = Header(default=None, alias="x-admin-token")
 ):
-    """
-    Añade columna partners.must_change_password para forzar cambio de contraseña en primer login.
-    SAFE: IF NOT EXISTS
-    """
     _require_admin_token(x_admin_token)
 
     from database import get_engine
@@ -213,6 +233,7 @@ def migrate_partners_must_change_password(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error migrando partners_must_change_password: {e}")
 
+
 # =========================================================
 # MIGRACIÓN: DGT/DEV submissions + submission_events
 # =========================================================
@@ -231,25 +252,14 @@ def migrate_dgt_dev_submissions(x_admin_token: str | None = Header(default=None,
             CREATE TABLE IF NOT EXISTS submissions (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
               case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-
-              -- canal de envío (DGT_DEV, etc.)
               channel TEXT NOT NULL DEFAULT 'DGT_DEV',
-
-              -- identificadores DEV/NOSTRA (cuando existan)
               remesa_id TEXT,
               notification_id TEXT,
-
-              -- estado del envío
               status TEXT NOT NULL DEFAULT 'queued',
-
-              -- contexto (normal/reforzado/critico) y modo
               context_intensity TEXT,
               dry_run BOOLEAN NOT NULL DEFAULT TRUE,
-
-              -- robustez
               retry_count INT NOT NULL DEFAULT 0,
               last_error TEXT,
-
               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
               updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
@@ -258,7 +268,6 @@ def migrate_dgt_dev_submissions(x_admin_token: str | None = Header(default=None,
         ("idx_submissions_case", "CREATE INDEX IF NOT EXISTS idx_submissions_case ON submissions(case_id);"),
         ("idx_submissions_status", "CREATE INDEX IF NOT EXISTS idx_submissions_status ON submissions(status);"),
         ("idx_submissions_channel", "CREATE INDEX IF NOT EXISTS idx_submissions_channel ON submissions(channel);"),
-
         (
             "submission_events_table",
             """
