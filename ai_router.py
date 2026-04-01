@@ -1,4 +1,3 @@
-import os
 import json
 from datetime import datetime, timedelta
 
@@ -17,17 +16,163 @@ class RunExpedienteAI(BaseModel):
     case_id: str = Field(..., description="UUID del expediente (cases.id)")
 
 
-def _build_deadlines():
-    today = datetime.utcnow()
+def _first_non_empty(*values):
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and value.strip() == "":
+            continue
+        return value
+    return None
 
-    before_deadline = today + timedelta(days=20)
-    after_deadline = today + timedelta(days=45)
+
+def _safe_float(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip().replace(",", ".")
+        if value == "":
+            return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _get_by_path(obj, path, default=None):
+    try:
+        current = obj
+        for part in path.split("."):
+            if current is None:
+                return default
+            if isinstance(current, dict):
+                current = current.get(part)
+            else:
+                return default
+        return current if current is not None else default
+    except Exception:
+        return default
+
+
+def _extract_confidence(result):
+    raw_confidence = _first_non_empty(
+        result.get("confianza"),
+        result.get("confidence"),
+        result.get("tipo_infraccion_confidence"),
+        result.get("score"),
+        result.get("probability"),
+        _get_by_path(result, "classifier_result.confidence"),
+        _get_by_path(result, "classifier_result.score"),
+        _get_by_path(result, "raw_result.confianza"),
+        _get_by_path(result, "raw_result.confidence"),
+        _get_by_path(result, "raw_result.tipo_infraccion_confidence"),
+        _get_by_path(result, "raw_result.score"),
+        _get_by_path(result, "raw_result.probability"),
+        _get_by_path(result, "raw_result.classifier_result.confidence"),
+        _get_by_path(result, "raw_result.classifier_result.score"),
+    )
+    confidence = _safe_float(raw_confidence)
+    if confidence is None:
+        return None
+
+    if confidence > 1:
+        confidence = confidence / 100.0
+
+    if confidence < 0:
+        confidence = 0.0
+    if confidence > 1:
+        confidence = 1.0
+
+    return round(confidence, 4)
+
+
+def _extract_familia(result):
+    return str(_first_non_empty(
+        result.get("familia"),
+        result.get("tipo_infraccion"),
+        result.get("family"),
+        _get_by_path(result, "classifier_result.family"),
+        _get_by_path(result, "raw_result.familia"),
+        _get_by_path(result, "raw_result.tipo_infraccion"),
+        _get_by_path(result, "raw_result.family"),
+        _get_by_path(result, "raw_result.classifier_result.family"),
+        "",
+    ))
+
+
+def _extract_hecho(result):
+    return str(_first_non_empty(
+        result.get("hecho"),
+        result.get("hecho_imputado"),
+        _get_by_path(result, "arguments.hecho"),
+        _get_by_path(result, "raw_result.hecho"),
+        _get_by_path(result, "raw_result.hecho_imputado"),
+        "",
+    ))
+
+
+def _parse_date_candidate(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    text_value = str(value).strip()
+    if not text_value:
+        return None
+
+    normalized = text_value.replace("Z", "+00:00")
+    for candidate in (
+        normalized,
+        normalized[:10],
+    ):
+        try:
+            return datetime.fromisoformat(candidate)
+        except Exception:
+            pass
+
+    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d", "%d/%m/%y", "%d-%m-%y"):
+        try:
+            return datetime.strptime(text_value[:10], fmt)
+        except Exception:
+            pass
+
+    return None
+
+
+def _extract_reference_date(result):
+    candidates = [
+        result.get("fecha_notificacion"),
+        result.get("fecha"),
+        result.get("notification_date"),
+        result.get("notice_date"),
+        result.get("boletin_fecha"),
+        result.get("fecha_denuncia"),
+        _get_by_path(result, "raw_result.fecha_notificacion"),
+        _get_by_path(result, "raw_result.fecha"),
+        _get_by_path(result, "raw_result.notification_date"),
+        _get_by_path(result, "raw_result.notice_date"),
+        _get_by_path(result, "raw_result.boletin_fecha"),
+        _get_by_path(result, "raw_result.fecha_denuncia"),
+    ]
+    for candidate in candidates:
+        parsed = _parse_date_candidate(candidate)
+        if parsed is not None:
+            return parsed
+    return datetime.utcnow()
+
+
+def _build_deadlines(result):
+    base_date = _extract_reference_date(result)
+
+    before_deadline = base_date + timedelta(days=20)
+    after_deadline = base_date + timedelta(days=30)
 
     return {
+        "reference_date": base_date.isoformat(),
         "before_resource_deadline": before_deadline.isoformat(),
         "after_resource_deadline": after_deadline.isoformat(),
-        "before_text": "Plazo orientativo de 20 días para alegaciones",
-        "after_text": "Plazo orientativo tras resolución",
+        "before_text": "20 días naturales desde la fecha de referencia para alegaciones o pronto pago.",
+        "after_text": "1 mes orientativo para recurso administrativo desde la resolución o acto recurrible.",
     }
 
 
@@ -38,46 +183,69 @@ def _build_delivery(result):
         return {
             "destination": "Ayuntamiento / Policía Local",
             "address": "Registro electrónico municipal o sede electrónica del Ayuntamiento",
+            "channel": "registro_electronico",
+            "entity": "ayuntamiento",
+        }
+
+    if "ministerio del interior" in raw or "trafico" in raw or "dgt" in raw or "jefatura de trafico" in raw:
+        return {
+            "destination": "DGT - Dirección General de Tráfico",
+            "address": "https://sede.dgt.gob.es",
+            "channel": "sede_dgt",
+            "entity": "dgt",
         }
 
     return {
-        "destination": "DGT - Dirección General de Tráfico",
-        "address": "https://sede.dgt.gob.es",
+        "destination": "Registro Electrónico General",
+        "address": "https://rec.redsara.es/registro/action/are/acceso.do",
+        "channel": "registro_electronico",
+        "entity": "ministerio_interior",
     }
 
 
-# VERSION CORREGIDA
 def _normalize_ai_payload(result):
+    familia = _extract_familia(result)
+    confianza = _extract_confidence(result)
+    hecho = _extract_hecho(result)
+    admisibilidad = str(_first_non_empty(
+        result.get("admisibilidad"),
+        result.get("admissibility"),
+        _get_by_path(result, "raw_result.admisibilidad"),
+        _get_by_path(result, "raw_result.admissibility"),
+        "",
+    ))
+    accion = str(_first_non_empty(
+        result.get("accion"),
+        result.get("action"),
+        _get_by_path(result, "recommended_action.action"),
+        _get_by_path(result, "phase.recommended_action.action"),
+        _get_by_path(result, "raw_result.accion"),
+        _get_by_path(result, "raw_result.action"),
+        _get_by_path(result, "raw_result.recommended_action.action"),
+        _get_by_path(result, "raw_result.phase.recommended_action.action"),
+        "",
+    ))
 
-    familia = result.get("familia") or result.get("tipo_infraccion") or ""
-    confianza = result.get("confianza") or 0
-    hecho = result.get("hecho") or result.get("hecho_imputado") or ""
-    admisibilidad = result.get("admisibilidad") or ""
-    accion = result.get("accion") or ""
-
-    deadlines = _build_deadlines()
+    deadlines = _build_deadlines(result)
     delivery = _build_delivery(result)
 
-    return {
-        "familia": str(familia),
-        "confianza": float(confianza),
-        "hecho": str(hecho),
-        "admisibilidad": str(admisibilidad),
-        "accion": str(accion),
-
+    payload = {
+        "familia": familia,
+        "confianza": confianza,
+        "hecho": hecho,
+        "admisibilidad": admisibilidad,
+        "accion": accion,
         "classifier_result": {
-            "family": str(familia),
-            "confidence": float(confianza)
+            "family": familia,
+            "confidence": confianza,
         },
-
-        "tipo_infraccion": str(familia),
-        "tipo_infraccion_confidence": float(confianza),
-
+        "tipo_infraccion": familia,
+        "tipo_infraccion_confidence": confianza,
         "deadlines": deadlines,
         "delivery": delivery,
-
         "raw_result": result,
     }
+    return payload
 
 
 @router.post("/expediente/run")
@@ -95,10 +263,10 @@ def run_ai(req: RunExpedienteAI):
         with engine.begin() as conn:
             conn.execute(
                 text(
-                    """
+                    '''
                     INSERT INTO events(case_id, type, payload, created_at)
                     VALUES (:id, 'ai_expediente_result', CAST(:payload AS JSONB), NOW())
-                    """
+                    '''
                 ),
                 {
                     "id": req.case_id,
