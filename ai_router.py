@@ -17,10 +17,6 @@ class RunExpedienteAI(BaseModel):
     case_id: str = Field(..., description="UUID del expediente (cases.id)")
 
 
-# -------------------------------------------------------
-# 🧠 NUEVO: cálculo de plazos
-# -------------------------------------------------------
-
 def _build_deadlines():
     today = datetime.utcnow()
 
@@ -34,10 +30,6 @@ def _build_deadlines():
         "after_text": "Plazo orientativo tras resolución",
     }
 
-
-# -------------------------------------------------------
-# 🧠 NUEVO: destino envío
-# -------------------------------------------------------
 
 def _build_delivery(result):
     raw = json.dumps(result, ensure_ascii=False).lower()
@@ -54,10 +46,7 @@ def _build_delivery(result):
     }
 
 
-# -------------------------------------------------------
-# NORMALIZACIÓN EXISTENTE + EXTENDIDA
-# -------------------------------------------------------
-
+# VERSION CORREGIDA
 def _normalize_ai_payload(result):
 
     familia = result.get("familia") or result.get("tipo_infraccion") or ""
@@ -66,7 +55,6 @@ def _normalize_ai_payload(result):
     admisibilidad = result.get("admisibilidad") or ""
     accion = result.get("accion") or ""
 
-    # 🔥 AQUÍ METEMOS LOS NUEVOS CAMPOS
     deadlines = _build_deadlines()
     delivery = _build_delivery(result)
 
@@ -77,17 +65,20 @@ def _normalize_ai_payload(result):
         "admisibilidad": str(admisibilidad),
         "accion": str(accion),
 
-        # 👇 NUEVO
+        "classifier_result": {
+            "family": str(familia),
+            "confidence": float(confianza)
+        },
+
+        "tipo_infraccion": str(familia),
+        "tipo_infraccion_confidence": float(confianza),
+
         "deadlines": deadlines,
         "delivery": delivery,
 
         "raw_result": result,
     }
 
-
-# -------------------------------------------------------
-# MAIN
-# -------------------------------------------------------
 
 @router.post("/expediente/run")
 def run_ai(req: RunExpedienteAI):
@@ -104,10 +95,10 @@ def run_ai(req: RunExpedienteAI):
         with engine.begin() as conn:
             conn.execute(
                 text(
-                    '''
+                    """
                     INSERT INTO events(case_id, type, payload, created_at)
                     VALUES (:id, 'ai_expediente_result', CAST(:payload AS JSONB), NOW())
-                    '''
+                    """
                 ),
                 {
                     "id": req.case_id,
