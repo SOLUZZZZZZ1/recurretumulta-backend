@@ -1,11 +1,14 @@
-# billing.py — Stripe Checkout + Webhook + Payment Status (bloqueo por autorización)
+# billing_auto_modo_dios.py — checkout bloqueado por autorización + Modo Dios automático tras pago
 import json
 import os
 import stripe
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import text
+
 from database import get_engine
+from ai.expediente_engine import run_expediente_ai
+from generate import generate_dgt_for_case
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 
@@ -22,6 +25,162 @@ class CheckoutRequest(BaseModel):
     product: str
     email: EmailStr
     locale: str | None = "es"
+
+
+def _pick(mapping, *paths):
+    for path in paths:
+        current = mapping
+        ok = True
+        for part in path.split("."):
+            if isinstance(current, dict) and part in current:
+                current = current.get(part)
+            else:
+                ok = False
+                break
+        if ok and current not in (None, "", [], {}):
+            return current
+    return None
+
+
+def _as_string(value):
+    if value in (None, "", [], {}):
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _as_confidence(value):
+    if value in (None, "", [], {}):
+        return None
+    if isinstance(value, (int, float)):
+        val = float(value)
+    else:
+        try:
+            val = float(str(value).replace(",", "."))
+        except Exception:
+            return None
+
+    if val > 1:
+        val = val / 100.0
+    if val < 0:
+        val = 0.0
+    if val > 1:
+        val = 1.0
+    return round(val, 4)
+
+
+def _normalize_ai_payload(result):
+    familia = _pick(
+        result,
+        "familia_resuelta",
+        "tipo_infraccion",
+        "classification.family",
+        "classification.familia",
+        "classifier_result.family",
+        "classifier_result.familia",
+        "arguments.family",
+        "arguments.familia",
+        "result.family",
+        "result.familia",
+        "extracted.tipo_infraccion",
+        "extracted.familia_resuelta",
+    )
+
+    confianza = _pick(
+        result,
+        "tipo_infraccion_confidence",
+        "classification.confidence",
+        "classification.confianza",
+        "classifier_result.confidence",
+        "classifier_result.score",
+        "arguments.confidence",
+        "arguments.score",
+        "result.confidence",
+        "result.confianza",
+        "extracted.tipo_infraccion_confidence",
+    )
+
+    hecho = _pick(
+        result,
+        "hecho_para_recurso",
+        "hecho_imputado",
+        "hecho_limpio",
+        "hecho_reconstruido",
+        "hecho_crudo",
+        "arguments.hecho",
+        "arguments.hecho_imputado",
+        "arguments.fact",
+        "arguments.facts",
+        "result.hecho",
+        "result.fact",
+        "extracted.hecho_para_recurso",
+        "extracted.hecho_imputado",
+        "extracted.hecho_limpio",
+        "extracted.hecho_denunciado_literal",
+        "extracted.hecho_denunciado_resumido",
+    )
+
+    admisibilidad = _pick(
+        result,
+        "resultado_estrategico",
+        "admissibility.admissibility",
+        "phase.admissibility",
+        "result.admissibility",
+        "result.admisibilidad",
+        "extracted.resultado_estrategico",
+        "extracted.admissibility.admissibility",
+    )
+
+    accion_raw = _pick(
+        result,
+        "phase.recommended_action",
+        "recommended_action",
+        "phase.recommended_action.action",
+        "recommended_action.action",
+        "result.recommended_action",
+        "result.accion_recomendada",
+        "modelo_defensa",
+        "extracted.modelo_defensa",
+    )
+
+    if isinstance(accion_raw, dict):
+        accion = _pick({"x": accion_raw}, "x.action", "x.accion", "x.name", "x.tipo") or _as_string(accion_raw)
+    else:
+        accion = _as_string(accion_raw)
+
+    familia_str = _as_string(familia)
+    confianza_num = _as_confidence(confianza)
+    hecho_str = _as_string(hecho)
+    admisibilidad_str = _as_string(admisibilidad)
+
+    return {
+        "familia": familia_str,
+        "confianza": confianza_num,
+        "hecho": hecho_str,
+        "admisibilidad": admisibilidad_str,
+        "accion": accion,
+        "classifier_result": {
+            "family": familia_str,
+            "confidence": confianza_num,
+        },
+        "tipo_infraccion": familia_str,
+        "tipo_infraccion_confidence": confianza_num,
+        "hecho_imputado": hecho_str,
+        "raw_result": result,
+    }
+
+
+def _append_event(conn, case_id: str, event_type: str, payload: dict):
+    conn.execute(
+        text(
+            """
+            INSERT INTO events(case_id, type, payload, created_at)
+            VALUES (:id, :type, CAST(:payload AS JSONB), NOW())
+            """
+        ),
+        {"id": case_id, "type": event_type, "payload": json.dumps(payload, ensure_ascii=False)},
+    )
 
 
 def _require_case_authorized_before_payment(conn, case_id: str):
@@ -66,10 +225,7 @@ def _require_case_authorized_before_payment(conn, case_id: str):
         )
 
     if not bool(row[1]):
-        raise HTTPException(
-            status_code=409,
-            detail="Debes autorizar antes de pagar",
-        )
+        raise HTTPException(status_code=409, detail="Debes autorizar antes de pagar")
 
     return {
         "case_id": str(row[0]),
@@ -77,6 +233,91 @@ def _require_case_authorized_before_payment(conn, case_id: str):
         "authorized_at": row[2],
         "payment_status": row[3],
         "interested_data": interested_data,
+    }
+
+
+def _run_post_payment_modo_dios(conn, case_id: str):
+    result = run_expediente_ai(case_id)
+    if not isinstance(result, dict):
+        result = {"raw_result": result}
+
+    ai_payload = _normalize_ai_payload(result)
+
+    _append_event(conn, case_id, "ai_expediente_result", ai_payload)
+
+    try:
+        generation_result = generate_dgt_for_case(conn, case_id)
+    except Exception as gen_err:
+        conn.execute(
+            text("UPDATE cases SET status='manual_review', updated_at=NOW() WHERE id=:id"),
+            {"id": case_id},
+        )
+        _append_event(
+            conn,
+            case_id,
+            "resource_generation_failed",
+            {
+                "ok": False,
+                "mode": "auto_post_payment",
+                "error": str(gen_err),
+            },
+        )
+        return {
+            "ok": False,
+            "stage": "generation",
+            "error": str(gen_err),
+            "ai_payload": ai_payload,
+        }
+
+    confidence = ai_payload.get("tipo_infraccion_confidence")
+    low_confidence = confidence is None or confidence < 0.80
+
+    if low_confidence:
+        conn.execute(
+            text("UPDATE cases SET status='manual_review', updated_at=NOW() WHERE id=:id"),
+            {"id": case_id},
+        )
+        _append_event(
+            conn,
+            case_id,
+            "auto_review_required_low_confidence",
+            {
+                "ok": True,
+                "mode": "auto_post_payment",
+                "confidence": confidence,
+                "threshold": 0.80,
+                "message": "Confianza inferior al 80%; revisión obligatoria por operador.",
+            },
+        )
+        return {
+            "ok": True,
+            "stage": "manual_review",
+            "confidence": confidence,
+            "ai_payload": ai_payload,
+            "generation_result": generation_result,
+        }
+
+    conn.execute(
+        text("UPDATE cases SET status='generated', updated_at=NOW() WHERE id=:id"),
+        {"id": case_id},
+    )
+    _append_event(
+        conn,
+        case_id,
+        "resource_generated_auto",
+        {
+            "ok": True,
+            "mode": "auto_post_payment",
+            "confidence": confidence,
+            "threshold": 0.80,
+        },
+    )
+    return {
+        "ok": True,
+        "stage": "generated",
+        "confidence": confidence,
+        "ai_payload": ai_payload,
+        "generation_result": generation_result,
     }
 
 
@@ -110,23 +351,15 @@ def create_checkout(req: CheckoutRequest):
             {"id": req.case_id, "product": req.product, "email": req.email},
         )
 
-        conn.execute(
-            text(
-                """
-                INSERT INTO events(case_id, type, payload, created_at)
-                VALUES (:id, 'checkout_started', CAST(:p AS JSONB), NOW())
-                """
-            ),
+        _append_event(
+            conn,
+            req.case_id,
+            "checkout_started",
             {
-                "id": req.case_id,
-                "p": json.dumps(
-                    {
-                        "product": req.product,
-                        "email": req.email,
-                        "authorized": True,
-                        "authorized_at": str(auth_meta["authorized_at"] or ""),
-                    }
-                ),
+                "product": req.product,
+                "email": req.email,
+                "authorized": True,
+                "authorized_at": str(auth_meta["authorized_at"] or ""),
             },
         )
 
@@ -178,15 +411,9 @@ async def stripe_webhook(request: Request):
                 ),
                 {"id": case_id, "sid": session["id"], "pi": session.get("payment_intent")},
             )
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO events(case_id, type, payload, created_at)
-                    VALUES (:id, 'paid_ok', CAST(:p AS JSONB), NOW())
-                    """
-                ),
-                {"id": case_id, "p": json.dumps({"session": session["id"]})},
-            )
+            _append_event(conn, case_id, "paid_ok", {"session": session["id"]})
+            _run_post_payment_modo_dios(conn, case_id)
+
     return {"ok": True}
 
 
@@ -197,7 +424,7 @@ def payment_status(case_id: str):
         row = conn.execute(
             text(
                 """
-                SELECT payment_status, paid_at, product_code, authorized
+                SELECT payment_status, paid_at, product_code, authorized, status
                 FROM cases WHERE id=:id
                 """
             ),
@@ -212,4 +439,5 @@ def payment_status(case_id: str):
         "paid_at": row.paid_at,
         "product_code": row.product_code,
         "authorized": bool(row.authorized),
+        "status": row.status,
     }
