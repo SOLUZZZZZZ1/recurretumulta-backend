@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from database import get_engine
 from generate import GenerateRequest, generate_dgt
+from destination_resolver import resolve_destination
 
 router = APIRouter(prefix="/ops/cases", tags=["ops-operator"])
 
@@ -642,8 +643,11 @@ def submit_to_dgt(
                 detail="El expediente debe estar en ready_to_submit antes de enviarse a DGT",
             )
 
-        dgt_id = f"DGT-{case_id}-{int(datetime.now().timestamp())}"
+        interesado = _load_interesado(conn, case_id)
+        destination = resolve_destination(interesado)
+
         submitted_at = _utcnow()
+        external_id = f"AUTO-{case_id}-{int(datetime.now().timestamp())}"
 
         _set_status(conn, case_id, "submitted")
 
@@ -657,16 +661,16 @@ def submit_to_dgt(
 
         try:
             conn.execute(
-                text("UPDATE cases SET dgt_id = :dgt_id WHERE id = :id"),
-                {"id": case_id, "dgt_id": dgt_id},
+                text("UPDATE cases SET dgt_id = :external_id WHERE id = :id"),
+                {"id": case_id, "external_id": external_id},
             )
         except Exception:
             pass
 
         try:
             conn.execute(
-                text("UPDATE cases SET dgt_submission_id = :dgt_id WHERE id = :id"),
-                {"id": case_id, "dgt_id": dgt_id},
+                text("UPDATE cases SET dgt_submission_id = :external_id WHERE id = :id"),
+                {"id": case_id, "external_id": external_id},
             )
         except Exception:
             pass
@@ -674,12 +678,13 @@ def submit_to_dgt(
         _append_event(
             conn,
             case_id,
-            "submitted_to_dgt",
+            "submitted_auto",
             {
                 "document_url": body.document_url,
-                "dgt_id": dgt_id,
+                "external_id": external_id,
                 "submitted_at": submitted_at.isoformat(),
-                "mode": "stub",
+                "mode": "AUTO",
+                "destination": destination,
             },
         )
 
@@ -689,7 +694,9 @@ def submit_to_dgt(
         "ok": True,
         "case_id": case_id,
         "status": status,
-        "dgt_id": dgt_id,
+        "external_id": external_id,
         "submitted_at": submitted_at.isoformat(),
-        "mode": "stub",
+        "mode": "AUTO",
+        "destination": destination,
     }
+
