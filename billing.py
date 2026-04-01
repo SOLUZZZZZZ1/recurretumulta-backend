@@ -1,4 +1,4 @@
-# billing.py — Stripe Checkout + Webhook + Payment Status (con authorized)
+# billing.py — Stripe Checkout + Webhook + Payment Status (bloqueo por autorización)
 import json
 import os
 import stripe
@@ -24,6 +24,62 @@ class CheckoutRequest(BaseModel):
     locale: str | None = "es"
 
 
+def _require_case_authorized_before_payment(conn, case_id: str):
+    row = conn.execute(
+        text(
+            """
+            SELECT
+                id,
+                COALESCE(authorized, FALSE) AS authorized,
+                authorized_at,
+                COALESCE(payment_status, '') AS payment_status,
+                COALESCE(interested_data, '{}'::jsonb) AS interested_data
+            FROM cases
+            WHERE id = :id
+            """
+        ),
+        {"id": case_id},
+    ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="case_id no existe")
+
+    interested_data = row[4] if isinstance(row[4], dict) else {}
+
+    missing = []
+    if not interested_data.get("full_name"):
+        missing.append("full_name")
+    if not interested_data.get("dni_nie"):
+        missing.append("dni_nie")
+    if not interested_data.get("domicilio_notif"):
+        missing.append("domicilio_notif")
+    if not interested_data.get("email"):
+        missing.append("email")
+
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Debes completar los datos del interesado antes de pagar",
+                "missing_fields": missing,
+            },
+        )
+
+    if not bool(row[1]):
+        raise HTTPException(
+            status_code=409,
+            detail="Debes autorizar antes de pagar",
+        )
+
+    return {
+        "case_id": str(row[0]),
+        "authorized": bool(row[1]),
+        "authorized_at": row[2],
+        "payment_status": row[3],
+        "interested_data": interested_data,
+    }
+
+
 @router.post("/checkout")
 def create_checkout(req: CheckoutRequest):
     stripe.api_key = _env("STRIPE_SECRET_KEY")
@@ -31,14 +87,9 @@ def create_checkout(req: CheckoutRequest):
 
     engine = get_engine()
     with engine.begin() as conn:
-        row = conn.execute(
-            text("SELECT payment_status FROM cases WHERE id=:id"),
-            {"id": req.case_id},
-        ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="case_id no existe")
+        auth_meta = _require_case_authorized_before_payment(conn, req.case_id)
 
-        if row.payment_status == "paid":
+        if auth_meta["payment_status"] == "paid":
             return {
                 "ok": True,
                 "already_paid": True,
@@ -57,6 +108,26 @@ def create_checkout(req: CheckoutRequest):
                 """
             ),
             {"id": req.case_id, "product": req.product, "email": req.email},
+        )
+
+        conn.execute(
+            text(
+                """
+                INSERT INTO events(case_id, type, payload, created_at)
+                VALUES (:id, 'checkout_started', CAST(:p AS JSONB), NOW())
+                """
+            ),
+            {
+                "id": req.case_id,
+                "p": json.dumps(
+                    {
+                        "product": req.product,
+                        "email": req.email,
+                        "authorized": True,
+                        "authorized_at": str(auth_meta["authorized_at"] or ""),
+                    }
+                ),
+            },
         )
 
     price_id = _env("STRIPE_PRICE_ID_DGT")
