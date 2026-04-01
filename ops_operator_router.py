@@ -9,7 +9,6 @@ from sqlalchemy import text
 
 from database import get_engine
 from generate import GenerateRequest, generate_dgt
-from destination_resolver import resolve_destination
 
 router = APIRouter(prefix="/ops/cases", tags=["ops-operator"])
 
@@ -180,6 +179,37 @@ def _save_ai_overrides_in_interested_data(
     )
 
     return ai_overrides
+
+
+
+
+def _stringify_generate_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, (dict, list, tuple, set)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)
+    return str(value)
+
+
+def _prepare_interesado_for_generate(interesado: Dict[str, Any]) -> Dict[str, str]:
+    raw = dict(interesado or {})
+    prepared: Dict[str, str] = {}
+    for key, value in raw.items():
+        key_str = str(key).strip()
+        if not key_str:
+            continue
+        val_str = _stringify_generate_value(value)
+        if val_str is not None:
+            prepared[key_str] = val_str
+    return prepared
 
 
 def _load_ai_overrides(conn, case_id: str) -> Dict[str, Any]:
@@ -453,7 +483,7 @@ def override_family_and_regenerate(
     try:
         req = GenerateRequest(
             case_id=case_id,
-            interesado=interesado,
+            interesado=_prepare_interesado_for_generate(interesado),
             tipo=body.familia,
         )
         generate_dgt(req)
@@ -560,7 +590,7 @@ def rewrite_hecho_and_regenerate(
     try:
         req = GenerateRequest(
             case_id=case_id,
-            interesado=interesado,
+            interesado=_prepare_interesado_for_generate(interesado),
             tipo=body.familia,
         )
         generate_dgt(req)
@@ -643,11 +673,8 @@ def submit_to_dgt(
                 detail="El expediente debe estar en ready_to_submit antes de enviarse a DGT",
             )
 
-        interesado = _load_interesado(conn, case_id)
-        destination = resolve_destination(interesado)
-
+        dgt_id = f"DGT-{case_id}-{int(datetime.now().timestamp())}"
         submitted_at = _utcnow()
-        external_id = f"AUTO-{case_id}-{int(datetime.now().timestamp())}"
 
         _set_status(conn, case_id, "submitted")
 
@@ -661,16 +688,16 @@ def submit_to_dgt(
 
         try:
             conn.execute(
-                text("UPDATE cases SET dgt_id = :external_id WHERE id = :id"),
-                {"id": case_id, "external_id": external_id},
+                text("UPDATE cases SET dgt_id = :dgt_id WHERE id = :id"),
+                {"id": case_id, "dgt_id": dgt_id},
             )
         except Exception:
             pass
 
         try:
             conn.execute(
-                text("UPDATE cases SET dgt_submission_id = :external_id WHERE id = :id"),
-                {"id": case_id, "external_id": external_id},
+                text("UPDATE cases SET dgt_submission_id = :dgt_id WHERE id = :id"),
+                {"id": case_id, "dgt_id": dgt_id},
             )
         except Exception:
             pass
@@ -678,13 +705,12 @@ def submit_to_dgt(
         _append_event(
             conn,
             case_id,
-            "submitted_auto",
+            "submitted_to_dgt",
             {
                 "document_url": body.document_url,
-                "external_id": external_id,
+                "dgt_id": dgt_id,
                 "submitted_at": submitted_at.isoformat(),
-                "mode": "AUTO",
-                "destination": destination,
+                "mode": "stub",
             },
         )
 
@@ -694,9 +720,7 @@ def submit_to_dgt(
         "ok": True,
         "case_id": case_id,
         "status": status,
-        "external_id": external_id,
+        "dgt_id": dgt_id,
         "submitted_at": submitted_at.isoformat(),
-        "mode": "AUTO",
-        "destination": destination,
+        "mode": "stub",
     }
-
