@@ -282,7 +282,7 @@ def run_ai(req: RunExpedienteAI):
         generation_error = None
 
         try:
-            generation_result = generate_dgt_for_case(req.case_id)
+            generation_result = generate_dgt_for_case(conn, req.case_id)
             with engine.begin() as conn:
                 conn.execute(
                     text("UPDATE cases SET status='generated', updated_at=NOW() WHERE id=:id"),
