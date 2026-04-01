@@ -229,7 +229,7 @@ def _normalize_ai_payload(result):
     deadlines = _build_deadlines(result)
     delivery = _build_delivery(result)
 
-    payload = {
+    return {
         "familia": familia,
         "confianza": confianza,
         "hecho": hecho,
@@ -245,7 +245,22 @@ def _normalize_ai_payload(result):
         "delivery": delivery,
         "raw_result": result,
     }
-    return payload
+
+
+def _append_event(conn, case_id: str, event_type: str, payload):
+    conn.execute(
+        text(
+            '''
+            INSERT INTO events(case_id, type, payload, created_at)
+            VALUES (:id, :type, CAST(:payload AS JSONB), NOW())
+            '''
+        ),
+        {
+            "id": case_id,
+            "type": event_type,
+            "payload": json.dumps(payload, ensure_ascii=False),
+        },
+    )
 
 
 @router.post("/expediente/run")
@@ -261,23 +276,51 @@ def run_ai(req: RunExpedienteAI):
         engine = get_engine()
 
         with engine.begin() as conn:
-            conn.execute(
-                text(
-                    '''
-                    INSERT INTO events(case_id, type, payload, created_at)
-                    VALUES (:id, 'ai_expediente_result', CAST(:payload AS JSONB), NOW())
-                    '''
-                ),
-                {
-                    "id": req.case_id,
-                    "payload": json.dumps(ai_payload, ensure_ascii=False),
-                },
-            )
+            _append_event(conn, req.case_id, "ai_expediente_result", ai_payload)
+
+        generation_result = None
+        generation_error = None
+
+        try:
+            generation_result = generate_dgt_for_case(req.case_id)
+            with engine.begin() as conn:
+                conn.execute(
+                    text("UPDATE cases SET status='generated', updated_at=NOW() WHERE id=:id"),
+                    {"id": req.case_id},
+                )
+                _append_event(
+                    conn,
+                    req.case_id,
+                    "resource_generated_auto",
+                    {
+                        "ok": True,
+                        "mode": "ai_run_auto_generate",
+                        "generated_at": datetime.utcnow().isoformat(),
+                        "result": generation_result,
+                    },
+                )
+        except Exception as gen_exc:
+            generation_error = str(gen_exc)
+            with engine.begin() as conn:
+                _append_event(
+                    conn,
+                    req.case_id,
+                    "resource_generation_failed",
+                    {
+                        "ok": False,
+                        "mode": "ai_run_auto_generate",
+                        "error": generation_error,
+                        "generated_at": datetime.utcnow().isoformat(),
+                    },
+                )
 
         return {
             "ok": True,
             "case_id": req.case_id,
             "ai_payload": ai_payload,
+            "generation_ok": generation_error is None,
+            "generation_result": generation_result,
+            "generation_error": generation_error,
         }
 
     except Exception as e:
