@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from schemas import HealthResponse
 from database import get_engine, ping_db
-from sqlalchemy import text
+
 
 from admin_migrate import router as admin_migrate_router
 from analyze import router as analyze_router
@@ -19,6 +19,7 @@ from ai_router import router as ai_router
 from partner_cases import router as partner_cases_router
 from ops_automation_router import router as ops_automation_router
 from ops_operator_router import router as ops_operator_router
+from ops_queue_smart import router as ops_queue_smart_router
 
 
 # ✅ AÑADIDO: OPS (operador)
@@ -56,6 +57,7 @@ app.include_router(ai_router)
 app.include_router(partner_cases_router)
 app.include_router(ops_automation_router)
 app.include_router(ops_operator_router)
+app.include_router(ops_queue_smart_router)
 
 
 
