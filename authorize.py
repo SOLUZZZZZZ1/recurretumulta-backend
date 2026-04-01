@@ -1,8 +1,10 @@
-# authorize.py — autorización completa (legal + trazabilidad)
-
+# authorize_completo.py — autorización completa (datos + IP + user agent + snapshot + PDF)
 import json
 from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from database import get_engine
@@ -16,150 +18,230 @@ def _utcnow():
     return datetime.now(timezone.utc)
 
 
-def _get_ip(request: Request):
-    return (
-        request.headers.get("x-forwarded-for")
-        or request.headers.get("x-real-ip")
-        or request.client.host
+def _get_ip(request: Request) -> str:
+    xff = (request.headers.get("x-forwarded-for") or "").strip()
+    if xff:
+        return xff.split(",")[0].strip()
+    xri = (request.headers.get("x-real-ip") or "").strip()
+    if xri:
+        return xri
+    if request.client and request.client.host:
+        return request.client.host
+    return ""
+
+
+class CaseDetailsBody(BaseModel):
+    full_name: str = Field(..., min_length=3)
+    dni_nie: str = Field(..., min_length=3)
+    domicilio_notif: str = Field(..., min_length=5)
+    email: str = Field(..., min_length=5)
+    telefono: Optional[str] = None
+
+
+class AuthorizeBody(BaseModel):
+    version: str = Field(default="v1_dgt_homologado", min_length=1)
+    accepted_text: bool = True
+    confirmed_identity: bool = True
+
+
+def _case_or_404(conn, case_id: str):
+    row = conn.execute(
+        text("SELECT id, COALESCE(interested_data, '{}'::jsonb) FROM cases WHERE id=:id"),
+        {"id": case_id},
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Expediente no encontrado")
+    data = row[1] if isinstance(row[1], dict) else {}
+    return {"id": str(row[0]), "interested_data": data}
+
+
+def _append_event(conn, case_id: str, event_type: str, payload: Dict[str, Any]):
+    conn.execute(
+        text(
+            """
+            INSERT INTO events(case_id, type, payload, created_at)
+            VALUES (:case_id, :type, CAST(:payload AS JSONB), NOW())
+            """
+        ),
+        {
+            "case_id": case_id,
+            "type": event_type,
+            "payload": json.dumps(payload, ensure_ascii=False),
+        },
     )
 
 
+@router.post("/{case_id}/details")
+def save_case_details(case_id: str, body: CaseDetailsBody):
+    engine = get_engine()
+    with engine.begin() as conn:
+        current = _case_or_404(conn, case_id)
+        interested = dict(current["interested_data"] or {})
+        interested.update(
+            {
+                "full_name": body.full_name.strip(),
+                "dni_nie": body.dni_nie.strip().upper(),
+                "domicilio_notif": body.domicilio_notif.strip(),
+                "email": body.email.strip(),
+                "telefono": (body.telefono or "").strip() or None,
+            }
+        )
+
+        conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET interested_data = CAST(:data AS JSONB),
+                    updated_at = NOW()
+                WHERE id = :id
+                """
+            ),
+            {"id": case_id, "data": json.dumps(interested, ensure_ascii=False)},
+        )
+
+        _append_event(
+            conn,
+            case_id,
+            "client_details_saved",
+            {
+                "full_name": interested.get("full_name"),
+                "dni_nie": interested.get("dni_nie"),
+                "domicilio_notif": interested.get("domicilio_notif"),
+                "email": interested.get("email"),
+                "telefono": interested.get("telefono"),
+                "saved_at": _utcnow().isoformat(),
+            },
+        )
+
+    return {"ok": True, "case_id": case_id, "interested_data": interested}
+
+
 @router.post("/{case_id}/authorize")
-async def authorize_case(case_id: str, request: Request):
+async def authorize_case(case_id: str, request: Request, body: AuthorizeBody):
+    if not body.accepted_text or not body.confirmed_identity:
+        raise HTTPException(status_code=400, detail="Debes aceptar el texto y confirmar tu identidad")
 
     engine = get_engine()
 
     with engine.begin() as conn:
+        current = _case_or_404(conn, case_id)
+        data = dict(current["interested_data"] or {})
 
-        # 1. Cargar datos del interesado
-        row = conn.execute(
-            text("SELECT interested_data FROM cases WHERE id=:id"),
-            {"id": case_id}
-        ).fetchone()
-
-        if not row:
-            raise HTTPException(404, "Expediente no encontrado")
-
-        data = row[0] or {}
-
-        # 2. Validar datos obligatorios
         required = ["full_name", "dni_nie", "domicilio_notif", "email"]
-        for field in required:
-            if not data.get(field):
-                raise HTTPException(400, f"Falta campo obligatorio: {field}")
+        missing = [field for field in required if not data.get(field)]
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "Faltan datos del interesado", "missing_fields": missing},
+            )
 
-        # 3. Datos técnicos
         ip = _get_ip(request)
-        user_agent = request.headers.get("user-agent", "")
-
+        user_agent = (request.headers.get("user-agent") or "").strip()
         now = _utcnow().isoformat()
 
-        # 4. Snapshot completo
-        snapshot = {
-            "case_id": case_id,
-            "data": data,
-            "ip": ip,
-            "user_agent": user_agent,
-            "authorized_at": now,
-            "version": "v1_dgt_homologado"
+        checks = {
+            "accepted_text": bool(body.accepted_text),
+            "confirmed_identity": bool(body.confirmed_identity),
         }
 
-        # 5. Guardar en cases
+        snapshot = {
+            "case_id": case_id,
+            "version": body.version,
+            "authorized_at": now,
+            "ip": ip,
+            "user_agent": user_agent,
+            "checks": checks,
+            "full_name": data.get("full_name"),
+            "dni_nie": data.get("dni_nie"),
+            "domicilio_notif": data.get("domicilio_notif"),
+            "email": data.get("email"),
+            "telefono": data.get("telefono"),
+        }
+
         conn.execute(
-            text("""
-            UPDATE cases
-            SET authorized = TRUE,
-                authorized_at = NOW(),
-                authorization_version = :version,
-                authorization_ip = :ip,
-                authorization_user_agent = :ua,
-                authorization_full_name = :name,
-                authorization_dni_nie = :dni,
-                authorization_address = :address,
-                authorization_email = :email,
-                authorization_phone = :phone,
-                authorization_checks = :checks,
-                authorization_snapshot = CAST(:snapshot AS JSONB),
-                updated_at = NOW()
-            WHERE id = :id
-            """),
+            text(
+                """
+                UPDATE cases
+                SET authorized = TRUE,
+                    authorized_at = NOW(),
+                    authorization_version = :version,
+                    authorization_ip = :ip,
+                    authorization_user_agent = :ua,
+                    authorization_full_name = :full_name,
+                    authorization_dni_nie = :dni_nie,
+                    authorization_address = :address,
+                    authorization_email = :email,
+                    authorization_phone = :phone,
+                    authorization_checks = CAST(:checks AS JSONB),
+                    authorization_snapshot = CAST(:snapshot AS JSONB),
+                    updated_at = NOW()
+                WHERE id = :id
+                """
+            ),
             {
                 "id": case_id,
-                "version": "v1_dgt_homologado",
+                "version": body.version,
                 "ip": ip,
                 "ua": user_agent,
-                "name": data.get("full_name"),
-                "dni": data.get("dni_nie"),
+                "full_name": data.get("full_name"),
+                "dni_nie": data.get("dni_nie"),
                 "address": data.get("domicilio_notif"),
                 "email": data.get("email"),
                 "phone": data.get("telefono"),
-                "checks": json.dumps({
-                    "accepted_text": True,
-                    "confirmed_identity": True
-                }),
-                "snapshot": json.dumps(snapshot),
-            }
+                "checks": json.dumps(checks, ensure_ascii=False),
+                "snapshot": json.dumps(snapshot, ensure_ascii=False),
+            },
         )
 
-        # 6. Evento
-        conn.execute(
-            text("""
-            INSERT INTO events(case_id, type, payload, created_at)
-            VALUES (:case_id, 'client_authorized', CAST(:payload AS JSONB), NOW())
-            """),
-            {
-                "case_id": case_id,
-                "payload": json.dumps(snapshot)
-            }
-        )
+        _append_event(conn, case_id, "client_authorized", snapshot)
 
-        # 7. Generar PDF de autorización
-        contenido = f"""
+        texto_autorizacion = f"""
 AUTORIZACIÓN DE REPRESENTACIÓN
 
 Expediente: {case_id}
 
-Nombre: {data.get("full_name")}
+Nombre y apellidos: {data.get("full_name")}
 DNI/NIE: {data.get("dni_nie")}
-Domicilio: {data.get("domicilio_notif")}
+Domicilio a efectos de notificaciones: {data.get("domicilio_notif")}
 Email: {data.get("email")}
-Teléfono: {data.get("telefono")}
+Teléfono: {data.get("telefono") or ""}
 
-Autorizo a LA TALAMANQUINA S.L. (RecurreTuMulta)
-a actuar en mi nombre para la tramitación administrativa.
+Texto autorizado:
+Autorizo a LA TALAMANQUINA, S.L. (RecurreTuMulta) a actuar en mi nombre para la tramitación administrativa del expediente asociado a este proceso, incluyendo la preparación y presentación de alegaciones y/o recursos ante la DGT u organismo competente, así como la obtención del justificante oficial de presentación.
 
-Fecha: {now}
+Versión del texto: {body.version}
+Fecha y hora de autorización: {now}
 IP: {ip}
 User Agent: {user_agent}
 """
 
-        pdf_bytes = build_pdf("AUTORIZACIÓN", contenido)
-
+        pdf_bytes = build_pdf("AUTORIZACIÓN DE REPRESENTACIÓN", texto_autorizacion)
         bucket, key = upload_bytes(
             case_id,
             "autorizaciones",
             pdf_bytes,
             ".pdf",
-            "application/pdf"
+            "application/pdf",
         )
 
-        # 8. Guardar documento
         conn.execute(
-            text("""
-            INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
-            VALUES (:id, 'autorizacion_cliente_pdf', :b, :k, :mime, :size, NOW())
-            """),
+            text(
+                """
+                INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
+                VALUES (:case_id, 'autorizacion_cliente_pdf', :bucket, :key, 'application/pdf', :size_bytes, NOW())
+                """
+            ),
             {
-                "id": case_id,
-                "b": bucket,
-                "k": key,
-                "mime": "application/pdf",
-                "size": len(pdf_bytes)
-            }
+                "case_id": case_id,
+                "bucket": bucket,
+                "key": key,
+                "size_bytes": len(pdf_bytes),
+            },
         )
 
     return {
         "ok": True,
         "case_id": case_id,
-        "authorized": True
+        "authorized": True,
+        "authorization_version": body.version,
     }
