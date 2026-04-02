@@ -2,12 +2,15 @@ from datetime import datetime, timezone
 from typing import Optional, Any, Dict
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
-# AJUSTA ESTOS IMPORTS A TU PROYECTO
-from database import get_db
+from database import get_db, get_engine
 from models import Case, CaseEvent
+
+# 🔥 NUEVO
+from connectors import pick_submitter
 
 router = APIRouter(prefix="/ops/cases", tags=["ops-operator"])
 
@@ -26,7 +29,7 @@ class ApproveBody(BaseModel):
     note: Optional[str] = None
 
 
-class SubmitDGTBody(BaseModel):
+class SubmitBody(BaseModel):
     document_url: Optional[str] = None
     force: bool = False
 
@@ -37,11 +40,10 @@ class GenericOk(BaseModel):
     status: str
 
 
-class SubmitDGTOut(BaseModel):
+class SubmitOut(BaseModel):
     ok: bool = True
     case_id: str
     status: str
-    dgt_id: str
     submitted_at: datetime
     mode: str
 
@@ -53,29 +55,14 @@ def _get_case_or_404(db: Session, case_id: str) -> Case:
     return case
 
 
-def _safe_getattr(obj: Any, *names: str, default=None):
-    for name in names:
-        if hasattr(obj, name):
-            value = getattr(obj, name)
-            if value is not None:
-                return value
-    return default
-
-
 def _set_status(case: Case, status: str):
     if hasattr(case, "status"):
         case.status = status
     elif hasattr(case, "estado"):
         case.estado = status
-    else:
-        raise HTTPException(status_code=500, detail="El modelo Case no tiene campo status/estado")
 
     if hasattr(case, "updated_at"):
         case.updated_at = _utcnow()
-
-
-def _get_status(case: Case) -> str:
-    return _safe_getattr(case, "status", "estado", default="pending_review")
 
 
 def _append_event(db: Session, case_id: str, event_type: str, payload: Optional[Dict[str, Any]] = None):
@@ -88,29 +75,6 @@ def _append_event(db: Session, case_id: str, event_type: str, payload: Optional[
     db.add(evt)
 
 
-def _store_dgt_result(case: Case, dgt_id: str, submitted_at: datetime):
-    if hasattr(case, "dgt_submission_id"):
-        case.dgt_submission_id = dgt_id
-    if hasattr(case, "dgt_id"):
-        case.dgt_id = dgt_id
-    if hasattr(case, "submitted_at"):
-        case.submitted_at = submitted_at
-
-
-def _fake_dgt_submit(case_id: str, document_url: Optional[str]) -> Dict[str, Any]:
-    """
-    STUB SERIO.
-    Sustituye esta función mañana por la integración real con DGT/homologación.
-    """
-    return {
-        "ok": True,
-        "dgt_id": f"DGT-{case_id}-{int(datetime.now().timestamp())}",
-        "submitted_at": _utcnow(),
-        "mode": "stub",
-        "document_url": document_url,
-    }
-
-
 @router.post("/{case_id}/approve", response_model=GenericOk)
 def approve_case(
     case_id: str,
@@ -119,6 +83,7 @@ def approve_case(
     _: str = Depends(require_operator_token),
 ):
     case = _get_case_or_404(db, case_id)
+
     _set_status(case, "ready_to_submit")
 
     _append_event(
@@ -127,73 +92,86 @@ def approve_case(
         "operator_approved",
         {"note": body.note, "at": _utcnow().isoformat()},
     )
+
     db.commit()
     db.refresh(case)
 
-    return GenericOk(case_id=case_id, status=_get_status(case))
+    return GenericOk(case_id=case_id, status=case.status)
 
 
-@router.post("/{case_id}/submit", response_model=SubmitDGTOut)
-def submit_to_dgt(
+@router.post("/{case_id}/submit", response_model=SubmitOut)
+def submit_case(
     case_id: str,
-    body: SubmitDGTBody,
+    body: SubmitBody,
     db: Session = Depends(get_db),
     _: str = Depends(require_operator_token),
 ):
     case = _get_case_or_404(db, case_id)
-    current_status = _get_status(case)
 
-    if current_status != "ready_to_submit" and not body.force:
+    if case.status != "ready_to_submit" and not body.force:
         raise HTTPException(
             status_code=400,
-            detail="El expediente debe estar en ready_to_submit antes de enviarse a DGT",
+            detail="El expediente debe estar en ready_to_submit",
         )
 
-    # 1) Sustituir por llamada real homologada cuando la tengas
-    result = _fake_dgt_submit(case_id=case_id, document_url=body.document_url)
+    # 🔥 DESCARGAR PDF
+    import requests
 
-    if not result.get("ok"):
+    if not body.document_url:
+        raise HTTPException(status_code=400, detail="Falta document_url")
+
+    resp = requests.get(body.document_url)
+    if resp.status_code != 200:
+        raise HTTPException(status_code=400, detail="No se pudo descargar el PDF")
+
+    pdf_bytes = resp.content
+
+    # 🔥 ELEGIR SUBMITTER AUTOMÁTICO
+    engine = get_engine()
+    submitter = pick_submitter(case_id=case_id, engine=engine)
+
+    try:
+        result = submitter.submit(
+            case_id=case_id,
+            pdf_bytes=pdf_bytes,
+        )
+    except Exception as e:
         _set_status(case, "error_submission")
+
         _append_event(
             db,
             case_id,
-            "dgt_submit_error",
+            "submission_failed",
             {
-                "detail": result.get("detail", "Error desconocido"),
+                "error": str(e),
                 "at": _utcnow().isoformat(),
             },
         )
+
         db.commit()
-        raise HTTPException(status_code=502, detail=result.get("detail", "Error enviando a DGT"))
+        raise HTTPException(status_code=502, detail=f"Error enviando: {e}")
 
-    dgt_id = result["dgt_id"]
-    submitted_at = result["submitted_at"]
-    mode = result.get("mode", "unknown")
+    submitted_at = _utcnow()
 
-    # 2) Guardar estado final
+    # 🔥 ESTADO FINAL
     _set_status(case, "submitted")
-    _store_dgt_result(case, dgt_id=dgt_id, submitted_at=submitted_at)
 
-    # 3) Trazabilidad
     _append_event(
         db,
         case_id,
-        "submitted_to_dgt",
+        "submitted",
         {
-            "dgt_id": dgt_id,
             "submitted_at": submitted_at.isoformat(),
-            "mode": mode,
-            "document_url": body.document_url,
+            "channel": getattr(submitter, "name", "unknown"),
         },
     )
 
     db.commit()
     db.refresh(case)
 
-    return SubmitDGTOut(
+    return SubmitOut(
         case_id=case_id,
-        status=_get_status(case),
-        dgt_id=dgt_id,
+        status=case.status,
         submitted_at=submitted_at,
-        mode=mode,
+        mode=getattr(submitter, "name", "unknown"),
     )
