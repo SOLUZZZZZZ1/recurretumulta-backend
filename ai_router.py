@@ -165,19 +165,18 @@ def run_ai(req: RunExpedienteAI):
             result = {"raw_result": result}
 
         engine = get_engine()
-            ai_payload = _normalize_ai_payload(result)
+        ai_payload = _normalize_ai_payload(result)
 
         with engine.begin() as conn:
             # 1) MODO DIOS: generar SIEMPRE para revisión
             try:
                 gen_result = generate_dgt_for_case(conn, req.case_id)
 
-                # 🔥 Inyectar destino real de generate dentro del payload que verá el panel
                 delivery = gen_result.get("delivery") or {}
                 if delivery.get("destination_text"):
                     ai_payload["delivery"] = delivery
 
-                # 2) Guardar resultado IA YA ENRIQUECIDO
+                # 2) Guardar resultado IA YA ENRIQUECIDO CON DESTINO
                 conn.execute(
                     text(
                         '''
@@ -225,7 +224,7 @@ def run_ai(req: RunExpedienteAI):
 
                 result["note"] = "Modo Dios: recurso generado para revisión (sin presentar)"
             except Exception as gen_err:
-                # Si falla generate, al menos guardamos el resultado IA base
+                # Si falla generate, guardamos al menos el resultado IA base
                 conn.execute(
                     text(
                         '''
