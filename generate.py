@@ -2247,6 +2247,8 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         },
     )
 
+    destination_text = _extract_destination_from_generated_body(tpl["cuerpo"])
+
     return {
         "ok": True,
         "kind": final_kind,
@@ -2256,8 +2258,41 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         "pdf": {"bucket": b2_bucket, "key": b2_key_pdf},
         "tipo_infraccion": tipo,
         "jurisdiccion": jurisdiccion,
+        "delivery": {
+            "destination_text": destination_text,
+            "source": "generate",
+        },
     }
 
+
+
+
+def _extract_destination_from_generated_body(body: str) -> str:
+    txt = _safe_str(body)
+    if not txt.strip():
+        return ""
+    for line in txt.splitlines():
+        clean = line.strip()
+        upper = clean.upper()
+        if upper.startswith("A LA JEFATURA PROVINCIAL DE TRÁFICO DE "):
+            return clean
+        if upper.startswith("A LA JEFATURA PROVINCIAL DE TRAFICO DE "):
+            return clean
+        if upper.startswith("A LA DIRECCIÓN GENERAL DE TRÁFICO"):
+            return clean
+        if upper.startswith("A LA DIRECCION GENERAL DE TRAFICO"):
+            return clean
+        if upper.startswith("AL AYUNTAMIENTO DE "):
+            return clean
+        if upper.startswith("A L'AJUNTAMENT DE "):
+            return clean
+        if upper.startswith("A LA POLICÍA LOCAL DE "):
+            return clean
+        if upper.startswith("A LA POLICIA LOCAL DE "):
+            return clean
+        if upper.startswith("A LA GUARDIA URBANA DE "):
+            return clean
+    return ""
 
 class GenerateRequest(BaseModel):
     case_id: str
