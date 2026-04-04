@@ -52,6 +52,7 @@ async def create_partner_case(
     interesado_json: Optional[str] = Form(default=None),
     partner_note: Optional[str] = Form(default=None),
     confirm_client_informed: str = Form(...),
+    authorization_file: UploadFile = File(...),
     files: List[UploadFile] = File(...),
 ) -> Dict[str, Any]:
     """
@@ -59,6 +60,7 @@ async def create_partner_case(
     - Auth: Bearer <partner_api_token>
     - Crea case con channel='partner' y facturación mensual (sin Stripe)
     - Sube hasta 5 docs a B2 y crea documents(kind='original')
+    - Requiere autorización firmada del cliente y la guarda como documents(kind='authorization_signed')
     """
     token = _require_partner_token(authorization)
 
@@ -68,6 +70,8 @@ async def create_partner_case(
         raise HTTPException(status_code=400, detail="No se han recibido archivos.")
     if len(files) > MAX_FILES:
         raise HTTPException(status_code=400, detail=f"Máximo {MAX_FILES} documentos por expediente.")
+    if not authorization_file:
+        raise HTTPException(status_code=400, detail="Falta la autorización firmada del cliente.")
 
     interesado: Dict[str, Any] = {}
     if interesado_json:
@@ -120,6 +124,47 @@ async def create_partner_case(
             "partner_note": (partner_note or "").strip()[:1000] if partner_note else None,
         })
 
+    # Guardar autorización firmada
+    auth_data = await authorization_file.read()
+    if not auth_data:
+        raise HTTPException(status_code=400, detail="La autorización firmada está vacía.")
+
+    auth_filename = (authorization_file.filename or "authorization_signed").replace("/", "_").replace("\\", "_")[:120]
+    auth_ext = ".bin"
+    if "." in auth_filename:
+        auth_ext = "." + auth_filename.split(".")[-1].lower()
+        if len(auth_ext) > 8:
+            auth_ext = ".bin"
+
+    auth_bucket, auth_key = upload_bytes(
+        case_id,
+        "authorization_signed",
+        auth_data,
+        ext=auth_ext,
+        content_type=(authorization_file.content_type or "application/octet-stream"),
+    )
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
+                VALUES (:case_id, 'authorization_signed', :b, :k, :m, :s, NOW())
+                """
+            ),
+            {
+                "case_id": case_id,
+                "b": auth_bucket,
+                "k": auth_key,
+                "m": authorization_file.content_type or "application/octet-stream",
+                "s": len(auth_data),
+            },
+        )
+        _event(conn, case_id, "authorization_uploaded", {
+            "source": "partner",
+            "filename": auth_filename,
+        })
+
     uploaded = []
     for idx, uf in enumerate(files, start=1):
         data = await uf.read()
@@ -158,6 +203,19 @@ async def create_partner_case(
                 ),
                 {"case_id": case_id, "b": b2_bucket, "k": b2_key, "m": uf.content_type or "application/octet-stream", "s": len(data)},
             )
-            _event(conn, case_id, "partner_documents_uploaded", {"count": len(uploaded)})
 
-    return {"ok": True, "case_id": case_id, "uploaded": uploaded}
+    with engine.begin() as conn:
+        _event(conn, case_id, "partner_documents_uploaded", {"count": len(uploaded)})
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "uploaded": uploaded,
+        "authorization_signed": {
+            "filename": auth_filename,
+            "bucket": auth_bucket,
+            "key": auth_key,
+            "mime": authorization_file.content_type or "application/octet-stream",
+            "size_bytes": len(auth_data),
+        },
+    }
