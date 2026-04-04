@@ -10,6 +10,12 @@ from sqlalchemy import text
 
 from database import get_engine
 from b2_storage import upload_bytes
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from fastapi import Response
+import io
 
 router = APIRouter(prefix="/partner", tags=["partner"])
 
@@ -56,6 +62,98 @@ def _event(conn, case_id: str, typ: str, payload: Dict[str, Any]) -> None:
         text("INSERT INTO events(case_id, type, payload, created_at) VALUES (:case_id, :type, CAST(:payload AS JSONB), NOW())"),
         {"case_id": case_id, "type": typ, "payload": json.dumps(payload)},
     )
+
+
+
+def _build_partner_authorization_template_pdf() -> bytes:
+    """
+    Genera un modelo base de autorización / apoderamiento para gestorías,
+    con los datos fijos de LA TALAMANQUINA, S.L. ya rellenos.
+    """
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=2.0 * cm,
+        rightMargin=2.0 * cm,
+        topMargin=1.8 * cm,
+        bottomMargin=1.8 * cm,
+        title="Modelo autorización gestorías",
+        author="RecurreTuMulta / LA TALAMANQUINA, S.L.",
+    )
+
+    styles = getSampleStyleSheet()
+    title = styles["Title"]
+    normal = styles["BodyText"]
+    normal.leading = 15
+    section = ParagraphStyle("section", parent=normal, fontSize=11, leading=14, spaceAfter=4)
+    small = ParagraphStyle("small", parent=normal, fontSize=9, leading=11)
+
+    content = []
+    content.append(Paragraph("REGISTRO DE APODERAMIENTOS · OTORGAMIENTO DE REPRESENTACIÓN", title))
+    content.append(Spacer(1, 0.4 * cm))
+
+    content.append(Paragraph("<b>DATOS DEL REPRESENTANTE / AUTORIZADO</b>", section))
+    content.append(Paragraph("<b>Nombre o razón social:</b> LA TALAMANQUINA, S.L.", normal))
+    content.append(Paragraph("<b>NIF/CIF:</b> B75440115", normal))
+    content.append(Paragraph("<b>Domicilio social:</b> Calle Velázquez, 15 – 28001 Madrid (España)", normal))
+    content.append(Spacer(1, 0.35 * cm))
+
+    content.append(Paragraph("<b>DATOS DEL REPRESENTADO / CLIENTE</b>", section))
+    content.append(Paragraph("<b>Nombre y apellidos o razón social:</b> ________________________________________________", normal))
+    content.append(Paragraph("<b>DNI/NIE/CIF:</b> ________________________________________________", normal))
+    content.append(Paragraph("<b>Domicilio:</b> ________________________________________________", normal))
+    content.append(Spacer(1, 0.35 * cm))
+
+    content.append(Paragraph("<b>TRÁMITE AUTORIZADO</b>", section))
+    content.append(Paragraph("Presentación de escritos de alegaciones o recursos ante la DGT y actuaciones administrativas vinculadas al expediente sancionador.", normal))
+    content.append(Spacer(1, 0.35 * cm))
+
+    content.append(Paragraph("<b>ALCANCE DE LA REPRESENTACIÓN</b>", section))
+    content.append(Paragraph(
+        "La persona firmante autoriza expresamente a <b>LA TALAMANQUINA, S.L.</b> para actuar en su nombre "
+        "ante la Dirección General de Tráfico y organismos competentes en relación con expedientes sancionadores "
+        "de tráfico, incluyendo la preparación y presentación de alegaciones, recursos y la obtención del "
+        "justificante oficial de presentación.",
+        normal,
+    ))
+    content.append(Spacer(1, 0.55 * cm))
+
+    content.append(Paragraph("En _______________________, a ______ de __________________ de 20____", normal))
+    content.append(Spacer(1, 1.0 * cm))
+
+    content.append(Paragraph("Firma del representante / autorizado:", normal))
+    content.append(Spacer(1, 0.8 * cm))
+    content.append(Paragraph("__________________________________________", normal))
+    content.append(Paragraph("LA TALAMANQUINA, S.L.", small))
+    content.append(Spacer(1, 0.7 * cm))
+
+    content.append(Paragraph("Firma del representado / cliente:", normal))
+    content.append(Spacer(1, 0.8 * cm))
+    content.append(Paragraph("__________________________________________", normal))
+    content.append(Paragraph("Nombre: _________________________________", small))
+    content.append(Paragraph("DNI/NIE: ________________________________", small))
+    content.append(Spacer(1, 0.5 * cm))
+
+    content.append(Paragraph(
+        "Documento base para firma manuscrita del cliente. Tras la firma, debe subirse escaneado o fotografiado al expediente.",
+        small,
+    ))
+
+    doc.build(content)
+    return buffer.getvalue()
+
+
+@router.get("/authorization-template-pdf")
+def partner_authorization_template_pdf() -> Response:
+    """
+    Descarga el modelo base de autorización para gestorías,
+    ya rellenado con los datos fijos de LA TALAMANQUINA, S.L.
+    """
+    pdf_bytes = _build_partner_authorization_template_pdf()
+    headers = {"Content-Disposition": 'attachment; filename="autorizacion_gestoria_recurretumulta.pdf"'}
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
 
 class PartnerCreateIn(BaseModel):
     name: str
