@@ -66,10 +66,6 @@ def _event(conn, case_id: str, typ: str, payload: Dict[str, Any]) -> None:
 
 
 def _build_partner_authorization_template_pdf() -> bytes:
-    """
-    Genera un modelo base de autorización / apoderamiento para gestorías,
-    con los datos fijos de LA TALAMANQUINA, S.L. ya rellenos.
-    """
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -146,13 +142,79 @@ def _build_partner_authorization_template_pdf() -> bytes:
 
 @router.get("/authorization-template-pdf")
 def partner_authorization_template_pdf() -> Response:
-    """
-    Descarga el modelo base de autorización para gestorías,
-    ya rellenado con los datos fijos de LA TALAMANQUINA, S.L.
-    """
     pdf_bytes = _build_partner_authorization_template_pdf()
     headers = {"Content-Disposition": 'attachment; filename="autorizacion_gestoria_recurretumulta.pdf"'}
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+
+@router.get("/cases")
+def list_partner_cases(
+    authorization: Optional[str] = Header(default=None),
+    q: Optional[str] = None,
+    status: Optional[str] = None,
+) -> Dict[str, Any]:
+    token = _require_partner_token(authorization)
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        partner = _get_partner_by_token(conn, token)
+
+        sql = """
+            SELECT
+                c.id,
+                c.contact_name,
+                c.contact_email,
+                c.status,
+                COALESCE(c.payment_status, 'monthly') AS payment_status,
+                c.updated_at,
+                (
+                    SELECT COUNT(*)
+                    FROM documents d
+                    WHERE d.case_id = c.id
+                ) AS docs_total,
+                EXISTS(
+                    SELECT 1
+                    FROM documents d2
+                    WHERE d2.case_id = c.id
+                      AND d2.kind = 'authorization_signed'
+                ) AS authorization_document_uploaded
+            FROM cases c
+            WHERE c.partner_id = :pid
+        """
+        params = {"pid": partner["id"]}
+
+        if (status or "").strip():
+            sql += " AND c.status = :status"
+            params["status"] = status.strip()
+
+        if (q or "").strip():
+            sql += " AND (COALESCE(c.contact_name,'') ILIKE :q OR COALESCE(c.contact_email,'') ILIKE :q OR CAST(c.id AS TEXT) ILIKE :q)"
+            params["q"] = f"%{q.strip()}%"
+
+        sql += " ORDER BY c.updated_at DESC"
+
+        rows = conn.execute(text(sql), params).fetchall()
+
+    items = []
+    for row in rows:
+        items.append({
+            "case_id": str(row[0]),
+            "client_name": row[1] or "",
+            "client_email": row[2] or "",
+            "status": row[3] or "uploaded",
+            "payment_status": row[4] or "monthly",
+            "updated_at": str(row[5]) if row[5] else None,
+            "authorization_mode": "partner_custody",
+            "authorization_received": bool(row[7]),
+            "authorization_document_uploaded": bool(row[7]),
+            "docs_total": int(row[6] or 0),
+        })
+
+    return {
+        "ok": True,
+        "partner_name": partner["name"],
+        "items": items,
+    }
 
 
 class PartnerCreateIn(BaseModel):
