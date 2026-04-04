@@ -2155,133 +2155,132 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
 
 
 
-
-def _clean_v2_intro_body(cuerpo: str) -> str:
-    txt = _safe_str(cuerpo).strip()
-    if not txt:
-        return txt
-
-    txt = txt.replace("A la atención del órgano competente,", "")
-    txt = txt.replace("A la atención del órgano competente", "")
-    txt = txt.replace("A la atencion del organo competente,", "")
-    txt = txt.replace("A la atencion del organo competente", "")
-
-    # Si el cuerpo viene ya con cabecera antigua, nos quedamos desde el extracto / antecedentes.
-    markers = [
-        "Extracto literal del boletín:",
-        "Extracto literal del boletin:",
-        "1) Órgano:",
-        "1) Organo:",
-        "I. ALEGACIONES",
-    ]
-    for marker in markers:
-        idx = txt.find(marker)
-        if idx > 0:
-            txt = txt[idx:]
-            break
-
-    txt = re.sub(r"^D\s+I\s+G\s+O:\s*", "", txt, flags=re.IGNORECASE)
-    txt = re.sub(r"^Que mediante el presente escrito[\s\S]{0,400}?A\s+N\s+T\s+E\s+C\s+E\s+D\s+E\s+N\s+T\s+E\s+S\s*", "", txt, flags=re.IGNORECASE)
-    return txt.strip()
-
-
 def build_v2_dgt_layout(cuerpo: str, core: Dict[str, Any], interesado: Dict[str, Any]) -> str:
+    """
+    Inserta una cabecera tipo DGT con espacios del modelo oficial sin romper
+    el resto del recurso. Sustituye la cabecera antigua del escrito y conserva
+    desde el extracto literal del boletín hacia abajo.
+    """
     core = core or {}
     interesado = interesado or {}
 
-    def _g(*keys: str, default: str = "") -> str:
-        for key in keys:
-            val = interesado.get(key)
-            if val not in (None, ""):
-                return str(val)
-            val = core.get(key)
-            if val not in (None, ""):
-                return str(val)
-        return str(default)
+    def g(k: str, default: str = "") -> str:
+        value = interesado.get(k)
+        if value in (None, "", [], {}):
+            value = core.get(k)
+        if value in (None, "", [], {}):
+            value = default
+        return str(value)
 
-    destino = _resolve_header_destination(core or {})
-    organismo = _safe_str(destino.get("organismo_cabecera") or "JEFATURA PROVINCIAL DE TRÁFICO").upper().strip()
-    provincia = _safe_str(destino.get("provincia_cabecera") or _g("provincia", "province", default="........")).upper().strip()
+    def _cleanup(value: str) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip()
 
-    provincia = provincia.replace("TRÁFICO DE", "").replace("TRAFICO DE", "").strip()
-    provincia = provincia.replace("JEFATURA PROVINCIAL DE", "").strip()
-    if not provincia:
-        provincia = "........"
+    def _infer_provincia() -> str:
+        # prioridad: provincia explícita
+        prov = _cleanup(g("provincia", ""))
+        if prov:
+            prov = prov.upper().replace("TRÁFICO DE", "").replace("TRAFICO DE", "").strip(" .,-")
+            if prov:
+                return prov
 
-    # Construir línea de cabecera sin duplicidades
-    if "AYUNTAMIENTO" in organismo or "AJUNTAMENT" in organismo or "CONCELLO" in organismo:
-        header_destino = f"AL {organismo}"
-    elif organismo.endswith(f"DE {provincia}") or organismo.endswith(f"DE {provincia.strip('.')}"):
-        header_destino = f"A LA {organismo}"
-    else:
-        header_destino = f"A LA {organismo} DE {provincia}"
+        # intentar inferir desde organismo / cabecera
+        candidates = [
+            _cleanup(g("organismo", "")),
+            _cleanup(g("organismo_cabecera", "")),
+            _cleanup(g("destination", "")),
+            _cleanup(g("delivery_destination", "")),
+        ]
+        for cand in candidates:
+            upper = cand.upper()
+            for marker in ["JEFATURA PROVINCIAL DE TRÁFICO DE ", "JEFATURA PROVINCIAL DE TRAFICO DE "]:
+                if marker in upper:
+                    return upper.split(marker, 1)[1].strip(" .,-")
+        return "........"
 
-    nombre = _g("nombre", "first_name")
-    apellido1 = _g("apellido1", "last_name_1")
-    apellido2 = _g("apellido2", "last_name_2")
-    nombre_completo = " ".join(x for x in [nombre, apellido1, apellido2] if _safe_str(x).strip())
+    def _infer_organismo_destino() -> str:
+        cand = _cleanup(g("organismo", "")) or _cleanup(g("organismo_cabecera", ""))
+        upper = cand.upper()
 
-    cuerpo_limpio = _clean_v2_intro_body(cuerpo)
+        if "JEFATURA PROVINCIAL DE TRÁFICO" in upper or "JEFATURA PROVINCIAL DE TRAFICO" in upper:
+            return "JEFATURA PROVINCIAL DE TRÁFICO"
 
-    header = f"""
-REFERENCIA: EXPTE. {_g("expediente_ref", "numero_expediente", default="........")}
+        if "DIRECCIÓN GENERAL DE TRÁFICO" in upper or "DIRECCION GENERAL DE TRAFICO" in upper:
+            return "JEFATURA PROVINCIAL DE TRÁFICO"
+
+        if "MINISTERIO DEL INTERIOR" in upper and "TRAFICO" in upper:
+            return "JEFATURA PROVINCIAL DE TRÁFICO"
+
+        if "AYUNTAMIENTO" in upper:
+            return "AYUNTAMIENTO"
+
+        if "AJUNTAMENT" in upper:
+            return "AJUNTAMENT"
+
+        if "POLICÍA LOCAL" in upper or "POLICIA LOCAL" in upper:
+            return "POLICÍA LOCAL"
+
+        if "GUARDIA URBANA" in upper:
+            return "GUARDIA URBANA"
+
+        return "JEFATURA PROVINCIAL DE TRÁFICO"
+
+    def _strip_old_header(text: str) -> str:
+        txt = str(text or "").replace("\r\n", "\n")
+        # quitar restos típicos de cabecera vieja
+        txt = txt.replace("A la atención del órgano competente,", "")
+        txt = txt.replace("A la atención del órgano competente", "")
+        # conservar desde el extracto literal, si existe
+        markers = [
+            "Extracto literal del boletín:",
+            "Extracto literal del boletin:",
+            "I. ALEGACIONES",
+        ]
+        for marker in markers:
+            idx = txt.find(marker)
+            if idx >= 0:
+                return txt[idx:].lstrip()
+        return txt.strip()
+
+    provincia = _infer_provincia()
+    organismo_destino = _infer_organismo_destino()
+
+    body = _strip_old_header(cuerpo)
+
+    header = f"""REFERENCIA: EXPTE. {g("expediente_ref", "........")}
 
 ESCRITO DE ALEGACIONES
 
-{header_destino}
-
+A LA {organismo_destino} DE {provincia}
 
 1.- DATOS DE LA DENUNCIA
 
-Nº EXPEDIENTE: {_g("expediente_ref", "numero_expediente")}
-CARRETERA / LUGAR: {_g("lugar_infraccion", "carretera", "place")}
-FECHA DE LA DENUNCIA: {_g("fecha_infraccion", "fecha_denuncia", "fecha_documento")}
-MATRÍCULA: {_g("matricula")}
-MARCA / MODELO: {_g("marca_modelo", "vehiculo_marca_modelo")}
-
+Nº EXPEDIENTE: {g("expediente_ref")}
+CARRETERA / LUGAR: {g("lugar_infraccion")}
+FECHA DE LA DENUNCIA: {g("fecha_infraccion")}
+MATRÍCULA: {g("matricula")}
+MARCA / MODELO: {g("marca_modelo")}
 
 2.- DATOS DEL RECURRENTE
 
-PRIMER APELLIDO: {apellido1}
-SEGUNDO APELLIDO: {apellido2}
-NOMBRE: {nombre}
-DNI/NIE: {_g("dni", "dni_nie")}
+PRIMER APELLIDO: {g("apellido1")}
+SEGUNDO APELLIDO: {g("apellido2")}
+NOMBRE: {g("nombre")}
+DNI/NIE: {g("dni")}
 
-DOMICILIO: {_g("domicilio", "domicilio_notif", "authorization_address")}
-LOCALIDAD: {_g("localidad", "city")}    PROVINCIA: {_g("provincia", "province")}    CP: {_g("cp", "postal_code")}
+DOMICILIO: {g("domicilio")}
+LOCALIDAD: {g("localidad")}    PROVINCIA: {g("provincia")}    CP: {g("cp")}
 
-TELÉFONO: {_g("telefono", "phone", "authorization_phone")}
-EMAIL: {_g("email", "contact_email", "authorization_email")}
-
+TELÉFONO: {g("telefono")}
+EMAIL: {g("email")}
 
 3.- NATURALEZA DEL ESCRITO
 
 [X] ESCRITO DE ALEGACIONES
 [ ] RECURSO DE REPOSICIÓN
 
-------------------------------------------------------------
-"""
+------------------------------------------------------------"""
 
-    if nombre_completo:
-        comparecencia = (
-            f"D./D.ª {nombre_completo}, mayor de edad, con DNI/NIE {_g('dni', 'dni_nie')}, "
-            f"y con domicilio en {_g('domicilio', 'domicilio_notif', 'authorization_address')}, "
-            "a efectos de notificaciones, comparece y como mejor proceda en Derecho,
-
-"
-            "D I G O:
-
-"
-            "Que mediante el presente escrito vengo a formular ESCRITO DE ALEGACIONES en el expediente arriba referenciado, "
-            "y todo ello con base en los siguientes:
-
-"
-        )
-    else:
-        comparecencia = ""
-
-    return header.strip() + "\n\n" + comparecencia + cuerpo_limpio.strip()
-
+    return header.strip() + "\n\n" + body.strip()
 
 def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str]] = None, forced_tipo: Optional[str] = None) -> Dict[str, Any]:
     row = conn.execute(
