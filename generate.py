@@ -2154,6 +2154,201 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+
+def _pick_first_non_empty(*values) -> str:
+    for v in values:
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s:
+            return s
+    return ""
+
+
+def _split_full_name(full_name: str) -> tuple[str, str, str]:
+    parts = [p for p in _safe_str(full_name).strip().split() if p]
+    if not parts:
+        return "", "", ""
+    if len(parts) == 1:
+        return "", "", parts[0]
+    if len(parts) == 2:
+        return parts[0], "", parts[1]
+    return parts[0], parts[1], " ".join(parts[2:])
+
+
+def build_v2_dgt_layout(cuerpo: str, core: Dict[str, Any], interesado: Optional[Dict[str, Any]] = None) -> str:
+    core = core or {}
+    interesado = interesado or {}
+
+    full_name = _pick_first_non_empty(
+        interesado.get("full_name"),
+        interesado.get("nombre_completo"),
+        interesado.get("name"),
+        core.get("full_name"),
+        core.get("nombre_completo"),
+    )
+    apellido1, apellido2, nombre = _split_full_name(full_name)
+
+    dni = _pick_first_non_empty(
+        interesado.get("dni_nie"),
+        interesado.get("dni"),
+        interesado.get("nie"),
+        core.get("dni_nie"),
+        core.get("dni"),
+        core.get("nie"),
+    )
+
+    domicilio = _pick_first_non_empty(
+        interesado.get("domicilio_notif"),
+        interesado.get("domicilio"),
+        core.get("domicilio_notif"),
+        core.get("domicilio"),
+    )
+
+    email = _pick_first_non_empty(interesado.get("email"), core.get("email"))
+    telefono = _pick_first_non_empty(interesado.get("telefono"), core.get("telefono"))
+    localidad = _pick_first_non_empty(interesado.get("localidad"), core.get("localidad"), core.get("city"))
+    provincia = _pick_first_non_empty(interesado.get("provincia"), core.get("provincia"), core.get("province"))
+    cp = _pick_first_non_empty(interesado.get("cp"), interesado.get("codigo_postal"), core.get("cp"), core.get("codigo_postal"))
+
+    expediente_ref = _pick_first_non_empty(
+        core.get("expediente_ref"),
+        core.get("numero_expediente"),
+        interesado.get("expediente_ref"),
+        "........",
+    )
+    lugar_infraccion = _pick_first_non_empty(
+        core.get("lugar_infraccion"),
+        core.get("carretera"),
+        core.get("via"),
+        core.get("place"),
+    )
+    fecha_infraccion = _pick_first_non_empty(
+        core.get("fecha_infraccion"),
+        core.get("fecha_hecho"),
+        core.get("fecha_documento"),
+    )
+    matricula = _pick_first_non_empty(core.get("matricula"), core.get("vehicle_plate"))
+    marca_modelo = _pick_first_non_empty(
+        core.get("marca_modelo"),
+        " / ".join([x for x in [core.get("marca"), core.get("modelo")] if _safe_str(x).strip()]),
+    )
+
+    destino = _resolve_header_destination(core)
+    organismo_cabecera = _pick_first_non_empty(
+        destino.get("organismo_cabecera"),
+        core.get("organismo"),
+        "JEFATURA PROVINCIAL DE TRÁFICO",
+    )
+    provincia_cabecera = _pick_first_non_empty(
+        destino.get("provincia_cabecera"),
+        provincia,
+        "........",
+    )
+
+    nombre_completo = _pick_first_non_empty(
+        full_name,
+        " ".join([x for x in [nombre, apellido1, apellido2] if x]).strip(),
+    )
+    domicilio_completo = _pick_first_non_empty(
+        domicilio,
+        " ".join([x for x in [localidad, provincia, cp] if x]).strip(),
+    )
+    hecho_literal = _pick_first_non_empty(
+        core.get("hecho_denunciado_literal"),
+        core.get("hecho_denunciado_resumido"),
+        core.get("hecho_imputado"),
+    )
+    hecho_imputado = _pick_first_non_empty(core.get("hecho_imputado"), hecho_literal)
+    organismo = _pick_first_non_empty(core.get("organismo"), "DIRECCIÓN GENERAL DE TRÁFICO")
+
+    header = f"""REFERENCIA: EXPTE. {expediente_ref}
+
+ESCRITO DE ALEGACIONES
+
+A LA {organismo_cabecera} DE {provincia_cabecera}
+
+
+1.- DATOS DE LA DENUNCIA
+
+Nº EXPEDIENTE: {expediente_ref}
+
+CARRETERA / CALLE / LUGAR: {lugar_infraccion}
+
+FECHA DE LA DENUNCIA: {fecha_infraccion}
+
+MATRÍCULA: {matricula}
+
+MARCA / MODELO: {marca_modelo}
+
+
+2.- DATOS DEL RECURRENTE
+
+PRIMER APELLIDO: {apellido1}
+
+SEGUNDO APELLIDO: {apellido2}
+
+NOMBRE: {nombre}
+
+D.N.I. / N.I.E. / C.I.F.: {dni}
+
+DOMICILIO: {domicilio}
+
+LOCALIDAD: {localidad}    PROVINCIA: {provincia}    C.P.: {cp}
+
+TELÉFONO: {telefono}
+
+EMAIL: {email}
+
+
+3.- NATURALEZA DEL ESCRITO
+
+☑ ESCRITO DE ALEGACIONES
+☐ RECURSO DE REPOSICIÓN
+
+
+------------------------------------------------------------
+
+D./D.ª {nombre_completo}, mayor de edad, con DNI/NIE {dni}, con domicilio a efectos de notificaciones en {domicilio_completo}, comparece y como mejor proceda en Derecho,
+
+D I G O:
+
+Que mediante el presente escrito vengo a formular ESCRITO DE ALEGACIONES en el expediente arriba referenciado, en base a los siguientes:
+
+------------------------------------------------------------
+
+A N T E C E D E N T E S
+
+Extracto literal del boletín:
+
+“{hecho_literal}”
+
+1) Órgano: {organismo}
+2) Identificación expediente: {expediente_ref}
+3) Hecho imputado: {hecho_imputado}
+
+------------------------------------------------------------
+"""
+    body = _safe_str(cuerpo).strip()
+    if not body:
+        return header.strip()
+
+    normalized_body = body.lstrip()
+    if normalized_body.startswith("REFERENCIA: EXPTE.") or normalized_body.startswith("ESCRITO DE ALEGACIONES"):
+        return body
+
+    for marker in [
+        "REFERENCIA: EXPTE.",
+        "ESCRITO DE ALEGACIONES",
+        "A LA ",
+        "1.- DATOS DE LA DENUNCIA",
+    ]:
+        if marker in normalized_body[:500]:
+            return body
+
+    return header.strip() + "\n\n" + body
+
+
 def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str]] = None, forced_tipo: Optional[str] = None) -> Dict[str, Any]:
     row = conn.execute(
         text("SELECT extracted_json FROM extractions WHERE case_id=:case_id ORDER BY created_at DESC LIMIT 1"),
@@ -2216,6 +2411,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     cuerpo = _fix_alegacion_titles(cuerpo)
     cuerpo = _upgrade_bullets(cuerpo)
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
+    tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
 
     docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
