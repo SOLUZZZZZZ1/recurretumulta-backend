@@ -4,7 +4,7 @@ import smtplib
 from email.message import EmailMessage
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, BackgroundTasks, Request
+from fastapi import APIRouter, HTTPException, UploadFile, File, BackgroundTasks, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import text
 
@@ -13,7 +13,7 @@ from b2_storage import upload_bytes
 
 # Import interno del engine (Modo Dios)
 from ai.expediente_engine import run_expediente_ai
-from authorization_pdf import ensure_authorization_pdf, get_request_ip
+from authorization_pdf import ensure_authorization_pdf, get_request_ip, _get_case_snapshot, _authorization_payload_from_case, generate_authorization_pdf
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
@@ -380,6 +380,32 @@ def authorize_case(case_id: str, request: Request):
         "authorized": True,
         "authorization_pdf": auth_doc.get("document"),
     }
+
+
+
+@router.get("/{case_id}/authorization-pdf")
+def download_authorization_pdf(case_id: str, request: Request):
+    """
+    Devuelve el PDF de autorización ya relleno para descargar y firmar.
+    """
+    engine = get_engine()
+    with engine.begin() as conn:
+        _case_exists(conn, case_id)
+        ip = get_request_ip(request)
+        case_meta = _get_case_snapshot(conn, case_id)
+        payload = _authorization_payload_from_case(case_meta, ip=ip, version="v1_dgt_homologado")
+
+        payload["representante_nombre"] = "LA TALAMANQUINA, S.L."
+        payload["representante_nif"] = "B75440115"
+        payload["representante_domicilio"] = "Calle Velázquez, 15 – 28001 Madrid (España)"
+
+        pdf_bytes = generate_authorization_pdf(payload)
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="autorizacion_{case_id}.pdf"'
+    }
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
 
 @router.post("/{case_id}/upload-receipt")
 async def upload_receipt(case_id: str, file: UploadFile = File(...)):
