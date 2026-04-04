@@ -381,3 +381,54 @@ def authorize_case(case_id: str, request: Request):
         "authorization_pdf": auth_doc.get("document"),
     }
 
+@router.post("/{case_id}/upload-receipt")
+async def upload_receipt(case_id: str, file: UploadFile = File(...)):
+    engine = get_engine()
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+
+    b2_bucket, b2_key = upload_bytes(
+        case_id,
+        "receipt",
+        data,
+        ext=".pdf",
+        content_type="application/pdf",
+    )
+
+    with engine.begin() as conn:
+        _case_exists(conn, case_id)
+
+        conn.execute(
+            text(
+                """
+                INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
+                VALUES (:id, 'submission_receipt', :b, :k, :m, :s, NOW())
+                """
+            ),
+            {
+                "id": case_id,
+                "b": b2_bucket,
+                "k": b2_key,
+                "m": "application/pdf",
+                "s": len(data),
+            },
+        )
+
+        conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET status='submitted', updated_at=NOW()
+                WHERE id=:id
+                """
+            ),
+            {"id": case_id},
+        )
+
+        _event(case_id, "submission_receipt_uploaded", {
+            "file": b2_key
+        })
+
+    return {"ok": True}
