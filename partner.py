@@ -131,7 +131,8 @@ def _build_partner_authorization_template_pdf() -> bytes:
     content.append(Spacer(1, 0.35 * cm))
 
     content.append(Paragraph("<b>TRÁMITE AUTORIZADO</b>", section))
-    content.append(Paragraph("Presentación de escritos de alegaciones o recursos ante la DGT y actuaciones administrativas vinculadas al expediente sancionador.", normal))
+    content.append(Paragraph("<b>Código:</b> 00040005001", normal))
+    content.append(Paragraph("<b>Nombre del trámite:</b> Presentación de escritos de alegaciones o recursos", normal))
     content.append(Spacer(1, 0.35 * cm))
 
     content.append(Paragraph("<b>ALCANCE DE LA REPRESENTACIÓN</b>", section))

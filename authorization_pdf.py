@@ -54,7 +54,6 @@ def _infer_lugar(data: Dict[str, str]) -> str:
     if domicilio:
         partes = [p.strip() for p in domicilio.split(",") if p.strip()]
         if partes:
-            # Prefer the last meaningful segment, cleaning postal codes and country tails.
             candidatos = list(reversed(partes))
             for seg in candidatos:
                 limpio = re.sub(r"\b\d{5}\b", "", seg).strip(" -")
@@ -186,11 +185,13 @@ def generate_authorization_pdf(data: Dict[str, str]) -> bytes:
     if data.get("expediente_ref"):
         content.append(Paragraph(f"<b>Expediente administrativo:</b> {data['expediente_ref']}", normal))
     content.append(Paragraph(f"<b>Expediente interno:</b> {data.get('case_id','')}", normal))
+    content.append(Paragraph("<b>Código de trámite:</b> 00040005001", normal))
+    content.append(Paragraph("<b>Nombre del trámite:</b> Presentación de escritos de alegaciones o recursos", normal))
     content.append(Spacer(1, 0.3 * cm))
 
     content.append(Paragraph(f"<b>Nombre y apellidos:</b> {data.get('full_name','') or '—'}", normal))
     content.append(Paragraph(f"<b>DNI/NIE:</b> {data.get('dni_nie','') or '—'}", normal))
-    content.append(Paragraph(f"<b>Domicilio a efectos de notificaciones:</b> {data.get('domicilio_notif','') or '—'}", normal))
+    content.append(Paragraph(f"<b>Domicilio del interesado a efectos de notificaciones:</b> {data.get('domicilio_notif','') or '—'}", normal))
     content.append(Paragraph(f"<b>Email:</b> {data.get('email','') or '—'}", normal))
     content.append(Paragraph(f"<b>Telefono:</b> {data.get('telefono','') or '—'}", normal))
     content.append(Spacer(1, 0.5 * cm))
