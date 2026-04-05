@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Image
 from sqlalchemy import text
 
 from b2_storage import upload_bytes
@@ -165,9 +165,30 @@ def generate_authorization_pdf(data: Dict[str, str]) -> bytes:
     content.append(Paragraph(f"<b>Version del texto de autorizacion:</b> {data.get('version','') or '—'}", normal))
     content.append(Spacer(1, 1.2 * cm))
 
-    content.append(Paragraph("Firma/aceptacion electronica registrada en sistema.", normal))
+    content.append(Paragraph("Firma del representante / autorizado:", normal))
+    content.append(Spacer(1, 0.3 * cm))
+
+    firma_path = "templates/firma.png"
+    img = Image(firma_path, width=6 * cm)
+    img.hAlign = "LEFT"
+    content.append(img)
+
+    content.append(Spacer(1, 0.2 * cm))
+    content.append(Paragraph("<b>LA TALAMANQUINA, S.L.</b>", normal))
+
+    content.append(Spacer(1, 1.0 * cm))
+
+    content.append(Paragraph("Firma del representado / cliente:", normal))
     content.append(Spacer(1, 0.8 * cm))
-    content.append(Paragraph("Documento generado automaticamente por RecurreTuMulta.", small))
+    content.append(Paragraph("__________________________________________", normal))
+
+    content.append(Spacer(1, 0.6 * cm))
+
+    content.append(Paragraph(
+        "Documento generado automaticamente por RecurreTuMulta. "
+        "La firma manuscrita del cliente valida esta autorizacion.",
+        small
+    ))
 
     doc.build(content)
     return buffer.getvalue()
