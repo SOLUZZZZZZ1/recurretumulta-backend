@@ -2,6 +2,7 @@ import os
 import json
 import secrets
 import hashlib
+from datetime import datetime
 from typing import Any, Dict, Optional, List
 
 from fastapi import APIRouter, HTTPException, Header, UploadFile, File, Form
@@ -20,6 +21,25 @@ import io
 router = APIRouter(prefix="/partner", tags=["partner"])
 
 MAX_FILES = 5
+
+
+def _fecha_es_hoy() -> str:
+    meses = {
+        1: "enero",
+        2: "febrero",
+        3: "marzo",
+        4: "abril",
+        5: "mayo",
+        6: "junio",
+        7: "julio",
+        8: "agosto",
+        9: "septiembre",
+        10: "octubre",
+        11: "noviembre",
+        12: "diciembre",
+    }
+    now = datetime.now()
+    return f"{now.day} de {meses[now.month]} de {now.year}"
 
 
 def _env(name: str, default: str = "") -> str:
@@ -124,7 +144,7 @@ def _build_partner_authorization_template_pdf() -> bytes:
     ))
     content.append(Spacer(1, 0.55 * cm))
 
-    content.append(Paragraph("En _______________________, a ______ de __________________ de 20____", normal))
+    content.append(Paragraph(f"En España, a {_fecha_es_hoy()}", normal))
     content.append(Spacer(1, 1.0 * cm))
 
     content.append(Paragraph("Firma del representante / autorizado:", normal))
@@ -132,18 +152,14 @@ def _build_partner_authorization_template_pdf() -> bytes:
 
     firma_path = os.path.join(os.path.dirname(__file__), "templates", "firma.png")
     if os.path.exists(firma_path):
-        max_width = 4.0 * cm
-        max_height = 2.0 * cm
-
         img = Image(firma_path)
-        ratio = min(
-            max_width / float(img.imageWidth),
-            max_height / float(img.imageHeight),
-        )
-
-        img.drawWidth = float(img.imageWidth) * ratio
-        img.drawHeight = float(img.imageHeight) * ratio
+        img.drawWidth = 4 * cm
+        img.drawHeight = 2 * cm
         img.hAlign = "CENTER"
+        try:
+            img._restrictSize(4 * cm, 2 * cm)
+        except Exception:
+            pass
         content.append(Spacer(1, 0.2 * cm))
         content.append(img)
     else:
