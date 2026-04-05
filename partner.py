@@ -118,11 +118,23 @@ def _build_partner_authorization_template_pdf() -> bytes:
     content.append(Paragraph("En _______________________, a ______ de __________________ de 20____", normal))
     content.append(Spacer(1, 1.0 * cm))
 
-    content.append(Paragraph("Firma del representante / autorizado:", normal))
-    content.append(Spacer(1, 0.8 * cm))
-    content.append(Paragraph("__________________________________________", normal))
-    content.append(Paragraph("LA TALAMANQUINA, S.L.", small))
-    content.append(Spacer(1, 0.7 * cm))
+    from reportlab.platypus import Image
+import os
+
+content.append(Paragraph("Firma del representante / autorizado:", normal))
+content.append(Spacer(1, 0.3 * cm))
+
+firma_path = os.path.join(os.path.dirname(__file__), "templates", "firma.png")
+
+if os.path.exists(firma_path):
+    img = Image(firma_path, width=6 * cm, height=2.2 * cm)
+    img.hAlign = "LEFT"
+    content.append(img)
+else:
+    content.append(Paragraph("______________________________", normal))
+
+content.append(Spacer(1, 0.2 * cm))
+content.append(Paragraph("LA TALAMANQUINA, S.L.", small))
 
     content.append(Paragraph("Firma del representado / cliente:", normal))
     content.append(Spacer(1, 0.8 * cm))
