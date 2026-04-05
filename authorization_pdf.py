@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -46,6 +47,21 @@ def _fecha_es_larga(iso_value: str) -> str:
     except Exception:
         dt = datetime.now(timezone.utc)
     return f"{dt.day} de {meses.get(dt.month, '')} de {dt.year}"
+
+
+def _infer_lugar(data: Dict[str, str]) -> str:
+    domicilio = (data.get("domicilio_notif") or "").strip()
+    if domicilio:
+        partes = [p.strip() for p in domicilio.split(",") if p.strip()]
+        if partes:
+            # Prefer the last meaningful segment, cleaning postal codes and country tails.
+            candidatos = list(reversed(partes))
+            for seg in candidatos:
+                limpio = re.sub(r"\b\d{5}\b", "", seg).strip(" -")
+                if limpio and limpio.lower() not in {"españa", "espana"}:
+                    return limpio
+    organismo = (data.get("organismo") or "").strip()
+    return organismo or "España"
 
 
 def get_request_ip(request) -> str:
@@ -197,7 +213,7 @@ def generate_authorization_pdf(data: Dict[str, str]) -> bytes:
     ))
     content.append(Spacer(1, 0.4 * cm))
 
-    lugar = data.get("domicilio_notif") or data.get("organismo") or "España"
+    lugar = _infer_lugar(data)
     fecha_larga = _fecha_es_larga(data.get("authorized_at", ""))
 
     content.append(Paragraph("<b>ALCANCE DE LA REPRESENTACION</b>", normal))
