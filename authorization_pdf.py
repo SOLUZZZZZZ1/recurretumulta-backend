@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -168,12 +169,16 @@ def generate_authorization_pdf(data: Dict[str, str]) -> bytes:
     content.append(Paragraph("Firma del representante / autorizado:", normal))
     content.append(Spacer(1, 0.3 * cm))
 
-    firma_path = "templates/firma.png"
-    img = Image(firma_path, width=6 * cm)
-    img.hAlign = "LEFT"
-    content.append(img)
+    firma_path = os.path.join(os.path.dirname(__file__), "templates", "firma.png")
+    if os.path.exists(firma_path):
+        img = Image(firma_path, width=6 * cm)
+        img.hAlign = "LEFT"
+        content.append(img)
+        content.append(Spacer(1, 0.2 * cm))
+    else:
+        content.append(Paragraph("__________________________________________", normal))
+        content.append(Spacer(1, 0.2 * cm))
 
-    content.append(Spacer(1, 0.2 * cm))
     content.append(Paragraph("<b>LA TALAMANQUINA, S.L.</b>", normal))
 
     content.append(Spacer(1, 1.0 * cm))
