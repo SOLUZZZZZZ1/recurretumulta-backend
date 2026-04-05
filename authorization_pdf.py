@@ -106,6 +106,19 @@ def _authorization_payload_from_case(case_meta: Dict[str, Any], ip: str, version
     }
 
 
+def _find_signature_path() -> str:
+    candidates = [
+        os.getenv("SIGNATURE_PATH", "").strip(),
+        os.path.join(os.path.dirname(__file__), "templates", "firma.png"),
+        os.path.join(os.getcwd(), "templates", "firma.png"),
+        os.path.join(os.getcwd(), "backend", "templates", "firma.png"),
+    ]
+    for p in candidates:
+        if p and os.path.exists(p):
+            return p
+    return ""
+
+
 def generate_authorization_pdf(data: Dict[str, str]) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -164,20 +177,23 @@ def generate_authorization_pdf(data: Dict[str, str]) -> bytes:
     content.append(Paragraph(f"<b>Fecha y hora (UTC):</b> {data.get('authorized_at','')}", normal))
     content.append(Paragraph(f"<b>IP de origen:</b> {data.get('ip','') or '—'}", normal))
     content.append(Paragraph(f"<b>Version del texto de autorizacion:</b> {data.get('version','') or '—'}", normal))
-    content.append(Spacer(1, 1.2 * cm))
+    content.append(Spacer(1, 1.0 * cm))
 
     content.append(Paragraph("Firma del representante / autorizado:", normal))
     content.append(Spacer(1, 0.3 * cm))
 
-    firma_path = os.path.join(os.path.dirname(__file__), "templates", "firma.png")
-    if os.path.exists(firma_path):
-        img = Image(firma_path, width=6 * cm)
+    firma_path = _find_signature_path()
+    if firma_path:
+        img = Image(firma_path, width=6 * cm, height=2.2 * cm)
         img.hAlign = "LEFT"
         content.append(img)
         content.append(Spacer(1, 0.2 * cm))
     else:
         content.append(Paragraph("__________________________________________", normal))
         content.append(Spacer(1, 0.2 * cm))
+        # Línea temporal de diagnóstico. Cuando ya salga la firma, se puede quitar.
+        content.append(Paragraph("<font size='8'>[DEBUG] firma.png no encontrada</font>", small))
+        content.append(Spacer(1, 0.1 * cm))
 
     content.append(Paragraph("<b>LA TALAMANQUINA, S.L.</b>", normal))
 
@@ -270,6 +286,7 @@ def ensure_authorization_pdf(conn, case_id: str, request, version: str = "v1") -
                     "ip": ip,
                     "version": version,
                     "generated_at": payload["authorized_at"],
+                    "signature_path_found": _find_signature_path(),
                 }
             ),
         },
