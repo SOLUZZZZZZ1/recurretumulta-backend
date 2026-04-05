@@ -25,6 +25,29 @@ def _safe_str(v: Any) -> str:
     return str(v).strip()
 
 
+def _fecha_es_larga(iso_value: str) -> str:
+    meses = {
+        1: "enero",
+        2: "febrero",
+        3: "marzo",
+        4: "abril",
+        5: "mayo",
+        6: "junio",
+        7: "julio",
+        8: "agosto",
+        9: "septiembre",
+        10: "octubre",
+        11: "noviembre",
+        12: "diciembre",
+    }
+    try:
+        raw = (iso_value or "").strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(raw)
+    except Exception:
+        dt = datetime.now(timezone.utc)
+    return f"{dt.day} de {meses.get(dt.month, '')} de {dt.year}"
+
+
 def get_request_ip(request) -> str:
     try:
         forwarded = request.headers.get("x-forwarded-for", "").strip()
@@ -172,7 +195,23 @@ def generate_authorization_pdf(data: Dict[str, str]) -> bytes:
         "ostenta legitimacion suficiente sobre el expediente asociado a esta autorizacion.",
         normal,
     ))
-    content.append(Spacer(1, 0.6 * cm))
+    content.append(Spacer(1, 0.4 * cm))
+
+    lugar = data.get("domicilio_notif") or data.get("organismo") or "España"
+    fecha_larga = _fecha_es_larga(data.get("authorized_at", ""))
+
+    content.append(Paragraph("<b>ALCANCE DE LA REPRESENTACION</b>", normal))
+    content.append(Spacer(1, 0.1 * cm))
+    content.append(Paragraph(
+        "La persona firmante autoriza expresamente a <b>LA TALAMANQUINA, S.L.</b> para actuar en su nombre ante "
+        "la Direccion General de Trafico y organismos competentes en relacion con expedientes sancionadores de "
+        "trafico, incluyendo la preparacion y presentacion de alegaciones, recursos y la obtencion del justificante "
+        "oficial de presentacion.",
+        normal,
+    ))
+    content.append(Spacer(1, 0.35 * cm))
+    content.append(Paragraph(f"En {lugar}, a {fecha_larga}", normal))
+    content.append(Spacer(1, 0.55 * cm))
 
     content.append(Paragraph(f"<b>Fecha y hora (UTC):</b> {data.get('authorized_at','')}", normal))
     content.append(Paragraph(f"<b>IP de origen:</b> {data.get('ip','') or '—'}", normal))
