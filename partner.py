@@ -132,10 +132,19 @@ def _build_partner_authorization_template_pdf() -> bytes:
 
     firma_path = os.path.join(os.path.dirname(__file__), "templates", "firma.png")
     if os.path.exists(firma_path):
+        max_width = 4.0 * cm
+        max_height = 2.0 * cm
+
         img = Image(firma_path)
-        img.drawWidth = 2.0 * cm
-        img.drawHeight = img.imageHeight * (img.drawWidth / img.imageWidth)
-        img.hAlign = "LEFT"
+        ratio = min(
+            max_width / float(img.imageWidth),
+            max_height / float(img.imageHeight),
+        )
+
+        img.drawWidth = float(img.imageWidth) * ratio
+        img.drawHeight = float(img.imageHeight) * ratio
+        img.hAlign = "CENTER"
+        content.append(Spacer(1, 0.2 * cm))
         content.append(img)
     else:
         content.append(Paragraph("__________________________________________", normal))
