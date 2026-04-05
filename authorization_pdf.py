@@ -184,16 +184,19 @@ def generate_authorization_pdf(data: Dict[str, str]) -> bytes:
 
     firma_path = _find_signature_path()
     if firma_path:
-        img = Image(firma_path, width=6 * cm, height=2.2 * cm)
-        img.hAlign = "LEFT"
+        img = Image(firma_path)
+        img.drawWidth = 4 * cm
+        img.drawHeight = 2 * cm
+        img.hAlign = "CENTER"
+        try:
+            img._restrictSize(4 * cm, 2 * cm)
+        except Exception:
+            pass
         content.append(img)
         content.append(Spacer(1, 0.2 * cm))
     else:
         content.append(Paragraph("__________________________________________", normal))
         content.append(Spacer(1, 0.2 * cm))
-        # Línea temporal de diagnóstico. Cuando ya salga la firma, se puede quitar.
-        content.append(Paragraph("<font size='8'>[DEBUG] firma.png no encontrada</font>", small))
-        content.append(Spacer(1, 0.1 * cm))
 
     content.append(Paragraph("<b>LA TALAMANQUINA, S.L.</b>", normal))
 
