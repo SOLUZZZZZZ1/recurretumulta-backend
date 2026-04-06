@@ -177,10 +177,8 @@ def _build_partner_authorization_template_pdf() -> bytes:
     content.append(Paragraph("DNI/NIE: ________________________________", small))
     content.append(Spacer(1, 0.5 * cm))
 
-    content.append(Paragraph(
-        "Documento base para firma manuscrita del cliente. Tras la firma, debe subirse escaneado o fotografiado al expediente.",
-        small,
-    ))
+    
+ 
 
     doc.build(content)
     return buffer.getvalue()
