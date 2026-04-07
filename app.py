@@ -20,6 +20,7 @@ from partner_cases import router as partner_cases_router
 from ops_automation_router import router as ops_automation_router
 from ops_operator_router import router as ops_operator_router
 from ops_queue_smart import router as ops_queue_smart_router
+from contact_backend_fastapi import router as contact_router
 
 
 # ✅ AÑADIDO: OPS (operador)
@@ -58,7 +59,7 @@ app.include_router(partner_cases_router)
 app.include_router(ops_automation_router)
 app.include_router(ops_operator_router)
 app.include_router(ops_queue_smart_router)
-
+app.include_router(contact_router)
 
 
 # ✅ NUEVO: router de operador (/ops/*)
