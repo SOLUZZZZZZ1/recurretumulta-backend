@@ -8,6 +8,7 @@ from sqlalchemy import text
 from scoring import classify
 
 from database import get_engine
+from jurisprudencia_base import obtener_bloques_juridicos
 
 from ai.infractions.semaforo import build_semaforo_strong_template
 from ai.infractions.movil import build_movil_strong_template
@@ -1372,6 +1373,31 @@ def _build_strategy_prefix(core: Dict[str, Any], tipo: str) -> str:
     return "\n\n".join(p.strip() for p in pieces if p.strip())
 
 
+
+
+def _build_jurisprudencia_section(tipo: str = "") -> str:
+    """
+    Integra doctrina controlada del Tribunal Supremo sin alterar la arquitectura
+    determinista actual. Usa la base jurídica interna y la presenta como
+    fundamento complementario, sin inventar citas ni sentencias concretas.
+    """
+    try:
+        bloques = obtener_bloques_juridicos(tipo or "")
+    except Exception:
+        return ""
+
+    partes = [p.strip() for p in _safe_str(bloques).split("\n\n") if p.strip()]
+    if not partes:
+        return ""
+
+    cuerpo = "\n\n".join(f"• {p}" for p in partes)
+    return (
+        "JURISPRUDENCIA APLICABLE\n\n"
+        "Sin perjuicio de la normativa expresamente citada, resultan de aplicación "
+        "los siguientes criterios jurisprudenciales consolidados:\n\n"
+        f"{cuerpo}"
+    )
+
 def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> str:
     tipo = (tipo or "").lower().strip()
 
@@ -1505,6 +1531,10 @@ def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> s
         fundamentos.append(
             "CUARTO.– La Administración debe describir con precisión suficiente la conducta imputada y el precepto aplicado, permitiendo una subsunción jurídica clara y una defensa efectiva."
         )
+
+    jurisprudencia_section = _build_jurisprudencia_section(tipo)
+    if jurisprudencia_section:
+        fundamentos.append(jurisprudencia_section)
 
     fundamentos.append(
         "SEXTO.– Conforme a reiterada jurisprudencia del Tribunal Supremo, la potestad sancionadora exige una motivación suficiente "
