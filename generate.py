@@ -1160,66 +1160,6 @@ def _detect_boletin_incoherente(core: Dict[str, Any]) -> bool:
     return any(s in blob for s in escandaloso) and not any(s in blob for s in riesgo_vial)
 
 
-
-
-def _inject_jurisprudencia_en_alegaciones(body: str, tipo: str) -> str:
-    """
-    Refuerza alegaciones con doctrina general del Tribunal Supremo sin citar
-    sentencias concretas y sin alterar la arquitectura del generador.
-    """
-    txt = _safe_str(body)
-    t = (tipo or "").lower().strip()
-
-    if not txt:
-        return txt
-
-    if t == "velocidad":
-        txt = txt.replace(
-            "La imputación por exceso de velocidad exige acreditación técnica completa y verificable.",
-            "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. "
-            "Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad exige una acreditación completa, verificable y trazable del dispositivo utilizado."
-        )
-        txt = txt.replace(
-            "La Administración debe motivar de forma individualizada por qué la velocidad atribuida, una vez aplicado el margen correspondiente, encaja exactamente en el tramo sancionador impuesto.",
-            "La Administración debe motivar de forma individualizada por qué la velocidad atribuida, una vez aplicado el margen correspondiente, encaja exactamente en el tramo sancionador impuesto. "
-            "La jurisprudencia del Tribunal Supremo exige que la motivación de los actos sancionadores sea suficiente, concreta e individualizada, no siendo válida una fundamentación genérica o estereotipada."
-        )
-        txt = txt.replace(
-            "Se solicita la aportación íntegra del expediente, incluyendo:",
-            "Se solicita la aportación íntegra del expediente, incluyendo: "
-            "De acuerdo con la doctrina consolidada del Tribunal Supremo, la presunción de inocencia solo puede ser desvirtuada mediante prueba de cargo suficiente, clara y concluyente. "
-        )
-
-    elif t in {"movil", "art18", "auriculares"}:
-        txt = txt.replace(
-            "La imputación",
-            "La imputación, tal como ha reiterado el Tribunal Supremo, debe descansar en una descripción concreta, detallada y circunstanciada de los hechos, con soporte probatorio bastante. La imputación",
-            1
-        )
-
-    elif t == "itv":
-        txt = txt.replace(
-            "La Administración debe acreditar",
-            "La Administración debe acreditar, conforme a la doctrina consolidada del Tribunal Supremo, de forma suficiente los hechos constitutivos de la infracción. La Administración debe acreditar",
-            1
-        )
-
-    elif t in {"semaforo", "municipal_semaforo"}:
-        txt = txt.replace(
-            "La Administración debe acreditar",
-            "La Administración debe acreditar, tal como exige reiteradamente el Tribunal Supremo, los hechos con prueba suficiente, precisa y susceptible de contradicción efectiva. La Administración debe acreditar",
-            1
-        )
-
-    else:
-        txt = txt.replace(
-            "La Administración",
-            "La Administración, conforme a la doctrina consolidada del Tribunal Supremo, soporta la carga de acreditar de forma suficiente el hecho imputado. La Administración",
-            1
-        )
-
-    return txt
-
 def _inject_tipicidad_material_en_alegaciones(body: str, core: Dict[str, Any]) -> str:
     if not _detect_boletin_incoherente(core):
         return body
@@ -2434,7 +2374,6 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     cuerpo = _fix_alegacion_titles(cuerpo)
     cuerpo = _upgrade_bullets(cuerpo)
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
-    tpl["cuerpo"] = _inject_jurisprudencia_en_alegaciones(tpl["cuerpo"], tipo)
     tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
 
     docx_bytes = build_docx("", tpl["cuerpo"])
