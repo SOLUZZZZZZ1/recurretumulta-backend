@@ -2143,7 +2143,7 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
         "II. ALEGACIONES\n\n"
         "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA DEL DISPOSITIVO DE CONTROL\n\n"
-        "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad exige una acreditación completa, verificable y trazable del dispositivo utilizado.
+        "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. No basta "
         "una referencia genérica al radar o cinemómetro: debe constar de forma precisa el dispositivo utilizado, "
         "su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. "
         f"{radar_focus}\n\n"
@@ -2374,6 +2374,13 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     cuerpo = _fix_alegacion_titles(cuerpo)
     cuerpo = _upgrade_bullets(cuerpo)
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
+
+    if tipo == "velocidad":
+        tpl["cuerpo"] = tpl["cuerpo"].replace(
+            "La imputación por exceso de velocidad exige acreditación técnica completa y verificable.",
+            "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad exige una acreditación completa, verificable y trazable del dispositivo utilizado."
+        )
+
     tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
 
     docx_bytes = build_docx("", tpl["cuerpo"])
