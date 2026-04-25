@@ -2163,10 +2163,15 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
 
     cuerpo += (
         "ALEGACIÓN SEGUNDA — DEFECTOS DE MOTIVACIÓN Y FALTA DE SOPORTE COMPLETO\n\n"
-"La Administración debe motivar de forma individualizada por qué la velocidad atribuida, una vez aplicado el margen correspondiente, encaja exactamente en el tramo sancionador impuesto. Sin fotograma completo, certificado metrológico, identificación técnica del equipo y acreditación de la cadena de custodia, no puede enervarse la presunción de inocencia con el rigor exigible en Derecho sancionador.\n\n"
-"ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA\n\n"
-"Se solicita la aportación íntegra del expediente, incluyendo: boletín/denuncia completa, fotograma o secuencia completa, certificado de verificación metrológica, identificación del equipo, documentación técnica del control y motivación detallada del tramo sancionador aplicado.\n\n"
-"III. SOLICITO\n"
+        "La Administración debe motivar de forma individualizada por qué la velocidad atribuida, una vez aplicado "
+        "el margen correspondiente, encaja exactamente en el tramo sancionador impuesto. Sin fotograma completo, "
+        "certificado metrológico, identificación técnica del equipo y acreditación de la cadena de custodia, no puede "
+        "enervarse la presunción de inocencia con el rigor exigible en Derecho sancionador.\n\n"
+        "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA\n\n"
+        "Se solicita la aportación íntegra del expediente, incluyendo: boletín/denuncia completa, fotograma o secuencia "
+        "completa, certificado de verificación metrológica, identificación del equipo, documentación técnica del control "
+        "y motivación detallada del tramo sancionador aplicado.\n\n"
+        "III. SOLICITO\n"
         "1) Que se tengan por formuladas las presentes alegaciones.\n"
         "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de acreditación técnica suficiente.\n"
         "3) Subsidiariamente, que se aporte expediente íntegro y prueba técnica completa para contradicción efectiva.\n"
@@ -2376,6 +2381,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         )
 
     tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
+    tpl["cuerpo"] = _force_final_alegacion_titles_upper(tpl["cuerpo"])
 
     docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
@@ -2425,6 +2431,39 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     }
 
 
+
+
+
+def _force_final_alegacion_titles_upper(text: str) -> str:
+    """
+    Corrección final de presentación: fuerza títulos de alegaciones a mayúsculas
+    después de todo el post-procesado y del layout DGT.
+    No toca cálculos, no toca datos técnicos y no altera la lógica de generación.
+    """
+    txt = _safe_str(text)
+
+    replacements = {
+        "ALEGACIÓN — nulidad de pleno derecho": "ALEGACIÓN — NULIDAD DE PLENO DERECHO",
+        "ALEGACIÓN — Nulidad de pleno derecho": "ALEGACIÓN — NULIDAD DE PLENO DERECHO",
+        "ALEGACIÓN TERCERA — SOLICITUD DE expediente íntegro Y PRUEBA TÉCNICA": "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA",
+        "Alegación tercera — solicitud de expediente íntegro y prueba técnica": "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA",
+        "ALEGACIÓN TERCERA — Solicitud de expediente íntegro y prueba técnica": "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA",
+    }
+
+    for bad, good in replacements.items():
+        txt = txt.replace(bad, good)
+
+    def repl(match):
+        return match.group(0).upper()
+
+    txt = re.sub(
+        r"^ALEGACIÓN(?:\s+[A-ZÁÉÍÓÚÑ]+)?\s+—\s+[^\n]+$",
+        repl,
+        txt,
+        flags=re.MULTILINE,
+    )
+
+    return txt
 
 
 def _extract_destination_from_generated_body(body: str) -> str:
