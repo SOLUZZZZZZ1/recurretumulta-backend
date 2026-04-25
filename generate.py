@@ -8,6 +8,7 @@ from sqlalchemy import text
 from scoring import classify
 
 from database import get_engine
+from jurisprudencia_base import obtener_bloques_juridicos
 
 from ai.infractions.semaforo import build_semaforo_strong_template
 from ai.infractions.movil import build_movil_strong_template
@@ -1025,6 +1026,10 @@ def _fix_alegaciones_numeracion(text: str) -> str:
 
 
 def _apply_premium_legal_formatting(text: str) -> str:
+    """
+    Aplica énfasis jurídico en el cuerpo, pero NO toca títulos de alegaciones.
+    Esto evita que encabezados como 'EXPEDIENTE ÍNTEGRO' acaben saliendo en minúscula.
+    """
     txt = _safe_str(text)
     if not txt:
         return ""
@@ -1041,12 +1046,23 @@ def _apply_premium_legal_formatting(text: str) -> str:
         ("carga probatoria", "**carga probatoria**"),
     ]
 
-    for src, dst in replacements:
-        txt = re.sub(rf"\b{re.escape(src)}\b", dst, txt, flags=re.IGNORECASE)
+    out_lines = []
+    for line in txt.splitlines():
+        stripped = line.strip()
 
-    txt = re.sub(r"\*\*\*+", "**", txt)
-    return txt
+        # No formatear encabezados: deben conservar mayúsculas exactas.
+        if stripped.upper().startswith("ALEGACIÓN"):
+            out_lines.append(line)
+            continue
 
+        new_line = line
+        for src_text, dst_text in replacements:
+            new_line = re.sub(rf"\b{re.escape(src_text)}\b", dst_text, new_line, flags=re.IGNORECASE)
+
+        new_line = re.sub(r"\*\*\*+", "**", new_line)
+        out_lines.append(new_line)
+
+    return "\n".join(out_lines)
 
 def _resolve_strategy_mode(core: Dict[str, Any]) -> str:
     viability = _safe_str(core.get("case_viability")).lower().strip()
@@ -1372,6 +1388,31 @@ def _build_strategy_prefix(core: Dict[str, Any], tipo: str) -> str:
     return "\n\n".join(p.strip() for p in pieces if p.strip())
 
 
+
+
+def _build_jurisprudencia_section(tipo: str = "") -> str:
+    """
+    Integra doctrina controlada del Tribunal Supremo sin alterar la arquitectura
+    determinista actual. Usa la base jurídica interna y la presenta como
+    fundamento complementario, sin inventar citas ni sentencias concretas.
+    """
+    try:
+        bloques = obtener_bloques_juridicos(tipo or "")
+    except Exception:
+        return ""
+
+    partes = [p.strip() for p in _safe_str(bloques).split("\n\n") if p.strip()]
+    if not partes:
+        return ""
+
+    cuerpo = "\n\n".join(f"• {p}" for p in partes)
+    return (
+        "JURISPRUDENCIA APLICABLE\n\n"
+        "Sin perjuicio de la normativa expresamente citada, resultan de aplicación "
+        "los siguientes criterios jurisprudenciales consolidados:\n\n"
+        f"{cuerpo}"
+    )
+
 def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> str:
     tipo = (tipo or "").lower().strip()
 
@@ -1505,6 +1546,10 @@ def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> s
         fundamentos.append(
             "CUARTO.– La Administración debe describir con precisión suficiente la conducta imputada y el precepto aplicado, permitiendo una subsunción jurídica clara y una defensa efectiva."
         )
+
+    jurisprudencia_section = _build_jurisprudencia_section(tipo)
+    if jurisprudencia_section:
+        fundamentos.append(jurisprudencia_section)
 
     fundamentos.append(
         "SEXTO.– Conforme a reiterada jurisprudencia del Tribunal Supremo, la potestad sancionadora exige una motivación suficiente "
@@ -2113,8 +2158,7 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
         "II. ALEGACIONES\n\n"
         "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA DEL DISPOSITIVO DE CONTROL\n\n"
-        "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. No basta "
-        "una referencia genérica al radar o cinemómetro: debe constar de forma precisa el dispositivo utilizado, "
+        "La imputación por exceso de velocidad exige una acreditación técnica completa, rigurosa y plenamente verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad requiere una acreditación íntegra, trazable y documentalmente sustentada del dispositivo utilizado, no bastando referencias genéricas o incompletas. Debe constar de forma precisa el dispositivo empleado, su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. En controles con Multanova debe acreditarse la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la correspondencia inequívoca con el vehículo denunciado. "
         "su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. "
         f"{radar_focus}\n\n"
         "No consta acreditado de forma completa en el expediente:\n"
@@ -2340,23 +2384,20 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     cuerpo = _replace_hecho_imputado_line_with_clean(cuerpo, hecho)
     cuerpo = _apply_strategy_mode_to_body(cuerpo, core, tipo)
     cuerpo = _fix_alegaciones_numeracion(cuerpo)
-    cuerpo = cuerpo.replace(
-    "ALEGACIÓN TERCERA — SOLICITUD DE expediente íntegro Y PRUEBA TÉCNICA",
-    "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA"
-)
     cuerpo = _apply_premium_legal_formatting(cuerpo)
     cuerpo = _fix_alegacion_titles(cuerpo)
+    cuerpo = cuerpo.replace("ALEGACIÓN TERCERA — SOLICITUD DE expediente íntegro Y PRUEBA TÉCNICA", "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA")
     cuerpo = _upgrade_bullets(cuerpo)
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
-    tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
-    # FIX FINAL: fuerza mayúsculas después de todo el post-procesado
-    tpl["cuerpo"] = re.sub(
-        r"(?im)^ALEGACIÓN TERCERA\s+—\s+SOLICITUD DE expediente íntegro Y PRUEBA TÉCNICA",
-        "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA",
-        tpl["cuerpo"]
-    )
 
-    
+    if tipo == "velocidad":
+        tpl["cuerpo"] = tpl["cuerpo"].replace(
+            "La imputación por exceso de velocidad exige acreditación técnica completa y verificable.",
+            "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad exige una acreditación completa, verificable y trazable del dispositivo utilizado."
+        )
+
+    tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
+
     docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
         case_id,
