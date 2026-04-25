@@ -2167,8 +2167,7 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         "el margen correspondiente, encaja exactamente en el tramo sancionador impuesto. Sin fotograma completo, "
         "certificado metrológico, identificación técnica del equipo y acreditación de la cadena de custodia, no puede "
         "enervarse la presunción de inocencia con el rigor exigible en Derecho sancionador.\n\n"
-        ""ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA\n\n"
-
+        "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA\n\n"
         "Se solicita la aportación íntegra del expediente, incluyendo: boletín/denuncia completa, fotograma o secuencia "
         "completa, certificado de verificación metrológica, identificación del equipo, documentación técnica del control "
         "y motivación detallada del tramo sancionador aplicado.\n\n"
