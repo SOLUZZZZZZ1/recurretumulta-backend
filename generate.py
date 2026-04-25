@@ -404,6 +404,47 @@ def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
     ]
     joined = "\n".join(s for s in focused_sources if s.strip())
 
+    # BLINDAJE DE VELOCIDAD:
+    # Si el hecho ya dice claramente algo tipo:
+    # "177 km/h en tramo limitado a 120 km/h",
+    # se respetan esos valores y no se vuelve a elegir otro número del OCR.
+    clear_sources = [
+        _safe_str(core.get("hecho_denunciado_resumido")),
+        _safe_str(core.get("hecho_denunciado_literal")),
+        _safe_str(core.get("hecho_imputado")),
+        _safe_str(core.get("hecho_para_recurso")),
+    ]
+    clear_blob = " ".join(s for s in clear_sources if s.strip()).lower()
+    clear_blob = clear_blob.replace("\n", " ")
+
+    clear_patterns = [
+        r"medici[oó]n\s+consignada\s+de\s+(\d{2,3})\s*km/?h.*?(?:limitad[ao]a?|l[ií]mite|tramo\s+limitado\s+a)\s+(\d{2,3})",
+        r"(\d{2,3})\s*km/?h.*?(?:limitad[ao]a?|l[ií]mite|tramo\s+limitado\s+a)\s+(\d{2,3})",
+        r"(?:limitad[ao]a?|l[ií]mite|tramo\s+limitado\s+a)\s+(\d{2,3}).*?(\d{2,3})\s*km/?h",
+    ]
+
+    for patt in clear_patterns:
+        m = re.search(patt, clear_blob, flags=re.IGNORECASE)
+        if m:
+            a = int(m.group(1))
+            b = int(m.group(2))
+
+            if patt.startswith("(?:limit"):
+                limit_candidate = a
+                measured_candidate = b
+            else:
+                measured_candidate = a
+                limit_candidate = b
+
+            if 20 <= measured_candidate <= 250 and 20 <= limit_candidate <= 130:
+                if measured_candidate > limit_candidate:
+                    return {
+                        "measured": measured_candidate,
+                        "limit": limit_candidate,
+                        "conflict": False,
+                        "raw_joined": clear_blob,
+                    }
+
     if not joined.strip() or len(joined.strip()) < 12:
         fallback_sources = [
             _safe_str(core.get("raw_text_pdf")),
@@ -433,7 +474,9 @@ def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
         if candidates:
             above = [v for v in candidates if isinstance(limit, (int, float)) and v > limit]
             if above:
-                measured = min(above)
+                # Antes esto podía escoger el menor valor superior al límite y degradar 177 -> 127.
+                # Ahora se protege el dato usando el mayor valor razonable.
+                measured = max(above)
             else:
                 conflict = True
 
@@ -443,7 +486,6 @@ def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
         "conflict": conflict,
         "raw_joined": joined,
     }
-
 
 def _looks_like_internal_extract(text: str) -> bool:
     low = _safe_str(text).lower().strip()
