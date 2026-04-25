@@ -2143,7 +2143,8 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
         "II. ALEGACIONES\n\n"
         "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA DEL DISPOSITIVO DE CONTROL\n\n"
-        "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. No basta "
+        "La imputación por exceso de velocidad exige una acreditación técnica completa, rigurosa y plenamente verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad requiere una acreditación íntegra, trazable y documentalmente sustentada del dispositivo utilizado, no bastando referencias genéricas o incompletas. "
+
         "una referencia genérica al radar o cinemómetro: debe constar de forma precisa el dispositivo utilizado, "
         "su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. "
         f"{radar_focus}\n\n"
