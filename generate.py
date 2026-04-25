@@ -1383,7 +1383,7 @@ def _build_strategy_prefix(core: Dict[str, Any], tipo: str) -> str:
 
     if nivel in ("agresivo", "muy_agresivo") and secundarios:
         bullets2 = "\n".join(f"• {str(x).replace('_', ' ')}" for x in secundarios)
-        pieces.append("ALEGACIÓN — CONSIDERACIONES COMPLEMENTARIAS\n\n" + bullets2 + "\n")
+        pieces.append("\n\n" + bullets2)
 
     return "\n\n".join(p.strip() for p in pieces if p.strip())
 
