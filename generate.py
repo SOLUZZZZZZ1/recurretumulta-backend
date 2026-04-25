@@ -2340,6 +2340,10 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     cuerpo = _replace_hecho_imputado_line_with_clean(cuerpo, hecho)
     cuerpo = _apply_strategy_mode_to_body(cuerpo, core, tipo)
     cuerpo = _fix_alegaciones_numeracion(cuerpo)
+    cuerpo = cuerpo.replace(
+    "ALEGACIÓN TERCERA — SOLICITUD DE expediente íntegro Y PRUEBA TÉCNICA",
+    "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA"
+)
     cuerpo = _apply_premium_legal_formatting(cuerpo)
     cuerpo = _fix_alegacion_titles(cuerpo)
     cuerpo = _upgrade_bullets(cuerpo)
