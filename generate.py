@@ -2345,7 +2345,14 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     cuerpo = _upgrade_bullets(cuerpo)
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
     tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
+    # FIX FINAL: fuerza mayúsculas después de todo el post-procesado
+    tpl["cuerpo"] = re.sub(
+        r"(?im)^ALEGACIÓN TERCERA\s+—\s+SOLICITUD DE expediente íntegro Y PRUEBA TÉCNICA",
+        "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA",
+        tpl["cuerpo"]
+    )
 
+    
     docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
         case_id,
