@@ -2159,8 +2159,8 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         "II. ALEGACIONES\n\n"
         "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA DEL DISPOSITIVO DE CONTROL\n\n"
                 "La imputación por exceso de velocidad exige una acreditación técnica completa, rigurosa y plenamente verificable. "
-        "Tal como ha reiterado el Tribunal Supremo, entre otras resoluciones, en sus sentencias de 17 de febrero de 2004 y 23 de noviembre de 2005. "
-        "la potestad sancionadora exige una prueba de cargo suficiente y una acreditación técnica rigurosa, especialmente cuando se basa en medios automáticos de control como los cinemómetros. "
+        "Tal como ha reiterado el Tribunal Supremo, entre otras resoluciones, en sus sentencias de 17 de febrero de 2004 y 23 de noviembre de 2005,la potestad sancionadora exige una prueba de cargo suficiente y una acreditación técnica rigurosa, especialmente cuando se basa en medios automáticos de control como los cinemómetros "
+        
         "En este sentido, la validez de dichos medios requiere una acreditación íntegra, trazable y documentalmente sustentada del dispositivo utilizado, no bastando referencias genéricas o incompletas. "
         "Debe constar de forma precisa el dispositivo empleado, su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. "
         "En controles con Multanova debe acreditarse la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la correspondencia inequívoca con el vehículo denunciado.\n\n"
