@@ -1026,10 +1026,6 @@ def _fix_alegaciones_numeracion(text: str) -> str:
 
 
 def _apply_premium_legal_formatting(text: str) -> str:
-    """
-    Aplica énfasis jurídico en el cuerpo, pero NO toca títulos de alegaciones.
-    Esto evita que encabezados como 'EXPEDIENTE ÍNTEGRO' acaben saliendo en minúscula.
-    """
     txt = _safe_str(text)
     if not txt:
         return ""
@@ -1046,23 +1042,12 @@ def _apply_premium_legal_formatting(text: str) -> str:
         ("carga probatoria", "**carga probatoria**"),
     ]
 
-    out_lines = []
-    for line in txt.splitlines():
-        stripped = line.strip()
+    for src, dst in replacements:
+        txt = re.sub(rf"\b{re.escape(src)}\b", dst, txt, flags=re.IGNORECASE)
 
-        # No formatear encabezados: deben conservar mayúsculas exactas.
-        if stripped.upper().startswith("ALEGACIÓN"):
-            out_lines.append(line)
-            continue
+    txt = re.sub(r"\*\*\*+", "**", txt)
+    return txt
 
-        new_line = line
-        for src_text, dst_text in replacements:
-            new_line = re.sub(rf"\b{re.escape(src_text)}\b", dst_text, new_line, flags=re.IGNORECASE)
-
-        new_line = re.sub(r"\*\*\*+", "**", new_line)
-        out_lines.append(new_line)
-
-    return "\n".join(out_lines)
 
 def _resolve_strategy_mode(core: Dict[str, Any]) -> str:
     viability = _safe_str(core.get("case_viability")).lower().strip()
@@ -2158,7 +2143,7 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
         "II. ALEGACIONES\n\n"
         "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA DEL DISPOSITIVO DE CONTROL\n\n"
-        "La imputación por exceso de velocidad exige una acreditación técnica completa, rigurosa y plenamente verificable. Tal como ha reiterado el Tribunal Supremo, entre otras, en sus sentencias de 17 de febrero de 2004 y 23 de noviembre de 2005, la potestad sancionadora exige una prueba de cargo suficiente y una acreditación técnica rigurosa, especialmente cuando se basa en medios automáticos de control como los cinemómetros. En este sentido, la validez de dichos medios requiere una acreditación íntegra, trazable y documentalmente sustentada del dispositivo utilizado, no bastando referencias genéricas o incompletas. Debe constar de forma precisa el dispositivo empleado, su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. En controles con Multanova debe acreditarse la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la correspondencia inequívoca con el vehículo denunciado. "
+        "La imputación por exceso de velocidad exige una acreditación técnica completa, rigurosa y plenamente verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad requiere una acreditación íntegra, trazable y documentalmente sustentada del dispositivo utilizado, no bastando referencias genéricas o incompletas. Debe constar de forma precisa el dispositivo empleado, su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. En controles con Multanova debe acreditarse la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la correspondencia inequívoca con el vehículo denunciado. "
         "su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. "
         f"{radar_focus}\n\n"
         "No consta acreditado de forma completa en el expediente:\n"
@@ -2178,15 +2163,10 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
 
     cuerpo += (
         "ALEGACIÓN SEGUNDA — DEFECTOS DE MOTIVACIÓN Y FALTA DE SOPORTE COMPLETO\n\n"
-        "La Administración debe motivar de forma individualizada por qué la velocidad atribuida, una vez aplicado "
-        "el margen correspondiente, encaja exactamente en el tramo sancionador impuesto. Sin fotograma completo, "
-        "certificado metrológico, identificación técnica del equipo y acreditación de la cadena de custodia, no puede "
-        "enervarse la presunción de inocencia con el rigor exigible en Derecho sancionador.\n\n"
-        "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA\n\n"
-        "Se solicita la aportación íntegra del expediente, incluyendo: boletín/denuncia completa, fotograma o secuencia "
-        "completa, certificado de verificación metrológica, identificación del equipo, documentación técnica del control "
-        "y motivación detallada del tramo sancionador aplicado.\n\n"
-        "III. SOLICITO\n"
+"La Administración debe motivar de forma individualizada por qué la velocidad atribuida, una vez aplicado el margen correspondiente, encaja exactamente en el tramo sancionador impuesto. Sin fotograma completo, certificado metrológico, identificación técnica del equipo y acreditación de la cadena de custodia, no puede enervarse la presunción de inocencia con el rigor exigible en Derecho sancionador.\n\n"
+"ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA\n\n"
+"Se solicita la aportación íntegra del expediente, incluyendo: boletín/denuncia completa, fotograma o secuencia completa, certificado de verificación metrológica, identificación del equipo, documentación técnica del control y motivación detallada del tramo sancionador aplicado.\n\n"
+"III. SOLICITO\n"
         "1) Que se tengan por formuladas las presentes alegaciones.\n"
         "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de acreditación técnica suficiente.\n"
         "3) Subsidiariamente, que se aporte expediente íntegro y prueba técnica completa para contradicción efectiva.\n"
@@ -2386,7 +2366,6 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     cuerpo = _fix_alegaciones_numeracion(cuerpo)
     cuerpo = _apply_premium_legal_formatting(cuerpo)
     cuerpo = _fix_alegacion_titles(cuerpo)
-    cuerpo = cuerpo.replace("ALEGACIÓN TERCERA — SOLICITUD DE expediente íntegro Y PRUEBA TÉCNICA", "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA")
     cuerpo = _upgrade_bullets(cuerpo)
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
 
@@ -2397,6 +2376,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         )
 
     tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
+    tpl["cuerpo"] = _cleanup_velocity_duplicate_text(tpl["cuerpo"])
 
     docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
@@ -2446,6 +2426,44 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     }
 
 
+
+
+
+def _cleanup_velocity_duplicate_text(text: str) -> str:
+    """
+    Limpieza final específica para evitar duplicados en la alegación de velocidad.
+    No toca datos técnicos, cálculo de velocidad, OCR ni generación DOCX/PDF.
+    """
+    txt = _safe_str(text)
+
+    duplicate_1 = (
+        "con el vehículo denunciado. su situación exacta, su verificación metrológica vigente "
+        "y la trazabilidad íntegra del dato captado. En controles con Multanova debe acreditarse "
+        "la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y "
+        "la correspondencia inequívoca con el vehículo denunciado."
+    )
+    txt = txt.replace(duplicate_1, "con el vehículo denunciado.")
+
+    duplicate_2 = (
+        "con el vehículo denunciado.una referencia genérica al radar o cinemómetro: debe constar "
+        "de forma precisa el dispositivo utilizado, su situación exacta, su verificación metrológica "
+        "vigente y la trazabilidad íntegra del dato captado. En controles con Multanova debe acreditarse "
+        "la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la "
+        "correspondencia inequívoca con el vehículo denunciado."
+    )
+    txt = txt.replace(duplicate_2, "con el vehículo denunciado.")
+
+    txt = txt.replace(
+        "cinemómetros., la validez de los medios técnicos de control de velocidad requiere",
+        "cinemómetros. En este sentido, la validez de dichos medios requiere"
+    )
+
+    txt = txt.replace(
+        "no bastando referencias genéricas o incompletas. una referencia genérica al radar o cinemómetro:",
+        "no bastando referencias genéricas o incompletas. Debe constar de forma precisa el dispositivo empleado,"
+    )
+
+    return txt
 
 
 def _extract_destination_from_generated_body(body: str) -> str:
