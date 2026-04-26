@@ -2534,36 +2534,13 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
 
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
 
-if tipo == "velocidad":
-    tpl["cuerpo"] = tpl["cuerpo"].replace(
-        "La imputación por exceso de velocidad exige acreditación técnica completa y verificable.",
-        "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad exige una acreditación completa, verificable y trazable del dispositivo utilizado."
-    )
+    if tipo == "velocidad":
+        tpl["cuerpo"] = tpl["cuerpo"].replace(
+            "La imputación por exceso de velocidad exige acreditación técnica completa y verificable.",
+            "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad exige una acreditación completa, verificable y trazable del dispositivo utilizado."
+        )
 
-# 🔥 AQUÍ VA LA NORMALIZACIÓN GLOBAL
-def _normalize_legal_style(text: str) -> str:
-    if not text:
-        return text
-
-    text = re.sub(r'Alegación', 'ALEGACIÓN', text)
-    text = re.sub(r'alegación', 'ALEGACIÓN', text)
-
-    text = re.sub(r'Fundamentos de Derecho', 'FUNDAMENTOS DE DERECHO', text)
-    text = re.sub(r'Jurisprudencia Aplicable', 'JURISPRUDENCIA APLICABLE', text)
-    text = re.sub(r'Suplico', 'S U P L I C A', text)
-    text = re.sub(r'Otrosí digo', 'OTROSÍ DIGO', text)
-
-    text = re.sub(
-        r'ALEGACIÓN\s+[^\n]+',
-        lambda m: m.group(0).upper(),
-        text
-    )
-
-    text = re.sub(r'\n{3,}', '\n\n', text)
-
-    return text
-
-tpl["cuerpo"] = _normalize_legal_style(tpl["cuerpo"])
+    tpl["cuerpo"] = _normalize_legal_style(tpl["cuerpo"])
 
     tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
 
