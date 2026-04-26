@@ -413,12 +413,15 @@ def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
         _safe_str(core.get("hecho_denunciado_literal")),
         _safe_str(core.get("hecho_imputado")),
         _safe_str(core.get("hecho_para_recurso")),
+        _safe_str(core.get("raw_text_pdf")),
+        _safe_str(core.get("raw_text_vision")),
     ]
     clear_blob = " ".join(s for s in clear_sources if s.strip()).lower()
     clear_blob = clear_blob.replace("\n", " ")
 
     clear_patterns = [
         r"medici[oó]n\s+consignada\s+de\s+(\d{2,3})\s*km/?h.*?(?:limitad[ao]a?|l[ií]mite|tramo\s+limitado\s+a)\s+(\d{2,3})",
+        r"velocidad\s+(?:medida|captada|detectada|registrada|consignada)\D{0,30}(\d{2,3})\s*km/?h.*?(?:limitad[ao]a?|l[ií]mite|tramo\s+limitado\s+a)\D{0,30}(\d{2,3})",
         r"(\d{2,3})\s*km/?h.*?(?:limitad[ao]a?|l[ií]mite|tramo\s+limitado\s+a)\s+(\d{2,3})",
         r"(?:limitad[ao]a?|l[ií]mite|tramo\s+limitado\s+a)\s+(\d{2,3}).*?(\d{2,3})\s*km/?h",
     ]
@@ -474,8 +477,7 @@ def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
         if candidates:
             above = [v for v in candidates if isinstance(limit, (int, float)) and v > limit]
             if above:
-                # Antes esto podía escoger el menor valor superior al límite y degradar 177 -> 127.
-                # Ahora se protege el dato usando el mayor valor razonable.
+                # Protección importante: evitar degradar 177 -> 127.
                 measured = max(above)
             else:
                 conflict = True
@@ -2191,6 +2193,7 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
             "evitando cualquier duda derivada de lecturas automatizadas o transcripciones defectuosas del boletín."
         )
         tramo_paragraph = ""
+
     cuerpo = (
         "A la atención del órgano competente,\n\n"
         "I. ANTECEDENTES\n"
@@ -2199,13 +2202,13 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
         "II. ALEGACIONES\n\n"
         "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA DEL DISPOSITIVO DE CONTROL\n\n"
-        "La imputación por exceso de velocidad exige una acreditación técnica completa, rigurosa y plenamente verificable. "
-        "Tal como ha reiterado el Tribunal Supremo, entre otras resoluciones, en sus sentencias de 17 de febrero de 2004 y 23 de noviembre de 2005, "
-        "la potestad sancionadora exige una prueba de cargo suficiente y una acreditación técnica rigurosa, especialmente cuando se basa en medios automáticos de control como los cinemómetros. "
+                "La imputación por exceso de velocidad exige una acreditación técnica completa, rigurosa y plenamente verificable. "
+        "Tal como ha reiterado el Tribunal Supremo, entre otras resoluciones, en sus sentencias de 17 de febrero de 2004 y 23 de noviembre de 2005, la potestad sancionadora exige una prueba de cargo suficiente y una acreditación técnica rigurosa, especialmente cuando se basa en medios automáticos de control como los cinemómetros. "
+        
         "En este sentido, la validez de dichos medios requiere una acreditación íntegra, trazable y documentalmente sustentada del dispositivo utilizado, no bastando referencias genéricas o incompletas. "
         "Debe constar de forma precisa el dispositivo empleado, su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. "
         "En controles con Multanova debe acreditarse la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la correspondencia inequívoca con el vehículo denunciado.\n\n"
-        "No consta acreditado de forma completa en el expediente:\n"
+"No consta acreditado de forma completa en el expediente:\n"
         "1) Identificación completa del cinemómetro utilizado (marca/modelo/número de serie).\n"
         "2) Certificado de verificación metrológica vigente en la fecha del hecho.\n"
         "3) Acreditación del control metrológico conforme a la normativa aplicable (Orden ICT/155/2020 o la normativa metrológica que corresponda en la fecha del hecho).\n"
@@ -2217,15 +2220,21 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"{calc_paragraph}\n\n"
     )
 
-    raw_text = "\n".join([
+    raw_text_tramo = "\n".join([
         _safe_str(core.get("raw_text_pdf")),
         _safe_str(core.get("raw_text_vision")),
+        _safe_str(core.get("raw_text_blob")),
+        _safe_str(core.get("vision_raw_text")),
         _safe_str(core.get("hecho_denunciado_literal")),
         _safe_str(core.get("hecho_imputado")),
     ])
 
-    hay_importe = core.get("importe_sancion_eur") or re.search(r"\b\d+\s*€|euros", raw_text, re.IGNORECASE)
-    hay_puntos = core.get("puntos") or re.search(r"\b\d+\s*puntos?", raw_text, re.IGNORECASE)
+    hay_importe = bool(core.get("importe_sancion_eur")) or bool(
+        re.search(r"\b\d{2,4}\s*(?:€|euros)\b", raw_text_tramo, re.IGNORECASE)
+    )
+    hay_puntos = bool(core.get("puntos")) or bool(
+        re.search(r"\b\d{1,2}\s*puntos?\b", raw_text_tramo, re.IGNORECASE)
+    )
 
     if hay_importe or hay_puntos:
         if tramo_paragraph:
@@ -2238,7 +2247,6 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
             "debiendo acreditar la correcta aplicación del margen de error, la velocidad corregida y la concreta "
             "banda sancionadora conforme a la normativa vigente.\n\n"
         )
-    
 
     cuerpo += (
         "ALEGACIÓN SEGUNDA — DEFECTOS DE MOTIVACIÓN Y FALTA DE SOPORTE COMPLETO\n\n"
