@@ -2500,31 +2500,38 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         core,
     )
 
-    cuerpo = tpl.get("cuerpo") or ""
+        cuerpo = tpl.get("cuerpo") or ""
 
-if tipo == "atencion" and bicicleta_ctx:
-    cuerpo = _sanitize_bicicleta_body(cuerpo)
+    if tipo == "atencion" and bicicleta_ctx:
+        cuerpo = _sanitize_bicicleta_body(cuerpo)
 
-if final_kind != "semaforo_pro":
-    cuerpo = _inject_tipicidad_material_en_alegaciones(cuerpo, core)
-    cuerpo = _inject_strategic_legal_reinforcement(cuerpo, core, tipo)
-    cuerpo = re.sub(r'\bREFUERZO\s*[—-]\s*', '', cuerpo, flags=re.IGNORECASE)
-    cuerpo = re.sub(r'\bESTRATEGIA PRINCIPAL\b', 'INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS', cuerpo, flags=re.IGNORECASE)
-    cuerpo = re.sub(r'\bFACTORES ADICIONALES\b', 'CONSIDERACIONES COMPLEMENTARIAS', cuerpo, flags=re.IGNORECASE)
-    cuerpo = re.sub(r'\bCONSIDERACIONES ADICIONALES\b', 'CONSIDERACIONES COMPLEMENTARIAS', cuerpo, flags=re.IGNORECASE)
-    cuerpo = re.sub(r'\bALEGACIÓN\s+DE\s+\s*NULIDAD\s+DE\s+PLENO\s+DERECHO\b', 'ALEGACIÓN — NULIDAD DE PLENO DERECHO', cuerpo, flags=re.IGNORECASE)
-    cuerpo = re.sub(r'\nA la atenci[oó]n del Ayuntamiento competente,\s*\nI\. ANTECEDENTES\s*\n', '\n', cuerpo, flags=re.IGNORECASE)
+    if final_kind != "semaforo_pro":
+        cuerpo = _inject_tipicidad_material_en_alegaciones(cuerpo, core)
+        cuerpo = _inject_strategic_legal_reinforcement(cuerpo, core, tipo)
+        cuerpo = re.sub(r'\bREFUERZO\s*[—-]\s*', '', cuerpo, flags=re.IGNORECASE)
+        cuerpo = re.sub(r'\bESTRATEGIA PRINCIPAL\b', 'INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS', cuerpo, flags=re.IGNORECASE)
+        cuerpo = re.sub(r'\bFACTORES ADICIONALES\b', 'CONSIDERACIONES COMPLEMENTARIAS', cuerpo, flags=re.IGNORECASE)
+        cuerpo = re.sub(r'\bCONSIDERACIONES ADICIONALES\b', 'CONSIDERACIONES COMPLEMENTARIAS', cuerpo, flags=re.IGNORECASE)
+        cuerpo = re.sub(r'\bALEGACIÓN\s+DE\s+\s*NULIDAD\s+DE\s+PLENO\s+DERECHO\b', 'ALEGACIÓN — NULIDAD DE PLENO DERECHO', cuerpo, flags=re.IGNORECASE)
+        cuerpo = re.sub(r'\nA la atenci[oó]n del Ayuntamiento competente,\s*\nI\. ANTECEDENTES\s*\n', '\n', cuerpo, flags=re.IGNORECASE)
 
-    hecho = _clean_hecho_para_recurso(get_hecho_para_recurso(core, forced_tipo=tipo), tipo=tipo, core=core)
-    if hecho and not _looks_like_internal_extract(hecho):
-        cuerpo = _integrate_extract_after_comparecencia(cuerpo, hecho, core, forced_tipo=tipo)
+        hecho = _clean_hecho_para_recurso(get_hecho_para_recurso(core, forced_tipo=tipo), tipo=tipo, core=core)
+        if hecho and not _looks_like_internal_extract(hecho):
+            cuerpo = _integrate_extract_after_comparecencia(cuerpo, hecho, core, forced_tipo=tipo)
 
-    cuerpo = _replace_hecho_imputado_line_with_clean(cuerpo, hecho)
-    cuerpo = _apply_strategy_mode_to_body(cuerpo, core, tipo)
-    cuerpo = _fix_alegaciones_numeracion(cuerpo)
-    cuerpo = _apply_premium_legal_formatting(cuerpo)
-    cuerpo = _fix_alegacion_titles(cuerpo)
-    cuerpo = _upgrade_bullets(cuerpo)
+        cuerpo = _replace_hecho_imputado_line_with_clean(cuerpo, hecho)
+        cuerpo = _apply_strategy_mode_to_body(cuerpo, core, tipo)
+        cuerpo = _fix_alegaciones_numeracion(cuerpo)
+        cuerpo = _apply_premium_legal_formatting(cuerpo)
+        cuerpo = _fix_alegacion_titles(cuerpo)
+        cuerpo = _upgrade_bullets(cuerpo)
+
+        if tipo == "velocidad":
+            cuerpo = cuerpo.replace(
+                "La imputación por exceso de velocidad exige acreditación técnica completa y verificable.",
+                "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad exige una acreditación completa, verificable y trazable del dispositivo utilizado."
+            )
+
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
 
     if tipo == "velocidad":
