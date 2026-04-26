@@ -2500,7 +2500,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         core,
     )
 
-    cuerpo = tpl.get("cuerpo") or ""
+        cuerpo = tpl.get("cuerpo") or ""
 
     if tipo == "atencion" and bicicleta_ctx:
         cuerpo = _sanitize_bicicleta_body(cuerpo)
