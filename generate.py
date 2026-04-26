@@ -2501,9 +2501,11 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     )
 
     cuerpo = tpl.get("cuerpo") or ""
-    if tipo == "atencion" and bicicleta_ctx:
-        cuerpo = _sanitize_bicicleta_body(cuerpo)
 
+if tipo == "atencion" and bicicleta_ctx:
+    cuerpo = _sanitize_bicicleta_body(cuerpo)
+
+if final_kind != "semaforo_pro":
     cuerpo = _inject_tipicidad_material_en_alegaciones(cuerpo, core)
     cuerpo = _inject_strategic_legal_reinforcement(cuerpo, core, tipo)
     cuerpo = re.sub(r'\bREFUERZO\s*[—-]\s*', '', cuerpo, flags=re.IGNORECASE)
