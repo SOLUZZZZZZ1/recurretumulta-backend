@@ -2238,7 +2238,7 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
             "debiendo acreditar la correcta aplicación del margen de error, la velocidad corregida y la concreta "
             "banda sancionadora conforme a la normativa vigente.\n\n"
         )
-    )
+    
 
     cuerpo += (
         "ALEGACIÓN SEGUNDA — DEFECTOS DE MOTIVACIÓN Y FALTA DE SOPORTE COMPLETO\n\n"
