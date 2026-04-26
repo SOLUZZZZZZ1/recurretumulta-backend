@@ -74,7 +74,7 @@ def build_movil_strong_template(core: Dict[str, Any], capture_mode: str = "UNKNO
 
     if cm == "AGENT":
         captacion_block = (
-            "ALEGACIÓN SEGUNDA — OBSERVACIÓN PRESENCIAL: FIABILIDAD PERCEPTIVA Y DESCRIPCIÓN CIRCUNSTANCIADA\n\n"
+            "ALEGACIÓN SEGUNDA — MODO DE CONSTATACIÓN NO CONCLUYENTE Y AUSENCIA DE PRUEBA OBJETIVA\n\n"
             "Si la imputación se basa en observación presencial, debe detallarse con precisión:\n"
             "• Posición del agente y punto exacto de observación.\n"
             "• Distancia aproximada y ángulo de visión respecto del habitáculo.\n"
