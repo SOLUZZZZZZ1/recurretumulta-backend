@@ -2304,10 +2304,17 @@ def _resolve_tipo_deterministico(text_blob: str, core: Optional[Dict[str, Any]] 
 
     # SEMÁFORO primero para evitar desvíos a velocidad por cifras o importes.
     semaforo_tokens = [
-        "semaforo", "semáforo", "fase roja", "fase del rojo", "luz roja",
-        "luz roja no intermitente", "cruce con fase roja", "cruce con fase del rojo",
-        "linea de detencion", "línea de detención", "rebase la linea de detencion",
-        "rebasar la linea de detencion", "articulo 146", "art. 146",
+        "semaforo", "semáforo",
+        "fase roja", "fase del rojo",
+        "luz roja", "luz roja no intermitente",
+        "no respetar la luz roja",
+        "no respetar la luz roja no intermitente",
+        "no respetar la luz roja no intermitente de un semaforo",
+        "no respetar la luz roja no intermitente de un semáforo",
+        "cruce con fase roja", "cruce con fase del rojo",
+        "linea de detencion", "línea de detención",
+        "rebase la linea de detencion", "rebasar la linea de detencion",
+        "articulo 146", "art. 146",
         "no respetar el conductor de un vehiculo la luz roja",
         "no respetar el conductor de un vehículo la luz roja",
     ]
@@ -2409,6 +2416,53 @@ def _resolve_tipo_deterministico(text_blob: str, core: Optional[Dict[str, Any]] 
 
 
 
+
+def _is_strong_semaforo_case(text_blob: str, core: Optional[Dict[str, Any]] = None) -> bool:
+    """
+    Blindaje fuerte: si aparece luz roja / semáforo, NO puede caer en velocidad
+    ni en condiciones del vehículo aunque haya otros términos o números.
+    """
+    core = core or {}
+    focused = "\n".join([
+        _safe_str(core.get("raw_text_pdf")),
+        _safe_str(core.get("raw_text_vision")),
+        _safe_str(core.get("raw_text_blob")),
+        _safe_str(core.get("vision_raw_text")),
+        _safe_str(core.get("hecho_denunciado_literal")),
+        _safe_str(core.get("hecho_denunciado_resumido")),
+        _safe_str(core.get("hecho_imputado_textual")),
+        _safe_str(core.get("hecho_imputado")),
+        _safe_str(core.get("hecho_crudo")),
+        _safe_str(core.get("hecho_reconstruido")),
+        _safe_str(text_blob),
+    ])
+
+    blob = _normalize_for_matching(focused)
+
+    signals = [
+        "no respetar la luz roja",
+        "no respetar la luz roja no intermitente",
+        "no respetar la luz roja no intermitente de un semaforo",
+        "no respetar la luz roja no intermitente de un semáforo",
+        "luz roja no intermitente",
+        "luz roja",
+        "fase roja",
+        "fase del rojo",
+        "cruce con fase roja",
+        "cruce con fase del rojo",
+        "semaforo",
+        "semáforo",
+        "linea de detencion",
+        "línea de detención",
+        "rebase la linea de detencion",
+        "rebasar la linea de detencion",
+        "articulo 146",
+        "art. 146",
+    ]
+
+    return any(s in blob for s in signals)
+
+
 def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
     out = dict(extracted_core or {})
 
@@ -2442,6 +2496,13 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
             tipo = tipo_validado
             confidence = max(confidence, conf_override)
 
+    # BLINDAJE FINAL SEMÁFORO:
+    # Si aparece luz roja/semáforo, forzamos semáforo aunque otros clasificadores
+    # hayan detectado velocidad o condiciones del vehículo.
+    if _is_strong_semaforo_case(text_blob, out):
+        tipo = "semaforo"
+        confidence = max(confidence, 0.99)
+
     out["tipo_infraccion"] = tipo
 
     hecho_imputado_textual = _safe_str(out.get("hecho_imputado_textual"))
@@ -2455,6 +2516,12 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
         or _canonical_hecho_imputado(tipo, hecho)
         or None
     )
+
+    if tipo == "semaforo":
+        hi = _safe_str(out.get("hecho_imputado"))
+        hi_norm = _normalize_for_matching(hi)
+        if (not hi.strip()) or ("velocidad" in hi_norm and not _is_strong_semaforo_case("", {"hecho_imputado": hi})):
+            out["hecho_imputado"] = "No respetar la luz roja no intermitente de un semáforo"
     out["facts_phrases"] = facts
     out["jurisdiccion"] = _extract_jurisdiction(text_blob, out)
     out["contexto_movilidad"] = _detect_mobility_context(text_blob, out)

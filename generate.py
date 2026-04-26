@@ -404,50 +404,6 @@ def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
     ]
     joined = "\n".join(s for s in focused_sources if s.strip())
 
-    # BLINDAJE DE VELOCIDAD:
-    # Si el hecho ya dice claramente algo tipo:
-    # "177 km/h en tramo limitado a 120 km/h",
-    # se respetan esos valores y no se vuelve a elegir otro número del OCR.
-    clear_sources = [
-        _safe_str(core.get("hecho_denunciado_resumido")),
-        _safe_str(core.get("hecho_denunciado_literal")),
-        _safe_str(core.get("hecho_imputado")),
-        _safe_str(core.get("hecho_para_recurso")),
-        _safe_str(core.get("raw_text_pdf")),
-        _safe_str(core.get("raw_text_vision")),
-    ]
-    clear_blob = " ".join(s for s in clear_sources if s.strip()).lower()
-    clear_blob = clear_blob.replace("\n", " ")
-
-    clear_patterns = [
-        r"medici[oó]n\s+consignada\s+de\s+(\d{2,3})\s*km/?h.*?(?:limitad[ao]a?|l[ií]mite|tramo\s+limitado\s+a)\s+(\d{2,3})",
-        r"velocidad\s+(?:medida|captada|detectada|registrada|consignada)\D{0,30}(\d{2,3})\s*km/?h.*?(?:limitad[ao]a?|l[ií]mite|tramo\s+limitado\s+a)\D{0,30}(\d{2,3})",
-        r"(\d{2,3})\s*km/?h.*?(?:limitad[ao]a?|l[ií]mite|tramo\s+limitado\s+a)\s+(\d{2,3})",
-        r"(?:limitad[ao]a?|l[ií]mite|tramo\s+limitado\s+a)\s+(\d{2,3}).*?(\d{2,3})\s*km/?h",
-    ]
-
-    for patt in clear_patterns:
-        m = re.search(patt, clear_blob, flags=re.IGNORECASE)
-        if m:
-            a = int(m.group(1))
-            b = int(m.group(2))
-
-            if patt.startswith("(?:limit"):
-                limit_candidate = a
-                measured_candidate = b
-            else:
-                measured_candidate = a
-                limit_candidate = b
-
-            if 20 <= measured_candidate <= 250 and 20 <= limit_candidate <= 130:
-                if measured_candidate > limit_candidate:
-                    return {
-                        "measured": measured_candidate,
-                        "limit": limit_candidate,
-                        "conflict": False,
-                        "raw_joined": clear_blob,
-                    }
-
     if not joined.strip() or len(joined.strip()) < 12:
         fallback_sources = [
             _safe_str(core.get("raw_text_pdf")),
@@ -477,8 +433,7 @@ def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
         if candidates:
             above = [v for v in candidates if isinstance(limit, (int, float)) and v > limit]
             if above:
-                # Protección importante: evitar degradar 177 -> 127.
-                measured = max(above)
+                measured = min(above)
             else:
                 conflict = True
 
@@ -488,6 +443,7 @@ def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
         "conflict": conflict,
         "raw_joined": joined,
     }
+
 
 def _looks_like_internal_extract(text: str) -> bool:
     low = _safe_str(text).lower().strip()
@@ -1070,10 +1026,6 @@ def _fix_alegaciones_numeracion(text: str) -> str:
 
 
 def _apply_premium_legal_formatting(text: str) -> str:
-    """
-    Aplica énfasis jurídico en el cuerpo, pero NO toca los títulos de alegaciones.
-    Evita que encabezados como 'EXPEDIENTE ÍNTEGRO' acaben en minúscula.
-    """
     txt = _safe_str(text)
     if not txt:
         return ""
@@ -1090,23 +1042,12 @@ def _apply_premium_legal_formatting(text: str) -> str:
         ("carga probatoria", "**carga probatoria**"),
     ]
 
-    out_lines = []
-    for line in txt.splitlines():
-        stripped = line.strip()
+    for src, dst in replacements:
+        txt = re.sub(rf"\b{re.escape(src)}\b", dst, txt, flags=re.IGNORECASE)
 
-        # No tocar títulos: deben conservar mayúsculas exactas.
-        if stripped.upper().startswith("ALEGACIÓN"):
-            out_lines.append(line)
-            continue
+    txt = re.sub(r"\*\*\*+", "**", txt)
+    return txt
 
-        new_line = line
-        for src_text, dst_text in replacements:
-            new_line = re.sub(rf"\b{re.escape(src_text)}\b", dst_text, new_line, flags=re.IGNORECASE)
-
-        new_line = re.sub(r"\*\*\*+", "**", new_line)
-        out_lines.append(new_line)
-
-    return "\n".join(out_lines)
 
 def _resolve_strategy_mode(core: Dict[str, Any]) -> str:
     viability = _safe_str(core.get("case_viability")).lower().strip()
@@ -1427,7 +1368,7 @@ def _build_strategy_prefix(core: Dict[str, Any], tipo: str) -> str:
 
     if nivel in ("agresivo", "muy_agresivo") and secundarios:
         bullets2 = "\n".join(f"• {str(x).replace('_', ' ')}" for x in secundarios)
-        pieces.append("\n\n" + bullets2)
+        pieces.append("ALEGACIÓN — CONSIDERACIONES COMPLEMENTARIAS\n\n" + bullets2 + "\n")
 
     return "\n\n".join(p.strip() for p in pieces if p.strip())
 
@@ -2065,11 +2006,156 @@ def build_camion_template(core: Dict[str, Any]) -> Dict[str, str]:
         "cuerpo": fix_roman_headings(cuerpo),
     }
 
+
+def _is_strong_semaforo_generation_case(core: Dict[str, Any]) -> bool:
+    """
+    Blindaje de generación: si el expediente habla de luz roja/semáforo,
+    nunca debe generarse plantilla de velocidad ni de condiciones del vehículo.
+    """
+    blob = "\n".join([
+        _safe_str(core.get("raw_text_pdf")),
+        _safe_str(core.get("raw_text_vision")),
+        _safe_str(core.get("raw_text_blob")),
+        _safe_str(core.get("vision_raw_text")),
+        _safe_str(core.get("hecho_denunciado_literal")),
+        _safe_str(core.get("hecho_denunciado_resumido")),
+        _safe_str(core.get("hecho_imputado_textual")),
+        _safe_str(core.get("hecho_imputado")),
+        _safe_str(core.get("hecho_para_recurso")),
+        _safe_str(core.get("hecho_crudo")),
+    ]).lower()
+
+    signals = [
+        "no respetar la luz roja",
+        "no respetar la luz roja no intermitente",
+        "no respetar la luz roja no intermitente de un semáforo",
+        "no respetar la luz roja no intermitente de un semaforo",
+        "luz roja no intermitente",
+        "luz roja",
+        "fase roja",
+        "fase del rojo",
+        "semáforo",
+        "semaforo",
+        "línea de detención",
+        "linea de detencion",
+        "artículo 146",
+        "articulo 146",
+        "art. 146",
+    ]
+
+    return any(s in blob for s in signals)
+
+
+def build_semaforo_pro_template(core: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Plantilla PRO específica de semáforo. Evita cualquier referencia a radar,
+    cinemómetro, margen de velocidad, Multanova o velocidad corregida.
+    """
+    core = core or {}
+
+    expediente = (
+        _safe_str(core.get("expediente_ref"))
+        or _safe_str(core.get("numero_expediente"))
+        or "[EXPEDIENTE]"
+    )
+
+    organo = (
+        _safe_str(core.get("organismo"))
+        or _safe_str(core.get("organismo_cabecera"))
+        or "órgano competente"
+    )
+
+    hecho = (
+        _safe_str(core.get("hecho_denunciado_literal"))
+        or _safe_str(core.get("hecho_denunciado_resumido"))
+        or _safe_str(core.get("hecho_imputado"))
+        or "No respetar la luz roja no intermitente de un semáforo"
+    )
+
+    hecho_norm = hecho.lower()
+    if "velocidad" in hecho_norm or not any(x in hecho_norm for x in ["semáforo", "semaforo", "luz roja", "fase roja"]):
+        hecho = "No respetar la luz roja no intermitente de un semáforo"
+
+    cuerpo = (
+        "A la atención del órgano competente,\n\n"
+        f"Extracto literal del boletín:\n“{hecho}”\n\n"
+        f"1) Órgano: {organo}\n"
+        f"2) Identificación expediente: {expediente}\n"
+        f"3) Hecho imputado: {hecho}\n\n"
+        "I. ALEGACIONES\n\n"
+        "ALEGACIÓN — NULIDAD DE PLENO DERECHO\n\n"
+        "Con carácter principal, esta parte interesa la nulidad de pleno derecho del acto impugnado "
+        "cuando el expediente prescinde de elementos esenciales de prueba o de tramitación que impiden "
+        "identificar con garantías el hecho realmente sancionado y su adecuado soporte probatorio.\n\n"
+        "ALEGACIÓN — INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS\n\n"
+        "• No consta secuencia completa de imágenes o vídeo que permita verificar el momento exacto del supuesto rebase.\n"
+        "• No consta acreditación suficiente de la fase semafórica existente en el instante de los hechos.\n"
+        "• No consta acreditación de la posición exacta del vehículo respecto de la línea de detención.\n\n"
+        "ALEGACIÓN PRIMERA — PRUEBA OBJETIVA, SECUENCIA COMPLETA Y FASE SEMAFÓRICA\n\n"
+        "La imputación consistente en no respetar la luz roja no intermitente de un semáforo exige una prueba objetiva, "
+        "completa y verificable del hecho denunciado. No basta una referencia genérica al cruce o al dispositivo de captación, "
+        "sino que debe acreditarse de forma suficiente la secuencia completa de los hechos, la fase semafórica existente en "
+        "el momento exacto del rebase, la posición del vehículo respecto de la línea de detención y la correspondencia "
+        "inequívoca entre la imagen o secuencia aportada y el vehículo denunciado.\n\n"
+        "No consta acreditado de forma completa en el expediente:\n"
+        "1) Secuencia completa de imágenes o vídeo que permita verificar el momento exacto del supuesto rebase.\n"
+        "2) Acreditación de que el semáforo se encontraba efectivamente en fase roja no intermitente.\n"
+        "3) Posición exacta del vehículo respecto de la línea de detención.\n"
+        "4) Identificación inequívoca del vehículo denunciado.\n"
+        "5) Funcionamiento correcto del sistema de captación utilizado.\n"
+        "6) Trazabilidad e integridad de la prueba gráfica o videográfica.\n"
+        "7) Motivación suficiente sobre la concreta conducta sancionada.\n\n"
+        "DATOS TÉCNICOS EXTRAÍDOS DEL EXPEDIENTE\n"
+        "• Hecho imputado: No respetar la luz roja no intermitente de un semáforo\n"
+        "• Sistema de captación: pendiente de acreditación\n"
+        "• Prueba gráfica/videográfica completa: no consta aportada de forma íntegra\n"
+        "• Fase semafórica: pendiente de acreditación\n"
+        "• Posición respecto de la línea de detención: pendiente de acreditación\n\n"
+        "A falta de dicha prueba completa, no puede considerarse desvirtuada la presunción de inocencia "
+        "ni acreditado con garantías el hecho imputado.\n\n"
+        "ALEGACIÓN SEGUNDA — DEFECTOS DE MOTIVACIÓN Y FALTA DE SOPORTE COMPLETO\n\n"
+        "La Administración debe motivar de forma individualizada por qué considera acreditado el rebase de la luz roja, "
+        "identificando el instante exacto de la infracción, la fase del semáforo, la posición del vehículo y la prueba "
+        "gráfica o videográfica en que se sustenta la denuncia. Sin secuencia completa, identificación inequívoca del vehículo "
+        "y acreditación del funcionamiento del sistema de captación, no puede enervarse la presunción de inocencia con el rigor "
+        "exigible en Derecho sancionador.\n\n"
+        "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA\n\n"
+        "Se solicita la aportación íntegra del expediente, incluyendo: boletín o denuncia completa, secuencia completa de imágenes "
+        "o vídeo, certificación o documentación técnica del sistema de captación utilizado, acreditación de la fase semafórica, "
+        "ubicación del dispositivo, acreditación de la línea de detención y motivación detallada de la conducta sancionada.\n\n"
+        "FUNDAMENTOS DE DERECHO\n\n"
+        "PRIMERO.– Resultan de aplicación los artículos 24 y 25 de la Constitución Española, que consagran el derecho a la "
+        "presunción de inocencia, la legalidad sancionadora y el principio de tipicidad.\n\n"
+        "SEGUNDO.– Conforme a los artículos 53, 63 y concordantes de la Ley 39/2015, de Procedimiento Administrativo Común, "
+        "la potestad sancionadora exige la existencia de un procedimiento válido, motivación suficiente y respeto a las garantías "
+        "del administrado.\n\n"
+        "TERCERO.– Corresponde a la Administración la carga de probar de forma suficiente los hechos constitutivos de la infracción, "
+        "sin que puedan bastar presunciones genéricas o referencias incompletas al hecho denunciado.\n\n"
+        "CUARTO.– La ausencia de prueba suficiente, la insuficiente motivación del expediente o la falta de concreción del hecho "
+        "determinan la improcedencia de la sanción propuesta.\n\n"
+        "S U P L I C A:\n\n"
+        "1) Que se tengan por formuladas las presentes alegaciones.\n"
+        "2) Que, en atención a las alegaciones presentadas y sus fundamentos, se acuerde el ARCHIVO DEL EXPEDIENTE por insuficiencia "
+        "probatoria, falta de acreditación suficiente del hecho imputado o ausencia de motivación individualizada.\n"
+        "3) Subsidiariamente, para el caso de no estimarse el archivo, que se aporte expediente íntegro y prueba completa para "
+        "contradicción efectiva.\n\n"
+        "OTROSÍ DIGO\n\n"
+        "Que esta parte se reserva expresamente el ejercicio de cuantos recursos administrativos y acciones legales pudieran "
+        "corresponder en defensa de sus derechos e intereses legítimos."
+    )
+
+    return {
+        "asunto": "ESCRITO DE ALEGACIONES — SEMÁFORO EN ROJO",
+        "cuerpo": fix_roman_headings(cuerpo),
+    }
+
+
 def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
-    if tipo == "semaforo" and jurisdiccion == "municipal":
-        return build_municipal_semaforo_template(core), "municipal_semaforo"
-    elif tipo == "semaforo":
-        return build_semaforo_strong_template(core), "semaforo"
+    if _is_strong_semaforo_generation_case(core):
+        tipo = "semaforo"
+
+    if tipo == "semaforo":
+        return build_semaforo_pro_template(core), "semaforo_pro"
     elif tipo == "velocidad":
         return build_velocity_strong_template(core), "velocidad"
     elif tipo == "movil":
@@ -2202,13 +2288,10 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
         "II. ALEGACIONES\n\n"
         "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA DEL DISPOSITIVO DE CONTROL\n\n"
-                "La imputación por exceso de velocidad exige una acreditación técnica completa, rigurosa y plenamente verificable. "
-        "Tal como ha reiterado el Tribunal Supremo, entre otras resoluciones, en sus sentencias de 17 de febrero de 2004 y 23 de noviembre de 2005, la potestad sancionadora exige una prueba de cargo suficiente y una acreditación técnica rigurosa, especialmente cuando se basa en medios automáticos de control como los cinemómetros. "
-        
-        "En este sentido, la validez de dichos medios requiere una acreditación íntegra, trazable y documentalmente sustentada del dispositivo utilizado, no bastando referencias genéricas o incompletas. "
-        "Debe constar de forma precisa el dispositivo empleado, su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. "
-        "En controles con Multanova debe acreditarse la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la correspondencia inequívoca con el vehículo denunciado.\n\n"
-"No consta acreditado de forma completa en el expediente:\n"
+        "La imputación por exceso de velocidad exige una acreditación técnica completa, rigurosa y plenamente verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad requiere una acreditación íntegra, trazable y documentalmente sustentada del dispositivo utilizado, no bastando referencias genéricas o incompletas. Debe constar de forma precisa el dispositivo empleado, su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. En controles con Multanova debe acreditarse la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la correspondencia inequívoca con el vehículo denunciado. "
+        "su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. "
+        f"{radar_focus}\n\n"
+        "No consta acreditado de forma completa en el expediente:\n"
         "1) Identificación completa del cinemómetro utilizado (marca/modelo/número de serie).\n"
         "2) Certificado de verificación metrológica vigente en la fecha del hecho.\n"
         "3) Acreditación del control metrológico conforme a la normativa aplicable (Orden ICT/155/2020 o la normativa metrológica que corresponda en la fecha del hecho).\n"
@@ -2220,33 +2303,8 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"{calc_paragraph}\n\n"
     )
 
-    raw_text_tramo = "\n".join([
-        _safe_str(core.get("raw_text_pdf")),
-        _safe_str(core.get("raw_text_vision")),
-        _safe_str(core.get("raw_text_blob")),
-        _safe_str(core.get("vision_raw_text")),
-        _safe_str(core.get("hecho_denunciado_literal")),
-        _safe_str(core.get("hecho_imputado")),
-    ])
-
-    hay_importe = bool(core.get("importe_sancion_eur")) or bool(
-        re.search(r"\b\d{2,4}\s*(?:€|euros)\b", raw_text_tramo, re.IGNORECASE)
-    )
-    hay_puntos = bool(core.get("puntos")) or bool(
-        re.search(r"\b\d{1,2}\s*puntos?\b", raw_text_tramo, re.IGNORECASE)
-    )
-
-    if hay_importe or hay_puntos:
-        if tramo_paragraph:
-            cuerpo += f"{tramo_paragraph}\n\n"
-    else:
-        cuerpo += (
-            "No consta en el expediente cuantía de la sanción ni detracción de puntos, por lo que cualquier valoración "
-            "sobre el tramo sancionador resulta improcedente en este momento.\n\n"
-            "Corresponde a la Administración, en su caso, determinar y motivar de forma expresa dichos extremos, "
-            "debiendo acreditar la correcta aplicación del margen de error, la velocidad corregida y la concreta "
-            "banda sancionadora conforme a la normativa vigente.\n\n"
-        )
+    if tramo_paragraph:
+        cuerpo += f"{tramo_paragraph}\n\n"
 
     cuerpo += (
         "ALEGACIÓN SEGUNDA — DEFECTOS DE MOTIVACIÓN Y FALTA DE SOPORTE COMPLETO\n\n"
@@ -2421,6 +2479,12 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
             core["hecho_denunciado_literal"] = literal
 
     tipo = forced_tipo or _resolved_tipo_from_core(core, fallback="generic")
+    if _is_strong_semaforo_generation_case(core):
+        tipo = "semaforo"
+        core["tipo_infraccion"] = "semaforo"
+        hi = _safe_str(core.get("hecho_imputado"))
+        if not hi or "velocidad" in hi.lower():
+            core["hecho_imputado"] = "No respetar la luz roja no intermitente de un semáforo"
     jurisdiccion = resolve_jurisdiction(core)
 
     bicicleta_ctx = _is_bicicleta_context(core)
@@ -2468,7 +2532,6 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         )
 
     tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
-    tpl["cuerpo"] = _final_text_safety_cleanup(tpl["cuerpo"])
 
     docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
@@ -2518,32 +2581,6 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     }
 
 
-
-
-
-def _final_text_safety_cleanup(text: str) -> str:
-    """
-    Limpieza final de presentación. No toca OCR, cálculo de velocidades,
-    datos técnicos ni lógica de generación.
-    """
-    txt = _safe_str(text)
-
-    txt = txt.replace(
-        "ALEGACIÓN TERCERA — SOLICITUD DE expediente íntegro Y PRUEBA TÉCNICA",
-        "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA"
-    )
-
-    txt = txt.replace(
-        "con el vehículo denunciado. su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. En controles con Multanova debe acreditarse la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la correspondencia inequívoca con el vehículo denunciado.",
-        "con el vehículo denunciado."
-    )
-
-    txt = txt.replace(
-        "cinemómetros., la validez de los medios técnicos de control de velocidad requiere",
-        "cinemómetros. En este sentido, la validez de dichos medios requiere"
-    )
-
-    return txt
 
 
 def _extract_destination_from_generated_body(body: str) -> str:
