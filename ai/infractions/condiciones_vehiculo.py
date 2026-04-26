@@ -59,7 +59,7 @@ def build_condiciones_vehiculo_strong_template(core: Dict[str, Any]) -> Dict[str
     if is_alumbrado:
         parts.append(
             "BLOQUE ESPECÍFICO — ALUMBRADO/SEÑALIZACIÓN ÓPTICA: DESTELLOS, FUNCIÓN Y HOMOLOGACIÓN\n\n"
-            "Si se afirma una luz trasera roja que emite destellos, debe acreditarse: (i) qué dispositivo exacto es (función y ubicación), (ii) qué apartado concreto del Anexo aplicable se considera infringido y por qué, (iii) si está homologado/autorizado y cómo se verificó, y (iv) soporte objetivo que muestre el modo de emisión (destello/intermitencia) sin recortes.\n\n"
+            "Si se afirma la instalación o uso de un dispositivo luminoso no reglamentario, debe acreditarse: (i) qué dispositivo exacto es, su función, color, ubicación y modo de emisión, (ii) qué precepto reglamentario concreto se considera infringido, (iii) si el dispositivo está homologado o autorizado y cómo se verificó, y (iv) soporte objetivo suficiente que permita constatar su instalación y uso efectivo en las condiciones descritas.\n\n"
             "No basta una apreciación visual genérica sobre 'destellos' si no se identifica el requisito técnico concreto incumplido.\n\n"
         )
 
