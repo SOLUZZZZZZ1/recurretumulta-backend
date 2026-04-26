@@ -2191,7 +2191,6 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
             "evitando cualquier duda derivada de lecturas automatizadas o transcripciones defectuosas del boletín."
         )
         tramo_paragraph = ""
-
     cuerpo = (
         "A la atención del órgano competente,\n\n"
         "I. ANTECEDENTES\n"
@@ -2200,13 +2199,13 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
         "II. ALEGACIONES\n\n"
         "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA DEL DISPOSITIVO DE CONTROL\n\n"
-                "La imputación por exceso de velocidad exige una acreditación técnica completa, rigurosa y plenamente verificable. "
-        "Tal como ha reiterado el Tribunal Supremo, entre otras resoluciones, en sus sentencias de 17 de febrero de 2004 y 23 de noviembre de 2005, la potestad sancionadora exige una prueba de cargo suficiente y una acreditación técnica rigurosa, especialmente cuando se basa en medios automáticos de control como los cinemómetros. "
-        
+        "La imputación por exceso de velocidad exige una acreditación técnica completa, rigurosa y plenamente verificable. "
+        "Tal como ha reiterado el Tribunal Supremo, entre otras resoluciones, en sus sentencias de 17 de febrero de 2004 y 23 de noviembre de 2005, "
+        "la potestad sancionadora exige una prueba de cargo suficiente y una acreditación técnica rigurosa, especialmente cuando se basa en medios automáticos de control como los cinemómetros. "
         "En este sentido, la validez de dichos medios requiere una acreditación íntegra, trazable y documentalmente sustentada del dispositivo utilizado, no bastando referencias genéricas o incompletas. "
         "Debe constar de forma precisa el dispositivo empleado, su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. "
         "En controles con Multanova debe acreditarse la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la correspondencia inequívoca con el vehículo denunciado.\n\n"
-"No consta acreditado de forma completa en el expediente:\n"
+        "No consta acreditado de forma completa en el expediente:\n"
         "1) Identificación completa del cinemómetro utilizado (marca/modelo/número de serie).\n"
         "2) Certificado de verificación metrológica vigente en la fecha del hecho.\n"
         "3) Acreditación del control metrológico conforme a la normativa aplicable (Orden ICT/155/2020 o la normativa metrológica que corresponda en la fecha del hecho).\n"
@@ -2219,25 +2218,26 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     )
 
     raw_text = "\n".join([
-    _safe_str(core.get("raw_text_pdf")),
-    _safe_str(core.get("raw_text_vision")),
-    _safe_str(core.get("hecho_denunciado_literal")),
-    _safe_str(core.get("hecho_imputado")),
-])
+        _safe_str(core.get("raw_text_pdf")),
+        _safe_str(core.get("raw_text_vision")),
+        _safe_str(core.get("hecho_denunciado_literal")),
+        _safe_str(core.get("hecho_imputado")),
+    ])
 
-    hay_importe = core.get("importe_sancion_eur") or re.search(r"\b\d+\s*€|euros",     raw_text, re.IGNORECASE)
-    hay_puntos = core.get("puntos") or re.search(r"\b\d+\s*puntos?", raw_text,     re.IGNORECASE)
+    hay_importe = core.get("importe_sancion_eur") or re.search(r"\b\d+\s*€|euros", raw_text, re.IGNORECASE)
+    hay_puntos = core.get("puntos") or re.search(r"\b\d+\s*puntos?", raw_text, re.IGNORECASE)
 
     if hay_importe or hay_puntos:
-    if tramo_paragraph:
-        cuerpo += f"{tramo_paragraph}\n\n"
+        if tramo_paragraph:
+            cuerpo += f"{tramo_paragraph}\n\n"
     else:
-    cuerpo += (
-        "No consta en el expediente cuantía de la sanción ni detracción de puntos, por lo que cualquier valoración "
-        "sobre el tramo sancionador resulta improcedente en este momento.\n\n"
-        "Corresponde a la Administración, en su caso, determinar y motivar de forma expresa dichos extremos, "
-        "debiendo acreditar la correcta aplicación del margen de error, la velocidad corregida y la concreta "
-        "banda sancionadora conforme a la normativa vigente.\n\n"
+        cuerpo += (
+            "No consta en el expediente cuantía de la sanción ni detracción de puntos, por lo que cualquier valoración "
+            "sobre el tramo sancionador resulta improcedente en este momento.\n\n"
+            "Corresponde a la Administración, en su caso, determinar y motivar de forma expresa dichos extremos, "
+            "debiendo acreditar la correcta aplicación del margen de error, la velocidad corregida y la concreta "
+            "banda sancionadora conforme a la normativa vigente.\n\n"
+        )
     )
 
     cuerpo += (
