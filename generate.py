@@ -2218,8 +2218,27 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"{calc_paragraph}\n\n"
     )
 
+   raw_text = "\n".join([
+    _safe_str(core.get("raw_text_pdf")),
+    _safe_str(core.get("raw_text_vision")),
+    _safe_str(core.get("hecho_denunciado_literal")),
+    _safe_str(core.get("hecho_imputado")),
+])
+
+hay_importe = core.get("importe_sancion_eur") or re.search(r"\b\d+\s*€|euros", raw_text, re.IGNORECASE)
+hay_puntos = core.get("puntos") or re.search(r"\b\d+\s*puntos?", raw_text, re.IGNORECASE)
+
+if hay_importe or hay_puntos:
     if tramo_paragraph:
         cuerpo += f"{tramo_paragraph}\n\n"
+else:
+    cuerpo += (
+        "No consta en el expediente cuantía de la sanción ni detracción de puntos, por lo que cualquier valoración "
+        "sobre el tramo sancionador resulta improcedente en este momento.\n\n"
+        "Corresponde a la Administración, en su caso, determinar y motivar de forma expresa dichos extremos, "
+        "debiendo acreditar la correcta aplicación del margen de error, la velocidad corregida y la concreta "
+        "banda sancionadora conforme a la normativa vigente.\n\n"
+    )
 
     cuerpo += (
         "ALEGACIÓN SEGUNDA — DEFECTOS DE MOTIVACIÓN Y FALTA DE SOPORTE COMPLETO\n\n"
