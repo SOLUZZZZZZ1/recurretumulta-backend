@@ -22,6 +22,7 @@ from ops_operator_router import router as ops_operator_router
 from ops_queue_smart import router as ops_queue_smart_router
 from ops_vehicle_removal_router import router as ops_vehicle_removal_router
 from contact_backend_fastapi import router as contact_router
+from vehicle_removal_router import router as vehicle_removal_router
 
 
 # ✅ AÑADIDO: OPS (operador)
@@ -62,6 +63,7 @@ app.include_router(ops_operator_router)
 app.include_router(ops_queue_smart_router)
 app.include_router(ops_vehicle_removal_router)
 app.include_router(contact_router)
+app.include_router(vehicle_removal_router)
 
 
 # ✅ NUEVO: router de operador (/ops/*)
