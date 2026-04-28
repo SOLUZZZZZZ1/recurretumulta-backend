@@ -11,6 +11,13 @@ router = APIRouter(prefix="/vehicle-removal", tags=["vehicle-removal"])
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 
+def _env(name: str) -> str:
+    value = (os.getenv(name) or "").strip()
+    if not value:
+        raise RuntimeError(f"Falta variable de entorno: {name}")
+    return value
+
+
 class VehicleRemovalRequest(BaseModel):
     name: str
     phone: str
@@ -27,18 +34,38 @@ def create_checkout_session(data: VehicleRemovalRequest):
     y abre sesión de pago Stripe para el servicio Eliminar coche.
     """
     try:
+        stripe.api_key = _env("STRIPE_SECRET_KEY")
+        price_id = _env("STRIPE_PRICE_ID_ELIMINAR_COCHE")
+
         engine = get_engine()
+
+        plate_clean = data.plate.strip().upper().replace(" ", "")
+        email_clean = (data.email or "").strip() or None
 
         with engine.begin() as conn:
             row = conn.execute(
                 text(
                     """
-                    INSERT INTO cases (status, contact_email, category, updated_at)
-                    VALUES ('vehicle_removal_pending_payment', :email, 'vehicle_removal', NOW())
+                    INSERT INTO cases (
+                        status,
+                        payment_status,
+                        product_code,
+                        contact_email,
+                        category,
+                        updated_at
+                    )
+                    VALUES (
+                        'vehicle_removal_pending_payment',
+                        'pending',
+                        'ELIMINAR_COCHE',
+                        :email,
+                        'vehicle_removal',
+                        NOW()
+                    )
                     RETURNING id
                     """
                 ),
-                {"email": data.email},
+                {"email": email_clean},
             ).fetchone()
 
             if not row:
@@ -49,13 +76,14 @@ def create_checkout_session(data: VehicleRemovalRequest):
             payload = {
                 "name": data.name.strip(),
                 "phone": data.phone.strip(),
-                "email": (data.email or "").strip() or None,
-                "plate": data.plate.strip().upper().replace(" ", ""),
+                "email": email_clean,
+                "plate": plate_clean,
                 "city": data.city.strip(),
                 "notes": (data.notes or "").strip() or None,
-                "price_eur": 39,
                 "service": "vehicle_removal",
+                "product_code": "ELIMINAR_COCHE",
                 "status": "pending_payment",
+                "stripe_price_id": price_id,
             }
 
             conn.execute(
@@ -71,29 +99,27 @@ def create_checkout_session(data: VehicleRemovalRequest):
                 },
             )
 
-        frontend_url = os.getenv("FRONTEND_URL", "https://recurretumulta.vercel.app").rstrip("/")
+        frontend_url = (
+            os.getenv("FRONTEND_URL")
+            or os.getenv("FRONTEND_BASE_URL")
+            or "https://recurretumulta.vercel.app"
+        ).rstrip("/")
 
         session = stripe.checkout.Session.create(
             payment_method_types=["card"],
             mode="payment",
-            customer_email=data.email if data.email else None,
+            customer_email=email_clean,
             line_items=[
                 {
-                    "price_data": {
-                        "currency": "eur",
-                        "product_data": {
-                            "name": "Eliminar coche - RecurreTuMulta",
-                            "description": "Gestión de baja definitiva de vehículo a través de centro autorizado",
-                        },
-                        "unit_amount": 3900,
-                    },
+                    "price": price_id,
                     "quantity": 1,
                 }
             ],
             metadata={
                 "case_id": case_id,
                 "service": "vehicle_removal",
-                "plate": data.plate.strip().upper().replace(" ", ""),
+                "product_code": "ELIMINAR_COCHE",
+                "plate": plate_clean,
                 "city": data.city.strip(),
                 "phone": data.phone.strip(),
             },
