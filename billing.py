@@ -394,9 +394,51 @@ async def stripe_webhook(request: Request):
 
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        case_id = session["metadata"]["case_id"]
+        metadata = session.get("metadata") or {}
+        case_id = metadata.get("case_id")
+        service = metadata.get("service")
+        product_code = metadata.get("product_code")
+
+        if not case_id:
+            raise HTTPException(status_code=400, detail="Webhook sin case_id en metadata")
+
         engine = get_engine()
         with engine.begin() as conn:
+            # Caso especial: producto "Eliminar coche".
+            # No debe lanzar IA ni generación de recurso DGT.
+            if service == "vehicle_removal" or product_code == "ELIMINAR_COCHE":
+                conn.execute(
+                    text(
+                        """
+                        UPDATE cases
+                        SET payment_status='paid',
+                            status='vehicle_removal_paid',
+                            paid_at=NOW(),
+                            stripe_session_id=:sid,
+                            stripe_payment_intent=:pi,
+                            product_code='ELIMINAR_COCHE',
+                            updated_at=NOW()
+                        WHERE id=:id
+                        """
+                    ),
+                    {"id": case_id, "sid": session["id"], "pi": session.get("payment_intent")},
+                )
+
+                _append_event(
+                    conn,
+                    case_id,
+                    "vehicle_removal_paid",
+                    {
+                        "session": session["id"],
+                        "payment_intent": session.get("payment_intent"),
+                        "service": "vehicle_removal",
+                        "product_code": "ELIMINAR_COCHE",
+                    },
+                )
+
+                return {"ok": True, "case_id": case_id, "service": "vehicle_removal"}
+
+            # Flujo normal DGT / multas.
             conn.execute(
                 text(
                     """
