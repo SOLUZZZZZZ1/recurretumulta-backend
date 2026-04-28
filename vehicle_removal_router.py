@@ -1,8 +1,7 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from sqlalchemy import text
 from database import get_engine
-from b2_storage import upload_original
 from openai_vision import extract_from_image_bytes
 from text_extractors import extract_text_from_pdf_bytes, has_enough_text
 import os
@@ -30,13 +29,7 @@ def _sha256_bytes(data: bytes) -> str:
 def _normalize_text(value: str) -> str:
     value = (value or "").lower()
     replacements = {
-        "á": "a",
-        "é": "e",
-        "í": "i",
-        "ó": "o",
-        "ú": "u",
-        "ü": "u",
-        "ñ": "n",
+        "á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u", "ü": "u", "ñ": "n",
     }
     for a, b in replacements.items():
         value = value.replace(a, b)
@@ -54,8 +47,7 @@ def _normalize_dni(value: str) -> str:
 
 def _name_tokens(full_name: str) -> list[str]:
     clean = _normalize_text(full_name)
-    tokens = [t for t in clean.split() if len(t) >= 3]
-    return tokens
+    return [t for t in clean.split() if len(t) >= 3]
 
 
 def _count_name_matches(full_name: str, text: str) -> int:
@@ -64,9 +56,6 @@ def _count_name_matches(full_name: str, text: str) -> int:
 
 
 def _extract_text_from_payload(payload) -> str:
-    """
-    Convierte cualquier salida de IA/visión/texto en un texto plano buscable.
-    """
     if payload is None:
         return ""
     if isinstance(payload, str):
@@ -80,9 +69,9 @@ def _extract_text_from_payload(payload) -> str:
 class VehicleRemovalRequest(BaseModel):
     name: str
     full_name: str | None = None
-    dni_nie: str | None = None
+    dni_nie: str
     phone: str
-    email: str | None = None
+    email: EmailStr
     plate: str
     city: str
     notes: str | None = None
@@ -100,14 +89,6 @@ async def verify_registration(
     dni_nie: str = Form(...),
     plate: str = Form(...),
 ):
-    """
-    Verifica el permiso de circulación antes del pago.
-
-    Devuelve:
-    - can_continue=True si la matrícula coincide y el titular parece coincidir.
-    - can_continue=False si hay discrepancia clara.
-    - review_required=True si la IA/OCR no puede confirmar con suficiente seguridad.
-    """
     try:
         content = await file.read()
         if not content:
@@ -133,7 +114,6 @@ async def verify_registration(
         extracted_payload = {}
         raw_text = ""
 
-        # PDF con texto: extraemos texto directo. Si no hay texto suficiente, probamos visión.
         if mime == "application/pdf":
             try:
                 pdf_text = extract_text_from_pdf_bytes(content) or ""
@@ -147,18 +127,12 @@ async def verify_registration(
                 extracted_payload = extract_from_image_bytes(content, mime, filename) or {}
                 raw_text = _extract_text_from_payload(extracted_payload)
 
-        # Imagen: visión directa.
         elif mime.startswith("image/"):
             extracted_payload = extract_from_image_bytes(content, mime, filename) or {}
             raw_text = _extract_text_from_payload(extracted_payload)
-
         else:
-            raise HTTPException(
-                status_code=400,
-                detail="Formato no soportado. Sube imagen o PDF del permiso de circulación.",
-            )
+            raise HTTPException(status_code=400, detail="Formato no soportado. Sube imagen o PDF.")
 
-        text_norm = _normalize_text(raw_text)
         text_compact_upper = re.sub(r"[^A-Z0-9]", "", raw_text.upper())
 
         plate_match = form_plate in text_compact_upper
@@ -167,9 +141,6 @@ async def verify_registration(
         name_matches = _count_name_matches(form_full_name, raw_text)
         name_token_total = max(1, len(_name_tokens(form_full_name)))
 
-        # Criterio prudente:
-        # - matrícula debe coincidir siempre.
-        # - titular: al menos 2 tokens del nombre completo o DNI/NIE si aparece.
         name_match = name_matches >= min(2, name_token_total)
         holder_match = name_match or dni_match
 
@@ -184,13 +155,10 @@ async def verify_registration(
         if not raw_text.strip():
             reasons.append("texto_no_extraido")
             review_required = True
-
-        # Si la matrícula coincide pero el titular no se detecta, puede ser foto mala:
-        # no dejamos pagar, pero lo marcamos como revisión posible.
         if plate_match and not holder_match:
             review_required = True
 
-        result = {
+        return {
             "ok": True,
             "can_continue": can_continue,
             "match": can_continue,
@@ -215,8 +183,6 @@ async def verify_registration(
             "mime": mime,
         }
 
-        return result
-
     except HTTPException:
         raise
     except Exception as e:
@@ -225,10 +191,6 @@ async def verify_registration(
 
 @router.post("/create-checkout-session")
 def create_checkout_session(data: VehicleRemovalRequest):
-    """
-    Crea un expediente interno tipo vehicle_removal, registra el evento
-    y abre sesión de pago Stripe para el servicio Eliminar coche.
-    """
     try:
         stripe.api_key = _env("STRIPE_SECRET_KEY")
         price_id = _env("STRIPE_PRICE_ID_ELIMINAR_COCHE")
@@ -239,7 +201,7 @@ def create_checkout_session(data: VehicleRemovalRequest):
         dni_nie = _normalize_dni(data.dni_nie or "")
         phone_clean = data.phone.strip()
         plate_clean = _normalize_plate(data.plate)
-        email_clean = (data.email or "").strip() or None
+        email_clean = str(data.email).strip()
 
         if not full_name:
             raise HTTPException(status_code=400, detail="Nombre completo del titular requerido")
@@ -247,6 +209,8 @@ def create_checkout_session(data: VehicleRemovalRequest):
             raise HTTPException(status_code=400, detail="DNI/NIE del titular requerido")
         if not phone_clean:
             raise HTTPException(status_code=400, detail="Teléfono requerido")
+        if not email_clean:
+            raise HTTPException(status_code=400, detail="Email requerido")
         if not plate_clean:
             raise HTTPException(status_code=400, detail="Matrícula requerida")
 
@@ -332,12 +296,7 @@ def create_checkout_session(data: VehicleRemovalRequest):
             payment_method_types=["card"],
             mode="payment",
             customer_email=email_clean,
-            line_items=[
-                {
-                    "price": price_id,
-                    "quantity": 1,
-                }
-            ],
+            line_items=[{"price": price_id, "quantity": 1}],
             metadata={
                 "case_id": case_id,
                 "service": "vehicle_removal",
@@ -346,16 +305,14 @@ def create_checkout_session(data: VehicleRemovalRequest):
                 "city": data.city.strip(),
                 "phone": phone_clean,
                 "dni_nie": dni_nie,
+                "email": email_clean,
+                "full_name": full_name,
             },
             success_url=f"{frontend_url}/#/eliminar-coche?success=1&case_id={case_id}",
             cancel_url=f"{frontend_url}/#/eliminar-coche?cancelled=1&case_id={case_id}",
         )
 
-        return {
-            "ok": True,
-            "case_id": case_id,
-            "checkout_url": session.url,
-        }
+        return {"ok": True, "case_id": case_id, "checkout_url": session.url}
 
     except HTTPException:
         raise
