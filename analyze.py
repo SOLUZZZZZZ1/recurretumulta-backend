@@ -2603,12 +2603,15 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     out["error_score"] = error_score
     out["case_viability"] = case_viability
 
-    # 🔥 MODO NEGOCIO: permitir siempre continuar (solo bloquear por plazo en frontend)
-out["resultado_estrategico"] = "continuar"
-out["motivo_estrategico"] = ""
-out["presentacion_automatica_recomendada"] = True
+    out["resultado_estrategico"] = "continuar"
 
-out["modelo_defensa"] = _infer_modelo_defensa(
+
+    out["motivo_estrategico"] = ""
+
+
+    out["presentacion_automatica_recomendada"] = True
+
+    out["modelo_defensa"] = _infer_modelo_defensa(
         tipo,
         subtipo or "",
         out.get("expediente_errors") or [],
