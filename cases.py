@@ -176,6 +176,74 @@ def save_case_contact(case_id: str, data: CaseContactIn, background_tasks: Backg
     _event(case_id, "contact_saved", {})
     return {"ok": True}
 
+
+# =========================
+# DATOS DEL INTERESADO
+# =========================
+@router.post("/{case_id}/details")
+def save_case_details(case_id: str, data: CaseDetailsIn):
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        meta = _case_exists(conn, case_id)
+        interested = dict(meta.get("interested_data") or {})
+
+        interested.update(
+            {
+                "full_name": data.full_name.strip(),
+                "dni_nie": data.dni_nie.strip().upper(),
+                "domicilio_notif": data.domicilio_notif.strip(),
+                "email": str(data.email).strip(),
+                "telefono": (data.telefono or "").strip() or None,
+            }
+        )
+
+        conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET interested_data = CAST(:interested AS JSONB),
+                    contact_name = :contact_name,
+                    contact_email = :contact_email,
+                    updated_at = NOW()
+                WHERE id = :id
+                """
+            ),
+            {
+                "id": case_id,
+                "interested": json.dumps(interested, ensure_ascii=False),
+                "contact_name": interested.get("full_name"),
+                "contact_email": interested.get("email"),
+            },
+        )
+
+        conn.execute(
+            text(
+                """
+                INSERT INTO events(case_id, type, payload, created_at)
+                VALUES (:id, 'case_details_saved', CAST(:payload AS JSONB), NOW())
+                """
+            ),
+            {
+                "id": case_id,
+                "payload": json.dumps(
+                    {
+                        "full_name": interested.get("full_name"),
+                        "dni_nie": interested.get("dni_nie"),
+                        "email": interested.get("email"),
+                        "telefono": interested.get("telefono"),
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        )
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "interested_data": interested,
+    }
+
 # =========================
 # AÑADIR DOCUMENTOS
 # =========================
