@@ -529,11 +529,15 @@ async def stripe_webhook(request: Request):
                 return {"ok": True, "case_id": case_id, "service": "vehicle_removal"}
 
             # Flujo normal DGT / multas.
+            # MODO MANUAL PRIMEROS CASOS:
+            # Tras el pago NO generamos recurso automáticamente.
+            # Dejamos el expediente pagado y pendiente de revisión manual en OPS.
             conn.execute(
                 text(
                     """
                     UPDATE cases
                     SET payment_status='paid',
+                        status='manual_review',
                         paid_at=NOW(),
                         stripe_session_id=:sid,
                         stripe_payment_intent=:pi,
@@ -543,8 +547,27 @@ async def stripe_webhook(request: Request):
                 ),
                 {"id": case_id, "sid": session["id"], "pi": session.get("payment_intent")},
             )
-            _append_event(conn, case_id, "paid_ok", {"session": session["id"]})
-            _run_post_payment_modo_dios(conn, case_id)
+
+            _append_event(
+                conn,
+                case_id,
+                "paid_ok",
+                {
+                    "session": session["id"],
+                    "payment_intent": session.get("payment_intent"),
+                    "mode": "manual_review_after_payment",
+                },
+            )
+
+            _append_event(
+                conn,
+                case_id,
+                "manual_review_required",
+                {
+                    "reason": "manual_first_cases",
+                    "message": "Pago recibido. Expediente pendiente de revisión manual interna antes de generar o presentar recurso.",
+                },
+            )
 
     return {"ok": True}
 

@@ -2243,27 +2243,21 @@ def _infer_recommended_tone(expediente_strength: str, attack_routes: List[Dict[s
 
 
 def _infer_operational_strategy(case_viability: str, critical_errors: List[str], evidence_gaps: List[str]) -> Dict[str, Any]:
-    critical_count = len(critical_errors or [])
-    gap_count = len(evidence_gaps or [])
-
-    if case_viability == "alta" and critical_count >= 1:
-        return {
-            "resultado_estrategico": "archivo_probable",
-            "motivo_estrategico": "Se detectan errores críticos del expediente y una base defensiva fuerte para solicitar archivo.",
-            "presentacion_automatica_recomendada": True,
-        }
-
-    if case_viability in ("alta", "media") and gap_count >= 2:
-        return {
-            "resultado_estrategico": "defensa_viable",
-            "motivo_estrategico": "Existen carencias probatorias o documentales suficientes para sostener una defensa sólida, aunque no necesariamente determinante de archivo inmediato.",
-            "presentacion_automatica_recomendada": True,
-        }
-
+    """
+    MODO MANUAL / COMERCIAL:
+    - No bloquea por viabilidad baja/media/alta.
+    - Permite continuar hacia autorización y pago.
+    - Marca el expediente para revisión manual interna.
+    - El bloqueo por plazo debe gestionarse en la pantalla de resumen/pago cuando exista fecha límite vencida.
+    """
     return {
-        "resultado_estrategico": "revision_manual_recomendada",
-        "motivo_estrategico": "El expediente no presenta por ahora una debilidad bastante clara; conviene revisión manual antes de presentación automática.",
-        "presentacion_automatica_recomendada": False,
+        "resultado_estrategico": "permitir_con_revision_manual",
+        "motivo_estrategico": (
+            "Caso permitido para continuar. Revisión manual interna obligatoria antes de presentación definitiva."
+        ),
+        "presentacion_automatica_recomendada": True,
+        "revision_manual_obligatoria": True,
+        "modo_revision": "manual_first_cases",
     }
 
 def _infer_modelo_defensa(tipo: str, subtipo: str, expediente_errors: List[str], critical_errors: List[str], attack_routes: List[Dict[str, Any]]) -> str:
@@ -2891,11 +2885,24 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     )
 
     # Revisión final de calidad del hecho y coherencia con la familia.
+    # En modo manual/comercial NO bloqueamos el flujo por viabilidad ni por dudas de IA.
+    # Se permite continuar, pero se marca revisión manual interna obligatoria.
     out = _apply_hecho_engine(out)
     if out.get("needs_operator_review"):
-        out["presentacion_automatica_recomendada"] = False
-        out["resultado_estrategico"] = "revision_operador_recomendada"
-        out["motivo_estrategico"] = "El hecho imputado no ha podido aislarse con suficiente limpieza o no es coherente con la familia detectada."
+        out["resultado_estrategico"] = "permitir_con_revision_manual"
+        out["motivo_estrategico"] = (
+            "El hecho imputado requiere revisión manual interna, pero el usuario puede continuar con autorización y pago."
+        )
+        out["revision_manual_obligatoria"] = True
+        out["modo_revision"] = "manual_first_cases"
+
+    out["presentacion_automatica_recomendada"] = True
+    out["resultado_estrategico"] = out.get("resultado_estrategico") or "permitir_con_revision_manual"
+    out["motivo_estrategico"] = out.get("motivo_estrategico") or (
+        "Caso permitido para continuar. Revisión manual interna obligatoria antes de presentación definitiva."
+    )
+    out["revision_manual_obligatoria"] = True
+    out["modo_revision"] = "manual_first_cases"
 
     return out
 
