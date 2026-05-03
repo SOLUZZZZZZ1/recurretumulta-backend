@@ -2603,13 +2603,14 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     out["error_score"] = error_score
     out["case_viability"] = case_viability
 
-    out["resultado_estrategico"] = "continuar"
-
-
-    out["motivo_estrategico"] = ""
-
-
-    out["presentacion_automatica_recomendada"] = True
+    strategy_meta = _infer_operational_strategy(
+        case_viability=case_viability,
+        critical_errors=critical_errors,
+        evidence_gaps=evidence_gaps,
+    )
+    out["resultado_estrategico"] = strategy_meta["resultado_estrategico"]
+    out["motivo_estrategico"] = strategy_meta["motivo_estrategico"]
+    out["presentacion_automatica_recomendada"] = strategy_meta["presentacion_automatica_recomendada"]
 
     out["modelo_defensa"] = _infer_modelo_defensa(
         tipo,
@@ -2894,6 +2895,26 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                     ),
                 },
             )
+
+            
+            # 🔥 GUARDAR DATOS CLAVE EN CASES (FIX AUTORIZACIÓN)
+            try:
+                conn.execute(
+                    text("""
+                        UPDATE cases SET
+                            organismo = COALESCE(:organismo, organismo),
+                            expediente_ref = COALESCE(:expediente_ref, expediente_ref),
+                            updated_at = NOW()
+                        WHERE id = :case_id
+                    """),
+                    {
+                        "case_id": case_id,
+                        "organismo": extracted_core.get("organismo"),
+                        "expediente_ref": extracted_core.get("expediente_ref"),
+                    },
+                )
+            except Exception:
+                pass
 
             conn.execute(
                 text("UPDATE cases SET status='analyzed', updated_at=NOW() WHERE id=:case_id"),
