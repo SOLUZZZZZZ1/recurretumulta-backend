@@ -40,19 +40,8 @@ def _safe_str(v: Any) -> str:
         return ""
 
 
-
 def _compact_plate(value: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", _safe_str(value).upper())
-
-
-def _extract_first_match(pattern: str, text: str, flags: int = re.IGNORECASE) -> str:
-    m = re.search(pattern, text or "", flags)
-    if not m:
-        return ""
-    for g in m.groups():
-        if g not in (None, ""):
-            return _safe_str(g).strip()
-    return _safe_str(m.group(0)).strip()
 
 
 def _title_person_name(value: str) -> str:
@@ -66,11 +55,7 @@ def _title_person_name(value: str) -> str:
 def _split_full_name(full_name: str) -> Dict[str, str]:
     parts = [p for p in re.sub(r"\s+", " ", _safe_str(full_name).strip()).split(" ") if p]
     if len(parts) >= 3:
-        return {
-            "nombre": " ".join(parts[:-2]),
-            "apellido1": parts[-2],
-            "apellido2": parts[-1],
-        }
+        return {"nombre": " ".join(parts[:-2]), "apellido1": parts[-2], "apellido2": parts[-1]}
     if len(parts) == 2:
         return {"nombre": parts[0], "apellido1": parts[1], "apellido2": ""}
     if len(parts) == 1:
@@ -78,11 +63,21 @@ def _split_full_name(full_name: str) -> Dict[str, str]:
     return {"nombre": "", "apellido1": "", "apellido2": ""}
 
 
+def _extract_first_match(pattern: str, text: str, flags: int = re.IGNORECASE) -> str:
+    m = re.search(pattern, text or "", flags)
+    if not m:
+        return ""
+    for g in m.groups():
+        if g not in (None, ""):
+            return _safe_str(g).strip()
+    return _safe_str(m.group(0)).strip()
+
+
 def _extract_municipal_basic_fields(raw_text: str, current: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    Extracción determinista de campos básicos en denuncias municipales,
-    especialmente boletines en catalán/castellano con tabla OCR.
-    No sustituye a la IA: rellena huecos críticos para resumen, autorización y recurso.
+    Extracción determinista para denuncias municipales en catalán/castellano.
+    Rellena campos críticos que la IA/OCR a veces deja vacíos:
+    ayuntamiento, titular, DNI/NIE, matrícula, expediente, importe y puntos.
     """
     current = current or {}
     raw = _safe_str(raw_text)
@@ -95,34 +90,41 @@ def _extract_municipal_basic_fields(raw_text: str, current: Optional[Dict[str, A
 
     # Organismo / municipio
     town = ""
-    m = re.search(r"AJUNTAMENT\s+DE\s+([A-ZÀ-Ü][A-ZÀ-Ü\s\-']{2,40})", upper)
+    m = re.search(r"AJUNTAMENT\s+DE\s+([A-ZÀ-Ü][A-ZÀ-Ü\s\-']{2,45})", upper)
     if not m:
-        m = re.search(r"AYUNTAMIENTO\s+DE\s+([A-ZÀ-Ü][A-ZÀ-Ü\s\-']{2,40})", upper)
+        m = re.search(r"AYUNTAMIENTO\s+DE\s+([A-ZÀ-Ü][A-ZÀ-Ü\s\-']{2,45})", upper)
     if m:
         town = re.sub(r"\s+", " ", m.group(1)).strip(" .,-")
-        # cortar si OCR se come cabeceras posteriores
-        town = re.split(r"\b(NIF|NOTIFICACIO|NOTIFICACIÓ|NOTIFICACION|TEL|TELEFONO|INFORMACIO|INFORMACIÓN)\b", town)[0].strip(" .,-")
+        town = re.split(r"\b(NIF|NOTIFICACIO|NOTIFICACIÓ|NOTIFICACION|TEL|TELEFONO|INFORMACIO|INFORMACIÓN|EXPEDIENT)\b", town)[0].strip(" .,-")
         if town:
+            town_title = _title_person_name(town)
             if "ajuntament" in norm:
-                out["organismo"] = f"Ajuntament de {_title_person_name(town)}"
+                out["organismo"] = f"Ajuntament de {town_title}"
                 out["organismo_cabecera"] = f"AJUNTAMENT DE {town}"
             else:
-                out["organismo"] = f"Ayuntamiento de {_title_person_name(town)}"
+                out["organismo"] = f"Ayuntamiento de {town_title}"
                 out["organismo_cabecera"] = f"AYUNTAMIENTO DE {town}"
-            out["municipio_organismo"] = _title_person_name(town)
-            out["provincia"] = out.get("provincia") or "Barcelona" if town == "TERRASSA" else out.get("provincia")
+            out["municipio_organismo"] = town_title
+            if town == "TERRASSA":
+                out["provincia"] = "Barcelona"
 
     # DNI/NIE infractor
-    dni = _extract_first_match(r"DOCUMENT(?:O|)\s*D[’']?IDENTITAT\s*INFRACTOR\s*[:\-]?\s*([0-9XYZ][0-9A-Z]{6,10}[A-Z])", upper)
-    if not dni:
-        dni = _extract_first_match(r"DOCUMENTO\s+D[’']?IDENTIDAD\s*INFRACTOR\s*[:\-]?\s*([0-9XYZ][0-9A-Z]{6,10}[A-Z])", upper)
-    if not dni:
-        dni = _extract_first_match(r"\b([0-9]{7,8}[A-Z])\b", upper)
+    dni_patterns = [
+        r"DOCUMENT(?:O|)\s*D[’']?IDENTITAT\s*INFRACTOR\s*[:\-]?\s*([0-9XYZ][0-9A-Z]{6,10}[A-Z])",
+        r"DOCUMENTO\s+D[’']?IDENTIDAD\s*INFRACTOR\s*[:\-]?\s*([0-9XYZ][0-9A-Z]{6,10}[A-Z])",
+        r"\b([XYZ][0-9]{7}[A-Z])\b",
+        r"\b([0-9]{7,8}[A-Z])\b",
+    ]
+    dni = ""
+    for patt in dni_patterns:
+        dni = _extract_first_match(patt, upper)
+        if dni:
+            break
     if dni:
         out["dni"] = dni
         out["dni_nie"] = dni
 
-    # Matrícula: moderna, tolerando espacios/guiones.
+    # Matrícula moderna tolerando espacios/guiones.
     plates = []
     for mm in re.findall(r"\b\d{4}\s*[-/]?\s*[A-Z]{3}\b", upper):
         p = _compact_plate(mm)
@@ -131,7 +133,7 @@ def _extract_municipal_basic_fields(raw_text: str, current: Optional[Dict[str, A
     if plates:
         out["matricula"] = plates[0]
 
-    # Expediente / referencia / identificación
+    # Expediente / referencia
     expediente = _extract_first_match(r"EXPEDIENT\s*/?\s*EXPEDIENTE\s*[:\-]?\s*([A-Z0-9\-/]+)", upper)
     if not expediente:
         expediente = _extract_first_match(r"\b(V\d{6,12})\b", upper)
@@ -139,52 +141,100 @@ def _extract_municipal_basic_fields(raw_text: str, current: Optional[Dict[str, A
         out["expediente_ref"] = expediente
         out["numero_expediente"] = expediente
 
-    referencia = _extract_first_match(r"REFER[EÈ]NCIA\s*/?\s*REFERENCIA\s*[:\-]?\s*([0-9]{6,})", upper)
+    referencia = _extract_first_match(r"REFER[EÈ]NCIA\s*/?\s*REFERENCIA\s*[:\-]?\s*([0-9]{5,})", upper)
     if referencia:
         out["referencia"] = referencia
 
-    # Fechas / importe / puntos
-    fecha = _extract_first_match(r"DATA\s+D[’']?EMISSI[OÓ]\s*/?\s*FECHA\s+D[’']?EMISI[OÓ]N\s*[:\-]?\s*(\d{2}[-/]\d{2}[-/]\d{4})", upper)
-    if not fecha:
-        fecha = _extract_first_match(r"\b(\d{2}[-/]\d{2}[-/]\d{4})\b", upper)
-    if fecha:
-        out["fecha_documento"] = fecha
+    # Fechas
+    fecha_doc = _extract_first_match(r"DATA\s+D[’']?EMISSI[OÓ]\s*/?\s*FECHA\s+D[’']?EMISI[OÓ]N\s*[:\-]?\s*(\d{2}[-/]\d{2}[-/]\d{4})", upper)
+    if not fecha_doc:
+        fecha_doc = _extract_first_match(r"\b(\d{2}[-/]\d{2}[-/]\d{4})\b", upper)
+    if fecha_doc:
+        out["fecha_documento"] = fecha_doc
 
-    fecha_hecho = _extract_first_match(r"DATA\s*[:\-]?\s*(\d{2}[-/]\d{2}[-/]\d{4})", upper)
+    fecha_hecho = _extract_first_match(r"(?:DATA|FECHA)\s*(?:INFRACCI[OÓ]|INFRACCIÓN)?\s*[:\-]?\s*(\d{2}[-/]\d{2}[-/]\d{4})", upper)
     if fecha_hecho:
         out["fecha_infraccion"] = fecha_hecho
         out["fecha_hecho"] = fecha_hecho
 
+    # Importe
     importe = _extract_first_match(r"IMPORT(?:\s+TOTAL|E\s+TOTAL|)\s*[:\-]?\s*([0-9]{1,4}(?:[,.][0-9]{2})?)", upper)
+    if not importe:
+        importe = _extract_first_match(r"\b([0-9]{2,4}[,.][0-9]{2})\s*(?:€|EUR|EUROS)?\b", upper)
     if importe:
         out["importe"] = importe.replace(".", ",")
+        try:
+            out["sancion_importe_eur"] = int(float(importe.replace(",", ".")))
+        except Exception:
+            pass
 
-    puntos = _extract_first_match(r"PUNTS?\s*[:\-]?\s*(\d{1,2})", upper)
+    # Puntos: castellano/catalán. Para semáforo en rojo municipal, normalmente 4 puntos.
+    puntos = ""
+    point_patterns = [
+        r"PUNTS?\s*(?:A\s+DETRAURE|DETRACCI[OÓ])?\s*[:\-]?\s*(\d{1,2})",
+        r"PUNTOS?\s*(?:A\s+DETRAER|DETRACCI[OÓ]N)?\s*[:\-]?\s*(\d{1,2})",
+        r"P[EÈ]RDUA\s+DE\s+PUNTS?\s*[:\-]?\s*(\d{1,2})",
+        r"P[EÉ]RDIDA\s+DE\s+PUNTOS?\s*[:\-]?\s*(\d{1,2})",
+        r"\b(\d{1,2})\s*PUNTS?\b",
+        r"\b(\d{1,2})\s*PUNTOS?\b",
+    ]
+    for patt in point_patterns:
+        puntos = _extract_first_match(patt, upper)
+        if puntos:
+            break
     if puntos:
         try:
             out["puntos_detraccion"] = int(puntos)
         except Exception:
             out["puntos_detraccion"] = puntos
 
-    # Nombre y dirección: en este tipo de Terrassa va después de la tabla inicial.
-    # Buscamos líneas con 2-4 palabras en mayúsculas antes de una dirección.
+    # Nombre completo del multado: varias estrategias.
+    blacklist = {
+        "AJUNTAMENT", "AYUNTAMIENTO", "NOTIFICACIO", "NOTIFICACIÓ", "NOTIFICACION", "EXPEDIENT", "REFERENCIA",
+        "DOCUMENT", "IMPORT", "PUNTS", "PUNTOS", "BARCELONA", "TERRASSA", "DENUNCIA", "SANCIO", "SANCIÓN",
+        "DADES", "DATOS", "VEHICLE", "VEHICULO", "MATRICULA", "MATRÍCULA", "PRECEPTE", "PRECEPTO",
+    }
     lines = [ln.strip() for ln in raw.replace("\r", "\n").split("\n") if ln.strip()]
     name_candidate = ""
-    for i, ln in enumerate(lines):
-        u = ln.upper().strip()
-        if re.fullmatch(r"[A-ZÀ-Ü][A-ZÀ-Ü'\-]+\s+[A-ZÀ-Ü][A-ZÀ-Ü'\-]+(?:\s+[A-ZÀ-Ü][A-ZÀ-Ü'\-]+){0,3}", u):
-            bad = ["AJUNTAMENT", "AYUNTAMIENTO", "NOTIFICACIO", "NOTIFICACIÓN", "BARCELONA", "TERRASSA", "DOCUMENT", "EXPEDIENT", "IMPORT"]
-            if any(b in u for b in bad):
-                continue
-            nxt = " ".join(lines[i+1:i+4]).upper()
-            if any(addr in nxt for addr in [" C/", " C ", " CA ", " CARRER", " CALLE", " AV ", " AVDA", " PASSEIG", " PLAÇA", " PLAZA", "BARCELONA", "MADRID", "MATARO", "MATARÓ"]):
-                name_candidate = u
-                break
+
+    # 1) Etiquetas habituales.
+    label_patterns = [
+        r"(?:NOM\s+I\s+COGNOMS|NOMBRE\s+Y\s+APELLIDOS|APELLIDOS\s+Y\s+NOMBRE|INFRACTOR)\s*[:\-]?\s*([A-ZÀ-Ü][A-ZÀ-Ü'\-]+(?:\s+[A-ZÀ-Ü][A-ZÀ-Ü'\-]+){1,4})",
+    ]
+    for patt in label_patterns:
+        name_candidate = _extract_first_match(patt, upper)
+        if name_candidate:
+            break
+
+    # 2) Cerca del DNI.
+    if not name_candidate and dni:
+        idx = upper.find(dni)
+        if idx >= 0:
+            window = upper[max(0, idx-180): idx+260]
+            candidates = re.findall(r"\b([A-ZÀ-Ü][A-ZÀ-Ü'\-]{2,}\s+[A-ZÀ-Ü][A-ZÀ-Ü'\-]{2,}(?:\s+[A-ZÀ-Ü][A-ZÀ-Ü'\-]{2,}){1,3})\b", window)
+            for cand in candidates:
+                words = cand.split()
+                if not any(w in blacklist for w in words):
+                    name_candidate = cand
+                    break
+
+    # 3) Línea en mayúsculas con 3-5 palabras, preferentemente antes de dirección.
     if not name_candidate:
-        # Fallback específico: texto tras DNI + fechas/referencias suele dejar el nombre al lado.
-        m = re.search(r"\b[0-9]{7,8}[A-Z]\b[\s\S]{0,120}?\b([A-ZÀ-Ü][A-ZÀ-Ü'\-]+\s+[A-ZÀ-Ü][A-ZÀ-Ü'\-]+\s+[A-ZÀ-Ü][A-ZÀ-Ü'\-]+)\b", upper)
-        if m:
-            name_candidate = m.group(1)
+        for i, ln in enumerate(lines):
+            u = ln.upper().strip()
+            if re.fullmatch(r"[A-ZÀ-Ü][A-ZÀ-Ü'\-]{2,}\s+[A-ZÀ-Ü][A-ZÀ-Ü'\-]{2,}(?:\s+[A-ZÀ-Ü][A-ZÀ-Ü'\-]{2,}){1,3}", u):
+                words = u.split()
+                if any(w in blacklist for w in words):
+                    continue
+                # Si la línea siguiente parece dirección, es casi seguro el titular.
+                nxt = " ".join(lines[i+1:i+4]).upper()
+                if any(addr in nxt for addr in [" C/", " C ", " CA ", "CARRER", "CALLE", "AV ", "AVDA", "PASSEIG", "PLAÇA", "PLAZA", " CP ", "BARCELONA", "MADRID", "MATARO", "MATARÓ"]):
+                    name_candidate = u
+                    break
+                # fallback permisivo si hay DNI en el documento.
+                if dni and len(words) in (3, 4, 5):
+                    name_candidate = u
+                    break
 
     if name_candidate:
         full_name = _title_person_name(name_candidate)
@@ -193,54 +243,29 @@ def _extract_municipal_basic_fields(raw_text: str, current: Optional[Dict[str, A
         out["nombre_completo"] = full_name
         out.update(_split_full_name(full_name))
 
-    # Domicilio si aparece bajo el nombre.
-    if name_candidate:
-        try:
-            idx = next(i for i, ln in enumerate(lines) if ln.upper().strip() == name_candidate)
-            domicilio_lines = []
-            for ln in lines[idx+1:idx+4]:
-                u = ln.upper().strip()
-                if re.search(r"\b\d{5}\b", u) or any(x in u for x in [" C/", " CA ", "CARRER", "CALLE", "BARCELONA", "MADRID", "MATARO", "MATARÓ"]):
-                    domicilio_lines.append(ln.strip())
-            if domicilio_lines:
-                out["domicilio"] = re.sub(r"\s+", " ", " ".join(domicilio_lines)).strip()
-        except Exception:
-            pass
-
-    # Lugar y hecho: Catalán/castellano municipal semáforo.
-    lugar = _extract_first_match(r"Lloc\s+infracci[oó]\s*[:\-]?\s*([^\n]+)", raw, flags=re.IGNORECASE)
+    # Lugar
+    lugar = _extract_first_match(r"LLOC\s+INFRACCI[OÓ]\s*[:\-]?\s*([^\n]+)", raw, flags=re.IGNORECASE)
     if not lugar:
-        lugar = _extract_first_match(r"Lugar\s+infracci[oó]n\s*[:\-]?\s*([^\n]+)", raw, flags=re.IGNORECASE)
+        lugar = _extract_first_match(r"LUGAR\s+INFRACCI[OÓ]N\s*[:\-]?\s*([^\n]+)", raw, flags=re.IGNORECASE)
     if lugar:
         out["lugar_infraccion"] = lugar.strip()
 
-    if any(s in norm for s in ["llum vermella", "luz roja", "semafor", "semaforo", "semáforo", "semafor"]):
+    # Semáforo municipal catalán/castellano: forzar familia y 4 puntos.
+    if any(s in norm for s in ["llum vermella", "luz roja", "semafor", "semaforo", "fase roja", "articulo 146", "article 146"]):
         out["tipo_infraccion"] = "semaforo"
         out["familia_resuelta"] = "semaforo"
         out["template_usado"] = "semaforo"
         out["jurisdiccion"] = "municipal"
         out["hecho_imputado"] = "No respetar la luz roja no intermitente de un semáforo"
-        # Literal preferente desde el boletín.
-        m = re.search(r"(No\s+respectar[\s\S]{0,260}?)(?:Precepte|Sanci[oó]|Punts|Qualificaci[oó]|$)", raw, flags=re.IGNORECASE)
-        if m:
-            literal = re.sub(r"\s+", " ", m.group(1)).strip()
-            out["hecho_denunciado_literal"] = literal
-            out["hecho_denunciado_resumido"] = "No respetar la luz roja no intermitente de un semáforo, según denuncia municipal."
-        else:
-            out["hecho_denunciado_literal"] = out.get("hecho_denunciado_literal") or "No respetar la luz roja no intermitente de un semáforo"
-            out["hecho_denunciado_resumido"] = out.get("hecho_denunciado_resumido") or "No respetar la luz roja no intermitente de un semáforo."
+        out["hecho_para_recurso"] = "No respetar la luz roja no intermitente de un semáforo"
+        out["hecho_denunciado_resumido"] = "No respetar la luz roja no intermitente de un semáforo, según denuncia municipal."
         out["articulo_infringido_num"] = out.get("articulo_infringido_num") or 146
-        out["puntos_detraccion"] = out.get("puntos_detraccion") or 4
+        out["puntos_detraccion"] = 4
+        out["puntos"] = 4
+        if not out.get("importe") and not out.get("sancion_importe_eur"):
+            out["sancion_importe_eur"] = 200
 
-    # No pisar campos ya fiables salvo que estén vacíos.
-    merged = {}
-    for k, v in out.items():
-        if current.get(k) in (None, "", [], {}):
-            merged[k] = v
-        elif k in ("tipo_infraccion", "familia_resuelta", "template_usado") and v == "semaforo":
-            # El semáforo municipal catalán debe prevalecer frente a generic.
-            merged[k] = v
-    return merged
+    return out
 
 
 def _apply_municipal_basic_fields(out: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
@@ -256,7 +281,15 @@ def _apply_municipal_basic_fields(out: Dict[str, Any], text_blob: str) -> Dict[s
     basic = _extract_municipal_basic_fields(raw, out)
     for k, v in basic.items():
         if v not in (None, "", [], {}):
-            out[k] = v
+            # La detección determinista municipal debe prevalecer sobre vacío, generic u otro.
+            if out.get(k) in (None, "", [], {}) or k in {
+                "tipo_infraccion", "familia_resuelta", "template_usado", "jurisdiccion",
+                "hecho_imputado", "hecho_para_recurso", "puntos_detraccion", "puntos",
+                "articulo_infringido_num", "organismo", "organismo_cabecera", "full_name",
+                "titular", "nombre_completo", "nombre", "apellido1", "apellido2", "dni", "dni_nie",
+                "matricula", "expediente_ref", "numero_expediente", "importe", "sancion_importe_eur",
+            }:
+                out[k] = v
     return out
 
 
@@ -957,14 +990,9 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
 
     semaforo_hard_signals = [
         "luz roja no intermitente",
-        "llum vermella",
-        "llum vermella no intermitent",
-        "llum vermella d un semafor",
         "luz roja del semaforo",
         "luz roja de un semaforo",
         "no respetar el conductor de un vehiculo la luz roja",
-        "no respectar el conductor dun vehicle la llum vermella",
-        "no respectar el conductor d un vehicle la llum vermella",
         "cruce con fase del rojo",
         "cruce con fase roja",
         "fase del rojo",
@@ -1419,9 +1447,6 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         "fase roja",
         "fase del rojo",
         "luz roja no intermitente",
-        "llum vermella",
-        "llum vermella no intermitent",
-        "llum vermella d un semafor",
         "luz roja del semaforo",
         "luz roja del semáforo",
         "luz roja de un semaforo",
@@ -1443,8 +1468,6 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         "artículo 146",
         "art. 146",
         "no respetar el conductor de un vehiculo la luz roja",
-        "no respectar el conductor dun vehicle la llum vermella",
-        "no respectar el conductor d un vehicle la llum vermella",
         "no respetar el conductor de un vehículo la luz roja",
     ]
 
@@ -2244,20 +2267,16 @@ def _infer_recommended_tone(expediente_strength: str, attack_routes: List[Dict[s
 
 def _infer_operational_strategy(case_viability: str, critical_errors: List[str], evidence_gaps: List[str]) -> Dict[str, Any]:
     """
-    MODO MANUAL / COMERCIAL:
-    - No bloquea por viabilidad baja/media/alta.
-    - Permite continuar hacia autorización y pago.
-    - Marca el expediente para revisión manual interna.
-    - El bloqueo por plazo debe gestionarse en la pantalla de resumen/pago cuando exista fecha límite vencida.
+    Modo comercial seguro: no bloquear por viabilidad.
+    Las primeras multas se trabajan con revisión humana interna, pero el cliente puede continuar
+    salvo que otra capa específica detecte plazo vencido.
     """
     return {
-        "resultado_estrategico": "permitir_con_revision_manual",
-        "motivo_estrategico": (
-            "Caso permitido para continuar. Revisión manual interna obligatoria antes de presentación definitiva."
-        ),
+        "resultado_estrategico": "gestion_disponible",
+        "motivo_estrategico": "El caso puede continuar. La revisión jurídica se realizará antes de presentar oficialmente.",
         "presentacion_automatica_recomendada": True,
-        "revision_manual_obligatoria": True,
-        "modo_revision": "manual_first_cases",
+        "manual_review_required": True,
+        "client_can_continue": True,
     }
 
 def _infer_modelo_defensa(tipo: str, subtipo: str, expediente_errors: List[str], critical_errors: List[str], attack_routes: List[Dict[str, Any]]) -> str:
@@ -2528,7 +2547,7 @@ def _resolve_tipo_deterministico(text_blob: str, core: Optional[Dict[str, Any]] 
 
     # SEMÁFORO primero para evitar desvíos a velocidad por cifras o importes.
     semaforo_tokens = [
-        "semaforo", "semáforo", "semafor", "semàfor",
+        "semaforo", "semáforo",
         "fase roja", "fase del rojo",
         "luz roja", "luz roja no intermitente",
         "no respetar la luz roja",
@@ -2540,8 +2559,6 @@ def _resolve_tipo_deterministico(text_blob: str, core: Optional[Dict[str, Any]] 
         "rebase la linea de detencion", "rebasar la linea de detencion",
         "articulo 146", "art. 146",
         "no respetar el conductor de un vehiculo la luz roja",
-        "no respectar el conductor dun vehicle la llum vermella",
-        "no respectar el conductor d un vehicle la llum vermella",
         "no respetar el conductor de un vehículo la luz roja",
     ]
     if has_any(semaforo_tokens):
@@ -2836,7 +2853,9 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     )
     out["resultado_estrategico"] = strategy_meta["resultado_estrategico"]
     out["motivo_estrategico"] = strategy_meta["motivo_estrategico"]
-    out["presentacion_automatica_recomendada"] = strategy_meta["presentacion_automatica_recomendada"]
+    out["presentacion_automatica_recomendada"] = True
+    out["manual_review_required"] = True
+    out["client_can_continue"] = True
 
     out["modelo_defensa"] = _infer_modelo_defensa(
         tipo,
@@ -2868,8 +2887,13 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
             out.get("tipo_infraccion") or ""
         )
 
-    # Extracción determinista municipal: titular, ayuntamiento, matrícula y expediente.
+    # Extracción determinista municipal: titular, DNI, matrícula, ayuntamiento, expediente y puntos.
     out = _apply_municipal_basic_fields(out, text_blob)
+    if out.get("tipo_infraccion") == "semaforo":
+        tipo = "semaforo"
+        confidence = max(confidence, 0.99)
+        out["puntos_detraccion"] = 4
+        out["puntos"] = 4
 
     # Fuente única de verdad para producción
     out["familia_resuelta"] = tipo
@@ -2885,24 +2909,13 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     )
 
     # Revisión final de calidad del hecho y coherencia con la familia.
-    # En modo manual/comercial NO bloqueamos el flujo por viabilidad ni por dudas de IA.
-    # Se permite continuar, pero se marca revisión manual interna obligatoria.
     out = _apply_hecho_engine(out)
     if out.get("needs_operator_review"):
-        out["resultado_estrategico"] = "permitir_con_revision_manual"
-        out["motivo_estrategico"] = (
-            "El hecho imputado requiere revisión manual interna, pero el usuario puede continuar con autorización y pago."
-        )
-        out["revision_manual_obligatoria"] = True
-        out["modo_revision"] = "manual_first_cases"
-
-    out["presentacion_automatica_recomendada"] = True
-    out["resultado_estrategico"] = out.get("resultado_estrategico") or "permitir_con_revision_manual"
-    out["motivo_estrategico"] = out.get("motivo_estrategico") or (
-        "Caso permitido para continuar. Revisión manual interna obligatoria antes de presentación definitiva."
-    )
-    out["revision_manual_obligatoria"] = True
-    out["modo_revision"] = "manual_first_cases"
+        out["manual_review_required"] = True
+        out["presentacion_automatica_recomendada"] = True
+        out["client_can_continue"] = True
+        out["resultado_estrategico"] = "gestion_disponible"
+        out["motivo_estrategico"] = "El caso puede continuar. La revisión jurídica se realizará antes de presentar oficialmente."
 
     return out
 
@@ -3098,6 +3111,9 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             extracted_core = _enrich_with_triage(extracted_core, blob)
             extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
             extracted_core = _apply_municipal_basic_fields(extracted_core, _flatten_text(extracted_core, text_content=text_content))
+            extracted_core["presentacion_automatica_recomendada"] = True
+            extracted_core["manual_review_required"] = True
+            extracted_core["client_can_continue"] = True
 
             wrapper = {
                 "filename": file.filename,

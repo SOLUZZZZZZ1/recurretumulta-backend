@@ -9,7 +9,6 @@ from sqlalchemy import text
 from database import get_engine
 from ai.expediente_engine import run_expediente_ai
 from generate import generate_dgt_for_case
-from email_utils import send_email, build_vehicle_removal_paid_email
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 
@@ -396,7 +395,7 @@ async def stripe_webhook(request: Request):
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
         metadata = session.get("metadata") or {}
-        case_id = metadata.get("case_id")
+        case_id = metadata.get("case_id") or session.get("client_reference_id")
         service = metadata.get("service")
         product_code = metadata.get("product_code")
 
@@ -505,10 +504,7 @@ async def stripe_webhook(request: Request):
                             conn,
                             case_id,
                             "vehicle_removal_email_sent" if sent else "vehicle_removal_email_not_sent",
-                            {
-                                "to": target_email,
-                                "sent": bool(sent),
-                            },
+                            {"to": target_email, "sent": bool(sent)},
                         )
                     else:
                         _append_event(
@@ -529,9 +525,8 @@ async def stripe_webhook(request: Request):
                 return {"ok": True, "case_id": case_id, "service": "vehicle_removal"}
 
             # Flujo normal DGT / multas.
-            # MODO MANUAL PRIMEROS CASOS:
-            # Tras el pago NO generamos recurso automáticamente.
-            # Dejamos el expediente pagado y pendiente de revisión manual en OPS.
+            # Modo primeras multas: pago confirmado y revisión humana interna antes de presentar.
+            # No se ejecuta Modo Dios ni generación automática en el webhook.
             conn.execute(
                 text(
                     """
@@ -547,25 +542,15 @@ async def stripe_webhook(request: Request):
                 ),
                 {"id": case_id, "sid": session["id"], "pi": session.get("payment_intent")},
             )
-
             _append_event(
                 conn,
                 case_id,
-                "paid_ok",
+                "paid_ok_manual_review",
                 {
                     "session": session["id"],
                     "payment_intent": session.get("payment_intent"),
-                    "mode": "manual_review_after_payment",
-                },
-            )
-
-            _append_event(
-                conn,
-                case_id,
-                "manual_review_required",
-                {
-                    "reason": "manual_first_cases",
-                    "message": "Pago recibido. Expediente pendiente de revisión manual interna antes de generar o presentar recurso.",
+                    "mode": "manual_review_before_filing",
+                    "message": "Pago confirmado. Expediente pendiente de revisión humana antes de presentación.",
                 },
             )
 
