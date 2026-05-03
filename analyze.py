@@ -40,226 +40,6 @@ def _safe_str(v: Any) -> str:
         return ""
 
 
-
-def _compact_plate(value: str) -> str:
-    return re.sub(r"[^A-Z0-9]", "", _safe_str(value).upper())
-
-
-def _extract_first_match(pattern: str, text: str, flags: int = re.IGNORECASE) -> str:
-    m = re.search(pattern, text or "", flags)
-    if not m:
-        return ""
-    for g in m.groups():
-        if g not in (None, ""):
-            return _safe_str(g).strip()
-    return _safe_str(m.group(0)).strip()
-
-
-def _title_person_name(value: str) -> str:
-    value = _safe_str(value).strip()
-    if not value:
-        return ""
-    value = re.sub(r"\s+", " ", value)
-    return " ".join(w[:1].upper() + w[1:].lower() for w in value.split())
-
-
-def _split_full_name(full_name: str) -> Dict[str, str]:
-    parts = [p for p in re.sub(r"\s+", " ", _safe_str(full_name).strip()).split(" ") if p]
-    if len(parts) >= 3:
-        return {
-            "nombre": " ".join(parts[:-2]),
-            "apellido1": parts[-2],
-            "apellido2": parts[-1],
-        }
-    if len(parts) == 2:
-        return {"nombre": parts[0], "apellido1": parts[1], "apellido2": ""}
-    if len(parts) == 1:
-        return {"nombre": parts[0], "apellido1": "", "apellido2": ""}
-    return {"nombre": "", "apellido1": "", "apellido2": ""}
-
-
-def _extract_municipal_basic_fields(raw_text: str, current: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    Extracción determinista de campos básicos en denuncias municipales,
-    especialmente boletines en catalán/castellano con tabla OCR.
-    No sustituye a la IA: rellena huecos críticos para resumen, autorización y recurso.
-    """
-    current = current or {}
-    raw = _safe_str(raw_text)
-    if not raw.strip():
-        return {}
-
-    upper = raw.upper()
-    norm = _normalize_for_matching(raw)
-    out: Dict[str, Any] = {}
-
-    # Organismo / municipio
-    town = ""
-    m = re.search(r"AJUNTAMENT\s+DE\s+([A-ZÀ-Ü][A-ZÀ-Ü\s\-']{2,40})", upper)
-    if not m:
-        m = re.search(r"AYUNTAMIENTO\s+DE\s+([A-ZÀ-Ü][A-ZÀ-Ü\s\-']{2,40})", upper)
-    if m:
-        town = re.sub(r"\s+", " ", m.group(1)).strip(" .,-")
-        # cortar si OCR se come cabeceras posteriores
-        town = re.split(r"\b(NIF|NOTIFICACIO|NOTIFICACIÓ|NOTIFICACION|TEL|TELEFONO|INFORMACIO|INFORMACIÓN)\b", town)[0].strip(" .,-")
-        if town:
-            if "ajuntament" in norm:
-                out["organismo"] = f"Ajuntament de {_title_person_name(town)}"
-                out["organismo_cabecera"] = f"AJUNTAMENT DE {town}"
-            else:
-                out["organismo"] = f"Ayuntamiento de {_title_person_name(town)}"
-                out["organismo_cabecera"] = f"AYUNTAMIENTO DE {town}"
-            out["municipio_organismo"] = _title_person_name(town)
-            out["provincia"] = out.get("provincia") or "Barcelona" if town == "TERRASSA" else out.get("provincia")
-
-    # DNI/NIE infractor
-    dni = _extract_first_match(r"DOCUMENT(?:O|)\s*D[’']?IDENTITAT\s*INFRACTOR\s*[:\-]?\s*([0-9XYZ][0-9A-Z]{6,10}[A-Z])", upper)
-    if not dni:
-        dni = _extract_first_match(r"DOCUMENTO\s+D[’']?IDENTIDAD\s*INFRACTOR\s*[:\-]?\s*([0-9XYZ][0-9A-Z]{6,10}[A-Z])", upper)
-    if not dni:
-        dni = _extract_first_match(r"\b([0-9]{7,8}[A-Z])\b", upper)
-    if dni:
-        out["dni"] = dni
-        out["dni_nie"] = dni
-
-    # Matrícula: moderna, tolerando espacios/guiones.
-    plates = []
-    for mm in re.findall(r"\b\d{4}\s*[-/]?\s*[A-Z]{3}\b", upper):
-        p = _compact_plate(mm)
-        if re.fullmatch(r"\d{4}[A-Z]{3}", p):
-            plates.append(p)
-    if plates:
-        out["matricula"] = plates[0]
-
-    # Expediente / referencia / identificación
-    expediente = _extract_first_match(r"EXPEDIENT\s*/?\s*EXPEDIENTE\s*[:\-]?\s*([A-Z0-9\-/]+)", upper)
-    if not expediente:
-        expediente = _extract_first_match(r"\b(V\d{6,12})\b", upper)
-    if expediente:
-        out["expediente_ref"] = expediente
-        out["numero_expediente"] = expediente
-
-    referencia = _extract_first_match(r"REFER[EÈ]NCIA\s*/?\s*REFERENCIA\s*[:\-]?\s*([0-9]{6,})", upper)
-    if referencia:
-        out["referencia"] = referencia
-
-    # Fechas / importe / puntos
-    fecha = _extract_first_match(r"DATA\s+D[’']?EMISSI[OÓ]\s*/?\s*FECHA\s+D[’']?EMISI[OÓ]N\s*[:\-]?\s*(\d{2}[-/]\d{2}[-/]\d{4})", upper)
-    if not fecha:
-        fecha = _extract_first_match(r"\b(\d{2}[-/]\d{2}[-/]\d{4})\b", upper)
-    if fecha:
-        out["fecha_documento"] = fecha
-
-    fecha_hecho = _extract_first_match(r"DATA\s*[:\-]?\s*(\d{2}[-/]\d{2}[-/]\d{4})", upper)
-    if fecha_hecho:
-        out["fecha_infraccion"] = fecha_hecho
-        out["fecha_hecho"] = fecha_hecho
-
-    importe = _extract_first_match(r"IMPORT(?:\s+TOTAL|E\s+TOTAL|)\s*[:\-]?\s*([0-9]{1,4}(?:[,.][0-9]{2})?)", upper)
-    if importe:
-        out["importe"] = importe.replace(".", ",")
-
-    puntos = _extract_first_match(r"PUNTS?\s*[:\-]?\s*(\d{1,2})", upper)
-    if puntos:
-        try:
-            out["puntos_detraccion"] = int(puntos)
-        except Exception:
-            out["puntos_detraccion"] = puntos
-
-    # Nombre y dirección: en este tipo de Terrassa va después de la tabla inicial.
-    # Buscamos líneas con 2-4 palabras en mayúsculas antes de una dirección.
-    lines = [ln.strip() for ln in raw.replace("\r", "\n").split("\n") if ln.strip()]
-    name_candidate = ""
-    for i, ln in enumerate(lines):
-        u = ln.upper().strip()
-        if re.fullmatch(r"[A-ZÀ-Ü][A-ZÀ-Ü'\-]+\s+[A-ZÀ-Ü][A-ZÀ-Ü'\-]+(?:\s+[A-ZÀ-Ü][A-ZÀ-Ü'\-]+){0,3}", u):
-            bad = ["AJUNTAMENT", "AYUNTAMIENTO", "NOTIFICACIO", "NOTIFICACIÓN", "BARCELONA", "TERRASSA", "DOCUMENT", "EXPEDIENT", "IMPORT"]
-            if any(b in u for b in bad):
-                continue
-            nxt = " ".join(lines[i+1:i+4]).upper()
-            if any(addr in nxt for addr in [" C/", " C ", " CA ", " CARRER", " CALLE", " AV ", " AVDA", " PASSEIG", " PLAÇA", " PLAZA", "BARCELONA", "MADRID", "MATARO", "MATARÓ"]):
-                name_candidate = u
-                break
-    if not name_candidate:
-        # Fallback específico: texto tras DNI + fechas/referencias suele dejar el nombre al lado.
-        m = re.search(r"\b[0-9]{7,8}[A-Z]\b[\s\S]{0,120}?\b([A-ZÀ-Ü][A-ZÀ-Ü'\-]+\s+[A-ZÀ-Ü][A-ZÀ-Ü'\-]+\s+[A-ZÀ-Ü][A-ZÀ-Ü'\-]+)\b", upper)
-        if m:
-            name_candidate = m.group(1)
-
-    if name_candidate:
-        full_name = _title_person_name(name_candidate)
-        out["full_name"] = full_name
-        out["titular"] = full_name
-        out["nombre_completo"] = full_name
-        out.update(_split_full_name(full_name))
-
-    # Domicilio si aparece bajo el nombre.
-    if name_candidate:
-        try:
-            idx = next(i for i, ln in enumerate(lines) if ln.upper().strip() == name_candidate)
-            domicilio_lines = []
-            for ln in lines[idx+1:idx+4]:
-                u = ln.upper().strip()
-                if re.search(r"\b\d{5}\b", u) or any(x in u for x in [" C/", " CA ", "CARRER", "CALLE", "BARCELONA", "MADRID", "MATARO", "MATARÓ"]):
-                    domicilio_lines.append(ln.strip())
-            if domicilio_lines:
-                out["domicilio"] = re.sub(r"\s+", " ", " ".join(domicilio_lines)).strip()
-        except Exception:
-            pass
-
-    # Lugar y hecho: Catalán/castellano municipal semáforo.
-    lugar = _extract_first_match(r"Lloc\s+infracci[oó]\s*[:\-]?\s*([^\n]+)", raw, flags=re.IGNORECASE)
-    if not lugar:
-        lugar = _extract_first_match(r"Lugar\s+infracci[oó]n\s*[:\-]?\s*([^\n]+)", raw, flags=re.IGNORECASE)
-    if lugar:
-        out["lugar_infraccion"] = lugar.strip()
-
-    if any(s in norm for s in ["llum vermella", "luz roja", "semafor", "semaforo", "semáforo", "semafor"]):
-        out["tipo_infraccion"] = "semaforo"
-        out["familia_resuelta"] = "semaforo"
-        out["template_usado"] = "semaforo"
-        out["jurisdiccion"] = "municipal"
-        out["hecho_imputado"] = "No respetar la luz roja no intermitente de un semáforo"
-        # Literal preferente desde el boletín.
-        m = re.search(r"(No\s+respectar[\s\S]{0,260}?)(?:Precepte|Sanci[oó]|Punts|Qualificaci[oó]|$)", raw, flags=re.IGNORECASE)
-        if m:
-            literal = re.sub(r"\s+", " ", m.group(1)).strip()
-            out["hecho_denunciado_literal"] = literal
-            out["hecho_denunciado_resumido"] = "No respetar la luz roja no intermitente de un semáforo, según denuncia municipal."
-        else:
-            out["hecho_denunciado_literal"] = out.get("hecho_denunciado_literal") or "No respetar la luz roja no intermitente de un semáforo"
-            out["hecho_denunciado_resumido"] = out.get("hecho_denunciado_resumido") or "No respetar la luz roja no intermitente de un semáforo."
-        out["articulo_infringido_num"] = out.get("articulo_infringido_num") or 146
-        out["puntos_detraccion"] = out.get("puntos_detraccion") or 4
-
-    # No pisar campos ya fiables salvo que estén vacíos.
-    merged = {}
-    for k, v in out.items():
-        if current.get(k) in (None, "", [], {}):
-            merged[k] = v
-        elif k in ("tipo_infraccion", "familia_resuelta", "template_usado") and v == "semaforo":
-            # El semáforo municipal catalán debe prevalecer frente a generic.
-            merged[k] = v
-    return merged
-
-
-def _apply_municipal_basic_fields(out: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
-    out = dict(out or {})
-    raw_sources = [
-        _safe_str(text_blob),
-        _safe_str(out.get("raw_text_pdf")),
-        _safe_str(out.get("raw_text_vision")),
-        _safe_str(out.get("raw_text_blob")),
-        _safe_str(out.get("vision_raw_text")),
-    ]
-    raw = "\n".join(s for s in raw_sources if s.strip())
-    basic = _extract_municipal_basic_fields(raw, out)
-    for k, v in basic.items():
-        if v not in (None, "", [], {}):
-            out[k] = v
-    return out
-
-
 def _flatten_text(extracted_core: Dict[str, Any], text_content: str = "") -> str:
     parts: List[str] = []
 
@@ -315,7 +95,7 @@ def _merge_extracted(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict
 def _normalize_for_matching(text: str) -> str:
     t = (text or "").lower()
     t = t.replace("\r", "\n")
-    t = t.replace("semáforo", "semaforo").replace("semàfor", "semafor").replace("semáfor", "semafor")
+    t = t.replace("semáforo", "semaforo")
     t = t.replace("señal", "senal")
     t = t.replace("línea", "linea")
     t = t.replace("teléfono", "telefono")
@@ -957,14 +737,9 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
 
     semaforo_hard_signals = [
         "luz roja no intermitente",
-        "llum vermella",
-        "llum vermella no intermitent",
-        "llum vermella d un semafor",
         "luz roja del semaforo",
         "luz roja de un semaforo",
         "no respetar el conductor de un vehiculo la luz roja",
-        "no respectar el conductor dun vehicle la llum vermella",
-        "no respectar el conductor d un vehicle la llum vermella",
         "cruce con fase del rojo",
         "cruce con fase roja",
         "fase del rojo",
@@ -1419,9 +1194,6 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         "fase roja",
         "fase del rojo",
         "luz roja no intermitente",
-        "llum vermella",
-        "llum vermella no intermitent",
-        "llum vermella d un semafor",
         "luz roja del semaforo",
         "luz roja del semáforo",
         "luz roja de un semaforo",
@@ -1443,8 +1215,6 @@ def _detect_facts_and_type(text_blob: str, core: Optional[Dict[str, Any]] = None
         "artículo 146",
         "art. 146",
         "no respetar el conductor de un vehiculo la luz roja",
-        "no respectar el conductor dun vehicle la llum vermella",
-        "no respectar el conductor d un vehicle la llum vermella",
         "no respetar el conductor de un vehículo la luz roja",
     ]
 
@@ -2534,7 +2304,7 @@ def _resolve_tipo_deterministico(text_blob: str, core: Optional[Dict[str, Any]] 
 
     # SEMÁFORO primero para evitar desvíos a velocidad por cifras o importes.
     semaforo_tokens = [
-        "semaforo", "semáforo", "semafor", "semàfor",
+        "semaforo", "semáforo",
         "fase roja", "fase del rojo",
         "luz roja", "luz roja no intermitente",
         "no respetar la luz roja",
@@ -2546,8 +2316,6 @@ def _resolve_tipo_deterministico(text_blob: str, core: Optional[Dict[str, Any]] 
         "rebase la linea de detencion", "rebasar la linea de detencion",
         "articulo 146", "art. 146",
         "no respetar el conductor de un vehiculo la luz roja",
-        "no respectar el conductor dun vehicle la llum vermella",
-        "no respectar el conductor d un vehicle la llum vermella",
         "no respetar el conductor de un vehículo la luz roja",
     ]
     if has_any(semaforo_tokens):
@@ -2873,9 +2641,6 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
             out.get("tipo_infraccion") or ""
         )
 
-    # Extracción determinista municipal: titular, ayuntamiento, matrícula y expediente.
-    out = _apply_municipal_basic_fields(out, text_blob)
-
     # Fuente única de verdad para producción
     out["familia_resuelta"] = tipo
     out["template_usado"] = tipo
@@ -3089,7 +2854,6 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             blob = _flatten_text(extracted_core, text_content=text_content)
             extracted_core = _enrich_with_triage(extracted_core, blob)
             extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
-            extracted_core = _apply_municipal_basic_fields(extracted_core, _flatten_text(extracted_core, text_content=text_content))
 
             wrapper = {
                 "filename": file.filename,
@@ -3132,124 +2896,94 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             )
 
 
-            # 🔥 SINCRONIZAR DATOS EXTRAÍDOS CON CASES
-            # Esto permite que autorización, PDF, resumen y OPS usen los datos detectados
-            # por la IA/OCR, no solo el JSON guardado en extractions.
-            try:
-                detected_full_name = (
-                    extracted_core.get("full_name")
-                    or extracted_core.get("nombre_completo")
-                    or extracted_core.get("titular")
-                    or ""
-                )
-                detected_dni = (
-                    extracted_core.get("dni_nie")
-                    or extracted_core.get("dni")
-                    or extracted_core.get("nie")
-                    or ""
-                )
-                detected_address = (
-                    extracted_core.get("domicilio_notif")
-                    or extracted_core.get("domicilio")
-                    or extracted_core.get("direccion")
-                    or ""
-                )
-                detected_email = (
-                    extracted_core.get("email")
-                    or extracted_core.get("contact_email")
-                    or ""
-                )
-                detected_phone = (
-                    extracted_core.get("telefono")
-                    or extracted_core.get("phone")
-                    or ""
-                )
+            # 🔒 SINCRONIZAR SOLO CAMPOS SEGUROS CON CASES
+            # Importante: no intentamos actualizar columnas opcionales que quizá no existan,
+            # porque en PostgreSQL un error dentro de la transacción la deja abortada.
+            detected_full_name = (
+                extracted_core.get("full_name")
+                or extracted_core.get("nombre_completo")
+                or extracted_core.get("titular")
+                or ""
+            )
+            detected_dni = (
+                extracted_core.get("dni_nie")
+                or extracted_core.get("dni")
+                or extracted_core.get("nie")
+                or ""
+            )
+            detected_address = (
+                extracted_core.get("domicilio_notif")
+                or extracted_core.get("domicilio")
+                or extracted_core.get("direccion")
+                or ""
+            )
+            detected_email = (
+                extracted_core.get("email")
+                or extracted_core.get("contact_email")
+                or ""
+            )
+            detected_phone = (
+                extracted_core.get("telefono")
+                or extracted_core.get("phone")
+                or ""
+            )
 
-                interested_patch = {}
-                if detected_full_name:
-                    interested_patch["full_name"] = detected_full_name
-                if detected_dni:
-                    interested_patch["dni_nie"] = detected_dni
-                if detected_address:
-                    interested_patch["domicilio_notif"] = detected_address
-                if detected_email:
-                    interested_patch["email"] = detected_email
-                if detected_phone:
-                    interested_patch["telefono"] = detected_phone
+            interested_patch = {}
+            if detected_full_name:
+                interested_patch["full_name"] = detected_full_name
+            if detected_dni:
+                interested_patch["dni_nie"] = detected_dni
+            if detected_address:
+                interested_patch["domicilio_notif"] = detected_address
+            if detected_email:
+                interested_patch["email"] = detected_email
+            if detected_phone:
+                interested_patch["telefono"] = detected_phone
 
-                case_patch = {
-                    "organismo": extracted_core.get("organismo") or extracted_core.get("organismo_cabecera"),
+            conn.execute(
+                text("""
+                    UPDATE cases SET
+                        organismo = COALESCE(:organismo, organismo),
+                        expediente_ref = COALESCE(:expediente_ref, expediente_ref),
+                        interested_data = COALESCE(interested_data, '{}'::jsonb) || CAST(:interested_data AS JSONB),
+                        updated_at = NOW()
+                    WHERE id = :case_id
+                """),
+                {
+                    "case_id": case_id,
+                    "organismo": (
+                        extracted_core.get("organismo")
+                        or extracted_core.get("organismo_cabecera")
+                    ),
                     "expediente_ref": (
                         extracted_core.get("expediente_ref")
                         or extracted_core.get("numero_expediente")
                         or extracted_core.get("referencia")
                     ),
-                    "matricula": extracted_core.get("matricula"),
-                    "tipo_infraccion": extracted_core.get("tipo_infraccion") or extracted_core.get("familia_resuelta"),
-                    "puntos_detraccion": extracted_core.get("puntos_detraccion"),
-                    "importe": extracted_core.get("importe") or extracted_core.get("sancion_importe_eur"),
-                }
+                    "interested_data": json.dumps(interested_patch, ensure_ascii=False),
+                },
+            )
 
-                # Guardado tolerante: algunas columnas pueden no existir todavía en producción.
-                # Por eso hacemos una actualización mínima segura y luego intentos opcionales.
-                conn.execute(
-                    text("""
-                        UPDATE cases SET
-                            organismo = COALESCE(:organismo, organismo),
-                            expediente_ref = COALESCE(:expediente_ref, expediente_ref),
-                            interested_data = COALESCE(interested_data, '{}'::jsonb) || CAST(:interested_data AS JSONB),
-                            updated_at = NOW()
-                        WHERE id = :case_id
-                    """),
-                    {
-                        "case_id": case_id,
-                        "organismo": case_patch.get("organismo"),
-                        "expediente_ref": case_patch.get("expediente_ref"),
-                        "interested_data": json.dumps(interested_patch, ensure_ascii=False),
-                    },
-                )
-
-                # Campos opcionales si las columnas existen.
-                optional_updates = [
-                    ("matricula", case_patch.get("matricula")),
-                    ("tipo_infraccion", case_patch.get("tipo_infraccion")),
-                    ("puntos_detraccion", case_patch.get("puntos_detraccion")),
-                    ("importe", case_patch.get("importe")),
-                ]
-
-                for col, val in optional_updates:
-                    if val not in (None, "", [], {}):
-                        try:
-                            conn.execute(
-                                text(f"UPDATE cases SET {col} = COALESCE(:val, {col}), updated_at = NOW() WHERE id = :case_id"),
-                                {"case_id": case_id, "val": val},
-                            )
-                        except Exception:
-                            pass
-
-                conn.execute(
-                    text("""
-                        INSERT INTO events(case_id, type, payload, created_at)
-                        VALUES (:case_id, 'case_extracted_fields_synced', CAST(:payload AS JSONB), NOW())
-                    """),
-                    {
-                        "case_id": case_id,
-                        "payload": json.dumps(
-                            {
-                                "organismo": case_patch.get("organismo"),
-                                "expediente_ref": case_patch.get("expediente_ref"),
-                                "matricula": case_patch.get("matricula"),
-                                "tipo_infraccion": case_patch.get("tipo_infraccion"),
-                                "puntos_detraccion": case_patch.get("puntos_detraccion"),
-                                "interested_data_keys": list(interested_patch.keys()),
-                            },
-                            ensure_ascii=False,
-                        ),
-                    },
-                )
-            except Exception:
-                # Nunca rompemos /analyze por fallo de sincronización auxiliar.
-                pass
+            conn.execute(
+                text("""
+                    INSERT INTO events(case_id, type, payload, created_at)
+                    VALUES (:case_id, 'case_extracted_fields_synced', CAST(:payload AS JSONB), NOW())
+                """),
+                {
+                    "case_id": case_id,
+                    "payload": json.dumps(
+                        {
+                            "organismo": extracted_core.get("organismo") or extracted_core.get("organismo_cabecera"),
+                            "expediente_ref": extracted_core.get("expediente_ref") or extracted_core.get("numero_expediente") or extracted_core.get("referencia"),
+                            "matricula": extracted_core.get("matricula"),
+                            "tipo_infraccion": extracted_core.get("tipo_infraccion") or extracted_core.get("familia_resuelta"),
+                            "puntos_detraccion": extracted_core.get("puntos_detraccion"),
+                            "interested_data_keys": list(interested_patch.keys()),
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            )
 
 
             conn.execute(
