@@ -9,7 +9,7 @@ from sqlalchemy import text
 
 from database import get_engine
 from pdf_builder import build_pdf
-from b2_storage import upload_bytes
+from b2_storage import upload_bytes, presign_get_url
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
@@ -239,9 +239,62 @@ User Agent: {user_agent}
             },
         )
 
+    download_url = presign_get_url(
+        bucket,
+        key,
+        expires_seconds=900,
+        filename=f"autorizacion-{case_id}.pdf",
+    )
+
     return {
         "ok": True,
         "case_id": case_id,
         "authorized": True,
         "authorization_version": body.version,
+        "authorization_download_url": download_url,
+        "download_url": download_url,
+    }
+
+
+
+@router.get("/{case_id}/authorization/download")
+def download_authorization(case_id: str):
+    """
+    Devuelve una URL temporal de descarga para la última autorización PDF del expediente.
+    No expone B2 directamente ni requiere que el frontend conozca bucket/key.
+    """
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT b2_bucket, b2_key
+                FROM documents
+                WHERE case_id = :id
+                  AND kind IN ('autorizacion_cliente_pdf', 'authorization_pdf')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"id": case_id},
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Autorización no encontrada")
+
+        bucket, key = row[0], row[1]
+
+    url = presign_get_url(
+        bucket,
+        key,
+        expires_seconds=900,
+        filename=f"autorizacion-{case_id}.pdf",
+    )
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "url": url,
+        "download_url": url,
     }
