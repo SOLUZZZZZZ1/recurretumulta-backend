@@ -183,32 +183,25 @@ def save_case_contact(case_id: str, data: CaseContactIn, background_tasks: Backg
 @router.post("/{case_id}/details")
 def save_case_details(case_id: str, data: CaseDetailsIn):
     engine = get_engine()
-
     with engine.begin() as conn:
         meta = _case_exists(conn, case_id)
         interested = dict(meta.get("interested_data") or {})
-
-        interested.update(
-            {
-                "full_name": data.full_name.strip(),
-                "dni_nie": data.dni_nie.strip().upper(),
-                "domicilio_notif": data.domicilio_notif.strip(),
-                "email": str(data.email).strip(),
-                "telefono": (data.telefono or "").strip() or None,
-            }
-        )
-
+        interested.update({
+            "full_name": data.full_name.strip(),
+            "dni_nie": data.dni_nie.strip().upper(),
+            "domicilio_notif": data.domicilio_notif.strip(),
+            "email": str(data.email).strip(),
+            "telefono": (data.telefono or "").strip() or None,
+        })
         conn.execute(
-            text(
-                """
+            text("""
                 UPDATE cases
                 SET interested_data = CAST(:interested AS JSONB),
                     contact_name = :contact_name,
                     contact_email = :contact_email,
                     updated_at = NOW()
                 WHERE id = :id
-                """
-            ),
+            """),
             {
                 "id": case_id,
                 "interested": json.dumps(interested, ensure_ascii=False),
@@ -216,33 +209,22 @@ def save_case_details(case_id: str, data: CaseDetailsIn):
                 "contact_email": interested.get("email"),
             },
         )
-
         conn.execute(
-            text(
-                """
+            text("""
                 INSERT INTO events(case_id, type, payload, created_at)
                 VALUES (:id, 'case_details_saved', CAST(:payload AS JSONB), NOW())
-                """
-            ),
+            """),
             {
                 "id": case_id,
-                "payload": json.dumps(
-                    {
-                        "full_name": interested.get("full_name"),
-                        "dni_nie": interested.get("dni_nie"),
-                        "email": interested.get("email"),
-                        "telefono": interested.get("telefono"),
-                    },
-                    ensure_ascii=False,
-                ),
+                "payload": json.dumps({
+                    "full_name": interested.get("full_name"),
+                    "dni_nie": interested.get("dni_nie"),
+                    "email": interested.get("email"),
+                    "telefono": interested.get("telefono"),
+                }, ensure_ascii=False),
             },
         )
-
-    return {
-        "ok": True,
-        "case_id": case_id,
-        "interested_data": interested,
-    }
+    return {"ok": True, "case_id": case_id, "interested_data": interested}
 
 # =========================
 # AÑADIR DOCUMENTOS
@@ -349,8 +331,12 @@ def public_status(case_id: str):
     with engine.begin() as conn:
         row = conn.execute(
             text(
-                "SELECT status, payment_status, authorized, contact_name, contact_email "
-                "FROM cases WHERE id=:id"
+                """
+                SELECT status, payment_status, authorized, contact_name, contact_email,
+                       COALESCE(interested_data, '{}'::jsonb) AS interested_data,
+                       organismo, expediente_ref
+                FROM cases WHERE id=:id
+                """
             ),
             {"id": case_id},
         ).fetchone()
@@ -358,11 +344,28 @@ def public_status(case_id: str):
         if not row:
             raise HTTPException(status_code=404, detail="case_id no existe")
 
+        latest_extraction_row = conn.execute(
+            text(
+                """
+                SELECT extracted_json
+                FROM extractions
+                WHERE case_id=:id
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"id": case_id},
+        ).fetchone()
+
     status = row[0] or "uploaded"
     payment_status = row[1] or ""
     authorized = bool(row[2])
     contact_name = row[3]
     contact_email = row[4]
+    interested_data = row[5] if isinstance(row[5], dict) else {}
+    organismo = row[6] or ""
+    expediente_ref = row[7] or ""
+    latest_extraction = latest_extraction_row[0] if latest_extraction_row and isinstance(latest_extraction_row[0], dict) else None
 
     if payment_status == "paid":
         msg = "Gestión iniciada correctamente."
@@ -380,6 +383,10 @@ def public_status(case_id: str):
         "message": msg,
         "contact_name": contact_name,
         "contact_email": contact_email,
+        "interested_data": interested_data,
+        "organismo": organismo,
+        "expediente_ref": expediente_ref,
+        "extracted": latest_extraction,
     }
 
 # =========================
@@ -476,6 +483,76 @@ def download_authorization_pdf(case_id: str, request: Request):
         "Content-Disposition": f'attachment; filename="autorizacion_{case_id}.pdf"'
     }
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+
+
+# =========================
+# SUBIR AUTORIZACIÓN FIRMADA
+# =========================
+def _upload_authorization_signed_impl(case_id: str, file: UploadFile):
+    engine = get_engine()
+
+    data = file.file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+
+    filename = (file.filename or "autorizacion_firmada").replace("/", "_").replace("\\", "_")[:120]
+    ext = ".pdf"
+    if "." in filename:
+        ext = "." + filename.split(".")[-1].lower()
+        if len(ext) > 10:
+            ext = ".pdf"
+
+    content_type = file.content_type or "application/octet-stream"
+
+    b2_bucket, b2_key = upload_bytes(
+        case_id,
+        "authorization_signed",
+        data,
+        ext=ext,
+        content_type=content_type,
+    )
+
+    with engine.begin() as conn:
+        _case_exists(conn, case_id)
+        conn.execute(
+            text("""
+                INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
+                VALUES (:id, 'authorization_signed', :b, :k, :m, :s, NOW())
+            """),
+            {"id": case_id, "b": b2_bucket, "k": b2_key, "m": content_type, "s": len(data)},
+        )
+        conn.execute(
+            text("""
+                UPDATE cases
+                SET authorized = TRUE,
+                    authorized_at = COALESCE(authorized_at, NOW()),
+                    updated_at = NOW()
+                WHERE id=:id
+            """),
+            {"id": case_id},
+        )
+        _event(conn, case_id, "authorization_signed_uploaded", {
+            "file": b2_key,
+            "filename": filename,
+            "mime": content_type,
+            "size_bytes": len(data),
+        })
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "authorized": True,
+        "document": {"bucket": b2_bucket, "key": b2_key, "mime": content_type, "size_bytes": len(data)},
+    }
+
+@router.post("/{case_id}/authorization-signed")
+def upload_authorization_signed(case_id: str, file: UploadFile = File(...)):
+    return _upload_authorization_signed_impl(case_id, file)
+
+@router.post("/{case_id}/upload-authorization-signed")
+def upload_authorization_signed_alias(case_id: str, file: UploadFile = File(...)):
+    return _upload_authorization_signed_impl(case_id, file)
 
 
 @router.post("/{case_id}/upload-receipt")
