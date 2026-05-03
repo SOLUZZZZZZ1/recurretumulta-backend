@@ -296,12 +296,12 @@ def public_status(case_id: str):
     contact_name = row[3]
     contact_email = row[4]
 
-    if status == "pending_documents":
-        msg = "Aún no se puede presentar el recurso. Falta documentación o el acto recurrible."
-    elif status == "ready_to_pay":
-        msg = "Tu recurso puede presentarse ahora."
+    if payment_status == "paid":
+        msg = "Gestión iniciada correctamente."
+    elif authorized:
+        msg = "Ya tenemos tu autorización. Puedes continuar para iniciar la gestión."
     else:
-        msg = "Expediente en revisión."
+        msg = "Hemos analizado tu multa. Para continuar, necesitamos tus datos y autorización."
 
     return {
         "ok": True,
@@ -374,11 +374,14 @@ def authorize_case(case_id: str, request: Request):
                 detail=f"Autorización registrada, pero falló el PDF: {e}",
             )
 
+    download_url = f"/cases/{case_id}/authorization-pdf"
+
     return {
         "ok": True,
         "case_id": case_id,
         "authorized": True,
         "authorization_pdf": auth_doc.get("document"),
+        "download_url": download_url,
     }
 
 
