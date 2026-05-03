@@ -69,6 +69,57 @@ def _safe_str(v: Any) -> str:
         return ""
 
 
+
+def _split_full_name_for_header(full_name: str) -> Dict[str, str]:
+    parts = [p for p in re.sub(r"\s+", " ", _safe_str(full_name).strip()).split(" ") if p]
+    if len(parts) >= 3:
+        return {"nombre": " ".join(parts[:-2]), "apellido1": parts[-2], "apellido2": parts[-1]}
+    if len(parts) == 2:
+        return {"nombre": parts[0], "apellido1": parts[1], "apellido2": ""}
+    if len(parts) == 1:
+        return {"nombre": parts[0], "apellido1": "", "apellido2": ""}
+    return {"nombre": "", "apellido1": "", "apellido2": ""}
+
+
+def _default_interesado_from_core(core: Dict[str, Any]) -> Dict[str, str]:
+    core = core or {}
+    full_name = (
+        _safe_str(core.get("full_name"))
+        or _safe_str(core.get("titular"))
+        or _safe_str(core.get("nombre_completo"))
+    ).strip()
+    split = _split_full_name_for_header(full_name)
+    return {
+        "nombre": _safe_str(core.get("nombre")) or split.get("nombre", ""),
+        "apellido1": _safe_str(core.get("apellido1")) or split.get("apellido1", ""),
+        "apellido2": _safe_str(core.get("apellido2")) or split.get("apellido2", ""),
+        "dni": _safe_str(core.get("dni")) or _safe_str(core.get("dni_nie")),
+        "domicilio": _safe_str(core.get("domicilio")),
+        "localidad": _safe_str(core.get("localidad")) or _safe_str(core.get("municipio")),
+        "provincia": _safe_str(core.get("provincia")),
+        "cp": _safe_str(core.get("cp")) or _safe_str(core.get("codigo_postal")),
+        "telefono": _safe_str(core.get("telefono")) or _safe_str(core.get("phone")),
+        "email": _safe_str(core.get("email")),
+        "expediente_ref": _safe_str(core.get("expediente_ref")) or _safe_str(core.get("numero_expediente")),
+        "lugar_infraccion": _safe_str(core.get("lugar_infraccion")),
+        "fecha_infraccion": _safe_str(core.get("fecha_infraccion")) or _safe_str(core.get("fecha_hecho")) or _safe_str(core.get("fecha_documento")),
+        "matricula": _safe_str(core.get("matricula")),
+        "marca_modelo": _safe_str(core.get("marca_modelo")) or " ".join(x for x in [_safe_str(core.get("marca")), _safe_str(core.get("modelo"))] if x),
+        "organismo": _safe_str(core.get("organismo")),
+        "organismo_cabecera": _safe_str(core.get("organismo_cabecera")),
+    }
+
+
+def _merge_interesado_with_core(interesado: Optional[Dict[str, str]], core: Dict[str, Any]) -> Dict[str, str]:
+    base = _default_interesado_from_core(core)
+    incoming = interesado or {}
+    out = dict(base)
+    for k, v in incoming.items():
+        if v not in (None, "", [], {}):
+            out[k] = str(v)
+    return out
+
+
 def _clean_hecho_text(text: str) -> str:
     if not text:
         return ""
@@ -647,7 +698,7 @@ def resolve_jurisdiction(core: Dict[str, Any]) -> str:
 def _normalized_blob(core: Dict[str, Any]) -> str:
     blob = json.dumps(core or {}, ensure_ascii=False).lower()
     return (
-        blob.replace("semáforo", "semaforo")
+        blob.replace("semáforo", "semaforo").replace("semàfor", "semafor").replace("semáfor", "semafor")
             .replace("línea", "linea")
             .replace("detención", "detencion")
             .replace("policía", "policia")
@@ -677,7 +728,7 @@ def _focused_infraction_blob(core: Dict[str, Any]) -> str:
 
     blob = " ".join(p for p in parts if isinstance(p, str) and p.strip()).lower()
     return (
-        blob.replace("semáforo", "semaforo")
+        blob.replace("semáforo", "semaforo").replace("semàfor", "semafor").replace("semáfor", "semafor")
             .replace("línea", "linea")
             .replace("detención", "detencion")
             .replace("policía", "policia")
@@ -1623,7 +1674,7 @@ def _build_comparecencia_text(core: Dict[str, Any], asunto_out: str) -> str:
 
 def _resolve_header_destination(core: Dict[str, Any]) -> Dict[str, str]:
     blob = json.dumps(core or {}, ensure_ascii=False).lower()
-    organismo_raw = _safe_str(core.get("organismo")).strip()
+    organismo_raw = _safe_str(core.get("organismo_cabecera")).strip() or _safe_str(core.get("organismo")).strip()
 
     organismo_fmt = "............................................"
     provincia_fmt = "............................................"
@@ -1684,9 +1735,9 @@ def _resolve_header_destination(core: Dict[str, Any]) -> Dict[str, str]:
     elif any(s in blob for s in ["policia local", "policía local"]):
         organismo_fmt = "POLICÍA LOCAL"
     elif "ajuntament" in blob:
-        organismo_fmt = "AJUNTAMENT"
+        organismo_fmt = organismo_raw.upper() if organismo_raw else "AJUNTAMENT"
     elif "ayuntamiento" in blob:
-        organismo_fmt = "AYUNTAMIENTO"
+        organismo_fmt = organismo_raw.upper() if organismo_raw else "AYUNTAMIENTO"
     elif organismo_raw:
         organismo_fmt = organismo_raw.upper()
 
@@ -2027,6 +2078,13 @@ def _is_strong_semaforo_generation_case(core: Dict[str, Any]) -> bool:
 
     signals = [
         "no respetar la luz roja",
+        "no respectar la llum vermella",
+        "no respectar el conductor dun vehicle la llum vermella",
+        "no respectar el conductor d un vehicle la llum vermella",
+        "llum vermella",
+        "llum vermella no intermitent",
+        "semàfor",
+        "semafor",
         "no respetar la luz roja no intermitente",
         "no respetar la luz roja no intermitente de un semáforo",
         "no respetar la luz roja no intermitente de un semaforo",
@@ -2331,12 +2389,11 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
 
 def build_v2_dgt_layout(cuerpo: str, core: Dict[str, Any], interesado: Dict[str, Any]) -> str:
     """
-    Inserta una cabecera tipo DGT con espacios del modelo oficial sin romper
-    el resto del recurso. Sustituye la cabecera antigua del escrito y conserva
-    desde el extracto literal del boletín hacia abajo.
+    Inserta una cabecera completa con datos del expediente y recurrente.
+    Para expedientes municipales, usa el ayuntamiento real si fue detectado.
     """
     core = core or {}
-    interesado = interesado or {}
+    interesado = _merge_interesado_with_core(interesado or {}, core)
 
     def g(k: str, default: str = "") -> str:
         value = interesado.get(k)
@@ -2420,11 +2477,17 @@ def build_v2_dgt_layout(cuerpo: str, core: Dict[str, Any], interesado: Dict[str,
 
     body = _strip_old_header(cuerpo)
 
+    destino_linea = f"A LA {organismo_destino} DE {provincia}"
+    if organismo_destino.startswith("AJUNTAMENT"):
+        destino_linea = f"A L'{organismo_destino}"
+    elif organismo_destino.startswith("AYUNTAMIENTO"):
+        destino_linea = f"AL {organismo_destino}"
+
     header = f"""REFERENCIA: EXPTE. {g("expediente_ref", "........")}
 
 ESCRITO DE ALEGACIONES
 
-A LA {organismo_destino} DE {provincia}
+{destino_linea}
 
 1.- DATOS DE LA DENUNCIA
 
@@ -2531,7 +2594,8 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
             "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad exige una acreditación completa, verificable y trazable del dispositivo utilizado."
         )
 
-    tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
+    interesado_resuelto = _merge_interesado_with_core(interesado or {}, core)
+    tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado_resuelto)
 
     docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
