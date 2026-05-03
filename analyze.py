@@ -2603,13 +2603,14 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     out["error_score"] = error_score
     out["case_viability"] = case_viability
 
-    out["resultado_estrategico"] = "continuar"
-
-
-    out["motivo_estrategico"] = ""
-
-
-    out["presentacion_automatica_recomendada"] = True
+    strategy_meta = _infer_operational_strategy(
+        case_viability=case_viability,
+        critical_errors=critical_errors,
+        evidence_gaps=evidence_gaps,
+    )
+    out["resultado_estrategico"] = strategy_meta["resultado_estrategico"]
+    out["motivo_estrategico"] = strategy_meta["motivo_estrategico"]
+    out["presentacion_automatica_recomendada"] = strategy_meta["presentacion_automatica_recomendada"]
 
     out["modelo_defensa"] = _infer_modelo_defensa(
         tipo,
@@ -2896,99 +2897,81 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             )
 
 
-            # 🔒 SINCRONIZAR DATOS EXTRAÍDOS CON CASES PARA AUTORIZACIÓN
-            # Solo usamos columnas seguras de cases y guardamos lo demás dentro de interested_data.
-            # Incluye fallback por OCR para multas municipales tipo Terrassa.
-            def _first_text(*vals):
+            # 🔒 SINCRONIZAR DATOS DETECTADOS CON CASES
+            # Estos datos alimentan formulario de autorización, PDF y encabezamiento del recurso.
+            def _first_sync(*vals):
                 for v in vals:
                     if v is not None and str(v).strip():
                         return str(v).strip()
                 return ""
 
-            def _ocr_find_dni(raw_text):
-                m = re.search(r"\b\d{7,8}[A-Z]\b", raw_text or "", re.I)
-                return m.group(0).upper() if m else ""
-
-            def _ocr_find_name_after_dni(raw_text):
-                txt = raw_text or ""
-                dni = _ocr_find_dni(txt)
-                if not dni:
-                    return ""
-                # Captura el bloque tras el DNI. Suele venir antes del domicilio.
-                idx = txt.upper().find(dni.upper())
-                if idx < 0:
-                    return ""
-                after = txt[idx + len(dni): idx + len(dni) + 180]
-                # Quitar fechas/importes/referencias frecuentes.
-                after = re.sub(r"\b\d{2}[-/]\d{2}[-/]\d{4}\b", " ", after)
-                after = re.sub(r"\b\d{6,}\b", " ", after)
-                after = re.sub(r"\b\d+[,.]\d{2}\b", " ", after)
-                lines = [x.strip(" :;-") for x in re.split(r"[\n\r]+", after) if x.strip()]
-                for line in lines:
-                    cand = re.sub(r"[^A-ZÁÉÍÓÚÜÑa-záéíóúüñ\s]", " ", line).strip()
-                    cand = re.sub(r"\s+", " ", cand)
-                    words = cand.split()
-                    if 2 <= len(words) <= 5 and not any(w.upper() in {"DATA", "FECHA", "IMPORT", "IMPORTE", "REFERENCIA"} for w in words):
-                        return cand.title()
-                # fallback en una sola línea
-                m = re.search(r"([A-ZÁÉÍÓÚÜÑ]{2,}(?:\s+[A-ZÁÉÍÓÚÜÑ]{2,}){1,4})", after)
-                return m.group(1).title() if m else ""
-
-            def _ocr_find_address_after_name(raw_text, name):
-                txt = raw_text or ""
-                if not name:
-                    return ""
-                idx = txt.upper().find(name.upper())
-                if idx < 0:
-                    return ""
-                after = txt[idx + len(name): idx + len(name) + 220]
-                parts = [p.strip(" :;-") for p in re.split(r"[\n\r]+", after) if p.strip()]
-                address_parts = []
-                for p in parts[:4]:
-                    if re.search(r"\b\d{5}\b", p) or re.search(r"\b(C/|CALLE|CARRER|AV|AVDA|PASEO|PASSEIG|CA)\b", p, re.I):
-                        address_parts.append(p)
-                return ", ".join(address_parts).strip()
-
-            raw_text_for_sync = ""
+            raw_sync_text = ""
             try:
-                raw_text_for_sync = text_blob or ""
+                raw_sync_text = text_blob or ""
             except Exception:
-                raw_text_for_sync = ""
+                raw_sync_text = ""
 
-            detected_dni_ocr = _ocr_find_dni(raw_text_for_sync)
-            detected_name_ocr = _ocr_find_name_after_dni(raw_text_for_sync)
-            detected_address_ocr = _ocr_find_address_after_name(raw_text_for_sync, detected_name_ocr)
+            dni_ocr = ""
+            try:
+                m_dni = re.search(r"\b\d{7,8}[A-Z]\b", raw_sync_text or "", re.I)
+                dni_ocr = m_dni.group(0).upper() if m_dni else ""
+            except Exception:
+                dni_ocr = ""
 
-            detected_full_name = _first_text(
+            name_ocr = ""
+            try:
+                if dni_ocr:
+                    idx = (raw_sync_text or "").upper().find(dni_ocr.upper())
+                    after = (raw_sync_text or "")[idx + len(dni_ocr): idx + len(dni_ocr) + 180] if idx >= 0 else ""
+                    after = re.sub(r"\b\d{2}[-/]\d{2}[-/]\d{4}\b", " ", after)
+                    after = re.sub(r"\b\d{6,}\b", " ", after)
+                    for line in [x.strip(" :;-") for x in re.split(r"[\n\r]+", after) if x.strip()]:
+                        cand = re.sub(r"[^A-ZÁÉÍÓÚÜÑa-záéíóúüñ\s]", " ", line)
+                        cand = re.sub(r"\s+", " ", cand).strip()
+                        words = cand.split()
+                        if 2 <= len(words) <= 5 and not any(w.upper() in {"DATA", "FECHA", "IMPORT", "IMPORTE", "REFERENCIA"} for w in words):
+                            name_ocr = cand.title()
+                            break
+            except Exception:
+                name_ocr = ""
+
+            detected_full_name = _first_sync(
                 extracted_core.get("full_name"),
                 extracted_core.get("nombre_completo"),
                 extracted_core.get("titular"),
                 extracted_core.get("nombre_multado"),
                 extracted_core.get("interesado"),
-                detected_name_ocr,
+                name_ocr,
             )
-            detected_dni = _first_text(
+            detected_dni = _first_sync(
                 extracted_core.get("dni_nie"),
                 extracted_core.get("dni"),
                 extracted_core.get("nie"),
                 extracted_core.get("documento_identidad"),
-                detected_dni_ocr,
+                dni_ocr,
             )
-            detected_address = _first_text(
+            detected_address = _first_sync(
                 extracted_core.get("domicilio_notif"),
                 extracted_core.get("domicilio"),
                 extracted_core.get("direccion"),
                 extracted_core.get("domicilio_multado"),
-                detected_address_ocr,
             )
-            detected_email = _first_text(
-                extracted_core.get("email"),
-                extracted_core.get("contact_email"),
+            detected_email = _first_sync(extracted_core.get("email"), extracted_core.get("contact_email"))
+            detected_phone = _first_sync(extracted_core.get("telefono"), extracted_core.get("phone"))
+            detected_matricula = _first_sync(extracted_core.get("matricula"))
+            detected_organismo = _first_sync(extracted_core.get("organismo"), extracted_core.get("organismo_cabecera"))
+            detected_expediente = _first_sync(
+                extracted_core.get("expediente_ref"),
+                extracted_core.get("numero_expediente"),
+                extracted_core.get("referencia"),
             )
-            detected_phone = _first_text(
-                extracted_core.get("telefono"),
-                extracted_core.get("phone"),
-            )
+
+            if not detected_organismo and re.search(r"Ajuntament\s+de\s+Terrassa", raw_sync_text or "", re.I):
+                detected_organismo = "Ajuntament de Terrassa"
+            if not detected_expediente:
+                m_exp = re.search(r"\b[Vv]\d{8,}\b", raw_sync_text or "")
+                if m_exp:
+                    detected_expediente = m_exp.group(0).upper()
 
             interested_patch = {}
             if detected_full_name:
@@ -3001,25 +2984,12 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                 interested_patch["email"] = detected_email
             if detected_phone:
                 interested_patch["telefono"] = detected_phone
-
-            organismo_sync = _first_text(
-                extracted_core.get("organismo"),
-                extracted_core.get("organismo_cabecera"),
-            )
-            expediente_sync = _first_text(
-                extracted_core.get("expediente_ref"),
-                extracted_core.get("numero_expediente"),
-                extracted_core.get("referencia"),
-            )
-
-            # Fallbacks OCR para organismo / expediente en municipal.
-            if not organismo_sync:
-                if re.search(r"Ajuntament\s+de\s+Terrassa", raw_text_for_sync, re.I):
-                    organismo_sync = "Ajuntament de Terrassa"
-            if not expediente_sync:
-                m_exp = re.search(r"\b[Vv]\d{8,}\b", raw_text_for_sync or "")
-                if m_exp:
-                    expediente_sync = m_exp.group(0).upper()
+            if detected_matricula:
+                interested_patch["matricula"] = detected_matricula.upper().replace(" ", "").replace("-", "")
+            if detected_organismo:
+                interested_patch["organismo"] = detected_organismo
+            if detected_expediente:
+                interested_patch["expediente_ref"] = detected_expediente
 
             conn.execute(
                 text("""
@@ -3032,8 +3002,8 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                 """),
                 {
                     "case_id": case_id,
-                    "organismo": organismo_sync or None,
-                    "expediente_ref": expediente_sync or None,
+                    "organismo": detected_organismo or None,
+                    "expediente_ref": detected_expediente or None,
                     "interested_data": json.dumps(interested_patch, ensure_ascii=False),
                 },
             )
@@ -3045,17 +3015,7 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
                 """),
                 {
                     "case_id": case_id,
-                    "payload": json.dumps(
-                        {
-                            "organismo": organismo_sync,
-                            "expediente_ref": expediente_sync,
-                            "full_name": detected_full_name,
-                            "dni_nie": detected_dni,
-                            "domicilio_notif": detected_address,
-                            "interested_data_keys": list(interested_patch.keys()),
-                        },
-                        ensure_ascii=False,
-                    ),
+                    "payload": json.dumps(interested_patch, ensure_ascii=False),
                 },
             )
 

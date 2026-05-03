@@ -155,6 +155,63 @@ def _event(case_id: str, typ: str, payload: Dict[str, Any]) -> None:
             {"c": case_id, "t": typ, "p": json.dumps(payload)},
         )
 
+
+def _extract_interested_from_latest(extracted: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normaliza datos del interesado desde la última extracción para que el frontend
+    pueda rellenar autorización y el PDF/recurso use los mismos datos.
+    """
+    if not isinstance(extracted, dict):
+        return {}
+
+    core = extracted.get("extracted")
+    if isinstance(core, dict):
+        nested = core.get("extracted")
+        if isinstance(nested, dict):
+            core = nested
+    else:
+        core = extracted
+
+    if not isinstance(core, dict):
+        core = {}
+
+    def first(*keys):
+        for k in keys:
+            v = core.get(k)
+            if v is not None and str(v).strip():
+                return str(v).strip()
+        return ""
+
+    out = {}
+    full_name = first("full_name", "nombre_completo", "titular", "nombre_multado", "interesado")
+    dni = first("dni_nie", "dni", "nie", "documento_identidad")
+    domicilio = first("domicilio_notif", "domicilio", "direccion", "domicilio_multado")
+    email = first("email", "contact_email")
+    telefono = first("telefono", "phone")
+    matricula = first("matricula")
+    organismo = first("organismo", "organismo_cabecera")
+    expediente_ref = first("expediente_ref", "numero_expediente", "referencia")
+
+    if full_name:
+        out["full_name"] = full_name
+    if dni:
+        out["dni_nie"] = dni.upper()
+    if domicilio:
+        out["domicilio_notif"] = domicilio
+    if email:
+        out["email"] = email
+    if telefono:
+        out["telefono"] = telefono
+    if matricula:
+        out["matricula"] = matricula.upper().replace(" ", "").replace("-", "")
+    if organismo:
+        out["organismo"] = organismo
+    if expediente_ref:
+        out["expediente_ref"] = expediente_ref
+
+    return out
+
+
 # =========================
 # CONTACTO (PRE-PAGO)
 # =========================
@@ -176,6 +233,57 @@ def save_case_contact(case_id: str, data: CaseContactIn, background_tasks: Backg
     _event(case_id, "contact_saved", {})
     return {"ok": True}
 
+
+# =========================
+# DATOS DEL INTERESADO
+# =========================
+@router.post("/{case_id}/details")
+def save_case_details(case_id: str, data: CaseDetailsIn):
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        meta = _case_exists(conn, case_id)
+        interested = dict(meta.get("interested_data") or {})
+
+        interested.update(
+            {
+                "full_name": data.full_name.strip(),
+                "dni_nie": data.dni_nie.strip().upper(),
+                "domicilio_notif": data.domicilio_notif.strip(),
+                "email": str(data.email).strip(),
+                "telefono": (data.telefono or "").strip() or None,
+            }
+        )
+
+        conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET interested_data = CAST(:interested AS JSONB),
+                    contact_name = :contact_name,
+                    contact_email = :contact_email,
+                    updated_at = NOW()
+                WHERE id = :id
+                """
+            ),
+            {
+                "id": case_id,
+                "interested": json.dumps(interested, ensure_ascii=False),
+                "contact_name": interested.get("full_name"),
+                "contact_email": interested.get("email"),
+            },
+        )
+
+        _event(case_id, "case_details_saved", {
+            "full_name": interested.get("full_name"),
+            "dni_nie": interested.get("dni_nie"),
+            "email": interested.get("email"),
+            "telefono": interested.get("telefono"),
+        })
+
+    return {"ok": True, "case_id": case_id, "interested_data": interested}
+
+
 # =========================
 # AÑADIR DOCUMENTOS
 # =========================
@@ -196,13 +304,7 @@ async def append_documents(case_id: str, files: List[UploadFile] = File(...)):
         if not data:
             continue
 
-        b2_bucket, b2_key = upload_bytes(
-            case_id,
-            "original",
-            data,
-            ext=".bin",
-            content_type=(uf.content_type or "application/octet-stream"),
-        )
+        b2_bucket, b2_key = upload_bytes(case_id, "original", data, ".bin", (uf.content_type or "application/octet-stream"))
 
         uploaded_docs.append({"bucket": b2_bucket, "key": b2_key})
 
@@ -281,8 +383,19 @@ def public_status(case_id: str):
     with engine.begin() as conn:
         row = conn.execute(
             text(
-                "SELECT status, payment_status, authorized, contact_name, contact_email "
-                "FROM cases WHERE id=:id"
+                """
+                SELECT
+                    status,
+                    payment_status,
+                    authorized,
+                    contact_name,
+                    contact_email,
+                    COALESCE(interested_data, '{}'::jsonb) AS interested_data,
+                    organismo,
+                    expediente_ref
+                FROM cases
+                WHERE id=:id
+                """
             ),
             {"id": case_id},
         ).fetchone()
@@ -290,18 +403,49 @@ def public_status(case_id: str):
         if not row:
             raise HTTPException(status_code=404, detail="case_id no existe")
 
+        ex_row = conn.execute(
+            text(
+                """
+                SELECT extracted_json
+                FROM extractions
+                WHERE case_id=:id
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"id": case_id},
+        ).fetchone()
+
     status = row[0] or "uploaded"
     payment_status = row[1] or ""
     authorized = bool(row[2])
     contact_name = row[3]
     contact_email = row[4]
+    interested_data = row[5] if isinstance(row[5], dict) else {}
+    organismo = row[6] or ""
+    expediente_ref = row[7] or ""
+    extracted = ex_row[0] if ex_row and isinstance(ex_row[0], dict) else {}
 
-    if status == "pending_documents":
-        msg = "Aún no se puede presentar el recurso. Falta documentación o el acto recurrible."
-    elif status == "ready_to_pay":
-        msg = "Tu recurso puede presentarse ahora."
+    # Completar interested_data con la última extracción si la BD todavía no lo tiene.
+    extracted_interested = _extract_interested_from_latest(extracted)
+    merged_interested = dict(extracted_interested or {})
+    merged_interested.update(interested_data or {})
+
+    if contact_name and not merged_interested.get("full_name"):
+        merged_interested["full_name"] = contact_name
+    if contact_email and not merged_interested.get("email"):
+        merged_interested["email"] = contact_email
+    if organismo and not merged_interested.get("organismo"):
+        merged_interested["organismo"] = organismo
+    if expediente_ref and not merged_interested.get("expediente_ref"):
+        merged_interested["expediente_ref"] = expediente_ref
+
+    if payment_status == "paid":
+        msg = "Gestión iniciada correctamente."
+    elif authorized:
+        msg = "Ya tenemos tu autorización. Puedes continuar para iniciar la gestión."
     else:
-        msg = "Expediente en revisión."
+        msg = "Hemos analizado tu multa. Para continuar, necesitamos tus datos y autorización."
 
     return {
         "ok": True,
@@ -312,8 +456,12 @@ def public_status(case_id: str):
         "message": msg,
         "contact_name": contact_name,
         "contact_email": contact_email,
-        "interested_data": {},
+        "interested_data": merged_interested,
+        "organismo": organismo or merged_interested.get("organismo") or "",
+        "expediente_ref": expediente_ref or merged_interested.get("expediente_ref") or "",
+        "extracted": extracted,
     }
+
 
 # =========================
 # AUTORIZACION DEL EXPEDIENTE + PDF
@@ -443,13 +591,7 @@ async def _store_authorization_signed(case_id: str, file: UploadFile):
     content_type = file.content_type or "application/octet-stream"
 
     try:
-        b2_bucket, b2_key = upload_bytes(
-            case_id,
-            "authorization_signed",
-            data,
-            ext=ext,
-            content_type=content_type,
-        )
+        b2_bucket, b2_key = upload_bytes(case_id, "authorization_signed", data, ext, content_type)
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -546,13 +688,7 @@ async def upload_receipt(case_id: str, file: UploadFile = File(...)):
     if not data:
         raise HTTPException(status_code=400, detail="Archivo vacío")
 
-    b2_bucket, b2_key = upload_bytes(
-        case_id,
-        "receipt",
-        data,
-        ext=".pdf",
-        content_type="application/pdf",
-    )
+    b2_bucket, b2_key = upload_bytes(case_id, "receipt", data, ".pdf", "application/pdf")
 
     with engine.begin() as conn:
         _case_exists(conn, case_id)
