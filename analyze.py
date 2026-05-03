@@ -2608,7 +2608,7 @@ out["resultado_estrategico"] = "continuar"
 out["motivo_estrategico"] = ""
 out["presentacion_automatica_recomendada"] = True
 
-    out["modelo_defensa"] = _infer_modelo_defensa(
+out["modelo_defensa"] = _infer_modelo_defensa(
         tipo,
         subtipo or "",
         out.get("expediente_errors") or [],
