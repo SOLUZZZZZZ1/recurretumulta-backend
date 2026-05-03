@@ -176,57 +176,6 @@ def save_case_contact(case_id: str, data: CaseContactIn, background_tasks: Backg
     _event(case_id, "contact_saved", {})
     return {"ok": True}
 
-
-# =========================
-# DATOS DEL INTERESADO
-# =========================
-@router.post("/{case_id}/details")
-def save_case_details(case_id: str, data: CaseDetailsIn):
-    engine = get_engine()
-
-    with engine.begin() as conn:
-        meta = _case_exists(conn, case_id)
-        interested = dict(meta.get("interested_data") or {})
-
-        interested.update(
-            {
-                "full_name": data.full_name.strip(),
-                "dni_nie": data.dni_nie.strip().upper(),
-                "domicilio_notif": data.domicilio_notif.strip(),
-                "email": str(data.email).strip(),
-                "telefono": (data.telefono or "").strip() or None,
-            }
-        )
-
-        conn.execute(
-            text(
-                """
-                UPDATE cases
-                SET interested_data = CAST(:interested AS JSONB),
-                    contact_name = :contact_name,
-                    contact_email = :contact_email,
-                    updated_at = NOW()
-                WHERE id = :id
-                """
-            ),
-            {
-                "id": case_id,
-                "interested": json.dumps(interested, ensure_ascii=False),
-                "contact_name": interested.get("full_name"),
-                "contact_email": interested.get("email"),
-            },
-        )
-
-        _event(case_id, "case_details_saved", {
-            "full_name": interested.get("full_name"),
-            "dni_nie": interested.get("dni_nie"),
-            "email": interested.get("email"),
-            "telefono": interested.get("telefono"),
-        })
-
-    return {"ok": True, "case_id": case_id, "interested_data": interested}
-
-
 # =========================
 # AÑADIR DOCUMENTOS
 # =========================
@@ -332,19 +281,8 @@ def public_status(case_id: str):
     with engine.begin() as conn:
         row = conn.execute(
             text(
-                """
-                SELECT
-                    status,
-                    payment_status,
-                    authorized,
-                    contact_name,
-                    contact_email,
-                    COALESCE(interested_data, '{}'::jsonb) AS interested_data,
-                    organismo,
-                    expediente_ref
-                FROM cases
-                WHERE id=:id
-                """
+                "SELECT status, payment_status, authorized, contact_name, contact_email "
+                "FROM cases WHERE id=:id"
             ),
             {"id": case_id},
         ).fetchone()
@@ -352,35 +290,18 @@ def public_status(case_id: str):
         if not row:
             raise HTTPException(status_code=404, detail="case_id no existe")
 
-        ex_row = conn.execute(
-            text(
-                """
-                SELECT extracted_json
-                FROM extractions
-                WHERE case_id=:id
-                ORDER BY created_at DESC
-                LIMIT 1
-                """
-            ),
-            {"id": case_id},
-        ).fetchone()
-
     status = row[0] or "uploaded"
     payment_status = row[1] or ""
     authorized = bool(row[2])
     contact_name = row[3]
     contact_email = row[4]
-    interested_data = row[5] if isinstance(row[5], dict) else {}
-    organismo = row[6] or ""
-    expediente_ref = row[7] or ""
-    extracted = ex_row[0] if ex_row and isinstance(ex_row[0], dict) else {}
 
-    if payment_status == "paid":
-        msg = "Gestión iniciada correctamente."
-    elif authorized:
-        msg = "Ya tenemos tu autorización. Puedes continuar para iniciar la gestión."
+    if status == "pending_documents":
+        msg = "Aún no se puede presentar el recurso. Falta documentación o el acto recurrible."
+    elif status == "ready_to_pay":
+        msg = "Tu recurso puede presentarse ahora."
     else:
-        msg = "Hemos analizado tu multa. Para continuar, necesitamos tus datos y autorización."
+        msg = "Expediente en revisión."
 
     return {
         "ok": True,
@@ -391,12 +312,8 @@ def public_status(case_id: str):
         "message": msg,
         "contact_name": contact_name,
         "contact_email": contact_email,
-        "interested_data": interested_data,
-        "organismo": organismo,
-        "expediente_ref": expediente_ref,
-        "extracted": extracted,
+        "interested_data": {},
     }
-
 
 # =========================
 # AUTORIZACION DEL EXPEDIENTE + PDF
@@ -496,68 +413,106 @@ def download_authorization_pdf(case_id: str, request: Request):
 # SUBIR AUTORIZACIÓN FIRMADA
 # =========================
 async def _store_authorization_signed(case_id: str, file: UploadFile):
+    """
+    Guarda la autorización firmada del cliente.
+    Endpoint robusto:
+    - comprueba primero que el expediente existe
+    - lee el archivo
+    - sube a B2
+    - inserta en documents como authorization_signed
+    - marca authorized = true
+    - devuelve errores claros si falla B2 o BD
+    """
     engine = get_engine()
+
+    with engine.begin() as conn:
+        _case_exists(conn, case_id)
 
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Archivo vacío")
 
     filename = (file.filename or "autorizacion_firmada").replace("/", "_").replace("\\", "_")[:140]
+
     ext = ".pdf"
     if "." in filename:
-        ext = "." + filename.split(".")[-1].lower()
-        if len(ext) > 12:
-            ext = ".pdf"
+        candidate = "." + filename.rsplit(".", 1)[-1].lower()
+        if 2 <= len(candidate) <= 10:
+            ext = candidate
 
     content_type = file.content_type or "application/octet-stream"
 
-    b2_bucket, b2_key = upload_bytes(
-        case_id,
-        "authorization_signed",
-        data,
-        ext=ext,
-        content_type=content_type,
-    )
-
-    with engine.begin() as conn:
-        _case_exists(conn, case_id)
-
-        conn.execute(
-            text(
-                """
-                INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
-                VALUES (:id, 'authorization_signed', :b, :k, :m, :s, NOW())
-                """
-            ),
-            {
-                "id": case_id,
-                "b": b2_bucket,
-                "k": b2_key,
-                "m": content_type,
-                "s": len(data),
-            },
+    try:
+        b2_bucket, b2_key = upload_bytes(
+            case_id,
+            "authorization_signed",
+            data,
+            ext=ext,
+            content_type=content_type,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No se pudo guardar el archivo en Backblaze B2: {type(e).__name__}: {e}",
         )
 
-        conn.execute(
-            text(
-                """
-                UPDATE cases
-                SET authorized = TRUE,
-                    authorized_at = COALESCE(authorized_at, NOW()),
-                    updated_at = NOW()
-                WHERE id = :id
-                """
-            ),
-            {"id": case_id},
-        )
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
+                    VALUES (:id, 'authorization_signed', :b, :k, :m, :s, NOW())
+                    """
+                ),
+                {
+                    "id": case_id,
+                    "b": b2_bucket,
+                    "k": b2_key,
+                    "m": content_type,
+                    "s": len(data),
+                },
+            )
 
-        _event(case_id, "authorization_signed_uploaded", {
-            "filename": filename,
-            "bucket": b2_bucket,
-            "key": b2_key,
-            "mime": content_type,
-            "size_bytes": len(data),
-        })
+            conn.execute(
+                text(
+                    """
+                    UPDATE cases
+                    SET authorized = TRUE,
+                        authorized_at = COALESCE(authorized_at, NOW()),
+                        updated_at = NOW()
+                    WHERE id = :id
+                    """
+                ),
+                {"id": case_id},
+            )
+
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO events(case_id, type, payload, created_at)
+                    VALUES (:id, 'authorization_signed_uploaded', CAST(:payload AS JSONB), NOW())
+                    """
+                ),
+                {
+                    "id": case_id,
+                    "payload": json.dumps(
+                        {
+                            "filename": filename,
+                            "bucket": b2_bucket,
+                            "key": b2_key,
+                            "mime": content_type,
+                            "size_bytes": len(data),
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Archivo subido a B2, pero falló el registro en base de datos: {type(e).__name__}: {e}",
+        )
 
     return {
         "ok": True,
