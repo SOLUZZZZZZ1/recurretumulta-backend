@@ -493,7 +493,7 @@ def download_authorization_pdf(case_id: str, request: Request):
 
 
 # =========================
-# SUBIR AUTORIZACIÓN FIRMADA (alias robustos)
+# SUBIR AUTORIZACIÓN FIRMADA
 # =========================
 async def _store_authorization_signed(case_id: str, file: UploadFile):
     engine = get_engine()
