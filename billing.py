@@ -8,18 +8,15 @@ from sqlalchemy import text
 
 from database import get_engine
 from ai.expediente_engine import run_expediente_ai
-from generate import generate_dgt_for_case
 from email_utils import send_email, build_vehicle_removal_paid_email
 
 router = APIRouter(prefix="/billing", tags=["billing"])
 
 
-def _env(name: str, default: str | None = None) -> str:
+def _env(name: str) -> str:
     v = (os.getenv(name) or "").strip()
     if not v:
-        if default is not None:
-            return default
-        raise HTTPException(status_code=500, detail=f"Falta variable de entorno: {name}")
+        raise RuntimeError(f"Falta variable de entorno: {name}")
     return v
 
 
@@ -326,102 +323,163 @@ def _run_post_payment_modo_dios(conn, case_id: str):
 
 @router.post("/checkout")
 def create_checkout(req: CheckoutRequest):
-    try:
-        stripe.api_key = _env("STRIPE_SECRET_KEY")
+    stripe.api_key = _env("STRIPE_SECRET_KEY")
+    frontend_url = _env("FRONTEND_URL").rstrip("/")
 
-        frontend_url = (
-            os.getenv("FRONTEND_URL")
-            or os.getenv("FRONTEND_BASE_URL")
-            or "https://www.recurretumulta.eu"
-        ).strip().rstrip("/")
+    engine = get_engine()
+    with engine.begin() as conn:
+        auth_meta = _require_case_authorized_before_payment(conn, req.case_id)
 
-        engine = get_engine()
-        with engine.begin() as conn:
-            auth_meta = _require_case_authorized_before_payment(conn, req.case_id)
+        if auth_meta["payment_status"] == "paid":
+            return {
+                "ok": True,
+                "already_paid": True,
+                "redirect": f"{frontend_url}/#/resumen?case={req.case_id}",
+            }
 
-            if auth_meta["payment_status"] == "paid":
-                return {
-                    "ok": True,
-                    "already_paid": True,
-                    "redirect": f"{frontend_url}/#/resumen?case={req.case_id}",
-                }
-
-            conn.execute(
-                text(
-                    """
-                    UPDATE cases
-                    SET payment_status='pending',
-                        product_code=:product,
-                        contact_email=:email,
-                        updated_at=NOW()
-                    WHERE id=:id
-                    """
-                ),
-                {"id": req.case_id, "product": req.product, "email": str(req.email)},
-            )
-
-            _append_event(
-                conn,
-                req.case_id,
-                "checkout_started",
-                {
-                    "product": req.product,
-                    "email": str(req.email),
-                    "authorized": True,
-                    "authorized_at": str(auth_meta["authorized_at"] or ""),
-                },
-            )
-
-        price_id = _env("STRIPE_PRICE_ID_DGT")
-        success_url = f"{frontend_url}/#/pago-ok?case={req.case_id}"
-        cancel_url = f"{frontend_url}/#/resumen?case={req.case_id}"
-
-        try:
-            session = stripe.checkout.Session.create(
-                mode="payment",
-                customer_email=str(req.email),
-                line_items=[{"price": price_id, "quantity": 1}],
-                success_url=success_url,
-                cancel_url=cancel_url,
-                metadata={"case_id": req.case_id},
-                locale=req.locale or "es",
-            )
-        except Exception as stripe_err:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error creando sesión de Stripe: {type(stripe_err).__name__}: {stripe_err}",
-            )
-
-        return {"ok": True, "url": session.url}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error en /billing/checkout: {type(e).__name__}: {e}",
+        conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET payment_status='pending',
+                    product_code=:product,
+                    contact_email=:email,
+                    updated_at=NOW()
+                WHERE id=:id
+                """
+            ),
+            {"id": req.case_id, "product": req.product, "email": req.email},
         )
 
+        _append_event(
+            conn,
+            req.case_id,
+            "checkout_started",
+            {
+                "product": req.product,
+                "email": req.email,
+                "authorized": True,
+                "authorized_at": str(auth_meta["authorized_at"] or ""),
+            },
+        )
+
+    price_id = _env("STRIPE_PRICE_ID_DGT")
+    success_url = f"{frontend_url}/#/pago-ok?case={req.case_id}"
+    cancel_url = f"{frontend_url}/#/resumen?case={req.case_id}"
+
+    session = stripe.checkout.Session.create(
+        mode="payment",
+        customer_email=req.email,
+        line_items=[{"price": price_id, "quantity": 1}],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata={"case_id": req.case_id},
+        locale=req.locale or "es",
+    )
+
+    return {"ok": True, "url": session.url}
 
 
 @router.post("/webhook")
 async def stripe_webhook(request: Request):
     payload = await request.body()
-    sig_header = request.headers.get("stripe-signature")
-    try:
-        stripe.api_key = _env("STRIPE_SECRET_KEY")
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, _env("STRIPE_WEBHOOK_SECRET")
-        )
-    except Exception:
-        raise HTTPException(status_code=400, detail="Webhook inválido")
+    sig_header = request.headers.get("stripe-signature", "")
+    webhook_secret = (os.getenv("STRIPE_WEBHOOK_SECRET") or "").strip()
 
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        case_id = session["metadata"]["case_id"]
+    try:
+        if webhook_secret:
+            event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+        else:
+            event = json.loads(payload.decode("utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Webhook inválido: {type(e).__name__}: {e}")
+
+    event_type = event.get("type")
+    data_object = (event.get("data") or {}).get("object") or {}
+
+    if event_type == "checkout.session.completed":
+        case_id = (data_object.get("metadata") or {}).get("case_id")
+        session_id = data_object.get("id")
+        payment_intent = data_object.get("payment_intent")
+        customer_email = data_object.get("customer_email") or (data_object.get("customer_details") or {}).get("email")
+
+        if not case_id:
+            return {"ok": True, "ignored": "missing_case_id"}
+
         engine = get_engine()
         with engine.begin() as conn:
-            _mark_paid_and_generate_resource(conn, case_id).fetchone()
+            conn.execute(
+                text("""
+                    UPDATE cases
+                    SET payment_status='paid',
+                        authorized=TRUE,
+                        status=CASE
+                            WHEN status IN ('generated', 'submitted', 'vehicle_removal_paid') THEN status
+                            ELSE 'manual_review'
+                        END,
+                        stripe_checkout_session_id=COALESCE(:session_id, stripe_checkout_session_id),
+                        stripe_payment_intent_id=COALESCE(:payment_intent, stripe_payment_intent_id),
+                        contact_email=COALESCE(:email, contact_email),
+                        paid_at=COALESCE(paid_at, NOW()),
+                        updated_at=NOW()
+                    WHERE id=:id
+                """),
+                {
+                    "id": case_id,
+                    "session_id": session_id,
+                    "payment_intent": payment_intent,
+                    "email": customer_email,
+                },
+            )
+
+            _append_event(
+                conn,
+                case_id,
+                "payment_confirmed",
+                {
+                    "source": "stripe_webhook",
+                    "session_id": session_id,
+                    "payment_intent": payment_intent,
+                },
+            )
+
+            try:
+                from generate import generate_dgt_for_case
+                generate_dgt_for_case(conn, case_id)
+                conn.execute(
+                    text("""
+                        UPDATE cases
+                        SET status='generated',
+                            updated_at=NOW()
+                        WHERE id=:id
+                    """),
+                    {"id": case_id},
+                )
+                _append_event(conn, case_id, "resource_generated_after_payment", {"ok": True})
+            except Exception as gen_err:
+                _append_event(
+                    conn,
+                    case_id,
+                    "resource_generation_after_payment_failed",
+                    {"error": f"{type(gen_err).__name__}: {gen_err}"},
+                )
+
+    return {"ok": True}
+
+
+@router.get("/status/{case_id}")
+def payment_status(case_id: str):
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT payment_status, paid_at, product_code, authorized, status
+                FROM cases WHERE id=:id
+                """
+            ),
+            {"id": case_id},
+        ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="case_id no existe")
 
