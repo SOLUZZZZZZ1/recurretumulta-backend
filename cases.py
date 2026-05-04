@@ -176,6 +176,82 @@ def save_case_contact(case_id: str, data: CaseContactIn, background_tasks: Backg
     _event(case_id, "contact_saved", {})
     return {"ok": True}
 
+
+# =========================
+# DATOS DEL INTERESADO
+# =========================
+@router.post("/{case_id}/details")
+def save_case_details(case_id: str, data: CaseDetailsIn):
+    """
+    Guarda los datos del interesado antes de generar la autorización.
+    Estos datos alimentan:
+    - PDF de autorización
+    - pago/Stripe
+    - encabezamiento del recurso
+    """
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        meta = _case_exists(conn, case_id)
+        interested = dict(meta.get("interested_data") or {})
+
+        interested.update(
+            {
+                "full_name": data.full_name.strip(),
+                "dni_nie": data.dni_nie.strip().upper(),
+                "domicilio_notif": data.domicilio_notif.strip(),
+                "email": str(data.email).strip(),
+                "telefono": (data.telefono or "").strip() or None,
+            }
+        )
+
+        conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET interested_data = CAST(:interested AS JSONB),
+                    contact_name = :contact_name,
+                    contact_email = :contact_email,
+                    updated_at = NOW()
+                WHERE id = :id
+                """
+            ),
+            {
+                "id": case_id,
+                "interested": json.dumps(interested, ensure_ascii=False),
+                "contact_name": interested.get("full_name"),
+                "contact_email": interested.get("email"),
+            },
+        )
+
+        conn.execute(
+            text(
+                """
+                INSERT INTO events(case_id, type, payload, created_at)
+                VALUES (:id, 'case_details_saved', CAST(:payload AS JSONB), NOW())
+                """
+            ),
+            {
+                "id": case_id,
+                "payload": json.dumps(
+                    {
+                        "full_name": interested.get("full_name"),
+                        "dni_nie": interested.get("dni_nie"),
+                        "email": interested.get("email"),
+                        "telefono": interested.get("telefono"),
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        )
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "interested_data": interested,
+    }
+
+
 # =========================
 # AÑADIR DOCUMENTOS
 # =========================
@@ -196,13 +272,7 @@ async def append_documents(case_id: str, files: List[UploadFile] = File(...)):
         if not data:
             continue
 
-        b2_bucket, b2_key = upload_bytes(
-            case_id,
-            "original",
-            data,
-            ext=".bin",
-            content_type=(uf.content_type or "application/octet-stream"),
-        )
+        b2_bucket, b2_key = upload_bytes(case_id, "original", data, ".bin", (uf.content_type or "application/octet-stream"))
 
         uploaded_docs.append({"bucket": b2_bucket, "key": b2_key})
 
@@ -360,13 +430,45 @@ def public_status(case_id: str):
 # AUTORIZACION DEL EXPEDIENTE + PDF
 # =========================
 @router.post("/{case_id}/authorize")
-def authorize_case(case_id: str, request: Request):
+async def authorize_case(case_id: str, request: Request):
     engine = get_engine()
 
     with engine.begin() as conn:
-        _case_exists(conn, case_id)
+        row = conn.execute(
+            text(
+                """
+                SELECT COALESCE(interested_data, '{}'::jsonb)
+                FROM cases
+                WHERE id = :id
+                """
+            ),
+            {"id": case_id},
+        ).fetchone()
 
-        # Marcar autorizado
+        if not row:
+            raise HTTPException(status_code=404, detail="Expediente no encontrado")
+
+        interested = row[0] if isinstance(row[0], dict) else {}
+
+        missing = []
+        if not interested.get("full_name"):
+            missing.append("full_name")
+        if not interested.get("dni_nie"):
+            missing.append("dni_nie")
+        if not interested.get("domicilio_notif"):
+            missing.append("domicilio_notif")
+        if not interested.get("email"):
+            missing.append("email")
+
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Faltan datos del interesado para generar la autorización",
+                    "missing_fields": missing,
+                },
+            )
+
         conn.execute(
             text(
                 """
@@ -380,10 +482,8 @@ def authorize_case(case_id: str, request: Request):
             {"id": case_id},
         )
 
-        # Capturar IP real
         ip = get_request_ip(request)
 
-        # Evento de autorización
         conn.execute(
             text(
                 """
@@ -397,12 +497,12 @@ def authorize_case(case_id: str, request: Request):
                     {
                         "ip": ip,
                         "version": "v1_dgt_homologado",
-                    }
+                    },
+                    ensure_ascii=False,
                 ),
             },
         )
 
-        # Generar y guardar PDF de autorización
         try:
             auth_doc = ensure_authorization_pdf(
                 conn,
@@ -413,17 +513,18 @@ def authorize_case(case_id: str, request: Request):
         except Exception as e:
             raise HTTPException(
                 status_code=500,
-                detail=f"Autorización registrada, pero falló el PDF: {e}",
+                detail=f"Error generando PDF de autorización: {type(e).__name__}: {e}",
             )
+
+    download_url = f"/cases/{case_id}/authorization-pdf"
 
     return {
         "ok": True,
         "case_id": case_id,
         "authorized": True,
         "authorization_pdf": auth_doc.get("document"),
+        "download_url": download_url,
     }
-
-
 
 @router.get("/{case_id}/authorization-pdf")
 def download_authorization_pdf(case_id: str, request: Request):
@@ -581,13 +682,7 @@ async def upload_receipt(case_id: str, file: UploadFile = File(...)):
     if not data:
         raise HTTPException(status_code=400, detail="Archivo vacío")
 
-    b2_bucket, b2_key = upload_bytes(
-        case_id,
-        "receipt",
-        data,
-        ext=".pdf",
-        content_type="application/pdf",
-    )
+    b2_bucket, b2_key = upload_bytes(case_id, "receipt", data, ".pdf", "application/pdf")
 
     with engine.begin() as conn:
         _case_exists(conn, case_id)
