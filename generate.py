@@ -94,7 +94,7 @@ def _default_interesado_from_core(core: Dict[str, Any]) -> Dict[str, str]:
         "apellido1": _safe_str(core.get("apellido1")) or split.get("apellido1", ""),
         "apellido2": _safe_str(core.get("apellido2")) or split.get("apellido2", ""),
         "dni": _safe_str(core.get("dni")) or _safe_str(core.get("dni_nie")),
-        "domicilio": _safe_str(core.get("domicilio")),
+        "domicilio": _safe_str(core.get("domicilio")) or _safe_str(core.get("domicilio_notif")) or _safe_str(core.get("direccion")),
         "localidad": _safe_str(core.get("localidad")) or _safe_str(core.get("municipio")),
         "provincia": _safe_str(core.get("provincia")),
         "cp": _safe_str(core.get("cp")) or _safe_str(core.get("codigo_postal")),
@@ -118,6 +118,164 @@ def _merge_interesado_with_core(interesado: Optional[Dict[str, str]], core: Dict
         if v not in (None, "", [], {}):
             out[k] = str(v)
     return out
+
+
+
+def _extract_person_fields_from_core(core: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Extrae nombre, DNI y domicilio del multado desde core/raw_text.
+    No inventa email ni teléfono porque no suelen figurar en la multa.
+    """
+    core = core or {}
+
+    raw_sources = [
+        _safe_str(core.get("full_name")),
+        _safe_str(core.get("titular")),
+        _safe_str(core.get("nombre_completo")),
+        _safe_str(core.get("nombre_multado")),
+        _safe_str(core.get("interesado")),
+        _safe_str(core.get("raw_text_pdf")),
+        _safe_str(core.get("raw_text_vision")),
+        _safe_str(core.get("raw_text_blob")),
+        _safe_str(core.get("vision_raw_text")),
+    ]
+    blob = "\n".join(x for x in raw_sources if x.strip())
+    flat = re.sub(r"\s+", " ", blob).strip()
+
+    out = {}
+
+    dni = (
+        _safe_str(core.get("dni_nie"))
+        or _safe_str(core.get("dni"))
+        or _safe_str(core.get("documento_identidad"))
+    ).strip()
+    if not dni:
+        m = re.search(r"\b0?\d{7,8}[A-Z]\b", flat, flags=re.I)
+        if m:
+            dni = m.group(0).upper()
+    if dni:
+        out["dni_nie"] = dni.upper()
+        out["dni"] = dni.upper()
+
+    full_name = (
+        _safe_str(core.get("full_name"))
+        or _safe_str(core.get("titular"))
+        or _safe_str(core.get("nombre_completo"))
+        or _safe_str(core.get("nombre_multado"))
+        or _safe_str(core.get("interesado"))
+    ).strip()
+
+    if not full_name and dni:
+        idx = flat.upper().find(dni.upper())
+        window = flat[idx + len(dni): idx + len(dni) + 260] if idx >= 0 else ""
+        # cortar al inicio probable de dirección
+        window = re.split(r"\b(?:CA|C/|CALLE|CARRER|AV|AVDA|AVENIDA|PASEO|PASSEIG|PLAZA)\b", window, maxsplit=1, flags=re.I)[0]
+        m_name = re.search(
+            r"\b([A-ZÁÉÍÓÚÜÑ]{2,}(?:\s+[A-ZÁÉÍÓÚÜÑ]{2,}){1,4})\b",
+            window,
+            flags=re.I,
+        )
+        if m_name:
+            candidate = re.sub(r"[^A-ZÁÉÍÓÚÜÑa-záéíóúüñ\s]", " ", m_name.group(1))
+            candidate = re.sub(r"\s+", " ", candidate).strip()
+            bad = {"DATA", "FECHA", "IMPORT", "IMPORTE", "REFERENCIA", "IDENTIFICACION", "IDENTIFICACIÓ", "EXPEDIENTE"}
+            words = candidate.split()
+            if 2 <= len(words) <= 5 and not any(w.upper() in bad for w in words):
+                full_name = " ".join(w[:1].upper() + w[1:].lower() for w in words)
+
+    if full_name:
+        out["full_name"] = full_name
+
+    domicilio = (
+        _safe_str(core.get("domicilio_notif"))
+        or _safe_str(core.get("domicilio"))
+        or _safe_str(core.get("direccion"))
+        or _safe_str(core.get("domicilio_multado"))
+    ).strip()
+
+    if not domicilio:
+        # Ejemplo real: CA ALBA BARATA, 32 08230 MATADEPERA BARCELONA
+        patterns = [
+            r"\b((?:CA|C/|CALLE|CARRER|AV|AVDA|AVENIDA|PASEO|PASSEIG|PLAZA)\s+[A-ZÁÉÍÓÚÜÑ0-9\s,.-]{5,120}?\b\d{5}\b\s+[A-ZÁÉÍÓÚÜÑ\s.-]{2,80})",
+            r"\b([A-ZÁÉÍÓÚÜÑ\s.-]{3,80},?\s*\d{1,4}\s*,?\s*\b\d{5}\b\s+[A-ZÁÉÍÓÚÜÑ\s.-]{2,80})",
+        ]
+        for pat in patterns:
+            m_addr = re.search(pat, flat, flags=re.I)
+            if m_addr:
+                domicilio = re.sub(r"\s+", " ", m_addr.group(1)).strip().upper()
+                break
+
+    if domicilio:
+        out["domicilio_notif"] = domicilio
+        out["domicilio"] = domicilio
+
+        cp_match = re.search(r"\b(\d{5})\b", domicilio)
+        if cp_match and not core.get("cp"):
+            out["cp"] = cp_match.group(1)
+
+        # localidad y provincia aproximadas desde lo que va después del CP
+        if cp_match:
+            after_cp = domicilio[cp_match.end():].strip(" ,.-")
+            parts = after_cp.split()
+            if len(parts) >= 2:
+                out["provincia"] = parts[-1]
+                out["localidad"] = " ".join(parts[:-1])
+            elif len(parts) == 1:
+                out["localidad"] = parts[0]
+
+    return out
+
+
+def _enrich_core_with_person_fields(core: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Completa core con datos del multado, sin pisar email/teléfono si no existen.
+    """
+    core = dict(core or {})
+    patch = _extract_person_fields_from_core(core)
+    for k, v in patch.items():
+        if v and not _safe_str(core.get(k)).strip():
+            core[k] = v
+
+    # Mapeos que usa build_v2_dgt_layout
+    if not _safe_str(core.get("domicilio")).strip() and _safe_str(core.get("domicilio_notif")).strip():
+        core["domicilio"] = core.get("domicilio_notif")
+    if not _safe_str(core.get("dni")).strip() and _safe_str(core.get("dni_nie")).strip():
+        core["dni"] = core.get("dni_nie")
+
+    return core
+
+
+def _strip_duplicate_final_sections(body: str) -> str:
+    """
+    Elimina duplicados de FUNDAMENTOS DE DERECHO / S U P L I C A / OTROSÍ DIGO.
+    Mantiene una sola versión final.
+    """
+    txt = _safe_str(body).strip()
+    if not txt:
+        return txt
+
+    # Si aparecen varios FUNDAMENTOS, deja solo el primero y elimina los siguientes bloques completos.
+    fund_pat = r"\n+FUNDAMENTOS DE DERECHO\n+"
+    matches = list(re.finditer(fund_pat, txt, flags=re.I))
+    if len(matches) > 1:
+        first_start = matches[0].start()
+        second_start = matches[1].start()
+        # Si antes del segundo hay suplico/otrosí, quitamos desde el segundo fundamento hasta final duplicado.
+        txt = txt[:second_start].rstrip()
+
+    # Si aparecen varios SUPLICA, deja solo el primero.
+    sup_pat = r"\n+S\s*U\s*P\s*L\s*I\s*C\s*A\s*:\n+"
+    matches = list(re.finditer(sup_pat, txt, flags=re.I))
+    if len(matches) > 1:
+        txt = txt[:matches[1].start()].rstrip()
+
+    # Si aparecen varios OTROSÍ DIGO, deja solo el primero.
+    otrosi_pat = r"\n+OTROS[IÍ]\s+DIGO\n+"
+    matches = list(re.finditer(otrosi_pat, txt, flags=re.I))
+    if len(matches) > 1:
+        txt = txt[:matches[1].start()].rstrip()
+
+    return txt.strip() + "\n"
 
 
 def _clean_hecho_text(text: str) -> str:
@@ -1815,15 +1973,13 @@ def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: 
     fundamentos = _build_fundamentos_derecho(tipo, core)
     suplico = _build_unified_suplico(tipo)
 
-    if re.search(r"\bIII\.\s*(SOLICITO|SUPLICO)\b", body, flags=re.IGNORECASE):
-        body = re.sub(
-            r"\bIII\.\s*(?:SOLICITO|SUPLICO)\b[\s\S]*$",
-            fundamentos + "\n" + suplico,
-            body,
-            flags=re.IGNORECASE,
-        )
-    else:
-        body = body.rstrip() + "\n\n\n" + fundamentos + "\n" + suplico
+    # Evitar duplicados: algunas plantillas ya traen FUNDAMENTOS / SUPLICA / OTROSÍ.
+    if "FUNDAMENTOS DE DERECHO" not in body.upper():
+        body = body.rstrip() + "\n\n\n" + fundamentos
+    if "S U P L I C A" not in body.upper() and "SUPLICA" not in body.upper():
+        body = body.rstrip() + "\n\n" + suplico
+
+    body = _strip_duplicate_final_sections(body)
 
     body = fix_roman_headings(body)
     body = _strip_initial_antecedentes_block(body)
@@ -2530,6 +2686,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
 
     wrapper = row[0] if isinstance(row[0], dict) else json.loads(row[0])
     core = wrapper.get("extracted") or {}
+    core = _enrich_core_with_person_fields(core)
 
     if (
         not core.get("hecho_denunciado_literal")
@@ -2593,6 +2750,8 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
             "La imputación por exceso de velocidad exige acreditación técnica completa y verificable.",
             "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad exige una acreditación completa, verificable y trazable del dispositivo utilizado."
         )
+
+    tpl["cuerpo"] = _strip_duplicate_final_sections(tpl["cuerpo"])
 
     interesado_resuelto = _merge_interesado_with_core(interesado or {}, core)
     tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado_resuelto)
