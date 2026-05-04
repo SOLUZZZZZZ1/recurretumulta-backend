@@ -70,61 +70,14 @@ def _safe_str(v: Any) -> str:
 
 
 
-def _split_full_name_for_header(full_name: str) -> Dict[str, str]:
-    parts = [p for p in re.sub(r"\s+", " ", _safe_str(full_name).strip()).split(" ") if p]
-    if len(parts) >= 3:
-        return {"nombre": " ".join(parts[:-2]), "apellido1": parts[-2], "apellido2": parts[-1]}
-    if len(parts) == 2:
-        return {"nombre": parts[0], "apellido1": parts[1], "apellido2": ""}
-    if len(parts) == 1:
-        return {"nombre": parts[0], "apellido1": "", "apellido2": ""}
-    return {"nombre": "", "apellido1": "", "apellido2": ""}
-
-
-def _default_interesado_from_core(core: Dict[str, Any]) -> Dict[str, str]:
-    core = core or {}
-    full_name = (
-        _safe_str(core.get("full_name"))
-        or _safe_str(core.get("titular"))
-        or _safe_str(core.get("nombre_completo"))
-    ).strip()
-    split = _split_full_name_for_header(full_name)
-    return {
-        "nombre": _safe_str(core.get("nombre")) or split.get("nombre", ""),
-        "apellido1": _safe_str(core.get("apellido1")) or split.get("apellido1", ""),
-        "apellido2": _safe_str(core.get("apellido2")) or split.get("apellido2", ""),
-        "dni": _safe_str(core.get("dni")) or _safe_str(core.get("dni_nie")),
-        "domicilio": _safe_str(core.get("domicilio")) or _safe_str(core.get("domicilio_notif")) or _safe_str(core.get("direccion")),
-        "localidad": _safe_str(core.get("localidad")) or _safe_str(core.get("municipio")),
-        "provincia": _safe_str(core.get("provincia")),
-        "cp": _safe_str(core.get("cp")) or _safe_str(core.get("codigo_postal")),
-        "telefono": _safe_str(core.get("telefono")) or _safe_str(core.get("phone")),
-        "email": _safe_str(core.get("email")),
-        "expediente_ref": _safe_str(core.get("expediente_ref")) or _safe_str(core.get("numero_expediente")),
-        "lugar_infraccion": _safe_str(core.get("lugar_infraccion")),
-        "fecha_infraccion": _safe_str(core.get("fecha_infraccion")) or _safe_str(core.get("fecha_hecho")) or _safe_str(core.get("fecha_documento")),
-        "matricula": _safe_str(core.get("matricula")),
-        "marca_modelo": _safe_str(core.get("marca_modelo")) or " ".join(x for x in [_safe_str(core.get("marca")), _safe_str(core.get("modelo"))] if x),
-        "organismo": _safe_str(core.get("organismo")),
-        "organismo_cabecera": _safe_str(core.get("organismo_cabecera")),
-    }
-
-
-def _merge_interesado_with_core(interesado: Optional[Dict[str, str]], core: Dict[str, Any]) -> Dict[str, str]:
-    base = _default_interesado_from_core(core)
-    incoming = interesado or {}
-    out = dict(base)
-    for k, v in incoming.items():
-        if v not in (None, "", [], {}):
-            out[k] = str(v)
-    return out
-
-
-
 def _extract_person_fields_from_core(core: Dict[str, Any]) -> Dict[str, str]:
     """
-    Extrae nombre, DNI y domicilio del multado desde core/raw_text.
-    No inventa email ni teléfono porque no suelen figurar en la multa.
+    Extrae datos visibles del multado desde OCR/core:
+    - nombre
+    - DNI/NIE
+    - domicilio
+    - CP/localidad/provincia si se puede
+    No inventa email ni teléfono.
     """
     core = core or {}
 
@@ -138,21 +91,26 @@ def _extract_person_fields_from_core(core: Dict[str, Any]) -> Dict[str, str]:
         _safe_str(core.get("raw_text_vision")),
         _safe_str(core.get("raw_text_blob")),
         _safe_str(core.get("vision_raw_text")),
+        json.dumps(core, ensure_ascii=False),
     ]
     blob = "\n".join(x for x in raw_sources if x.strip())
     flat = re.sub(r"\s+", " ", blob).strip()
+    upper = flat.upper()
 
-    out = {}
+    out: Dict[str, str] = {}
 
     dni = (
         _safe_str(core.get("dni_nie"))
         or _safe_str(core.get("dni"))
         or _safe_str(core.get("documento_identidad"))
+        or _safe_str(core.get("document_identitat_infractor"))
     ).strip()
+
     if not dni:
         m = re.search(r"\b0?\d{7,8}[A-Z]\b", flat, flags=re.I)
         if m:
             dni = m.group(0).upper()
+
     if dni:
         out["dni_nie"] = dni.upper()
         out["dni"] = dni.upper()
@@ -163,25 +121,38 @@ def _extract_person_fields_from_core(core: Dict[str, Any]) -> Dict[str, str]:
         or _safe_str(core.get("nombre_completo"))
         or _safe_str(core.get("nombre_multado"))
         or _safe_str(core.get("interesado"))
+        or _safe_str(core.get("infractor"))
     ).strip()
 
+    # Caso real: DNI seguido de nombre y dirección.
     if not full_name and dni:
-        idx = flat.upper().find(dni.upper())
-        window = flat[idx + len(dni): idx + len(dni) + 260] if idx >= 0 else ""
-        # cortar al inicio probable de dirección
-        window = re.split(r"\b(?:CA|C/|CALLE|CARRER|AV|AVDA|AVENIDA|PASEO|PASSEIG|PLAZA)\b", window, maxsplit=1, flags=re.I)[0]
-        m_name = re.search(
-            r"\b([A-ZÁÉÍÓÚÜÑ]{2,}(?:\s+[A-ZÁÉÍÓÚÜÑ]{2,}){1,4})\b",
+        idx = upper.find(dni.upper())
+        window = flat[idx + len(dni): idx + len(dni) + 300] if idx >= 0 else ""
+        # cortar antes de vías/dirección o códigos
+        window_name = re.split(
+            r"\b(?:CA|C/|CALLE|CARRER|AV|AVDA|AVENIDA|PASEO|PASSEIG|PLAZA|CL|CTRA)\b",
             window,
+            maxsplit=1,
+            flags=re.I,
+        )[0]
+        window_name = re.sub(r"\b\d{2}[-/]\d{2}[-/]\d{4}\b", " ", window_name)
+        window_name = re.sub(r"\b\d{6,}\b", " ", window_name)
+        window_name = re.sub(r"\b\d+[,.]\d{2}\b", " ", window_name)
+
+        candidates = re.findall(
+            r"\b([A-ZÁÉÍÓÚÜÑ]{2,}(?:\s+[A-ZÁÉÍÓÚÜÑ]{2,}){1,4})\b",
+            window_name,
             flags=re.I,
         )
-        if m_name:
-            candidate = re.sub(r"[^A-ZÁÉÍÓÚÜÑa-záéíóúüñ\s]", " ", m_name.group(1))
-            candidate = re.sub(r"\s+", " ", candidate).strip()
-            bad = {"DATA", "FECHA", "IMPORT", "IMPORTE", "REFERENCIA", "IDENTIFICACION", "IDENTIFICACIÓ", "EXPEDIENTE"}
-            words = candidate.split()
+        bad = {
+            "DATA", "FECHA", "IMPORT", "IMPORTE", "REFERENCIA", "IDENTIFICACION", "IDENTIFICACIÓ",
+            "EXPEDIENTE", "DOCUMENT", "IDENTITAT", "INFRACTOR", "LIMIT", "PAGAMENT", "PAGO"
+        }
+        for cand in candidates:
+            words = [w for w in re.sub(r"[^A-ZÁÉÍÓÚÜÑa-záéíóúüñ\s]", " ", cand).split() if w]
             if 2 <= len(words) <= 5 and not any(w.upper() in bad for w in words):
                 full_name = " ".join(w[:1].upper() + w[1:].lower() for w in words)
+                break
 
     if full_name:
         out["full_name"] = full_name
@@ -191,12 +162,13 @@ def _extract_person_fields_from_core(core: Dict[str, Any]) -> Dict[str, str]:
         or _safe_str(core.get("domicilio"))
         or _safe_str(core.get("direccion"))
         or _safe_str(core.get("domicilio_multado"))
+        or _safe_str(core.get("direccion_infractor"))
     ).strip()
 
     if not domicilio:
-        # Ejemplo real: CA ALBA BARATA, 32 08230 MATADEPERA BARCELONA
+        # Caso real: CA ALBA BARATA, 32 08230 MATADEPERA BARCELONA
         patterns = [
-            r"\b((?:CA|C/|CALLE|CARRER|AV|AVDA|AVENIDA|PASEO|PASSEIG|PLAZA)\s+[A-ZÁÉÍÓÚÜÑ0-9\s,.-]{5,120}?\b\d{5}\b\s+[A-ZÁÉÍÓÚÜÑ\s.-]{2,80})",
+            r"\b((?:CA|C/|CALLE|CARRER|AV|AVDA|AVENIDA|PASEO|PASSEIG|PLAZA|CL)\s+[A-ZÁÉÍÓÚÜÑ0-9\s,.-]{5,120}?\b\d{5}\b\s+[A-ZÁÉÍÓÚÜÑ\s.-]{2,80})",
             r"\b([A-ZÁÉÍÓÚÜÑ\s.-]{3,80},?\s*\d{1,4}\s*,?\s*\b\d{5}\b\s+[A-ZÁÉÍÓÚÜÑ\s.-]{2,80})",
         ]
         for pat in patterns:
@@ -206,17 +178,15 @@ def _extract_person_fields_from_core(core: Dict[str, Any]) -> Dict[str, str]:
                 break
 
     if domicilio:
+        domicilio = domicilio.strip(" ,.-")
         out["domicilio_notif"] = domicilio
         out["domicilio"] = domicilio
 
         cp_match = re.search(r"\b(\d{5})\b", domicilio)
-        if cp_match and not core.get("cp"):
-            out["cp"] = cp_match.group(1)
-
-        # localidad y provincia aproximadas desde lo que va después del CP
         if cp_match:
+            out["cp"] = cp_match.group(1)
             after_cp = domicilio[cp_match.end():].strip(" ,.-")
-            parts = after_cp.split()
+            parts = [p for p in after_cp.split() if p]
             if len(parts) >= 2:
                 out["provincia"] = parts[-1]
                 out["localidad"] = " ".join(parts[:-1])
@@ -227,16 +197,12 @@ def _extract_person_fields_from_core(core: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _enrich_core_with_person_fields(core: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Completa core con datos del multado, sin pisar email/teléfono si no existen.
-    """
     core = dict(core or {})
     patch = _extract_person_fields_from_core(core)
     for k, v in patch.items():
         if v and not _safe_str(core.get(k)).strip():
             core[k] = v
 
-    # Mapeos que usa build_v2_dgt_layout
     if not _safe_str(core.get("domicilio")).strip() and _safe_str(core.get("domicilio_notif")).strip():
         core["domicilio"] = core.get("domicilio_notif")
     if not _safe_str(core.get("dni")).strip() and _safe_str(core.get("dni_nie")).strip():
@@ -245,36 +211,97 @@ def _enrich_core_with_person_fields(core: Dict[str, Any]) -> Dict[str, Any]:
     return core
 
 
+def _strip_duplicate_extractos(body: str) -> str:
+    """
+    Deja un solo 'Extracto literal del boletín', priorizando el más completo.
+    """
+    txt = _safe_str(body)
+    pat = r'Extracto literal del bolet[ií]n:\s*\n[“"]([^”"]+)[”"]\s*\n*'
+    matches = list(re.finditer(pat, txt, flags=re.I))
+    if len(matches) <= 1:
+        return txt
+
+    values = [m.group(1).strip() for m in matches]
+    # priorizar el más específico/completo
+    chosen = sorted(values, key=lambda s: (("no intermitente" in s.lower()), len(s)), reverse=True)[0]
+    first_done = False
+
+    def repl(m):
+        nonlocal first_done
+        if not first_done:
+            first_done = True
+            return f'Extracto literal del boletín:\n“{chosen}”\n\n'
+        return ""
+
+    return re.sub(pat, repl, txt, flags=re.I)
+
+
+def _strip_duplicate_alegaciones(body: str) -> str:
+    """
+    Elimina bloques repetidos evidentes:
+    - Nulidad repetida
+    - Insuficiencia probatoria repetida genérica
+    Mantiene las alegaciones numeradas fuertes.
+    """
+    txt = _safe_str(body)
+
+    block_patterns = [
+        r"ALEGACIÓN\s+—\s+NULIDAD DE PLENO DERECHO\s*\n\nCon carácter principal,[\s\S]*?(?=\n\nALEGACIÓN|\n\nFUNDAMENTOS|\Z)",
+        r"ALEGACIÓN\s+—\s+nulidad de pleno derecho\s*\n\nCon carácter principal,[\s\S]*?(?=\n\nALEGACIÓN|\n\nFUNDAMENTOS|\Z)",
+        r"ALEGACIÓN\s+—\s+INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS\s*\n\n(?:•[^\n]+\n?){1,8}",
+    ]
+
+    for pat in block_patterns:
+        matches = list(re.finditer(pat, txt, flags=re.I))
+        if len(matches) > 1:
+            # conservar la versión más larga
+            blocks = [(m.start(), m.end(), m.group(0)) for m in matches]
+            keep = max(blocks, key=lambda x: len(x[2]))
+            new = []
+            last = 0
+            for b in blocks:
+                new.append(txt[last:b[0]])
+                if b == keep:
+                    new.append(b[2])
+                last = b[1]
+            new.append(txt[last:])
+            txt = "".join(new)
+
+    txt = re.sub(r"\n{4,}", "\n\n\n", txt)
+    return txt.strip() + "\n"
+
+
 def _strip_duplicate_final_sections(body: str) -> str:
     """
-    Elimina duplicados de FUNDAMENTOS DE DERECHO / S U P L I C A / OTROSÍ DIGO.
-    Mantiene una sola versión final.
+    Evita duplicar FUNDAMENTOS / SUPLICA / OTROSÍ.
     """
     txt = _safe_str(body).strip()
     if not txt:
         return txt
 
-    # Si aparecen varios FUNDAMENTOS, deja solo el primero y elimina los siguientes bloques completos.
-    fund_pat = r"\n+FUNDAMENTOS DE DERECHO\n+"
-    matches = list(re.finditer(fund_pat, txt, flags=re.I))
-    if len(matches) > 1:
-        first_start = matches[0].start()
-        second_start = matches[1].start()
-        # Si antes del segundo hay suplico/otrosí, quitamos desde el segundo fundamento hasta final duplicado.
-        txt = txt[:second_start].rstrip()
+    # Mantener solo el primer bloque de fundamentos hasta el final, pero si hay un segundo,
+    # quitar desde el segundo fundamento hacia abajo.
+    fund_matches = list(re.finditer(r"\n+FUNDAMENTOS DE DERECHO\n+", txt, flags=re.I))
+    if len(fund_matches) > 1:
+        txt = txt[:fund_matches[1].start()].rstrip()
 
-    # Si aparecen varios SUPLICA, deja solo el primero.
-    sup_pat = r"\n+S\s*U\s*P\s*L\s*I\s*C\s*A\s*:\n+"
-    matches = list(re.finditer(sup_pat, txt, flags=re.I))
-    if len(matches) > 1:
-        txt = txt[:matches[1].start()].rstrip()
+    sup_matches = list(re.finditer(r"\n+S\s*U\s*P\s*L\s*I\s*C\s*A\s*:\n+", txt, flags=re.I))
+    if len(sup_matches) > 1:
+        txt = txt[:sup_matches[1].start()].rstrip()
 
-    # Si aparecen varios OTROSÍ DIGO, deja solo el primero.
-    otrosi_pat = r"\n+OTROS[IÍ]\s+DIGO\n+"
-    matches = list(re.finditer(otrosi_pat, txt, flags=re.I))
-    if len(matches) > 1:
-        txt = txt[:matches[1].start()].rstrip()
+    otrosi_matches = list(re.finditer(r"\n+OTROS[IÍ]\s+DIGO\n+", txt, flags=re.I))
+    if len(otrosi_matches) > 1:
+        txt = txt[:otrosi_matches[1].start()].rstrip()
 
+    return txt.strip() + "\n"
+
+
+def _clean_final_resource_body(body: str) -> str:
+    txt = _safe_str(body)
+    txt = _strip_duplicate_extractos(txt)
+    txt = _strip_duplicate_alegaciones(txt)
+    txt = _strip_duplicate_final_sections(txt)
+    txt = re.sub(r"\n{4,}", "\n\n\n", txt)
     return txt.strip() + "\n"
 
 
@@ -856,7 +883,7 @@ def resolve_jurisdiction(core: Dict[str, Any]) -> str:
 def _normalized_blob(core: Dict[str, Any]) -> str:
     blob = json.dumps(core or {}, ensure_ascii=False).lower()
     return (
-        blob.replace("semáforo", "semaforo").replace("semàfor", "semafor").replace("semáfor", "semafor")
+        blob.replace("semáforo", "semaforo")
             .replace("línea", "linea")
             .replace("detención", "detencion")
             .replace("policía", "policia")
@@ -886,7 +913,7 @@ def _focused_infraction_blob(core: Dict[str, Any]) -> str:
 
     blob = " ".join(p for p in parts if isinstance(p, str) and p.strip()).lower()
     return (
-        blob.replace("semáforo", "semaforo").replace("semàfor", "semafor").replace("semáfor", "semafor")
+        blob.replace("semáforo", "semaforo")
             .replace("línea", "linea")
             .replace("detención", "detencion")
             .replace("policía", "policia")
@@ -1832,7 +1859,7 @@ def _build_comparecencia_text(core: Dict[str, Any], asunto_out: str) -> str:
 
 def _resolve_header_destination(core: Dict[str, Any]) -> Dict[str, str]:
     blob = json.dumps(core or {}, ensure_ascii=False).lower()
-    organismo_raw = _safe_str(core.get("organismo_cabecera")).strip() or _safe_str(core.get("organismo")).strip()
+    organismo_raw = _safe_str(core.get("organismo")).strip()
 
     organismo_fmt = "............................................"
     provincia_fmt = "............................................"
@@ -1893,9 +1920,9 @@ def _resolve_header_destination(core: Dict[str, Any]) -> Dict[str, str]:
     elif any(s in blob for s in ["policia local", "policía local"]):
         organismo_fmt = "POLICÍA LOCAL"
     elif "ajuntament" in blob:
-        organismo_fmt = organismo_raw.upper() if organismo_raw else "AJUNTAMENT"
+        organismo_fmt = "AJUNTAMENT"
     elif "ayuntamiento" in blob:
-        organismo_fmt = organismo_raw.upper() if organismo_raw else "AYUNTAMIENTO"
+        organismo_fmt = "AYUNTAMIENTO"
     elif organismo_raw:
         organismo_fmt = organismo_raw.upper()
 
@@ -1979,7 +2006,7 @@ def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: 
     if "S U P L I C A" not in body.upper() and "SUPLICA" not in body.upper():
         body = body.rstrip() + "\n\n" + suplico
 
-    body = _strip_duplicate_final_sections(body)
+    body = _clean_final_resource_body(body)
 
     body = fix_roman_headings(body)
     body = _strip_initial_antecedentes_block(body)
@@ -2234,13 +2261,6 @@ def _is_strong_semaforo_generation_case(core: Dict[str, Any]) -> bool:
 
     signals = [
         "no respetar la luz roja",
-        "no respectar la llum vermella",
-        "no respectar el conductor dun vehicle la llum vermella",
-        "no respectar el conductor d un vehicle la llum vermella",
-        "llum vermella",
-        "llum vermella no intermitent",
-        "semàfor",
-        "semafor",
         "no respetar la luz roja no intermitente",
         "no respetar la luz roja no intermitente de un semáforo",
         "no respetar la luz roja no intermitente de un semaforo",
@@ -2545,11 +2565,12 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
 
 def build_v2_dgt_layout(cuerpo: str, core: Dict[str, Any], interesado: Dict[str, Any]) -> str:
     """
-    Inserta una cabecera completa con datos del expediente y recurrente.
-    Para expedientes municipales, usa el ayuntamiento real si fue detectado.
+    Inserta una cabecera tipo DGT con espacios del modelo oficial sin romper
+    el resto del recurso. Sustituye la cabecera antigua del escrito y conserva
+    desde el extracto literal del boletín hacia abajo.
     """
     core = core or {}
-    interesado = _merge_interesado_with_core(interesado or {}, core)
+    interesado = interesado or {}
 
     def g(k: str, default: str = "") -> str:
         value = interesado.get(k)
@@ -2633,17 +2654,11 @@ def build_v2_dgt_layout(cuerpo: str, core: Dict[str, Any], interesado: Dict[str,
 
     body = _strip_old_header(cuerpo)
 
-    destino_linea = f"A LA {organismo_destino} DE {provincia}"
-    if organismo_destino.startswith("AJUNTAMENT"):
-        destino_linea = f"A L'{organismo_destino}"
-    elif organismo_destino.startswith("AYUNTAMIENTO"):
-        destino_linea = f"AL {organismo_destino}"
-
     header = f"""REFERENCIA: EXPTE. {g("expediente_ref", "........")}
 
 ESCRITO DE ALEGACIONES
 
-{destino_linea}
+A LA {organismo_destino} DE {provincia}
 
 1.- DATOS DE LA DENUNCIA
 
@@ -2751,10 +2766,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
             "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad exige una acreditación completa, verificable y trazable del dispositivo utilizado."
         )
 
-    tpl["cuerpo"] = _strip_duplicate_final_sections(tpl["cuerpo"])
-
-    interesado_resuelto = _merge_interesado_with_core(interesado or {}, core)
-    tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado_resuelto)
+    tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
 
     docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
