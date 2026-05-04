@@ -14,10 +14,12 @@ from email_utils import send_email, build_vehicle_removal_paid_email
 router = APIRouter(prefix="/billing", tags=["billing"])
 
 
-def _env(name: str) -> str:
+def _env(name: str, default: str | None = None) -> str:
     v = (os.getenv(name) or "").strip()
     if not v:
-        raise RuntimeError(f"Falta variable de entorno: {name}")
+        if default is not None:
+            return default
+        raise HTTPException(status_code=500, detail=f"Falta variable de entorno: {name}")
     return v
 
 
@@ -299,7 +301,7 @@ def _run_post_payment_modo_dios(conn, case_id: str):
         }
 
     conn.execute(
-        text("UPDATE cases SET status='manual_review', updated_at=NOW() WHERE id=:id"),
+        text("UPDATE cases SET status='generated', updated_at=NOW() WHERE id=:id"),
         {"id": case_id},
     )
     _append_event(
@@ -324,61 +326,82 @@ def _run_post_payment_modo_dios(conn, case_id: str):
 
 @router.post("/checkout")
 def create_checkout(req: CheckoutRequest):
-    stripe.api_key = _env("STRIPE_SECRET_KEY")
-    frontend_url = _env("FRONTEND_URL").rstrip("/")
+    try:
+        stripe.api_key = _env("STRIPE_SECRET_KEY")
 
-    engine = get_engine()
-    with engine.begin() as conn:
-        auth_meta = _require_case_authorized_before_payment(conn, req.case_id)
+        frontend_url = (
+            os.getenv("FRONTEND_URL")
+            or os.getenv("FRONTEND_BASE_URL")
+            or "https://www.recurretumulta.eu"
+        ).strip().rstrip("/")
 
-        if auth_meta["payment_status"] == "paid":
-            return {
-                "ok": True,
-                "already_paid": True,
-                "redirect": f"{frontend_url}/#/resumen?case={req.case_id}",
-            }
+        engine = get_engine()
+        with engine.begin() as conn:
+            auth_meta = _require_case_authorized_before_payment(conn, req.case_id)
 
-        conn.execute(
-            text(
-                """
-                UPDATE cases
-                SET payment_status='pending',
-                    product_code=:product,
-                    contact_email=:email,
-                    updated_at=NOW()
-                WHERE id=:id
-                """
-            ),
-            {"id": req.case_id, "product": req.product, "email": req.email},
+            if auth_meta["payment_status"] == "paid":
+                return {
+                    "ok": True,
+                    "already_paid": True,
+                    "redirect": f"{frontend_url}/#/resumen?case={req.case_id}",
+                }
+
+            conn.execute(
+                text(
+                    """
+                    UPDATE cases
+                    SET payment_status='pending',
+                        product_code=:product,
+                        contact_email=:email,
+                        updated_at=NOW()
+                    WHERE id=:id
+                    """
+                ),
+                {"id": req.case_id, "product": req.product, "email": req.email},
+            )
+
+            _append_event(
+                conn,
+                req.case_id,
+                "checkout_started",
+                {
+                    "product": req.product,
+                    "email": req.email,
+                    "authorized": True,
+                    "authorized_at": str(auth_meta["authorized_at"] or ""),
+                },
+            )
+
+        price_id = _env("STRIPE_PRICE_ID_DGT")
+        success_url = f"{frontend_url}/#/pago-ok?case={req.case_id}"
+        cancel_url = f"{frontend_url}/#/resumen?case={req.case_id}"
+
+        try:
+            session = stripe.checkout.Session.create(
+                mode="payment",
+                customer_email=str(req.email),
+                line_items=[{"price": price_id, "quantity": 1}],
+                success_url=success_url,
+                cancel_url=cancel_url,
+                metadata={"case_id": req.case_id},
+                locale=req.locale or "es",
+            )
+        except Exception as stripe_err:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error creando sesión de Stripe: {type(stripe_err).__name__}: {stripe_err}",
+            )
+
+        return {"ok": True, "url": session.url}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error en /billing/checkout: {type(e).__name__}: {e}",
         )
 
-        _append_event(
-            conn,
-            req.case_id,
-            "checkout_started",
-            {
-                "product": req.product,
-                "email": req.email,
-                "authorized": True,
-                "authorized_at": str(auth_meta["authorized_at"] or ""),
-            },
-        )
-
-    price_id = _env("STRIPE_PRICE_ID_DGT")
-    success_url = f"{frontend_url}/#/pago-ok?case={req.case_id}"
-    cancel_url = f"{frontend_url}/#/resumen?case={req.case_id}"
-
-    session = stripe.checkout.Session.create(
-        mode="payment",
-        customer_email=req.email,
-        line_items=[{"price": price_id, "quantity": 1}],
-        success_url=success_url,
-        cancel_url=cancel_url,
-        metadata={"case_id": req.case_id},
-        locale=req.locale or "es",
-    )
-
-    return {"ok": True, "url": session.url}
 
 
 @router.post("/webhook")
@@ -395,9 +418,140 @@ async def stripe_webhook(request: Request):
 
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        case_id = session["metadata"]["case_id"]
+        metadata = session.get("metadata") or {}
+        case_id = metadata.get("case_id")
+        service = metadata.get("service")
+        product_code = metadata.get("product_code")
+
+        if not case_id:
+            raise HTTPException(status_code=400, detail="Webhook sin case_id en metadata")
+
         engine = get_engine()
         with engine.begin() as conn:
+            # Caso especial: producto "Eliminar coche".
+            # No debe lanzar IA ni generar recurso DGT.
+            if service == "vehicle_removal" or product_code == "ELIMINAR_COCHE":
+                conn.execute(
+                    text(
+                        """
+                        UPDATE cases
+                        SET payment_status='paid',
+                            status='vehicle_removal_paid',
+                            paid_at=NOW(),
+                            stripe_session_id=:sid,
+                            stripe_payment_intent=:pi,
+                            product_code='ELIMINAR_COCHE',
+                            updated_at=NOW()
+                        WHERE id=:id
+                        """
+                    ),
+                    {"id": case_id, "sid": session["id"], "pi": session.get("payment_intent")},
+                )
+
+                row = conn.execute(
+                    text(
+                        """
+                        SELECT contact_email, COALESCE(interested_data, '{}'::jsonb)
+                        FROM cases
+                        WHERE id=:id
+                        """
+                    ),
+                    {"id": case_id},
+                ).fetchone()
+
+                contact_email = row[0] if row else None
+                interested_data = row[1] if row and isinstance(row[1], dict) else {}
+
+                ev = conn.execute(
+                    text(
+                        """
+                        SELECT payload
+                        FROM events
+                        WHERE case_id=:id
+                          AND type='vehicle_removal_request_created'
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"id": case_id},
+                ).fetchone()
+
+                vehicle_payload = ev[0] if ev and isinstance(ev[0], dict) else {}
+
+                _append_event(
+                    conn,
+                    case_id,
+                    "vehicle_removal_paid",
+                    {
+                        "session": session["id"],
+                        "payment_intent": session.get("payment_intent"),
+                        "service": "vehicle_removal",
+                        "product_code": "ELIMINAR_COCHE",
+                        "email": contact_email or vehicle_payload.get("email") or metadata.get("email"),
+                    },
+                )
+
+                # Email automático al cliente. Nunca debe romper el webhook.
+                try:
+                    target_email = (
+                        contact_email
+                        or vehicle_payload.get("email")
+                        or interested_data.get("email")
+                        or metadata.get("email")
+                    )
+
+                    full_name = (
+                        vehicle_payload.get("full_name")
+                        or vehicle_payload.get("name")
+                        or interested_data.get("full_name")
+                        or metadata.get("full_name")
+                        or "cliente"
+                    )
+
+                    plate = vehicle_payload.get("plate") or metadata.get("plate") or ""
+                    city = vehicle_payload.get("city") or metadata.get("city") or ""
+
+                    if target_email:
+                        subject, body = build_vehicle_removal_paid_email(
+                            case_id=case_id,
+                            full_name=full_name,
+                            plate=plate,
+                            city=city,
+                        )
+                        sent = send_email(
+                            to_email=target_email,
+                            subject=subject,
+                            body=body,
+                        )
+
+                        _append_event(
+                            conn,
+                            case_id,
+                            "vehicle_removal_email_sent" if sent else "vehicle_removal_email_not_sent",
+                            {
+                                "to": target_email,
+                                "sent": bool(sent),
+                            },
+                        )
+                    else:
+                        _append_event(
+                            conn,
+                            case_id,
+                            "vehicle_removal_email_not_sent",
+                            {"reason": "missing_email"},
+                        )
+
+                except Exception as email_err:
+                    _append_event(
+                        conn,
+                        case_id,
+                        "vehicle_removal_email_failed",
+                        {"error": str(email_err)},
+                    )
+
+                return {"ok": True, "case_id": case_id, "service": "vehicle_removal"}
+
+            # Flujo normal DGT / multas.
             conn.execute(
                 text(
                     """
