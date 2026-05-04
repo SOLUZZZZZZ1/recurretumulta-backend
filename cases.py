@@ -184,10 +184,7 @@ def save_case_contact(case_id: str, data: CaseContactIn, background_tasks: Backg
 def save_case_details(case_id: str, data: CaseDetailsIn):
     """
     Guarda los datos del interesado antes de generar la autorización.
-    Estos datos alimentan:
-    - PDF de autorización
-    - pago/Stripe
-    - encabezamiento del recurso
+    Alimenta autorización, pago y recurso.
     """
     engine = get_engine()
 
@@ -245,11 +242,7 @@ def save_case_details(case_id: str, data: CaseDetailsIn):
             },
         )
 
-    return {
-        "ok": True,
-        "case_id": case_id,
-        "interested_data": interested,
-    }
+    return {"ok": True, "case_id": case_id, "interested_data": interested}
 
 
 # =========================
@@ -494,10 +487,7 @@ async def authorize_case(case_id: str, request: Request):
             {
                 "id": case_id,
                 "payload": json.dumps(
-                    {
-                        "ip": ip,
-                        "version": "v1_dgt_homologado",
-                    },
+                    {"ip": ip, "version": "v1_dgt_homologado"},
                     ensure_ascii=False,
                 ),
             },
@@ -516,14 +506,12 @@ async def authorize_case(case_id: str, request: Request):
                 detail=f"Error generando PDF de autorización: {type(e).__name__}: {e}",
             )
 
-    download_url = f"/cases/{case_id}/authorization-pdf"
-
     return {
         "ok": True,
         "case_id": case_id,
         "authorized": True,
         "authorization_pdf": auth_doc.get("document"),
-        "download_url": download_url,
+        "download_url": f"/cases/{case_id}/authorization-pdf",
     }
 
 @router.get("/{case_id}/authorization-pdf")
