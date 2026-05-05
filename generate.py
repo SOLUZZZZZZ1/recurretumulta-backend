@@ -730,10 +730,6 @@ def _resolved_tipo_from_core(core: Dict[str, Any], fallback: str = "generic") ->
 
 
 def get_hecho_para_recurso(core: Dict[str, Any], forced_tipo: Optional[str] = None) -> str:
-    semaforo = "No respetar la luz roja no intermitente de un semáforo"
-    if _is_strong_semaforo_generation_case(core):
-        return semaforo
-
     raw = (
         core.get("hecho_denunciado_resumido")
         or core.get("hecho_denunciado_literal")
@@ -1972,7 +1968,7 @@ def _center_text_line(text: str, width: int = 90) -> str:
     return s.center(width).rstrip()
 
 
-def # removed_upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: Dict[str, Any] = None, inferred_type: str = "", scores: Dict[str, int] | None = None, jurisdiction: str = "") -> Dict[str, str]:
+def _upgrade_generated_template(asunto: str, cuerpo: str, tipo: str = "", core: Dict[str, Any] = None, inferred_type: str = "", scores: Dict[str, int] | None = None, jurisdiction: str = "") -> Dict[str, str]:
     core = core or {}
     asunto_out = "ESCRITO DE ALEGACIONES"
 
@@ -2246,11 +2242,6 @@ def build_camion_template(core: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _is_strong_semaforo_generation_case(core: Dict[str, Any]) -> bool:
-    blob = str(core).lower()
-    return any(x in blob for x in [
-        "luz roja","fase roja","semaforo","semáforo",
-        "llum vermella","semàfor","semafor"
-    ])
     """
     Blindaje de generación: si el expediente habla de luz roja/semáforo,
     nunca debe generarse plantilla de velocidad ni de condiciones del vehículo.
@@ -2284,6 +2275,17 @@ def _is_strong_semaforo_generation_case(core: Dict[str, Any]) -> bool:
         "artículo 146",
         "articulo 146",
         "art. 146",
+        "llum vermella",
+        "llum vermella no intermitent",
+        "no respectar la llum vermella",
+        "semàfor",
+        "semafor",
+        "fase vermella",
+        "linia de detencio",
+        "línia de detenció",
+        "art. 143",
+        "articulo 143",
+        "artículo 143",
     ]
 
     return any(s in blob for s in signals)
@@ -2572,150 +2574,19 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
 
 
 
-
-
-def _split_spanish_full_name(full_name: str) -> Dict[str, str]:
-    clean = re.sub(r"\s+", " ", _safe_str(full_name)).strip()
-    if not clean:
-        return {"nombre": "", "apellido1": "", "apellido2": ""}
-    BAD = {"DATE","DATA","EMISSIO","EMISION","IMPORT","VALOR"}
-    parts = [p for p in clean.split() if p.upper() not in BAD]
-    if len(parts) >= 3:
-        return {"nombre": " ".join(parts[:-2]).upper(), "apellido1": parts[-2].upper(), "apellido2": parts[-1].upper()}
-    if len(parts) == 2:
-        return {"nombre": parts[0].upper(), "apellido1": parts[1].upper(), "apellido2": ""}
-    return {"nombre": clean.upper(), "apellido1": "", "apellido2": ""}
-
-
-def _extract_case_header_fields(core: Dict[str, Any], interesado: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    core = dict(core or {})
-    interesado = dict(interesado or {})
-    merged = dict(core)
-    for k, v in interesado.items():
-        if _safe_str(v).strip():
-            merged[k] = v
-
-    person = _extract_person_fields_from_core(merged)
-    for k, v in person.items():
-        if v and not _safe_str(merged.get(k)).strip():
-            merged[k] = v
-
-    full_name = (
-        _safe_str(merged.get("full_name"))
-        or _safe_str(merged.get("nombre_completo"))
-        or _safe_str(merged.get("nombre_multado"))
-        or _safe_str(merged.get("titular"))
-        or _safe_str(merged.get("interesado"))
-    ).strip()
-
-    if not _safe_str(merged.get("nombre")).strip():
-        split = _split_spanish_full_name(full_name)
-        for k, v in split.items():
-            if v and not _safe_str(merged.get(k)).strip():
-                merged[k] = v
-
-    dni = (
-        _safe_str(merged.get("dni"))
-        or _safe_str(merged.get("dni_nie"))
-        or _safe_str(merged.get("documento_identidad"))
-        or _safe_str(merged.get("document_identitat_infractor"))
-    ).strip()
-    if dni:
-        merged["dni"] = dni.upper()
-        merged["dni_nie"] = dni.upper()
-
-    domicilio = (
-        _safe_str(merged.get("domicilio"))
-        or _safe_str(merged.get("domicilio_notif"))
-        or _safe_str(merged.get("direccion"))
-        or _safe_str(merged.get("direccion_infractor"))
-    ).strip()
-    if domicilio:
-        merged["domicilio"] = domicilio.upper()
-        merged["domicilio_notif"] = domicilio.upper()
-        cp_match = re.search(r"\b(\d{5})\b", domicilio)
-        if cp_match and not _safe_str(merged.get("cp")).strip():
-            merged["cp"] = cp_match.group(1)
-        if cp_match:
-            after_cp = domicilio[cp_match.end():].strip(" ,.-")
-            words = [w for w in after_cp.split() if w]
-            if words:
-                if not _safe_str(merged.get("provincia")).strip() and len(words) >= 2:
-                    merged["provincia"] = words[-1].upper()
-                if not _safe_str(merged.get("localidad")).strip():
-                    merged["localidad"] = (" ".join(words[:-1]) if len(words) >= 2 else words[0]).upper()
-
-    aliases = {
-        "expediente_ref": ["expediente_ref", "numero_expediente", "expediente", "expedient", "n_expediente", "num_expediente"],
-        "lugar_infraccion": ["lugar_infraccion", "lugar", "ubicacion", "ubicación", "via", "vía", "direccion_hecho", "lloc_infraccio"],
-        "fecha_infraccion": ["fecha_infraccion", "fecha_hecho", "fecha_denuncia", "data_infraccio", "fecha_documento"],
-        "matricula": ["matricula", "matrícula", "placa", "plate"],
-        "marca_modelo": ["marca_modelo", "vehiculo", "vehículo", "modelo", "marca"],
-        "organismo": ["organismo", "organo", "órgano", "administracion", "administración"],
-    }
-    for target, keys in aliases.items():
-        if _safe_str(merged.get(target)).strip():
-            continue
-        for key in keys:
-            val = _safe_str(merged.get(key)).strip()
-            if val:
-                merged[target] = val
-                break
-
-    raw_blob = "\n".join([
-        _safe_str(merged.get("raw_text_pdf")),
-        _safe_str(merged.get("raw_text_vision")),
-        _safe_str(merged.get("raw_text_blob")),
-        _safe_str(merged.get("vision_raw_text")),
-        json.dumps(merged, ensure_ascii=False),
-    ])
-    flat = re.sub(r"\s+", " ", raw_blob)
-
-    if not _safe_str(merged.get("expediente_ref")).strip():
-        m = re.search(r"\b([A-Z]\d{6,10})\b", flat, flags=re.I)
-        if m:
-            merged["expediente_ref"] = m.group(1).upper()
-
-    if not _safe_str(merged.get("matricula")).strip():
-        m = re.search(r"\b(\d{4}\s*[A-Z]{3})\b", flat, flags=re.I)
-        if m:
-            merged["matricula"] = re.sub(r"\s+", "", m.group(1)).upper()
-
-    if not _safe_str(merged.get("fecha_infraccion")).strip():
-        m = re.search(r"\b(\d{2}[-/]\d{2}[-/]\d{4})\b", flat)
-        if m:
-            merged["fecha_infraccion"] = m.group(1).replace("/", "-")
-
-    if not _safe_str(merged.get("lugar_infraccion")).strip():
-        # Caso real: Lloc infracció: AV DE JAUME I, 283
-        m = re.search(r"\b(?:lloc infracci[oó]|lugar infracci[oó]n|lloc infracción|lugar)\s*[:\-]?\s*([A-ZÁÉÍÓÚÜÑ0-9 ,./ºª-]{5,100})", flat, flags=re.I)
-        if m:
-            val = re.split(r"\b(?:No respetar|Precepte|Sanció|Punts|Expedient|Identificaci[oó]|Import)\b", m.group(1), flags=re.I)[0]
-            merged["lugar_infraccion"] = re.sub(r"\s+", " ", val).strip(" ,.-").upper()
-
-    if not _safe_str(merged.get("organismo")).strip():
-        if re.search(r"Ajuntament\s+de\s+Terrassa", flat, flags=re.I):
-            merged["organismo"] = "Ajuntament de Terrassa"
-
-    if not _safe_str(merged.get("telefono")).strip():
-        merged["telefono"] = ""
-    if not _safe_str(merged.get("email")).strip():
-        merged["email"] = ""
-
-    return merged
-
-
 def build_v2_dgt_layout(cuerpo: str, core: Dict[str, Any], interesado: Dict[str, Any]) -> str:
     """
     Inserta una cabecera tipo DGT con espacios del modelo oficial sin romper
     el resto del recurso. Sustituye la cabecera antigua del escrito y conserva
     desde el extracto literal del boletín hacia abajo.
     """
-    core = _extract_case_header_fields(core or {}, interesado or {})
-    interesado = {}
+    core = core or {}
+    interesado = interesado or {}
 
     def g(k: str, default: str = "") -> str:
-        value = core.get(k)
+        value = interesado.get(k)
+        if value in (None, "", [], {}):
+            value = core.get(k)
         if value in (None, "", [], {}):
             value = default
         return str(value)
@@ -2857,9 +2728,10 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     if _is_strong_semaforo_generation_case(core):
         tipo = "semaforo"
         core["tipo_infraccion"] = "semaforo"
-        hi = _safe_str(core.get("hecho_imputado"))
-        if not hi or "velocidad" in hi.lower():
-            core["hecho_imputado"] = "No respetar la luz roja no intermitente de un semáforo"
+        core["hecho_imputado"] = "No respetar la luz roja no intermitente de un semáforo"
+        core["hecho_denunciado_literal"] = "No respetar la luz roja no intermitente de un semáforo"
+        core["hecho_denunciado_resumido"] = "No respetar la luz roja no intermitente de un semáforo"
+        core["hecho_para_recurso"] = "No respetar la luz roja no intermitente de un semáforo"
     jurisdiccion = resolve_jurisdiction(core)
 
     bicicleta_ctx = _is_bicicleta_context(core)
@@ -2868,19 +2740,13 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     tpl, final_kind = _select_template(core, tipo, jurisdiccion)
 
     tpl = ensure_tpl_dict(tpl, core)
-    tpl = # removed_upgrade_generated_template(
-        tpl.get("asunto") or "",
-        tpl.get("cuerpo") or "",
-        tipo,
-        core,
-    )
 
     cuerpo = tpl.get("cuerpo") or ""
     if tipo == "atencion" and bicicleta_ctx:
         cuerpo = _sanitize_bicicleta_body(cuerpo)
 
     cuerpo = _inject_tipicidad_material_en_alegaciones(cuerpo, core)
-    # Evitamos inyectar bloques genéricos duplicados antes de FUNDAMENTOS/SUPLICA.
+    cuerpo = _inject_strategic_legal_reinforcement(cuerpo, core, tipo)
     cuerpo = re.sub(r'\bREFUERZO\s*[—-]\s*', '', cuerpo, flags=re.IGNORECASE)
     cuerpo = re.sub(r'\bESTRATEGIA PRINCIPAL\b', 'INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS', cuerpo, flags=re.IGNORECASE)
     cuerpo = re.sub(r'\bFACTORES ADICIONALES\b', 'CONSIDERACIONES COMPLEMENTARIAS', cuerpo, flags=re.IGNORECASE)
@@ -2906,7 +2772,6 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
             "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad exige una acreditación completa, verificable y trazable del dispositivo utilizado."
         )
 
-    core = _extract_case_header_fields(core, interesado or {})
     tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
 
     docx_bytes = build_docx("", tpl["cuerpo"])
