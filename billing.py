@@ -1,385 +1,325 @@
-# billing_auto_modo_dios.py — checkout bloqueado por autorización + Modo Dios automático tras pago
-import json
 import os
+import json
+
 import stripe
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import text
 
 from database import get_engine
-from ai.expediente_engine import run_expediente_ai
-from email_utils import send_email, build_vehicle_removal_paid_email
 
-router = APIRouter(prefix="/billing", tags=["billing"])
-
-
-def _env(name: str) -> str:
-    v = (os.getenv(name) or "").strip()
-    if not v:
-        raise RuntimeError(f"Falta variable de entorno: {name}")
-    return v
+router = APIRouter(tags=["billing"])
 
 
 class CheckoutRequest(BaseModel):
     case_id: str
-    product: str
+    product: str = "dgt"
     email: EmailStr
-    locale: str | None = "es"
+    locale: str = "es"
 
 
-def _pick(mapping, *paths):
-    for path in paths:
-        current = mapping
-        ok = True
-        for part in path.split("."):
-            if isinstance(current, dict) and part in current:
-                current = current.get(part)
-            else:
-                ok = False
-                break
-        if ok and current not in (None, "", [], {}):
-            return current
-    return None
+class ConfirmPaymentRequest(BaseModel):
+    case_id: str
+    session_id: str | None = None
 
 
-def _as_string(value):
-    if value in (None, "", [], {}):
-        return ""
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False)
-    return str(value)
+def _env(name: str, default: str | None = None) -> str:
+    v = (os.getenv(name) or "").strip()
+    if not v:
+        if default is not None:
+            return default
+        raise HTTPException(status_code=500, detail=f"Falta variable de entorno: {name}")
+    return v
 
 
-def _as_confidence(value):
-    if value in (None, "", [], {}):
-        return None
-    if isinstance(value, (int, float)):
-        val = float(value)
-    else:
-        try:
-            val = float(str(value).replace(",", "."))
-        except Exception:
-            return None
-
-    if val > 1:
-        val = val / 100.0
-    if val < 0:
-        val = 0.0
-    if val > 1:
-        val = 1.0
-    return round(val, 4)
-
-
-def _normalize_ai_payload(result):
-    familia = _pick(
-        result,
-        "familia_resuelta",
-        "tipo_infraccion",
-        "classification.family",
-        "classification.familia",
-        "classifier_result.family",
-        "classifier_result.familia",
-        "arguments.family",
-        "arguments.familia",
-        "result.family",
-        "result.familia",
-        "extracted.tipo_infraccion",
-        "extracted.familia_resuelta",
-    )
-
-    confianza = _pick(
-        result,
-        "tipo_infraccion_confidence",
-        "classification.confidence",
-        "classification.confianza",
-        "classifier_result.confidence",
-        "classifier_result.score",
-        "arguments.confidence",
-        "arguments.score",
-        "result.confidence",
-        "result.confianza",
-        "extracted.tipo_infraccion_confidence",
-    )
-
-    hecho = _pick(
-        result,
-        "hecho_para_recurso",
-        "hecho_imputado",
-        "hecho_limpio",
-        "hecho_reconstruido",
-        "hecho_crudo",
-        "arguments.hecho",
-        "arguments.hecho_imputado",
-        "arguments.fact",
-        "arguments.facts",
-        "result.hecho",
-        "result.fact",
-        "extracted.hecho_para_recurso",
-        "extracted.hecho_imputado",
-        "extracted.hecho_limpio",
-        "extracted.hecho_denunciado_literal",
-        "extracted.hecho_denunciado_resumido",
-    )
-
-    admisibilidad = _pick(
-        result,
-        "resultado_estrategico",
-        "admissibility.admissibility",
-        "phase.admissibility",
-        "result.admissibility",
-        "result.admisibilidad",
-        "extracted.resultado_estrategico",
-        "extracted.admissibility.admissibility",
-    )
-
-    accion_raw = _pick(
-        result,
-        "phase.recommended_action",
-        "recommended_action",
-        "phase.recommended_action.action",
-        "recommended_action.action",
-        "result.recommended_action",
-        "result.accion_recomendada",
-        "modelo_defensa",
-        "extracted.modelo_defensa",
-    )
-
-    if isinstance(accion_raw, dict):
-        accion = _pick({"x": accion_raw}, "x.action", "x.accion", "x.name", "x.tipo") or _as_string(accion_raw)
-    else:
-        accion = _as_string(accion_raw)
-
-    familia_str = _as_string(familia)
-    confianza_num = _as_confidence(confianza)
-    hecho_str = _as_string(hecho)
-    admisibilidad_str = _as_string(admisibilidad)
-
-    return {
-        "familia": familia_str,
-        "confianza": confianza_num,
-        "hecho": hecho_str,
-        "admisibilidad": admisibilidad_str,
-        "accion": accion,
-        "classifier_result": {
-            "family": familia_str,
-            "confidence": confianza_num,
-        },
-        "tipo_infraccion": familia_str,
-        "tipo_infraccion_confidence": confianza_num,
-        "hecho_imputado": hecho_str,
-        "raw_result": result,
-    }
+def _append_event(conn, case_id: str, event_type: str, payload: dict | None = None) -> None:
+    try:
+        conn.execute(
+            text(
+                """
+                INSERT INTO events(case_id, type, payload, created_at)
+                VALUES (:case_id, :type, CAST(:payload AS JSONB), NOW())
+                """
+            ),
+            {
+                "case_id": case_id,
+                "type": event_type,
+                "payload": json.dumps(payload or {}, ensure_ascii=False),
+            },
+        )
+    except Exception:
+        pass
 
 
-def _append_event(conn, case_id: str, event_type: str, payload: dict):
-    conn.execute(
-        text(
-            """
-            INSERT INTO events(case_id, type, payload, created_at)
-            VALUES (:id, :type, CAST(:payload AS JSONB), NOW())
-            """
-        ),
-        {"id": case_id, "type": event_type, "payload": json.dumps(payload, ensure_ascii=False)},
-    )
-
-
-def _require_case_authorized_before_payment(conn, case_id: str):
+def _require_case_authorized_before_payment(conn, case_id: str) -> dict:
     row = conn.execute(
         text(
             """
-            SELECT
-                id,
-                COALESCE(authorized, FALSE) AS authorized,
-                authorized_at,
-                COALESCE(payment_status, '') AS payment_status,
-                COALESCE(interested_data, '{}'::jsonb) AS interested_data
+            SELECT payment_status, authorized, authorized_at, contact_email,
+                   COALESCE(interested_data, '{}'::jsonb) AS interested_data
             FROM cases
-            WHERE id = :id
+            WHERE id=:id
             """
         ),
         {"id": case_id},
     ).fetchone()
 
     if not row:
-        raise HTTPException(status_code=404, detail="case_id no existe")
+        raise HTTPException(status_code=404, detail="Expediente no encontrado")
 
-    interested_data = row[4] if isinstance(row[4], dict) else {}
+    interested = row[4] if isinstance(row[4], dict) else {}
+    authorized = bool(row[1])
 
-    missing = []
-    if not interested_data.get("full_name"):
-        missing.append("full_name")
-    if not interested_data.get("dni_nie"):
-        missing.append("dni_nie")
-    if not interested_data.get("domicilio_notif"):
-        missing.append("domicilio_notif")
-    if not interested_data.get("email"):
-        missing.append("email")
-
-    if missing:
+    if not authorized:
         raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "Debes completar los datos del interesado antes de pagar",
-                "missing_fields": missing,
-            },
+            status_code=400,
+            detail="Primero debes completar y subir la autorización firmada.",
         )
 
-    if not bool(row[1]):
-        raise HTTPException(status_code=409, detail="Debes autorizar antes de pagar")
-
     return {
-        "case_id": str(row[0]),
-        "authorized": bool(row[1]),
+        "payment_status": row[0] or "",
+        "authorized": authorized,
         "authorized_at": row[2],
-        "payment_status": row[3],
-        "interested_data": interested_data,
+        "contact_email": row[3] or interested.get("email") or "",
     }
 
 
-def _run_post_payment_modo_dios(conn, case_id: str):
-    result = run_expediente_ai(case_id)
-    if not isinstance(result, dict):
-        result = {"raw_result": result}
-
-    ai_payload = _normalize_ai_payload(result)
-
-    _append_event(conn, case_id, "ai_expediente_result", ai_payload)
-
-    try:
-        generation_result = generate_dgt_for_case(conn, case_id)
-    except Exception as gen_err:
-        conn.execute(
-            text("UPDATE cases SET status='manual_review', updated_at=NOW() WHERE id=:id"),
-            {"id": case_id},
-        )
-        _append_event(
-            conn,
-            case_id,
-            "resource_generation_failed",
-            {
-                "ok": False,
-                "mode": "auto_post_payment",
-                "error": str(gen_err),
-            },
-        )
-        return {
-            "ok": False,
-            "stage": "generation",
-            "error": str(gen_err),
-            "ai_payload": ai_payload,
-        }
-
-    confidence = ai_payload.get("tipo_infraccion_confidence")
-    low_confidence = confidence is None or confidence < 0.80
-
-    if low_confidence:
-        conn.execute(
-            text("UPDATE cases SET status='manual_review', updated_at=NOW() WHERE id=:id"),
-            {"id": case_id},
-        )
-        _append_event(
-            conn,
-            case_id,
-            "auto_review_required_low_confidence",
-            {
-                "ok": True,
-                "mode": "auto_post_payment",
-                "confidence": confidence,
-                "threshold": 0.80,
-                "message": "Confianza inferior al 80%; revisión obligatoria por operador.",
-            },
-        )
-        return {
-            "ok": True,
-            "stage": "manual_review",
-            "confidence": confidence,
-            "ai_payload": ai_payload,
-            "generation_result": generation_result,
-        }
-
+def _mark_paid_core(
+    conn,
+    case_id: str,
+    *,
+    session_id: str | None = None,
+    payment_intent: str | None = None,
+    email: str | None = None,
+    source: str = "unknown",
+) -> None:
+    """
+    Marca el pago como confirmado de forma segura.
+    No depende de que la generación del recurso salga bien.
+    """
     conn.execute(
-        text("UPDATE cases SET status='manual_review', updated_at=NOW() WHERE id=:id"),
-        {"id": case_id},
+        text(
+            """
+            UPDATE cases
+            SET payment_status='paid',
+                authorized=TRUE,
+                status=CASE
+                    WHEN status IN ('generated', 'submitted', 'vehicle_removal_paid') THEN status
+                    ELSE 'manual_review'
+                END,
+                stripe_checkout_session_id=COALESCE(:session_id, stripe_checkout_session_id),
+                stripe_payment_intent_id=COALESCE(:payment_intent, stripe_payment_intent_id),
+                contact_email=COALESCE(:email, contact_email),
+                paid_at=COALESCE(paid_at, NOW()),
+                updated_at=NOW()
+            WHERE id=:id
+            """
+        ),
+        {
+            "id": case_id,
+            "session_id": session_id,
+            "payment_intent": payment_intent,
+            "email": email,
+        },
     )
+
     _append_event(
         conn,
         case_id,
-        "resource_generated_auto",
+        "payment_confirmed",
         {
-            "ok": True,
-            "mode": "auto_post_payment",
-            "confidence": confidence,
-            "threshold": 0.80,
+            "source": source,
+            "session_id": session_id,
+            "payment_intent": payment_intent,
+            "email": email,
         },
     )
-    return {
-        "ok": True,
-        "stage": "generated",
-        "confidence": confidence,
-        "ai_payload": ai_payload,
-        "generation_result": generation_result,
-    }
 
 
-@router.post("/checkout")
-def create_checkout(req: CheckoutRequest):
-    stripe.api_key = _env("STRIPE_SECRET_KEY")
-    frontend_url = _env("FRONTEND_URL").rstrip("/")
+def _try_generate_after_payment(conn, case_id: str) -> None:
+    """
+    Intenta generar DOCX/PDF. Si falla, no rompe el pago.
+    El caso queda en manual_review para reintento desde OPS.
+    """
+    try:
+        from generate import generate_dgt_for_case
 
-    engine = get_engine()
-    with engine.begin() as conn:
-        auth_meta = _require_case_authorized_before_payment(conn, req.case_id)
-
-        if auth_meta["payment_status"] == "paid":
-            return {
-                "ok": True,
-                "already_paid": True,
-                "redirect": f"{frontend_url}/#/resumen?case={req.case_id}",
-            }
+        generate_dgt_for_case(conn, case_id)
 
         conn.execute(
             text(
                 """
                 UPDATE cases
-                SET payment_status='pending',
-                    product_code=:product,
-                    contact_email=:email,
+                SET status='generated',
                     updated_at=NOW()
                 WHERE id=:id
                 """
             ),
-            {"id": req.case_id, "product": req.product, "email": req.email},
+            {"id": case_id},
         )
 
+        _append_event(conn, case_id, "resource_generated_after_payment", {"ok": True})
+
+    except Exception as gen_err:
         _append_event(
             conn,
-            req.case_id,
-            "checkout_started",
-            {
-                "product": req.product,
-                "email": req.email,
-                "authorized": True,
-                "authorized_at": str(auth_meta["authorized_at"] or ""),
-            },
+            case_id,
+            "resource_generation_after_payment_failed",
+            {"error": f"{type(gen_err).__name__}: {gen_err}"},
         )
 
-    price_id = _env("STRIPE_PRICE_ID_DGT")
-    success_url = f"{frontend_url}/#/pago-ok?case={req.case_id}"
-    cancel_url = f"{frontend_url}/#/resumen?case={req.case_id}"
 
-    session = stripe.checkout.Session.create(
-        mode="payment",
-        customer_email=req.email,
-        line_items=[{"price": price_id, "quantity": 1}],
-        success_url=success_url,
-        cancel_url=cancel_url,
-        metadata={"case_id": req.case_id},
-        locale=req.locale or "es",
-    )
+@router.get("/billing/status/{case_id}")
+@router.get("/status/{case_id}")
+def billing_status(case_id: str):
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT payment_status, authorized, status, contact_email
+                FROM cases
+                WHERE id=:id
+                """
+            ),
+            {"id": case_id},
+        ).fetchone()
 
-    return {"ok": True, "url": session.url}
+    if not row:
+        raise HTTPException(status_code=404, detail="Expediente no encontrado")
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "payment_status": row[0] or "",
+        "authorized": bool(row[1]),
+        "status": row[2] or "",
+        "email": row[3] or "",
+    }
 
 
+@router.post("/billing/checkout")
+@router.post("/checkout")
+def create_checkout(req: CheckoutRequest):
+    try:
+        stripe.api_key = _env("STRIPE_SECRET_KEY")
+
+        frontend_url = (
+            os.getenv("FRONTEND_URL")
+            or os.getenv("FRONTEND_BASE_URL")
+            or "https://www.recurretumulta.eu"
+        ).strip().rstrip("/")
+
+        engine = get_engine()
+        with engine.begin() as conn:
+            auth_meta = _require_case_authorized_before_payment(conn, req.case_id)
+
+            if auth_meta["payment_status"] == "paid":
+                return {
+                    "ok": True,
+                    "already_paid": True,
+                    "redirect": f"{frontend_url}/#/resumen?case={req.case_id}",
+                }
+
+            conn.execute(
+                text(
+                    """
+                    UPDATE cases
+                    SET payment_status='pending',
+                        product_code=:product,
+                        contact_email=:email,
+                        updated_at=NOW()
+                    WHERE id=:id
+                    """
+                ),
+                {"id": req.case_id, "product": req.product, "email": str(req.email)},
+            )
+
+            _append_event(
+                conn,
+                req.case_id,
+                "checkout_started",
+                {
+                    "product": req.product,
+                    "email": str(req.email),
+                    "authorized": True,
+                    "authorized_at": str(auth_meta["authorized_at"] or ""),
+                },
+            )
+
+        price_id = _env("STRIPE_PRICE_ID_DGT")
+
+        # Doble seguridad: Stripe devolverá el session_id a pago-ok.
+        success_url = f"{frontend_url}/#/pago-ok?case={req.case_id}&session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = f"{frontend_url}/#/resumen?case={req.case_id}"
+
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            customer_email=str(req.email),
+            line_items=[{"price": price_id, "quantity": 1}],
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={"case_id": req.case_id},
+            locale=req.locale or "es",
+        )
+
+        return {"ok": True, "url": session.url}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error en /billing/checkout: {type(e).__name__}: {e}",
+        )
+
+
+@router.post("/billing/confirm")
+@router.post("/confirm")
+def confirm_payment(req: ConfirmPaymentRequest):
+    """
+    Doble seguridad: pago-ok llama aquí al volver de Stripe.
+    Verifica en Stripe y marca paid aunque el webhook falle o tarde.
+    """
+    stripe.api_key = _env("STRIPE_SECRET_KEY")
+
+    session_id = (req.session_id or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Falta session_id")
+
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"No se pudo verificar Stripe: {type(e).__name__}: {e}")
+
+    metadata = getattr(session, "metadata", None) or {}
+    stripe_case_id = metadata.get("case_id")
+    payment_status = getattr(session, "payment_status", "") or ""
+    payment_intent = getattr(session, "payment_intent", None)
+    customer_email = getattr(session, "customer_email", None)
+
+    if stripe_case_id and stripe_case_id != req.case_id:
+        raise HTTPException(status_code=400, detail="La sesión de Stripe no corresponde a este expediente")
+
+    if payment_status != "paid":
+        raise HTTPException(status_code=400, detail=f"Stripe aún no confirma pago paid. Estado: {payment_status}")
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        _mark_paid_core(
+            conn,
+            req.case_id,
+            session_id=session_id,
+            payment_intent=str(payment_intent or ""),
+            email=str(customer_email or ""),
+            source="frontend_confirm",
+        )
+        _try_generate_after_payment(conn, req.case_id)
+
+    return {"ok": True, "case_id": req.case_id, "payment_status": "paid"}
+
+
+@router.post("/billing/webhook")
 @router.post("/webhook")
 async def stripe_webhook(request: Request):
     payload = await request.body()
@@ -402,92 +342,23 @@ async def stripe_webhook(request: Request):
         session_id = data_object.get("id")
         payment_intent = data_object.get("payment_intent")
         customer_email = data_object.get("customer_email") or (data_object.get("customer_details") or {}).get("email")
+        payment_status = data_object.get("payment_status") or "paid"
 
         if not case_id:
             return {"ok": True, "ignored": "missing_case_id"}
 
         engine = get_engine()
         with engine.begin() as conn:
-            conn.execute(
-                text("""
-                    UPDATE cases
-                    SET payment_status='paid',
-                        authorized=TRUE,
-                        status=CASE
-                            WHEN status IN ('generated', 'submitted', 'vehicle_removal_paid') THEN status
-                            ELSE 'manual_review'
-                        END,
-                        stripe_checkout_session_id=COALESCE(:session_id, stripe_checkout_session_id),
-                        stripe_payment_intent_id=COALESCE(:payment_intent, stripe_payment_intent_id),
-                        contact_email=COALESCE(:email, contact_email),
-                        paid_at=COALESCE(paid_at, NOW()),
-                        updated_at=NOW()
-                    WHERE id=:id
-                """),
-                {
-                    "id": case_id,
-                    "session_id": session_id,
-                    "payment_intent": payment_intent,
-                    "email": customer_email,
-                },
-            )
-
-            _append_event(
+            _mark_paid_core(
                 conn,
                 case_id,
-                "payment_confirmed",
-                {
-                    "source": "stripe_webhook",
-                    "session_id": session_id,
-                    "payment_intent": payment_intent,
-                },
+                session_id=session_id,
+                payment_intent=payment_intent,
+                email=customer_email,
+                source="stripe_webhook",
             )
 
-            try:
-                from generate import generate_dgt_for_case
-                generate_dgt_for_case(conn, case_id)
-                conn.execute(
-                    text("""
-                        UPDATE cases
-                        SET status='generated',
-                            updated_at=NOW()
-                        WHERE id=:id
-                    """),
-                    {"id": case_id},
-                )
-                _append_event(conn, case_id, "resource_generated_after_payment", {"ok": True})
-            except Exception as gen_err:
-                _append_event(
-                    conn,
-                    case_id,
-                    "resource_generation_after_payment_failed",
-                    {"error": f"{type(gen_err).__name__}: {gen_err}"},
-                )
+            if payment_status == "paid":
+                _try_generate_after_payment(conn, case_id)
 
     return {"ok": True}
-
-
-@router.get("/status/{case_id}")
-def payment_status(case_id: str):
-    engine = get_engine()
-    with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                """
-                SELECT payment_status, paid_at, product_code, authorized, status
-                FROM cases WHERE id=:id
-                """
-            ),
-            {"id": case_id},
-        ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="case_id no existe")
-
-    return {
-        "ok": True,
-        "payment_status": row.payment_status,
-        "paid_at": row.paid_at,
-        "product_code": row.product_code,
-        "authorized": bool(row.authorized),
-        "status": row.status,
-    }
