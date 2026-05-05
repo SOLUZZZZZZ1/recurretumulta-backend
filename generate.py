@@ -729,7 +729,73 @@ def _resolved_tipo_from_core(core: Dict[str, Any], fallback: str = "generic") ->
     return fallback
 
 
+
+def _normalize_accents_for_match(value: str) -> str:
+    return (
+        _safe_str(value).lower()
+        .replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
+        .replace("à", "a").replace("è", "e").replace("ì", "i").replace("ò", "o").replace("ù", "u")
+        .replace("ï", "i").replace("ü", "u").replace("ç", "c")
+    )
+
+
+def _canonical_hecho_semaforo(core: Dict[str, Any]) -> str:
+    blob = "\n".join([
+        _safe_str((core or {}).get("raw_text_pdf")),
+        _safe_str((core or {}).get("raw_text_vision")),
+        _safe_str((core or {}).get("raw_text_blob")),
+        _safe_str((core or {}).get("vision_raw_text")),
+        _safe_str((core or {}).get("hecho_denunciado_literal")),
+        _safe_str((core or {}).get("hecho_denunciado_resumido")),
+        _safe_str((core or {}).get("hecho_imputado_textual")),
+        _safe_str((core or {}).get("hecho_imputado")),
+        _safe_str((core or {}).get("hecho_para_recurso")),
+        json.dumps(core or {}, ensure_ascii=False),
+    ])
+    b = _normalize_accents_for_match(blob)
+    signals = [
+        "no respetar la luz roja",
+        "luz roja no intermitente",
+        "luz roja",
+        "fase roja",
+        "semaforo",
+        "linea de detencion",
+        "art. 143",
+        "articulo 143",
+        "art. 146",
+        "precepto aplicable",
+        "no respectar la llum vermella",
+        "llum vermella no intermitent",
+        "llum vermella",
+        "fase vermella",
+        "semafor",
+        "linia de detencio",
+    ]
+    if any(s in b for s in signals):
+        return "No respetar la luz roja no intermitente de un semáforo"
+    return ""
+
+
+def _looks_like_ocr_header_not_fact(value: str) -> bool:
+    low = _normalize_accents_for_match(value)
+    bad = [
+        "notificacio de denuncia",
+        "notificacion de denuncia",
+        "document identitat infractor",
+        "documento identidad infractor",
+        "data emissio",
+        "fecha de emision",
+        "expedient / expedient",
+        "identificador valor",
+    ]
+    return any(x in low for x in bad)
+
+
 def get_hecho_para_recurso(core: Dict[str, Any], forced_tipo: Optional[str] = None) -> str:
+    semaforo_hecho = _canonical_hecho_semaforo(core)
+    if semaforo_hecho:
+        return semaforo_hecho
+
     raw = (
         core.get("hecho_denunciado_resumido")
         or core.get("hecho_denunciado_literal")
@@ -952,7 +1018,7 @@ def _semaforo_positive_signals(blob: str) -> int:
         ("rebasar la linea de detencion sin respetar la luz roja", 8),
         ("no detenerse ante semaforo", 5),
         ("reanudar la marcha con semaforo", 5),
-        ("articulo 146", 5),
+        ("precepto aplicable", 5),
         ("art. 146", 5),
     ]
     for token, pts in weighted:
@@ -1667,7 +1733,7 @@ def _build_fundamentos_derecho(tipo: str = "", core: Dict[str, Any] = None) -> s
 
     elif tipo in ("semaforo", "municipal_semaforo"):
         fundamentos.append(
-            "CUARTO.– Conforme al artículo 146 del Reglamento General de Circulación, las señales luminosas regulan la prioridad de paso, "
+            "CUARTO.– Conforme a los preceptos del Reglamento General de Circulación relativos a señales luminosas, las señales luminosas regulan la prioridad de paso, "
             "exigiendo la detención ante luz roja no intermitente."
         )
         fundamentos.append(
@@ -2243,42 +2309,9 @@ def build_camion_template(core: Dict[str, Any]) -> Dict[str, str]:
 
 def _is_strong_semaforo_generation_case(core: Dict[str, Any]) -> bool:
     """
-    Blindaje de generación: si el expediente habla de luz roja/semáforo,
-    nunca debe generarse plantilla de velocidad ni de condiciones del vehículo.
+    Blindaje semáforo: español + catalán.
     """
-    blob = "\n".join([
-        _safe_str(core.get("raw_text_pdf")),
-        _safe_str(core.get("raw_text_vision")),
-        _safe_str(core.get("raw_text_blob")),
-        _safe_str(core.get("vision_raw_text")),
-        _safe_str(core.get("hecho_denunciado_literal")),
-        _safe_str(core.get("hecho_denunciado_resumido")),
-        _safe_str(core.get("hecho_imputado_textual")),
-        _safe_str(core.get("hecho_imputado")),
-        _safe_str(core.get("hecho_para_recurso")),
-        _safe_str(core.get("hecho_crudo")),
-    ]).lower()
-
-    signals = [
-        "no respetar la luz roja",
-        "no respetar la luz roja no intermitente",
-        "no respetar la luz roja no intermitente de un semáforo",
-        "no respetar la luz roja no intermitente de un semaforo",
-        "luz roja no intermitente",
-        "luz roja",
-        "fase roja",
-        "fase del rojo",
-        "semáforo",
-        "semaforo",
-        "línea de detención",
-        "linea de detencion",
-        "artículo 146",
-        "articulo 146",
-        "art. 146",
-    ]
-
-    return any(s in blob for s in signals)
-
+    return bool(_canonical_hecho_semaforo(core))
 
 def build_semaforo_pro_template(core: Dict[str, Any]) -> Dict[str, str]:
     """
@@ -2692,6 +2725,69 @@ def _extract_case_header_fields(core: Dict[str, Any], interesado: Optional[Dict[
     if not _safe_str(merged.get("email")).strip():
         merged["email"] = ""
 
+    # Refuerzo final: extraer datos personales aunque vengan solo en OCR/cabecera.
+    raw_blob2 = raw_blob
+    flat2 = re.sub(r"\s+", " ", raw_blob2).strip()
+    upper2 = flat2.upper()
+
+    if not _safe_str(merged.get("dni")).strip():
+        m = re.search(r"\b([XYZ]?\d{7,8}[A-Z])\b", flat2, flags=re.I)
+        if m:
+            merged["dni"] = m.group(1).upper()
+            merged["dni_nie"] = m.group(1).upper()
+
+    if not _safe_str(merged.get("nombre")).strip() and _safe_str(merged.get("dni")).strip():
+        dni_val = _safe_str(merged.get("dni")).upper()
+        idx = upper2.find(dni_val)
+        window = flat2[idx + len(dni_val): idx + len(dni_val) + 350] if idx >= 0 else ""
+        window = re.split(
+            r"\b(?:CA|C/|CALLE|CARRER|AV|AVDA|AVENIDA|PASEO|PASSEIG|PLAZA|CL|CTRA|DOMICILI|DOMICILIO)\b",
+            window,
+            maxsplit=1,
+            flags=re.I,
+        )[0]
+        window = re.sub(r"\b(?:DOCUMENT|IDENTITAT|INFRACTOR|EXPEDIENT|EXPEDIENTE|DATA|FECHA|EMISSIÓ|EMISION|IMPORT|VALOR)\b", " ", window, flags=re.I)
+        candidates = re.findall(r"\b([A-ZÁÉÍÓÚÜÑÀÈÍÒÚÇ]{2,}(?:\s+[A-ZÁÉÍÓÚÜÑÀÈÍÒÚÇ]{2,}){1,4})\b", window, flags=re.I)
+        for cand in candidates:
+            words = [w for w in re.sub(r"[^A-ZÁÉÍÓÚÜÑÀÈÍÒÚÇa-záéíóúüñàèíòúç\s]", " ", cand).split() if w]
+            if 2 <= len(words) <= 5:
+                full = " ".join(words)
+                split = _split_spanish_full_name(full)
+                for k, v in split.items():
+                    if v and not _safe_str(merged.get(k)).strip():
+                        merged[k] = v
+                if not _safe_str(merged.get("full_name")).strip():
+                    merged["full_name"] = full.upper()
+                break
+
+    if not _safe_str(merged.get("domicilio")).strip():
+        addr_patterns = [
+            r"\b((?:CA|C/|CALLE|CARRER|AV|AVDA|AVENIDA|PASEO|PASSEIG|PLAZA|CL)\s+[A-ZÁÉÍÓÚÜÑÀÈÍÒÚÇ0-9\s,.-]{5,120}?\b\d{5}\b\s+[A-ZÁÉÍÓÚÜÑÀÈÍÒÚÇ\s.-]{2,80})",
+            r"\b([A-ZÁÉÍÓÚÜÑÀÈÍÒÚÇ\s.-]{3,80},?\s*\d{1,4}\s*,?\s*\b\d{5}\b\s+[A-ZÁÉÍÓÚÜÑÀÈÍÒÚÇ\s.-]{2,80})",
+        ]
+        for pat in addr_patterns:
+            m_addr = re.search(pat, flat2, flags=re.I)
+            if m_addr:
+                domicilio = re.sub(r"\s+", " ", m_addr.group(1)).strip(" ,.-").upper()
+                merged["domicilio"] = domicilio
+                merged["domicilio_notif"] = domicilio
+                cp_match = re.search(r"\b(\d{5})\b", domicilio)
+                if cp_match:
+                    merged["cp"] = merged.get("cp") or cp_match.group(1)
+                    after_cp = domicilio[cp_match.end():].strip(" ,.-")
+                    words = [w for w in after_cp.split() if w]
+                    if len(words) >= 2:
+                        merged["provincia"] = merged.get("provincia") or words[-1].upper()
+                        merged["localidad"] = merged.get("localidad") or " ".join(words[:-1]).upper()
+                    elif len(words) == 1:
+                        merged["localidad"] = merged.get("localidad") or words[0].upper()
+                break
+
+    if not _safe_str(merged.get("fecha_infraccion")).strip():
+        m = re.search(r"\b(20\d{2})(\d{2})(\d{2})\b", flat2)
+        if m:
+            merged["fecha_infraccion"] = f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+
     return merged
 
 
@@ -2840,16 +2936,18 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         and not core.get("hecho_denunciado_resumido")
     ):
         literal = extract_hecho_denunciado_literal(core)
-        if literal:
+        if literal and not _looks_like_ocr_header_not_fact(literal):
             core["hecho_denunciado_literal"] = literal
 
     tipo = forced_tipo or _resolved_tipo_from_core(core, fallback="generic")
     if _is_strong_semaforo_generation_case(core):
         tipo = "semaforo"
         core["tipo_infraccion"] = "semaforo"
-        hi = _safe_str(core.get("hecho_imputado"))
-        if not hi or "velocidad" in hi.lower():
-            core["hecho_imputado"] = "No respetar la luz roja no intermitente de un semáforo"
+        semaforo_hecho = _canonical_hecho_semaforo(core)
+        core["hecho_imputado"] = semaforo_hecho
+        core["hecho_denunciado_literal"] = semaforo_hecho
+        core["hecho_denunciado_resumido"] = semaforo_hecho
+        core["hecho_para_recurso"] = semaforo_hecho
     jurisdiccion = resolve_jurisdiction(core)
 
     bicicleta_ctx = _is_bicicleta_context(core)
@@ -2858,12 +2956,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     tpl, final_kind = _select_template(core, tipo, jurisdiccion)
 
     tpl = ensure_tpl_dict(tpl, core)
-    tpl = _upgrade_generated_template(
-        tpl.get("asunto") or "",
-        tpl.get("cuerpo") or "",
-        tipo,
-        core,
-    )
+    # No envolver con _upgrade_generated_template: duplicaba cabecera, alegaciones, fundamentos y suplico.
 
     cuerpo = tpl.get("cuerpo") or ""
     if tipo == "atencion" and bicicleta_ctx:
@@ -2896,8 +2989,10 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
             "La imputación por exceso de velocidad exige acreditación técnica completa y verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad exige una acreditación completa, verificable y trazable del dispositivo utilizado."
         )
 
+    tpl["cuerpo"] = _clean_final_resource_body(tpl["cuerpo"])
     core = _extract_case_header_fields(core, interesado or {})
     tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
+    tpl["cuerpo"] = _clean_final_resource_body(tpl["cuerpo"])
 
     docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
@@ -2919,8 +3014,8 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         """),
         {
             "case_id": case_id,
-            "kind_docx": f"{final_kind}_docx",
-            "kind_pdf": f"{final_kind}_pdf",
+            "kind_docx": "recurso_docx",
+            "kind_pdf": "recurso_pdf",
             "bucket": b2_bucket,
             "key_docx": b2_key_docx,
             "key_pdf": b2_key_pdf,
