@@ -8,7 +8,7 @@ from sqlalchemy import text
 
 from database import get_engine
 
-router = APIRouter(prefix="/billing", tags=["billing"])
+router = APIRouter(tags=["billing"])
 
 
 class CheckoutRequest(BaseModel):
