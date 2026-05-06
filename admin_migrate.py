@@ -286,11 +286,7 @@ def migrate_dgt_dev_submissions(x_admin_token: str | None = Header(default=None,
     applied = _run(engine, ddl)
     return MigrateResponse(ok=True, message="Migración dgt_dev_submissions aplicada.", created=applied)
 
-# admin_migrate.py — migraciones admin (OPS FINAL RESOURCES añadido)
 
-Añadir este bloque completo al final de `admin_migrate.py`
-
-```python
 # =========================================================
 # MIGRACIÓN: OPS FINAL RESOURCES
 # =========================================================
@@ -328,41 +324,24 @@ def migrate_ops_final_resources(
             """,
         ),
         (
+            "idx_ops_final_resources_case_version",
+            """
+            CREATE INDEX IF NOT EXISTS idx_ops_final_resources_case_version
+            ON ops_final_resources(case_id, version DESC);
+            """,
+        ),
+        (
             "idx_ops_final_resources_final",
             """
             CREATE INDEX IF NOT EXISTS idx_ops_final_resources_final
-            ON ops_final_resources(is_final);
+            ON ops_final_resources(case_id, is_final);
             """,
         ),
     ]
 
     applied = _run(engine, ddl)
-
     return MigrateResponse(
         ok=True,
         message="Migración ops_final_resources aplicada.",
         created=applied,
     )
-```
-
----
-
-# Endpoint para ejecutar migración
-
-```bash
-POST /admin/migrate/ops_final_resources
-```
-
----
-
-# Resultado
-
-Se crea:
-
-* tabla `ops_final_resources`
-* versiones de recurso final
-* drafts
-* finales bloqueados
-* editor OPS profesional
-* base para DOCX/PDF finales
-* base para envío expediente completo
