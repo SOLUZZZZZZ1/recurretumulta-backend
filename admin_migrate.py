@@ -285,3 +285,84 @@ def migrate_dgt_dev_submissions(x_admin_token: str | None = Header(default=None,
 
     applied = _run(engine, ddl)
     return MigrateResponse(ok=True, message="Migración dgt_dev_submissions aplicada.", created=applied)
+
+# admin_migrate.py — migraciones admin (OPS FINAL RESOURCES añadido)
+
+Añadir este bloque completo al final de `admin_migrate.py`
+
+```python
+# =========================================================
+# MIGRACIÓN: OPS FINAL RESOURCES
+# =========================================================
+
+@router.post("/ops_final_resources", response_model=MigrateResponse)
+def migrate_ops_final_resources(
+    x_admin_token: str | None = Header(default=None, alias="x-admin-token")
+):
+    _require_admin_token(x_admin_token)
+
+    from database import get_engine
+    engine = get_engine()
+
+    ddl = [
+        (
+            "ops_final_resources_table",
+            """
+            CREATE TABLE IF NOT EXISTS ops_final_resources (
+              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+              case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+              content TEXT NOT NULL,
+              version INT NOT NULL DEFAULT 1,
+              is_final BOOLEAN NOT NULL DEFAULT FALSE,
+              created_by TEXT,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """,
+        ),
+        (
+            "idx_ops_final_resources_case",
+            """
+            CREATE INDEX IF NOT EXISTS idx_ops_final_resources_case
+            ON ops_final_resources(case_id);
+            """,
+        ),
+        (
+            "idx_ops_final_resources_final",
+            """
+            CREATE INDEX IF NOT EXISTS idx_ops_final_resources_final
+            ON ops_final_resources(is_final);
+            """,
+        ),
+    ]
+
+    applied = _run(engine, ddl)
+
+    return MigrateResponse(
+        ok=True,
+        message="Migración ops_final_resources aplicada.",
+        created=applied,
+    )
+```
+
+---
+
+# Endpoint para ejecutar migración
+
+```bash
+POST /admin/migrate/ops_final_resources
+```
+
+---
+
+# Resultado
+
+Se crea:
+
+* tabla `ops_final_resources`
+* versiones de recurso final
+* drafts
+* finales bloqueados
+* editor OPS profesional
+* base para DOCX/PDF finales
+* base para envío expediente completo
