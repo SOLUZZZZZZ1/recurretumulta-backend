@@ -1340,18 +1340,20 @@ def _apply_strategy_mode_to_body(body: str, core: Dict[str, Any], tipo: str) -> 
 
 def _fix_alegacion_titles(text: str) -> str:
     txt = _safe_str(text)
-    txt = re.sub(
-        r"ALEGACIÓN\s+—\s*\*\*insuficiencia probatoria\*\*\s+Y\s+VULNERACIÓN\s+DE\s+GARANTÍAS",
-        "ALEGACIÓN — INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS",
-        txt,
-        flags=re.IGNORECASE,
-    )
-    txt = re.sub(
-        r"ALEGACIÓN\s+—\s*insuficiencia probatoria\s+Y\s+VULNERACIÓN\s+DE\s+GARANTÍAS",
-        "ALEGACIÓN — INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS",
-        txt,
-        flags=re.IGNORECASE,
-    )
+
+    # Normalización de títulos de alegaciones para evitar mezclas de
+    # mayúsculas/minúsculas producidas por el postprocesado markdown.
+    title_replacements = [
+        (r"ALEGACIÓN\s+—\s*\*\*insuficiencia probatoria\*\*\s+Y\s+VULNERACIÓN\s+DE\s+GARANTÍAS", "ALEGACIÓN — INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS"),
+        (r"ALEGACIÓN\s+—\s*insuficiencia probatoria\s+Y\s+VULNERACIÓN\s+DE\s+GARANTÍAS", "ALEGACIÓN — INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS"),
+        (r"ALEGACIÓN\s+—\s*\*\*nulidad de pleno derecho\*\*", "ALEGACIÓN — NULIDAD DE PLENO DERECHO"),
+        (r"ALEGACIÓN\s+—\s*nulidad de pleno derecho", "ALEGACIÓN — NULIDAD DE PLENO DERECHO"),
+        (r"ALEGACIÓN\s+TERCERA\s+—\s+SOLICITUD\s+DE\s+expediente íntegro\s+Y\s+PRUEBA\s+TÉCNICA", "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA"),
+        (r"SOLICITUD\s+DE\s+expediente íntegro\s+Y\s+PRUEBA\s+TÉCNICA", "SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA"),
+    ]
+    for patt, repl in title_replacements:
+        txt = re.sub(patt, repl, txt, flags=re.IGNORECASE)
+
     txt = re.sub(r"^ALEGACIÓN ADICIONAL\s+—", "ALEGACIÓN SEXTA —", txt, flags=re.MULTILINE)
 
     for label in ["PRIMERA", "SEGUNDA", "TERCERA", "CUARTA", "QUINTA", "SEXTA"]:
@@ -2970,6 +2972,10 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     cuerpo = _apply_premium_legal_formatting(cuerpo)
     cuerpo = _fix_alegacion_titles(cuerpo)
     cuerpo = _upgrade_bullets(cuerpo)
+    # Limpieza final después de insertar extracto y refuerzos: evita duplicados
+    # de "Extracto literal del boletín" y deja títulos homogéneos.
+    cuerpo = _clean_final_resource_body(cuerpo)
+    cuerpo = _fix_alegacion_titles(cuerpo)
     tpl["cuerpo"] = fix_roman_headings(cuerpo)
 
     if tipo == "velocidad":
