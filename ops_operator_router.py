@@ -9,6 +9,9 @@ from sqlalchemy import text
 
 from database import get_engine
 from generate import GenerateRequest, generate_dgt
+from b2_storage import upload_bytes
+from docx_builder import build_docx
+from pdf_builder import build_pdf
 
 router = APIRouter(prefix="/ops/cases", tags=["ops-operator"])
 
@@ -69,6 +72,17 @@ class SaveAiOverridesBody(BaseModel):
     familia: Optional[str] = None
     hecho: Optional[str] = None
     motivo: str = Field(..., min_length=3)
+
+
+class FinalResourceBody(BaseModel):
+    content: str = Field(..., min_length=1)
+    created_by: Optional[str] = None
+
+
+class SendCompleteBody(BaseModel):
+    destination: Optional[str] = None
+    channel: str = "ops"
+    note: Optional[str] = None
 
 
 def _case_or_404(conn, case_id: str):
@@ -226,6 +240,310 @@ def _load_ai_overrides(conn, case_id: str) -> Dict[str, Any]:
         "hecho": hecho,
         "motivo": motivo,
         "saved_at": saved_at,
+    }
+
+
+
+def _next_final_resource_version(conn, case_id: str) -> int:
+    row = conn.execute(
+        text("SELECT COALESCE(MAX(version), 0) + 1 FROM ops_final_resources WHERE case_id = :id"),
+        {"id": case_id},
+    ).fetchone()
+    return int(row[0] or 1)
+
+
+def _latest_final_resource(conn, case_id: str) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        text(
+            '''
+            SELECT id, content, version, is_final, created_by, created_at, updated_at
+            FROM ops_final_resources
+            WHERE case_id = :id
+            ORDER BY version DESC, updated_at DESC
+            LIMIT 1
+            '''
+        ),
+        {"id": case_id},
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": str(row[0]),
+        "content": row[1] or "",
+        "version": int(row[2] or 1),
+        "is_final": bool(row[3]),
+        "created_by": row[4] or "",
+        "created_at": row[5],
+        "updated_at": row[6],
+    }
+
+
+@router.get("/{case_id}/final-resource")
+def get_final_resource(
+    case_id: str,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+):
+    require_operator_token(x_operator_token)
+    engine = get_engine()
+    with engine.begin() as conn:
+        _case_or_404(conn, case_id)
+        resource = _latest_final_resource(conn, case_id)
+        status = _get_status(conn, case_id)
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "status": status,
+        "resource": resource,
+    }
+
+
+@router.post("/{case_id}/final-resource")
+def save_final_resource_draft(
+    case_id: str,
+    body: FinalResourceBody,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+):
+    require_operator_token(x_operator_token)
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="El recurso no puede estar vacío")
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        _case_or_404(conn, case_id)
+        version = _next_final_resource_version(conn, case_id)
+
+        row = conn.execute(
+            text(
+                '''
+                INSERT INTO ops_final_resources(case_id, content, version, is_final, created_by, created_at, updated_at)
+                VALUES (:case_id, :content, :version, FALSE, :created_by, NOW(), NOW())
+                RETURNING id, created_at, updated_at
+                '''
+            ),
+            {
+                "case_id": case_id,
+                "content": content,
+                "version": version,
+                "created_by": (body.created_by or "operator").strip() or "operator",
+            },
+        ).fetchone()
+
+        _append_event(
+            conn,
+            case_id,
+            "ops_final_resource_draft_saved",
+            {
+                "resource_id": str(row[0]),
+                "version": version,
+                "chars": len(content),
+                "created_by": (body.created_by or "operator").strip() or "operator",
+                "at": _utcnow().isoformat(),
+            },
+        )
+        status = _get_status(conn, case_id)
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "status": status,
+        "resource": {
+            "id": str(row[0]),
+            "content": content,
+            "version": version,
+            "is_final": False,
+            "created_by": (body.created_by or "operator").strip() or "operator",
+            "created_at": row[1],
+            "updated_at": row[2],
+        },
+    }
+
+
+@router.post("/{case_id}/finalize-resource")
+def finalize_resource(
+    case_id: str,
+    body: FinalResourceBody,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+):
+    require_operator_token(x_operator_token)
+    content = (body.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="El recurso final no puede estar vacío")
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        _case_or_404(conn, case_id)
+        version = _next_final_resource_version(conn, case_id)
+
+        conn.execute(
+            text("UPDATE ops_final_resources SET is_final = FALSE, updated_at = NOW() WHERE case_id = :id"),
+            {"id": case_id},
+        )
+
+        row = conn.execute(
+            text(
+                '''
+                INSERT INTO ops_final_resources(case_id, content, version, is_final, created_by, created_at, updated_at)
+                VALUES (:case_id, :content, :version, TRUE, :created_by, NOW(), NOW())
+                RETURNING id, created_at, updated_at
+                '''
+            ),
+            {
+                "case_id": case_id,
+                "content": content,
+                "version": version,
+                "created_by": (body.created_by or "operator").strip() or "operator",
+            },
+        ).fetchone()
+
+        created_by = (body.created_by or "operator").strip() or "operator"
+
+        txt_bytes = content.encode("utf-8")
+        docx_bytes = build_docx("", content)
+        pdf_bytes = build_pdf("", content)
+
+        b2_bucket, b2_key_txt = upload_bytes(
+            case_id,
+            "final_resources",
+            txt_bytes,
+            ".txt",
+            "text/plain; charset=utf-8",
+        )
+        _, b2_key_docx = upload_bytes(
+            case_id,
+            "final_resources",
+            docx_bytes,
+            ".docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        _, b2_key_pdf = upload_bytes(
+            case_id,
+            "final_resources",
+            pdf_bytes,
+            ".pdf",
+            "application/pdf",
+        )
+
+        documents = [
+            {
+                "kind": "final_resource_text",
+                "bucket": b2_bucket,
+                "key": b2_key_txt,
+                "mime": "text/plain; charset=utf-8",
+                "size_bytes": len(txt_bytes),
+            },
+            {
+                "kind": "final_resource_docx",
+                "bucket": b2_bucket,
+                "key": b2_key_docx,
+                "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "size_bytes": len(docx_bytes),
+            },
+            {
+                "kind": "final_resource_pdf",
+                "bucket": b2_bucket,
+                "key": b2_key_pdf,
+                "mime": "application/pdf",
+                "size_bytes": len(pdf_bytes),
+            },
+        ]
+
+        for doc in documents:
+            conn.execute(
+                text(
+                    '''
+                    INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
+                    VALUES (:case_id, :kind, :bucket, :key, :mime, :size_bytes, NOW())
+                    '''
+                ),
+                {
+                    "case_id": case_id,
+                    "kind": doc["kind"],
+                    "bucket": doc["bucket"],
+                    "key": doc["key"],
+                    "mime": doc["mime"],
+                    "size_bytes": doc["size_bytes"],
+                },
+            )
+
+        _set_status(conn, case_id, "final_ready")
+        _append_event(
+            conn,
+            case_id,
+            "ops_final_resource_finalized",
+            {
+                "resource_id": str(row[0]),
+                "version": version,
+                "chars": len(content),
+                "documents": documents,
+                "created_by": created_by,
+                "at": _utcnow().isoformat(),
+            },
+        )
+        status = _get_status(conn, case_id)
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "status": status,
+        "resource": {
+            "id": str(row[0]),
+            "content": content,
+            "version": version,
+            "is_final": True,
+            "created_by": created_by,
+            "created_at": row[1],
+            "updated_at": row[2],
+        },
+        "documents": documents,
+    }
+
+
+@router.post("/{case_id}/send-complete")
+def send_complete_case_file(
+    case_id: str,
+    body: SendCompleteBody,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+):
+    require_operator_token(x_operator_token)
+    engine = get_engine()
+    with engine.begin() as conn:
+        _case_or_404(conn, case_id)
+        resource = _latest_final_resource(conn, case_id)
+        if not resource or not resource.get("is_final"):
+            raise HTTPException(status_code=409, detail="Antes de enviar hay que guardar una versión final del recurso")
+
+        docs_row = conn.execute(
+            text("SELECT COUNT(*) FROM documents WHERE case_id = :id"),
+            {"id": case_id},
+        ).fetchone()
+        docs_count = int(docs_row[0] or 0) if docs_row else 0
+
+        _set_status(conn, case_id, "sent")
+        _append_event(
+            conn,
+            case_id,
+            "ops_complete_file_sent",
+            {
+                "resource_id": resource.get("id"),
+                "resource_version": resource.get("version"),
+                "documents_count": docs_count,
+                "destination": body.destination,
+                "channel": body.channel or "ops",
+                "note": body.note,
+                "at": _utcnow().isoformat(),
+            },
+        )
+        status = _get_status(conn, case_id)
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "status": status,
+        "resource_version": resource.get("version"),
+        "documents_count": docs_count,
+        "message": "Expediente completo marcado como enviado.",
     }
 
 
