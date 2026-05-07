@@ -106,9 +106,12 @@ def _email_ready(case_id: str, name: str, email: str) -> None:
 class CaseDetailsIn(BaseModel):
     full_name: str = Field(...)
     dni_nie: str = Field(...)
+    matricula: Optional[str] = None
     domicilio_notif: str = Field(...)
     email: EmailStr
     telefono: Optional[str] = None
+    autorizo_gestion: Optional[bool] = None
+    acepto_responsabilidad: Optional[bool] = None
 
 class CaseContactIn(BaseModel):
     name: str = Field(...)
@@ -196,9 +199,16 @@ def save_case_details(case_id: str, data: CaseDetailsIn):
             {
                 "full_name": data.full_name.strip(),
                 "dni_nie": data.dni_nie.strip().upper(),
+                "dni": data.dni_nie.strip().upper(),
+                "matricula": (data.matricula or "").strip().upper() or interested.get("matricula"),
                 "domicilio_notif": data.domicilio_notif.strip(),
+                "domicilio": data.domicilio_notif.strip(),
                 "email": str(data.email).strip(),
                 "telefono": (data.telefono or "").strip() or None,
+                "authorization_checks": {
+                    "autorizo_gestion": bool(data.autorizo_gestion),
+                    "acepto_responsabilidad": bool(data.acepto_responsabilidad),
+                },
             }
         )
 
@@ -234,8 +244,10 @@ def save_case_details(case_id: str, data: CaseDetailsIn):
                     {
                         "full_name": interested.get("full_name"),
                         "dni_nie": interested.get("dni_nie"),
+                        "matricula": interested.get("matricula"),
                         "email": interested.get("email"),
                         "telefono": interested.get("telefono"),
+                        "authorization_checks": interested.get("authorization_checks"),
                     },
                     ensure_ascii=False,
                 ),

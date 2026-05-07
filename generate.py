@@ -2597,35 +2597,213 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
 
 
 
+def _split_full_name_for_header(full_name: str) -> Dict[str, str]:
+    """
+    Divide nombre completo en campos simples para la cabecera DGT.
+    No es perfecto, pero evita dejar la cabecera vacía cuando el dato viene
+    del formulario de autorización.
+    """
+    name = re.sub(r"\s+", " ", _safe_str(full_name)).strip()
+    if not name:
+        return {}
+    parts = name.split()
+    if len(parts) == 1:
+        return {"nombre": parts[0]}
+    if len(parts) == 2:
+        return {"nombre": parts[0], "apellido1": parts[1]}
+    # En España lo más útil para cabecera es asumir los dos últimos como apellidos.
+    return {
+        "nombre": " ".join(parts[:-2]),
+        "apellido1": parts[-2],
+        "apellido2": parts[-1],
+    }
+
+
+def _normalize_interesado_for_resource(interesado: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Normaliza los datos del formulario de autorización para que SIEMPRE tengan
+    prioridad frente al OCR en la cabecera del recurso.
+    """
+    src = dict(interesado or {})
+    out: Dict[str, Any] = {}
+
+    def first(*keys):
+        for k in keys:
+            v = src.get(k)
+            if v not in (None, "", [], {}):
+                return v
+        return ""
+
+    full_name = _safe_str(first("full_name", "nombre_completo", "interesado", "titular")).strip()
+    if full_name:
+        out["full_name"] = full_name
+        for k, v in _split_full_name_for_header(full_name).items():
+            out.setdefault(k, v)
+
+    dni = _safe_str(first("dni_nie", "dni", "documento_identidad")).strip().upper()
+    if dni:
+        out["dni_nie"] = dni
+        out["dni"] = dni
+
+    matricula = _safe_str(first("matricula", "plate", "vehicle_plate", "matricula_vehiculo")).strip().upper()
+    if matricula:
+        out["matricula"] = matricula
+
+    domicilio = _safe_str(first("domicilio_notif", "domicilio", "direccion", "address")).strip()
+    if domicilio:
+        out["domicilio_notif"] = domicilio
+        out["domicilio"] = domicilio
+        cp = re.search(r"\b(\d{5})\b", domicilio)
+        if cp:
+            out["cp"] = cp.group(1)
+            after = domicilio[cp.end():].strip(" ,.-")
+            before = domicilio[:cp.start()].strip(" ,.-")
+            # Si tras el CP viene LOCALIDAD + PROVINCIA, usamos el último token como provincia.
+            words = [w for w in after.split() if w]
+            if len(words) >= 2:
+                out["provincia"] = words[-1]
+                out["localidad"] = " ".join(words[:-1])
+            elif len(words) == 1:
+                out["localidad"] = words[0]
+            # Evitar que el OCR meta la palabra MATRÍCULA como provincia/localidad.
+            for key in ("provincia", "localidad"):
+                if _safe_str(out.get(key)).strip().upper() in ("MATRÍCULA", "MATRICULA"):
+                    out.pop(key, None)
+
+    email = _safe_str(first("email", "contact_email")).strip()
+    if email:
+        out["email"] = email
+    telefono = _safe_str(first("telefono", "phone", "teléfono")).strip()
+    if telefono:
+        out["telefono"] = telefono
+
+    organismo = _safe_str(first("organismo", "organo", "órgano")).strip()
+    if organismo:
+        out["organismo"] = organismo
+    expediente = _safe_str(first("expediente_ref", "numero_expediente", "expediente")).strip()
+    if expediente:
+        out["expediente_ref"] = expediente
+
+    return out
+
+
+def _load_interesado_from_case_for_generate(conn, case_id: str) -> Dict[str, Any]:
+    """
+    Carga datos fiables del formulario/case para no depender del OCR.
+    """
+    try:
+        row = conn.execute(
+            text(
+                """
+                SELECT
+                    COALESCE(interested_data, '{}'::jsonb) AS interested_data,
+                    organismo,
+                    expediente_ref,
+                    contact_email
+                FROM cases
+                WHERE id = :id
+                """
+            ),
+            {"id": case_id},
+        ).fetchone()
+    except Exception:
+        return {}
+
+    if not row:
+        return {}
+    data = row[0] if isinstance(row[0], dict) else {}
+    data = dict(data or {})
+    if row[1] and not data.get("organismo"):
+        data["organismo"] = row[1]
+    if row[2] and not data.get("expediente_ref"):
+        data["expediente_ref"] = row[2]
+    if row[3] and not data.get("email"):
+        data["email"] = row[3]
+    return data
+
+
+def _merge_form_data_over_ocr(core: Dict[str, Any], form_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    El formulario de autorización manda sobre el OCR para datos personales,
+    matrícula y destino. Así evitamos errores como provincia='MATRÍCULA'.
+    """
+    merged = dict(core or {})
+    clean = _normalize_interesado_for_resource(form_data)
+
+    priority_keys = [
+        "full_name", "nombre", "apellido1", "apellido2",
+        "dni", "dni_nie", "matricula",
+        "domicilio", "domicilio_notif", "localidad", "provincia", "cp",
+        "email", "telefono",
+        "organismo", "expediente_ref",
+    ]
+    for key in priority_keys:
+        if clean.get(key) not in (None, "", [], {}):
+            merged[key] = clean[key]
+
+    # Limpieza defensiva de basura OCR típica.
+    for key in ("provincia", "localidad"):
+        if _safe_str(merged.get(key)).strip().upper() in ("MATRÍCULA", "MATRICULA"):
+            merged.pop(key, None)
+    domicilio = _safe_str(merged.get("domicilio") or merged.get("domicilio_notif"))
+    domicilio = re.sub(r"\bMATR[IÍ]CULA\b.*$", "", domicilio, flags=re.IGNORECASE).strip(" ,.-")
+    if domicilio:
+        merged["domicilio"] = domicilio
+        merged["domicilio_notif"] = domicilio
+
+    return merged
+
 def build_v2_dgt_layout(cuerpo: str, core: Dict[str, Any], interesado: Dict[str, Any]) -> str:
     """
-    Inserta una cabecera tipo DGT con espacios del modelo oficial sin romper
-    el resto del recurso. Sustituye la cabecera antigua del escrito y conserva
-    desde el extracto literal del boletín hacia abajo.
+    Cabecera tipo DGT/municipal usando primero los datos del formulario de
+    autorización. El OCR solo se usa como respaldo.
     """
     core = core or {}
-    interesado = interesado or {}
+    form = _normalize_interesado_for_resource(interesado or {})
+
+    # El formulario manda sobre el OCR.
+    merged = dict(core)
+    for k, v in form.items():
+        if v not in (None, "", [], {}):
+            merged[k] = v
 
     def g(k: str, default: str = "") -> str:
-        value = interesado.get(k)
-        if value in (None, "", [], {}):
-            value = core.get(k)
+        value = merged.get(k)
         if value in (None, "", [], {}):
             value = default
-        return str(value)
+        value = str(value)
+        # Limpieza específica: nunca dejar que el OCR arrastre "Matrícula" a domicilio/provincia.
+        if k in ("domicilio", "domicilio_notif"):
+            value = re.sub(r"\bMATR[IÍ]CULA\b.*$", "", value, flags=re.IGNORECASE).strip(" ,.-")
+        if k in ("provincia", "localidad") and value.strip().upper() in ("MATRÍCULA", "MATRICULA"):
+            return default
+        return value
 
     def _cleanup(value: str) -> str:
         return re.sub(r"\s+", " ", str(value or "")).strip()
 
-    def _infer_provincia() -> str:
-        # prioridad: provincia explícita
-        prov = _cleanup(g("provincia", ""))
-        if prov:
-            prov = prov.upper().replace("TRÁFICO DE", "").replace("TRAFICO DE", "").strip(" .,-")
-            if prov:
-                return prov
+    def _infer_location_from_organismo() -> str:
+        org = _cleanup(g("organismo", "") or g("organismo_cabecera", ""))
+        if not org:
+            return ""
+        # Ajuntament de Terrassa / Ayuntamiento de Madrid / Policía Local de X
+        m = re.search(r"\b(?:AJUNTAMENT|AYUNTAMIENTO|POLIC[IÍ]A LOCAL|GUARDIA URBANA)\s+(?:DE|D['’])\s+(.+)$", org, flags=re.I)
+        if m:
+            loc = m.group(1).strip(" .,-")
+            # cortar restos raros de OCR
+            loc = re.sub(r"\bMATR[IÍ]CULA\b.*$", "", loc, flags=re.I).strip(" .,-")
+            if loc:
+                return loc.upper()
+        # Caso simple: contiene Terrassa aunque no haya patrón perfecto.
+        if "terrassa" in org.lower():
+            return "TERRASSA"
+        return ""
 
-        # intentar inferir desde organismo / cabecera
+    def _infer_provincia() -> str:
+        prov = _cleanup(g("provincia", ""))
+        if prov and prov.upper() not in ("MATRÍCULA", "MATRICULA"):
+            return prov.upper().replace("TRÁFICO DE", "").replace("TRAFICO DE", "").strip(" .,-")
+
         candidates = [
             _cleanup(g("organismo", "")),
             _cleanup(g("organismo_cabecera", "")),
@@ -2637,41 +2815,37 @@ def build_v2_dgt_layout(cuerpo: str, core: Dict[str, Any], interesado: Dict[str,
             for marker in ["JEFATURA PROVINCIAL DE TRÁFICO DE ", "JEFATURA PROVINCIAL DE TRAFICO DE "]:
                 if marker in upper:
                     return upper.split(marker, 1)[1].strip(" .,-")
+        loc = _infer_location_from_organismo()
+        if loc:
+            return loc
         return "........"
 
-    def _infer_organismo_destino() -> str:
-        cand = _cleanup(g("organismo", "")) or _cleanup(g("organismo_cabecera", ""))
-        upper = cand.upper()
-
-        if "JEFATURA PROVINCIAL DE TRÁFICO" in upper or "JEFATURA PROVINCIAL DE TRAFICO" in upper:
-            return "JEFATURA PROVINCIAL DE TRÁFICO"
-
-        if "DIRECCIÓN GENERAL DE TRÁFICO" in upper or "DIRECCION GENERAL DE TRAFICO" in upper:
-            return "JEFATURA PROVINCIAL DE TRÁFICO"
-
-        if "MINISTERIO DEL INTERIOR" in upper and "TRAFICO" in upper:
-            return "JEFATURA PROVINCIAL DE TRÁFICO"
-
-        if "AYUNTAMIENTO" in upper:
-            return "AYUNTAMIENTO"
+    def _build_destination_line() -> str:
+        org = _cleanup(g("organismo", "") or g("organismo_cabecera", ""))
+        upper = org.upper()
+        loc = _infer_location_from_organismo()
+        provincia = _infer_provincia()
 
         if "AJUNTAMENT" in upper:
-            return "AJUNTAMENT"
-
+            return f"A L'AJUNTAMENT DE {loc or provincia}"
+        if "AYUNTAMIENTO" in upper:
+            return f"AL AYUNTAMIENTO DE {loc or provincia}"
         if "POLICÍA LOCAL" in upper or "POLICIA LOCAL" in upper:
-            return "POLICÍA LOCAL"
-
+            return f"A LA POLICÍA LOCAL DE {loc or provincia}"
         if "GUARDIA URBANA" in upper:
-            return "GUARDIA URBANA"
-
-        return "JEFATURA PROVINCIAL DE TRÁFICO"
+            return f"A LA GUARDIA URBANA DE {loc or provincia}"
+        if "DIRECCIÓN GENERAL DE TRÁFICO" in upper or "DIRECCION GENERAL DE TRAFICO" in upper:
+            return f"A LA JEFATURA PROVINCIAL DE TRÁFICO DE {provincia}"
+        if "JEFATURA PROVINCIAL DE TRÁFICO" in upper or "JEFATURA PROVINCIAL DE TRAFICO" in upper:
+            return f"A LA JEFATURA PROVINCIAL DE TRÁFICO DE {provincia}"
+        if "MINISTERIO DEL INTERIOR" in upper and "TRAFICO" in upper:
+            return f"A LA JEFATURA PROVINCIAL DE TRÁFICO DE {provincia}"
+        return f"A LA JEFATURA PROVINCIAL DE TRÁFICO DE {provincia}"
 
     def _strip_old_header(text: str) -> str:
         txt = str(text or "").replace("\r\n", "\n")
-        # quitar restos típicos de cabecera vieja
         txt = txt.replace("A la atención del órgano competente,", "")
         txt = txt.replace("A la atención del órgano competente", "")
-        # conservar desde el extracto literal, si existe
         markers = [
             "Extracto literal del boletín:",
             "Extracto literal del boletin:",
@@ -2683,16 +2857,16 @@ def build_v2_dgt_layout(cuerpo: str, core: Dict[str, Any], interesado: Dict[str,
                 return txt[idx:].lstrip()
         return txt.strip()
 
-    provincia = _infer_provincia()
-    organismo_destino = _infer_organismo_destino()
-
     body = _strip_old_header(cuerpo)
+    body = _strip_duplicate_extractos(body)
+
+    destino_line = _build_destination_line()
 
     header = f"""REFERENCIA: EXPTE. {g("expediente_ref", "........")}
 
 ESCRITO DE ALEGACIONES
 
-A LA {organismo_destino} DE {provincia}
+{destino_line}
 
 1.- DATOS DE LA DENUNCIA
 
@@ -2707,9 +2881,9 @@ MARCA / MODELO: {g("marca_modelo")}
 PRIMER APELLIDO: {g("apellido1")}
 SEGUNDO APELLIDO: {g("apellido2")}
 NOMBRE: {g("nombre")}
-DNI/NIE: {g("dni")}
+DNI/NIE: {g("dni") or g("dni_nie")}
 
-DOMICILIO: {g("domicilio")}
+DOMICILIO: {g("domicilio") or g("domicilio_notif")}
 LOCALIDAD: {g("localidad")}    PROVINCIA: {g("provincia")}    CP: {g("cp")}
 
 TELÉFONO: {g("telefono")}
@@ -2735,7 +2909,15 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
 
     wrapper = row[0] if isinstance(row[0], dict) else json.loads(row[0])
     core = wrapper.get("extracted") or {}
+
+    # Datos fiables del formulario de autorización: mandan sobre OCR.
+    case_form_data = _load_interesado_from_case_for_generate(conn, case_id)
+    if interesado:
+        case_form_data.update(dict(interesado or {}))
+
     core = _enrich_core_with_person_fields(core)
+    core = _merge_form_data_over_ocr(core, case_form_data)
+    interesado = _normalize_interesado_for_resource(case_form_data)
 
     if (
         not core.get("hecho_denunciado_literal")
