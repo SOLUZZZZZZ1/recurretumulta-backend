@@ -1,6 +1,7 @@
 # ops.py — Panel Operador (PIN + cola + docs + logs + presentado + justificante + descarga segura)
 import json
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
 
 from fastapi import APIRouter, HTTPException, Header, UploadFile, File, Form, Query
@@ -235,6 +236,70 @@ def _require_paid_and_authorized(conn, case_id: str):
         raise HTTPException(status_code=409, detail="Falta autorización del cliente")
 
 
+def _case_exists(conn, case_id: str) -> str:
+    row = conn.execute(
+        text("SELECT id FROM cases WHERE id=:id"),
+        {"id": case_id},
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return str(row[0])
+
+
+def _append_event(conn, case_id: str, event_type: str, payload: Optional[Dict[str, Any]] = None):
+    conn.execute(
+        text(
+            """
+            INSERT INTO events(case_id, type, payload, created_at)
+            VALUES (:case_id, :type, CAST(:payload AS JSONB), NOW())
+            """
+        ),
+        {
+            "case_id": case_id,
+            "type": event_type,
+            "payload": json.dumps(payload or {}, ensure_ascii=False),
+        },
+    )
+
+
+def _clean_kind(kind: str) -> str:
+    allowed = {
+        "justificante_presentacion",
+        "instancia_firmada",
+        "csv_registro",
+        "resolucion",
+        "requerimiento",
+        "contestacion_ayuntamiento",
+        "prueba_externa",
+        "documento_externo",
+        "recurso_presentado",
+        "multa_presentada",
+        "autorizacion_presentada",
+    }
+    k = (kind or "documento_externo").strip().lower().replace(" ", "_")
+    return k if k in allowed else "documento_externo"
+
+
+def _guess_ext_from_filename(filename: str, content_type: str = "") -> str:
+    _, ext = os.path.splitext((filename or "").lower())
+    if ext and 2 <= len(ext) <= 10:
+        return ext
+    ct = (content_type or "").lower().strip()
+    if ct == "application/pdf":
+        return ".pdf"
+    if ct in ("image/jpeg", "image/jpg"):
+        return ".jpg"
+    if ct == "image/png":
+        return ".png"
+    if ct == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        return ".docx"
+    return ".bin"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 @router.post("/cases/{case_id}/mark-submitted")
 def mark_submitted(
     case_id: str,
@@ -356,6 +421,214 @@ async def upload_justificante(
         )
 
     return {"ok": True, "case_id": case_id, "kind": kind, "bucket": b2_bucket, "key": b2_key}
+
+@router.post("/cases/{case_id}/upload-external-document")
+async def upload_external_document(
+    case_id: str,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+    file: UploadFile = File(...),
+    kind: str = Form("documento_externo"),
+    note: Optional[str] = Form(default=None),
+) -> Dict[str, Any]:
+    """
+    Adjunta documentación externa real al expediente:
+    resoluciones, requerimientos, justificantes, instancias, CSV, pruebas externas, etc.
+
+    No exige pago ni autorización: es una acción interna OPS para completar expediente.
+    """
+    _require_operator(x_operator_token)
+
+    filename = (file.filename or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="Filename requerido")
+
+    content_type = (file.content_type or "application/octet-stream").strip()
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+
+    clean_kind = _clean_kind(kind)
+    ext = _guess_ext_from_filename(filename, content_type)
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        _case_exists(conn, case_id)
+
+        b2_bucket, b2_key = upload_bytes(
+            case_id,
+            "external",
+            data,
+            ext=ext,
+            content_type=content_type,
+        )
+
+        conn.execute(
+            text(
+                """
+                INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
+                VALUES (:case_id, :kind, :b2_bucket, :b2_key, :mime, :size_bytes, NOW())
+                """
+            ),
+            {
+                "case_id": case_id,
+                "kind": clean_kind,
+                "b2_bucket": b2_bucket,
+                "b2_key": b2_key,
+                "mime": content_type,
+                "size_bytes": len(data),
+            },
+        )
+
+        _append_event(
+            conn,
+            case_id,
+            "external_document_uploaded",
+            {
+                "kind": clean_kind,
+                "filename": filename,
+                "bucket": b2_bucket,
+                "key": b2_key,
+                "mime": content_type,
+                "size_bytes": len(data),
+                "note": note or "",
+                "at": _now_iso(),
+            },
+        )
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "kind": clean_kind,
+        "bucket": b2_bucket,
+        "key": b2_key,
+        "mime": content_type,
+        "size_bytes": len(data),
+    }
+
+
+@router.post("/cases/{case_id}/register-manual-submission")
+async def register_manual_submission(
+    case_id: str,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+    organismo: str = Form(...),
+    registro: str = Form(...),
+    csv: Optional[str] = Form(default=None),
+    submitted_at: Optional[str] = Form(default=None),
+    channel: str = Form("ayuntamiento_manual"),
+    note: Optional[str] = Form(default=None),
+    file: Optional[UploadFile] = File(default=None),
+) -> Dict[str, Any]:
+    """
+    Registra una presentación hecha fuera de OPS, por ejemplo en la sede electrónica
+    de un ayuntamiento.
+
+    Diferencia clave:
+    - NO llama a submitter.submit()
+    - NO requiere automatización DGT/SIR
+    - Guarda justificante si se adjunta
+    - Marca el expediente como presentado_manual_ayuntamiento
+    """
+    _require_operator(x_operator_token)
+
+    organismo_clean = (organismo or "").strip()
+    registro_clean = (registro or "").strip()
+    csv_clean = (csv or "").strip()
+    channel_clean = (channel or "ayuntamiento_manual").strip()
+    submitted_at_clean = (submitted_at or "").strip()
+
+    if not organismo_clean:
+        raise HTTPException(status_code=400, detail="Organismo requerido")
+    if not registro_clean:
+        raise HTTPException(status_code=400, detail="Número de registro requerido")
+
+    document_info: Optional[Dict[str, Any]] = None
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        _case_exists(conn, case_id)
+
+        row = conn.execute(
+            text("SELECT status FROM cases WHERE id=:id"),
+            {"id": case_id},
+        ).fetchone()
+        previous_status = row[0] if row else ""
+
+        if file is not None and (file.filename or "").strip():
+            filename = (file.filename or "justificante_presentacion").strip()
+            content_type = (file.content_type or "application/octet-stream").strip()
+            data = await file.read()
+            if not data:
+                raise HTTPException(status_code=400, detail="Justificante vacío")
+
+            ext = _guess_ext_from_filename(filename, content_type)
+            b2_bucket, b2_key = upload_bytes(
+                case_id,
+                "manual_submission",
+                data,
+                ext=ext,
+                content_type=content_type,
+            )
+
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
+                    VALUES (:case_id, 'justificante_presentacion', :b2_bucket, :b2_key, :mime, :size_bytes, NOW())
+                    """
+                ),
+                {
+                    "case_id": case_id,
+                    "b2_bucket": b2_bucket,
+                    "b2_key": b2_key,
+                    "mime": content_type,
+                    "size_bytes": len(data),
+                },
+            )
+
+            document_info = {
+                "filename": filename,
+                "bucket": b2_bucket,
+                "key": b2_key,
+                "mime": content_type,
+                "size_bytes": len(data),
+            }
+
+        new_status = "presentado_manual_ayuntamiento"
+        conn.execute(
+            text("UPDATE cases SET status=:status, updated_at=NOW() WHERE id=:id"),
+            {"id": case_id, "status": new_status},
+        )
+
+        _append_event(
+            conn,
+            case_id,
+            "manual_submission_registered",
+            {
+                "from": previous_status,
+                "to": new_status,
+                "organismo": organismo_clean,
+                "registro": registro_clean,
+                "csv": csv_clean,
+                "submitted_at": submitted_at_clean,
+                "channel": channel_clean,
+                "note": note or "",
+                "document": document_info,
+                "at": _now_iso(),
+            },
+        )
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "status": new_status,
+        "organismo": organismo_clean,
+        "registro": registro_clean,
+        "csv": csv_clean,
+        "submitted_at": submitted_at_clean,
+        "channel": channel_clean,
+        "document": document_info,
+    }
+
 
 @router.post("/cases/{case_id}/force-ready-to-submit")
 def force_ready_to_submit(
