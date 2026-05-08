@@ -374,13 +374,7 @@ async def upload_justificante(
         _, ext = os.path.splitext(filename.lower())
         ext = ext or ".bin"
 
-        b2_bucket, b2_key = upload_bytes(
-            case_id,
-            "justificantes",
-            data,
-            ext=ext,
-            content_type=content_type,
-        )
+        b2_bucket, b2_key = upload_bytes(case_id, "justificantes", data, ext, content_type)
 
         conn.execute(
             text(
@@ -454,13 +448,7 @@ async def upload_external_document(
     with engine.begin() as conn:
         _case_exists(conn, case_id)
 
-        b2_bucket, b2_key = upload_bytes(
-            case_id,
-            "external",
-            data,
-            ext=ext,
-            content_type=content_type,
-        )
+        b2_bucket, b2_key = upload_bytes(case_id, "external", data, ext, content_type)
 
         conn.execute(
             text(
@@ -561,13 +549,7 @@ async def register_manual_submission(
                 raise HTTPException(status_code=400, detail="Justificante vacío")
 
             ext = _guess_ext_from_filename(filename, content_type)
-            b2_bucket, b2_key = upload_bytes(
-                case_id,
-                "manual_submission",
-                data,
-                ext=ext,
-                content_type=content_type,
-            )
+            b2_bucket, b2_key = upload_bytes(case_id, "manual_submission", data, ext, content_type)
 
             conn.execute(
                 text(
