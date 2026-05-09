@@ -288,11 +288,11 @@ def migrate_dgt_dev_submissions(x_admin_token: str | None = Header(default=None,
 
 
 # =========================================================
-# MIGRACIÓN: OPS FINAL RESOURCES
+# MIGRACIÓN: SEGUIMIENTO DE PLAZOS / FOLLOW-UPS OPS
 # =========================================================
 
-@router.post("/ops_final_resources", response_model=MigrateResponse)
-def migrate_ops_final_resources(
+@router.post("/ops_followups", response_model=MigrateResponse)
+def migrate_ops_followups(
     x_admin_token: str | None = Header(default=None, alias="x-admin-token")
 ):
     _require_admin_token(x_admin_token)
@@ -302,46 +302,44 @@ def migrate_ops_final_resources(
 
     ddl = [
         (
-            "ops_final_resources_table",
+            "ops_followups_table",
             """
-            CREATE TABLE IF NOT EXISTS ops_final_resources (
+            CREATE TABLE IF NOT EXISTS ops_followups (
               id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
               case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-              content TEXT NOT NULL,
-              version INT NOT NULL DEFAULT 1,
-              is_final BOOLEAN NOT NULL DEFAULT FALSE,
+              kind TEXT NOT NULL DEFAULT 'seguimiento',
+              status TEXT NOT NULL DEFAULT 'pending',
+              title TEXT NOT NULL,
+              description TEXT,
+              due_at TIMESTAMPTZ NOT NULL,
+              source_event_type TEXT,
               created_by TEXT,
+              resolved_at TIMESTAMPTZ,
+              resolved_by TEXT,
+              resolution_note TEXT,
               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
               updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
             """,
         ),
         (
-            "idx_ops_final_resources_case",
-            """
-            CREATE INDEX IF NOT EXISTS idx_ops_final_resources_case
-            ON ops_final_resources(case_id);
-            """,
+            "idx_ops_followups_case",
+            "CREATE INDEX IF NOT EXISTS idx_ops_followups_case ON ops_followups(case_id);",
         ),
         (
-            "idx_ops_final_resources_case_version",
-            """
-            CREATE INDEX IF NOT EXISTS idx_ops_final_resources_case_version
-            ON ops_final_resources(case_id, version DESC);
-            """,
+            "idx_ops_followups_status_due",
+            "CREATE INDEX IF NOT EXISTS idx_ops_followups_status_due ON ops_followups(status, due_at);",
         ),
         (
-            "idx_ops_final_resources_final",
-            """
-            CREATE INDEX IF NOT EXISTS idx_ops_final_resources_final
-            ON ops_final_resources(case_id, is_final);
-            """,
+            "idx_ops_followups_due",
+            "CREATE INDEX IF NOT EXISTS idx_ops_followups_due ON ops_followups(due_at);",
         ),
     ]
 
     applied = _run(engine, ddl)
     return MigrateResponse(
         ok=True,
-        message="Migración ops_final_resources aplicada.",
+        message="Migración ops_followups aplicada.",
         created=applied,
     )
+
