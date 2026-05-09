@@ -854,6 +854,151 @@ def download_case_zip(
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
+
+
+@router.post("/cases/{case_id}/zip-selected")
+async def download_selected_case_zip(
+    case_id: str,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+    body: Dict[str, Any] = None,
+):
+    _require_operator(x_operator_token)
+
+    body = body or {}
+    raw_ids = body.get("document_ids") or body.get("ids") or []
+
+    if not isinstance(raw_ids, list):
+        raise HTTPException(status_code=400, detail="document_ids debe ser una lista")
+
+    document_ids = [str(x).strip() for x in raw_ids if str(x).strip()]
+
+    if not document_ids:
+        raise HTTPException(status_code=400, detail="Selecciona al menos un documento")
+
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        _case_exists(conn, case_id)
+
+        doc_rows = conn.execute(
+            text(
+                '''
+                SELECT id, kind, b2_bucket, b2_key, mime, size_bytes, created_at
+                FROM documents
+                WHERE case_id = :case_id
+                  AND id = ANY(CAST(:ids AS uuid[]))
+                ORDER BY created_at ASC
+                '''
+            ),
+            {"case_id": case_id, "ids": document_ids},
+        ).fetchall()
+
+        event_rows = conn.execute(
+            text(
+                '''
+                SELECT type, payload, created_at
+                FROM events
+                WHERE case_id = :case_id
+                ORDER BY created_at ASC
+                '''
+            ),
+            {"case_id": case_id},
+        ).fetchall()
+
+    docs = []
+
+    for r in doc_rows:
+        docs.append(
+            {
+                "id": str(r[0]),
+                "kind": r[1],
+                "b2_bucket": r[2],
+                "b2_key": r[3],
+                "mime": r[4],
+                "size_bytes": int(r[5] or 0),
+                "created_at": r[6],
+            }
+        )
+
+    events = []
+
+    for r in event_rows:
+        events.append(
+            {
+                "type": r[0],
+                "payload": r[1],
+                "created_at": r[2],
+            }
+        )
+
+    zip_buffer = io.BytesIO()
+    used_names = set()
+
+    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        manifest = _build_zip_manifest(case_id, docs, events)
+
+        zf.writestr(
+            "00_manifest/manifest_expediente.txt",
+            manifest,
+        )
+
+        zf.writestr(
+            "00_manifest/documentos_seleccionados.json",
+            json.dumps(docs, ensure_ascii=False, default=str, indent=2),
+        )
+
+        for index, doc in enumerate(docs, start=1):
+            bucket = doc.get("b2_bucket")
+            key = doc.get("b2_key")
+            kind = doc.get("kind") or "documento"
+            mime = doc.get("mime") or ""
+
+            if not bucket or not key:
+                continue
+
+            try:
+                data = _download_bytes(bucket, key)
+            except Exception as e:
+                zf.writestr(
+                    f"99_errores/error_{index}.txt",
+                    f"No se pudo descargar documento: {e}",
+                )
+                continue
+
+            ext = _doc_ext_from_mime_or_key(mime, key)
+            original_name = _safe_zip_name(key)
+
+            if "." not in original_name and ext:
+                original_name += ext
+
+            folder = _zip_folder_for_kind(kind)
+
+            base_name = f"{index:03d}_{_safe_zip_name(kind)}_{original_name}"
+            zip_name = f"{folder}/{base_name}"
+
+            candidate = zip_name
+            counter = 2
+
+            while candidate in used_names:
+                name_no_ext, ext2 = os.path.splitext(zip_name)
+                candidate = f"{name_no_ext}_{counter}{ext2}"
+                counter += 1
+
+            used_names.add(candidate)
+
+            zf.writestr(candidate, data)
+
+    zip_buffer.seek(0)
+
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="expediente_{case_id}_seleccionado.zip"'
+        },
+    )
+
+
 @router.post("/cases/{case_id}/force-ready-to-submit")
 def force_ready_to_submit(
     case_id: str,
