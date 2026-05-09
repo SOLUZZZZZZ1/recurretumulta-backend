@@ -1,6 +1,8 @@
 # ops.py — Panel Operador (PIN + cola + docs + logs + presentado + justificante + descarga segura)
 import json
 import os
+import io
+import zipfile
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
 
@@ -611,6 +613,246 @@ async def register_manual_submission(
         "document": document_info,
     }
 
+
+
+# =========================================================
+# ZIP expediente completo
+# =========================================================
+
+def _safe_zip_name(value: str) -> str:
+    """
+    Nombre seguro para archivos dentro del ZIP.
+    Evita rutas, caracteres raros y nombres vacíos.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return "documento"
+
+    # quitar rutas B2 o locales
+    raw = raw.split("/")[-1].split("\\")[-1]
+
+    # limpiar caracteres problemáticos
+    allowed = []
+    for ch in raw:
+        if ch.isalnum() or ch in (" ", ".", "_", "-", "(", ")"):
+            allowed.append(ch)
+        else:
+            allowed.append("_")
+
+    cleaned = "".join(allowed).strip(" ._")
+    return cleaned or "documento"
+
+
+def _doc_ext_from_mime_or_key(mime: str = "", key: str = "") -> str:
+    k = (key or "").lower()
+    _, ext = os.path.splitext(k)
+    if ext and 2 <= len(ext) <= 10:
+        return ext
+
+    m = (mime or "").lower()
+    if "pdf" in m:
+        return ".pdf"
+    if "word" in m or "officedocument.wordprocessingml" in m:
+        return ".docx"
+    if "jpeg" in m or "jpg" in m:
+        return ".jpg"
+    if "png" in m:
+        return ".png"
+    if "webp" in m:
+        return ".webp"
+    if "json" in m:
+        return ".json"
+    if "text" in m:
+        return ".txt"
+    return ".bin"
+
+
+def _zip_folder_for_kind(kind: str) -> str:
+    k = (kind or "").lower()
+
+    if "recurso" in k or "generated" in k or "final" in k:
+        return "01_recursos"
+    if "multa" in k or "original" in k:
+        return "02_multa_original"
+    if "autoriz" in k or "authorization" in k:
+        return "03_autorizacion"
+    if "justificante" in k or "instancia" in k or "csv" in k or "registro" in k:
+        return "04_presentacion"
+    if "resolucion" in k or "requerimiento" in k or "contestacion" in k:
+        return "05_resoluciones_y_requerimientos"
+    if "prueba" in k or "externo" in k:
+        return "06_documentacion_externa"
+
+    return "99_otros"
+
+
+def _build_zip_manifest(case_id: str, docs: list, events: list) -> str:
+    """
+    Manifest simple en TXT para que el ZIP sea autoexplicativo.
+    """
+    lines = []
+    lines.append("EXPEDIENTE RECURRETUMULTA")
+    lines.append("========================")
+    lines.append(f"Case ID: {case_id}")
+    lines.append(f"Generado: {datetime.now(timezone.utc).isoformat()}")
+    lines.append("")
+    lines.append("DOCUMENTOS INCLUIDOS")
+    lines.append("--------------------")
+
+    for i, d in enumerate(docs, start=1):
+        lines.append(
+            f"{i}. kind={d.get('kind') or ''} | mime={d.get('mime') or ''} | "
+            f"size={d.get('size_bytes') or 0} | created_at={d.get('created_at') or ''} | "
+            f"key={d.get('b2_key') or ''}"
+        )
+
+    lines.append("")
+    lines.append("TIMELINE / EVENTOS")
+    lines.append("------------------")
+
+    for i, e in enumerate(events, start=1):
+        payload = e.get("payload")
+        try:
+            payload_s = json.dumps(payload or {}, ensure_ascii=False)
+        except Exception:
+            payload_s = str(payload or "")
+        lines.append(
+            f"{i}. {e.get('created_at') or ''} | {e.get('type') or ''} | {payload_s[:800]}"
+        )
+
+    return "\n".join(lines) + "\n"
+
+
+@router.get("/cases/{case_id}/zip")
+def download_case_zip(
+    case_id: str,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+):
+    """
+    Descarga un ZIP con todo el expediente:
+    - recursos
+    - multa/documentos originales
+    - autorización
+    - justificantes
+    - resoluciones/requerimientos
+    - documentación externa
+    - manifest con timeline
+    """
+    _require_operator(x_operator_token)
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        _case_exists(conn, case_id)
+
+        doc_rows = conn.execute(
+            text(
+                """
+                SELECT id, kind, b2_bucket, b2_key, mime, size_bytes, created_at
+                FROM documents
+                WHERE case_id = :case_id
+                ORDER BY created_at ASC
+                """
+            ),
+            {"case_id": case_id},
+        ).fetchall()
+
+        event_rows = conn.execute(
+            text(
+                """
+                SELECT type, payload, created_at
+                FROM events
+                WHERE case_id = :case_id
+                ORDER BY created_at ASC
+                """
+            ),
+            {"case_id": case_id},
+        ).fetchall()
+
+    docs = []
+    for r in doc_rows:
+        docs.append(
+            {
+                "id": str(r[0]),
+                "kind": r[1],
+                "b2_bucket": r[2],
+                "b2_key": r[3],
+                "mime": r[4],
+                "size_bytes": int(r[5] or 0),
+                "created_at": r[6],
+            }
+        )
+
+    events = []
+    for r in event_rows:
+        events.append(
+            {
+                "type": r[0],
+                "payload": r[1],
+                "created_at": r[2],
+            }
+        )
+
+    zip_buffer = io.BytesIO()
+    used_names = set()
+
+    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        manifest = _build_zip_manifest(case_id, docs, events)
+        zf.writestr("00_manifest/manifest_expediente.txt", manifest)
+
+        # Timeline completo en JSON
+        zf.writestr(
+            "00_manifest/timeline_eventos.json",
+            json.dumps(events, ensure_ascii=False, default=str, indent=2),
+        )
+
+        for index, doc in enumerate(docs, start=1):
+            bucket = doc.get("b2_bucket")
+            key = doc.get("b2_key")
+            kind = doc.get("kind") or "documento"
+            mime = doc.get("mime") or ""
+
+            if not bucket or not key:
+                continue
+
+            try:
+                data = _download_bytes(bucket, key)
+            except Exception as e:
+                # No rompemos todo el ZIP si un documento falla.
+                error_name = f"99_errores/{index:03d}_{_safe_zip_name(kind)}_ERROR.txt"
+                zf.writestr(
+                    error_name,
+                    f"No se pudo descargar documento.\nkind={kind}\nbucket={bucket}\nkey={key}\nerror={e}\n",
+                )
+                continue
+
+            ext = _doc_ext_from_mime_or_key(mime, key)
+            original_name = _safe_zip_name(key)
+            if "." not in original_name and ext:
+                original_name += ext
+
+            folder = _zip_folder_for_kind(kind)
+            base_name = f"{index:03d}_{_safe_zip_name(kind)}_{original_name}"
+            zip_name = f"{folder}/{base_name}"
+
+            # Evitar duplicados dentro del ZIP
+            counter = 2
+            candidate = zip_name
+            while candidate in used_names:
+                name_no_ext, ext2 = os.path.splitext(zip_name)
+                candidate = f"{name_no_ext}_{counter}{ext2}"
+                counter += 1
+
+            used_names.add(candidate)
+            zf.writestr(candidate, data)
+
+    zip_buffer.seek(0)
+    filename = f"expediente_{case_id}.zip"
+
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 @router.post("/cases/{case_id}/force-ready-to-submit")
 def force_ready_to_submit(
