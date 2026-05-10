@@ -129,6 +129,81 @@ def queue(
     return {"ok": True, "status": status, "count": len(items), "items": items}
 
 
+
+@router.get("/presented-cases")
+def list_presented_cases_safe(
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+    q: Optional[str] = Query(default=None),
+    limit: int = Query(100, ge=1, le=500),
+) -> Dict[str, Any]:
+    """
+    Histórico operativo de expedientes presentados / en seguimiento.
+    Ruta segura: /ops/presented-cases
+    Evita conflictos con /ops/cases/{case_id}.
+    """
+    _require_operator(x_operator_token)
+
+    term = (q or "").strip()
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        if term:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT id, expediente_ref, status, payment_status, contact_email, created_at, updated_at
+                    FROM cases
+                    WHERE (
+                        status = 'submitted'
+                        OR status ILIKE 'presentado%%'
+                        OR status ILIKE '%%presentado%%'
+                    )
+                    AND (
+                        CAST(id AS TEXT) ILIKE :term
+                        OR COALESCE(expediente_ref, '') ILIKE :term
+                        OR COALESCE(contact_email, '') ILIKE :term
+                        OR COALESCE(status, '') ILIKE :term
+                    )
+                    ORDER BY updated_at DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"term": f"%{term}%", "limit": limit},
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT id, expediente_ref, status, payment_status, contact_email, created_at, updated_at
+                    FROM cases
+                    WHERE (
+                        status = 'submitted'
+                        OR status ILIKE 'presentado%%'
+                        OR status ILIKE '%%presentado%%'
+                    )
+                    ORDER BY updated_at DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            ).fetchall()
+
+    items = [
+        {
+            "case_id": str(r[0]),
+            "expediente_ref": r[1],
+            "status": r[2],
+            "payment_status": r[3],
+            "contact_email": r[4],
+            "created_at": r[5],
+            "updated_at": r[6],
+        }
+        for r in rows
+    ]
+
+    return {"ok": True, "count": len(items), "items": items}
+
+
 @router.get("/cases/{case_id}/documents")
 def list_documents(
     case_id: str,
