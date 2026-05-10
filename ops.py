@@ -1089,6 +1089,107 @@ def list_presented_cases(
 
     return {"ok": True, "count": len(items), "items": items}
 
+
+@router.post("/cases/{case_id}/rebuild-followups")
+def rebuild_followups(
+    case_id: str,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+):
+    """
+    Regenera automáticamente los followups 30/60/90 para un expediente
+    ya presentado manualmente.
+
+    Útil cuando el expediente fue restaurado después de la limpieza
+    o cuando no se crearon los seguimientos al registrar la presentación.
+    """
+    _require_operator(x_operator_token)
+
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT status, expediente_ref
+                FROM cases
+                WHERE id = :id
+                """
+            ),
+            {"id": case_id},
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Case not found")
+
+        current_status = (row[0] or "").strip()
+
+        if current_status != "presentado_manual_ayuntamiento":
+            raise HTTPException(
+                status_code=409,
+                detail="El expediente no está en presentado_manual_ayuntamiento",
+            )
+
+        event_row = conn.execute(
+            text(
+                """
+                SELECT payload
+                FROM events
+                WHERE case_id = :case_id
+                  AND type = 'manual_submission_registered'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"case_id": case_id},
+        ).fetchone()
+
+        if not event_row:
+            raise HTTPException(
+                status_code=404,
+                detail="No existe evento manual_submission_registered",
+            )
+
+        payload = event_row[0] or {}
+
+        organismo = payload.get("organismo") or "Organismo"
+        submitted_at = payload.get("submitted_at") or ""
+
+        conn.execute(
+            text(
+                """
+                DELETE FROM ops_followups
+                WHERE case_id = :case_id
+                  AND source_event_type = 'manual_submission_registered'
+                """
+            ),
+            {"case_id": case_id},
+        )
+
+        _ensure_standard_followups_after_manual_submission(
+            conn,
+            case_id,
+            organismo,
+            submitted_at,
+        )
+
+        _append_event(
+            conn,
+            case_id,
+            "followups_rebuilt",
+            {
+                "organismo": organismo,
+                "submitted_at": submitted_at,
+                "at": _now_iso(),
+            },
+        )
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "message": "Followups 30/60/90 regenerados correctamente.",
+    }
+
+
 @router.post("/cases/{case_id}/force-ready-to-submit")
 def force_ready_to_submit(
     case_id: str,
