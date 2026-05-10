@@ -1,5 +1,6 @@
 # admin_migrate.py — migraciones admin (init + ampliaciones + autorización reforzada)
 import os
+import json
 from typing import List, Tuple
 from fastapi import APIRouter, Header, HTTPException, Query
 from sqlalchemy import text
@@ -367,42 +368,48 @@ def ops_clean_start_from_real_case(
         candidate_ids = [str(r[0]) for r in candidates]
 
         if not dry_run and candidate_ids:
-            conn.execute(
-                text(
-                    """
-                    UPDATE cases
-                    SET status = 'archived_test',
-                        updated_at = NOW()
-                    WHERE id = ANY(CAST(:ids AS uuid[]))
-                    """
-                ),
-                {"ids": candidate_ids},
-            )
-
-            for cid in candidate_ids:
+            try:
                 conn.execute(
                     text(
                         """
-                        INSERT INTO events(case_id, type, payload, created_at)
-                        VALUES (
-                          :case_id,
-                          'ops_archived_as_test',
-                          CAST(:payload AS JSONB),
-                          NOW()
-                        )
+                        UPDATE cases
+                        SET status = 'archived_test',
+                            updated_at = NOW()
+                        WHERE id = ANY(CAST(:ids AS uuid[]))
                         """
                     ),
-                    {
-                        "case_id": cid,
-                        "payload": json.dumps(
-                            {
-                                "reason": "Limpieza operativa: inicio desde primer expediente real",
-                                "kept_case_id": keep_case_id,
-                                "expediente_ref": expediente_ref,
-                            },
-                            ensure_ascii=False,
+                    {"ids": candidate_ids},
+                )
+
+                for cid in candidate_ids:
+                    conn.execute(
+                        text(
+                            """
+                            INSERT INTO events(case_id, type, payload, created_at)
+                            VALUES (
+                              :case_id,
+                              'ops_archived_as_test',
+                              CAST(:payload AS JSONB),
+                              NOW()
+                            )
+                            """
                         ),
-                    },
+                        {
+                            "case_id": cid,
+                            "payload": json.dumps(
+                                {
+                                    "reason": "Limpieza operativa: inicio desde primer expediente real",
+                                    "kept_case_id": keep_case_id,
+                                    "expediente_ref": expediente_ref,
+                                },
+                                ensure_ascii=False,
+                            ),
+                        },
+                    )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Error aplicando limpieza operativa: {e}",
                 )
 
         message = (
