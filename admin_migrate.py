@@ -1,7 +1,7 @@
 # admin_migrate.py — migraciones admin (init + ampliaciones + autorización reforzada)
 import os
 from typing import List, Tuple
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from schemas import MigrateResponse
@@ -288,58 +288,135 @@ def migrate_dgt_dev_submissions(x_admin_token: str | None = Header(default=None,
 
 
 # =========================================================
-# MIGRACIÓN: SEGUIMIENTO DE PLAZOS / FOLLOW-UPS OPS
+# OPS: LIMPIEZA OPERATIVA — MARCAR PRUEBAS ANTERIORES COMO LAB
 # =========================================================
 
-@router.post("/ops_followups", response_model=MigrateResponse)
-def migrate_ops_followups(
-    x_admin_token: str | None = Header(default=None, alias="x-admin-token")
+@router.post("/ops_clean_start_from_real_case", response_model=MigrateResponse)
+def ops_clean_start_from_real_case(
+    keep_case_id: str = Query(..., description="Case ID real que se conserva como expediente operativo"),
+    expediente_ref: str = Query("V250274524", description="Referencia de expediente real de arranque"),
+    dry_run: bool = Query(True, description="Si true, no actualiza; solo informa"),
+    x_admin_token: str | None = Header(default=None, alias="x-admin-token"),
 ):
+    """
+    Limpieza segura: NO borra nada.
+
+    Marca como archived_test los expedientes de laboratorio anteriores al primer caso real,
+    y también duplicados del mismo expediente_ref, conservando el keep_case_id indicado.
+
+    Uso recomendado:
+    1) Ejecutar primero con dry_run=true.
+    2) Si el resultado cuadra, ejecutar con dry_run=false.
+
+    Ejemplo:
+    /admin/migrate/ops_clean_start_from_real_case?keep_case_id=0dcd7bdc-4b81-450d-a274-0294bf708917&expediente_ref=V250274524&dry_run=true
+    """
     _require_admin_token(x_admin_token)
 
     from database import get_engine
     engine = get_engine()
 
-    ddl = [
-        (
-            "ops_followups_table",
-            """
-            CREATE TABLE IF NOT EXISTS ops_followups (
-              id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-              case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-              kind TEXT NOT NULL DEFAULT 'seguimiento',
-              status TEXT NOT NULL DEFAULT 'pending',
-              title TEXT NOT NULL,
-              description TEXT,
-              due_at TIMESTAMPTZ NOT NULL,
-              source_event_type TEXT,
-              created_by TEXT,
-              resolved_at TIMESTAMPTZ,
-              resolved_by TEXT,
-              resolution_note TEXT,
-              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            """,
-        ),
-        (
-            "idx_ops_followups_case",
-            "CREATE INDEX IF NOT EXISTS idx_ops_followups_case ON ops_followups(case_id);",
-        ),
-        (
-            "idx_ops_followups_status_due",
-            "CREATE INDEX IF NOT EXISTS idx_ops_followups_status_due ON ops_followups(status, due_at);",
-        ),
-        (
-            "idx_ops_followups_due",
-            "CREATE INDEX IF NOT EXISTS idx_ops_followups_due ON ops_followups(due_at);",
-        ),
-    ]
+    with engine.begin() as conn:
+        baseline = conn.execute(
+            text(
+                """
+                SELECT id, expediente_ref, created_at
+                FROM cases
+                WHERE id = :keep_case_id
+                """
+            ),
+            {"keep_case_id": keep_case_id},
+        ).fetchone()
 
-    applied = _run(engine, ddl)
-    return MigrateResponse(
-        ok=True,
-        message="Migración ops_followups aplicada.",
-        created=applied,
-    )
+        if not baseline:
+            raise HTTPException(status_code=404, detail="No se encuentra el expediente real indicado en keep_case_id")
+
+        baseline_created_at = baseline[2]
+
+        candidates = conn.execute(
+            text(
+                """
+                SELECT id, expediente_ref, status, contact_email, created_at, updated_at
+                FROM cases
+                WHERE id <> :keep_case_id
+                  AND COALESCE(status, '') NOT IN (
+                    'presentado_manual_ayuntamiento',
+                    'presentado_auto_dgt',
+                    'presentado_auto_registro',
+                    'submitted',
+                    'closed',
+                    'archived',
+                    'resolved',
+                    'estimado',
+                    'desestimado'
+                  )
+                  AND (
+                    created_at < :baseline_created_at
+                    OR expediente_ref = :expediente_ref
+                  )
+                ORDER BY created_at ASC
+                """
+            ),
+            {
+                "keep_case_id": keep_case_id,
+                "baseline_created_at": baseline_created_at,
+                "expediente_ref": expediente_ref,
+            },
+        ).fetchall()
+
+        candidate_ids = [str(r[0]) for r in candidates]
+
+        if not dry_run and candidate_ids:
+            conn.execute(
+                text(
+                    """
+                    UPDATE cases
+                    SET status = 'archived_test',
+                        updated_at = NOW()
+                    WHERE id = ANY(CAST(:ids AS uuid[]))
+                    """
+                ),
+                {"ids": candidate_ids},
+            )
+
+            for cid in candidate_ids:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO events(case_id, type, payload, created_at)
+                        VALUES (
+                          :case_id,
+                          'ops_archived_as_test',
+                          CAST(:payload AS JSONB),
+                          NOW()
+                        )
+                        """
+                    ),
+                    {
+                        "case_id": cid,
+                        "payload": json.dumps(
+                            {
+                                "reason": "Limpieza operativa: inicio desde primer expediente real",
+                                "kept_case_id": keep_case_id,
+                                "expediente_ref": expediente_ref,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                )
+
+        message = (
+            f"Dry run: {len(candidate_ids)} expedientes serían marcados como archived_test."
+            if dry_run
+            else f"Limpieza aplicada: {len(candidate_ids)} expedientes marcados como archived_test."
+        )
+
+        created = [
+            f"keep_case_id={keep_case_id}",
+            f"expediente_ref={expediente_ref}",
+            f"dry_run={dry_run}",
+            f"candidates={len(candidate_ids)}",
+        ]
+
+        return MigrateResponse(ok=True, message=message, created=created)
 
