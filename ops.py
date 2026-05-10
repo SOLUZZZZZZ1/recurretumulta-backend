@@ -1020,6 +1020,7 @@ def restore_real_case(
 
 
 
+
 @router.get("/cases/presented")
 def list_presented_cases(
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
@@ -1027,17 +1028,12 @@ def list_presented_cases(
     limit: int = Query(100, ge=1, le=500),
 ) -> Dict[str, Any]:
     """
-    Histórico operativo de expedientes presentados / en seguimiento.
+    Historico operativo de expedientes presentados / en seguimiento.
+    Query robusta sin ANY(:lista), para evitar problemas de binding.
     """
     _require_operator(x_operator_token)
 
     term = (q or "").strip()
-    statuses = [
-        "submitted",
-        "presentado_manual_ayuntamiento",
-        "presentado_auto_dgt",
-        "presentado_auto_registro",
-    ]
 
     engine = get_engine()
     with engine.begin() as conn:
@@ -1047,17 +1043,22 @@ def list_presented_cases(
                     """
                     SELECT id, expediente_ref, status, payment_status, contact_email, created_at, updated_at
                     FROM cases
-                    WHERE status = ANY(:statuses)
-                      AND (
+                    WHERE (
+                        status = 'submitted'
+                        OR status ILIKE 'presentado%%'
+                        OR status ILIKE '%%presentado%%'
+                    )
+                    AND (
                         CAST(id AS TEXT) ILIKE :term
                         OR COALESCE(expediente_ref, '') ILIKE :term
                         OR COALESCE(contact_email, '') ILIKE :term
-                      )
+                        OR COALESCE(status, '') ILIKE :term
+                    )
                     ORDER BY updated_at DESC
                     LIMIT :limit
                     """
                 ),
-                {"statuses": statuses, "term": f"%{term}%", "limit": limit},
+                {"term": f"%{term}%", "limit": limit},
             ).fetchall()
         else:
             rows = conn.execute(
@@ -1065,12 +1066,16 @@ def list_presented_cases(
                     """
                     SELECT id, expediente_ref, status, payment_status, contact_email, created_at, updated_at
                     FROM cases
-                    WHERE status = ANY(:statuses)
+                    WHERE (
+                        status = 'submitted'
+                        OR status ILIKE 'presentado%%'
+                        OR status ILIKE '%%presentado%%'
+                    )
                     ORDER BY updated_at DESC
                     LIMIT :limit
                     """
                 ),
-                {"statuses": statuses, "limit": limit},
+                {"limit": limit},
             ).fetchall()
 
     items = []
