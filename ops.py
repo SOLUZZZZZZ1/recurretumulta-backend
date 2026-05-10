@@ -933,6 +933,92 @@ def resolve_case_followup(
 
     return {"ok": True, "case_id": case_id, "followup_id": followup_id, "status": "resolved"}
 
+
+@router.post("/cases/{case_id}/restore-real-case")
+def restore_real_case(
+    case_id: str,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+    note: Optional[str] = Form(default=None),
+) -> Dict[str, Any]:
+    """
+    Restaura un expediente real marcado accidentalmente como archived_test.
+
+    NO borra nada.
+    NO toca documentos.
+    NO toca eventos anteriores.
+
+    Solo:
+    archived_test -> presentado_manual_ayuntamiento
+    """
+
+    _require_operator(x_operator_token)
+
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT status, expediente_ref
+                FROM cases
+                WHERE id = :id
+                """
+            ),
+            {"id": case_id},
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Case not found")
+
+        previous_status = (row[0] or "").strip()
+        expediente_ref = row[1]
+
+        conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET status = 'presentado_manual_ayuntamiento',
+                    updated_at = NOW()
+                WHERE id = :id
+                """
+            ),
+            {"id": case_id},
+        )
+
+        conn.execute(
+            text(
+                """
+                INSERT INTO events(case_id, type, payload, created_at)
+                VALUES (
+                  :case_id,
+                  'ops_restore_real_case',
+                  CAST(:payload AS JSONB),
+                  NOW()
+                )
+                """
+            ),
+            {
+                "case_id": case_id,
+                "payload": json.dumps(
+                    {
+                        "from": previous_status,
+                        "to": "presentado_manual_ayuntamiento",
+                        "expediente_ref": expediente_ref,
+                        "note": note or "Restauración expediente real",
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        )
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "status": "presentado_manual_ayuntamiento",
+        "message": "Expediente real restaurado correctamente.",
+    }
+
+
 @router.post("/cases/{case_id}/force-ready-to-submit")
 def force_ready_to_submit(
     case_id: str,
