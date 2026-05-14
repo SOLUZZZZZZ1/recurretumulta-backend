@@ -2769,7 +2769,7 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
 
         with engine.begin() as conn:
             case_id = conn.execute(
-                text("INSERT INTO cases(status, created_at, updated_at) VALUES ('uploaded', NOW(), NOW()) RETURNING id")
+                text("INSERT INTO cases(status, created_at, updated_at) VALUES ('pending_client_data', NOW(), NOW()) RETURNING id")
             ).scalar()
 
             b2_bucket, b2_key = upload_original(str(case_id), content, file.filename, mime)
@@ -3021,7 +3021,7 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
 
 
             conn.execute(
-                text("UPDATE cases SET status='analyzed', updated_at=NOW() WHERE id=:case_id"),
+                text("UPDATE cases SET status=CASE WHEN COALESCE(payment_status, '') = 'paid' AND COALESCE(authorized, FALSE) = TRUE THEN 'manual_review' ELSE 'pending_client_data' END, updated_at=NOW() WHERE id=:case_id"),
                 {"case_id": case_id},
             )
 

@@ -415,6 +415,23 @@ async def stripe_webhook(request: Request):
                 {"id": case_id, "sid": session["id"], "pi": session.get("payment_intent")},
             )
             _append_event(conn, case_id, "paid_ok", {"session": session["id"]})
+
+            # Activación operativa: solo tras pago confirmado por Stripe.
+            # El análisis inicial puede haber dejado el expediente como pending_client_data.
+            conn.execute(
+                text("UPDATE cases SET status='manual_review', updated_at=NOW() WHERE id=:id"),
+                {"id": case_id},
+            )
+            _append_event(
+                conn,
+                case_id,
+                "case_activated_after_payment",
+                {
+                    "session": session["id"],
+                    "message": "Expediente activado para revisión jurídica tras pago confirmado.",
+                },
+            )
+
             _run_post_payment_modo_dios(conn, case_id)
 
     return {"ok": True}
