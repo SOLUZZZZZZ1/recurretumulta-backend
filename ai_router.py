@@ -49,6 +49,54 @@ def _as_confidence(value):
         return 0
 
 
+
+def _needs_manual_review_before_generate(ai_payload, result):
+    """
+    Bloqueo seguro: si OCR/hecho/familia no están suficientemente claros,
+    NO generamos recurso automático. Lo dejamos para revisión manual.
+    """
+    raw = ai_payload.get("raw_result") or result or {}
+    extracted = raw.get("extracted") if isinstance(raw, dict) else {}
+    if not isinstance(extracted, dict):
+        extracted = {}
+
+    familia = str(ai_payload.get("familia") or ai_payload.get("tipo_infraccion") or "").strip().lower()
+    hecho = str(ai_payload.get("hecho") or ai_payload.get("hecho_imputado") or "").strip()
+    admisibilidad = str(ai_payload.get("admisibilidad") or "").strip().lower()
+
+    review_flags = [
+        bool(raw.get("needs_operator_review")) if isinstance(raw, dict) else False,
+        bool(extracted.get("needs_operator_review")),
+        bool(extracted.get("hecho_focus_needs_operator_review")),
+        admisibilidad == "revision_operador_recomendada",
+    ]
+
+    try:
+        focus_conf = float(extracted.get("hecho_focus_confidence") or 0)
+    except Exception:
+        focus_conf = 0.0
+
+    if focus_conf and focus_conf < 0.75:
+        review_flags.append(True)
+
+    generic_hechos = [
+        "no mantener la atención permanente a la conducción",
+        "no mantener la atencion permanente a la conduccion",
+        "insuficiencia probatoria",
+    ]
+
+    if not hecho or len(hecho) < 12:
+        review_flags.append(True)
+
+    if any(g in hecho.lower() for g in generic_hechos) and bool(extracted.get("hecho_focus_needs_operator_review")):
+        review_flags.append(True)
+
+    if familia in ("", "otro", "generic", "desconocido", "unknown"):
+        review_flags.append(True)
+
+    return any(review_flags)
+
+
 def _normalize_ai_payload(result):
     familia = _pick(
         result,
@@ -168,8 +216,63 @@ def run_ai(req: RunExpedienteAI):
         ai_payload = _normalize_ai_payload(result)
 
         with engine.begin() as conn:
-            # 1) MODO DIOS: generar SIEMPRE para revisión
+            # 1) MODO SEGURO:
+            # Antes generaba SIEMPRE. Ahora, si OCR/hecho/familia son dudosos,
+            # NO genera recurso automático y lo deja en revisión manual.
             try:
+                if _needs_manual_review_before_generate(ai_payload, result):
+                    conn.execute(
+                        text(
+                            """
+                            INSERT INTO events(case_id, type, payload, created_at)
+                            VALUES (:id, 'ai_expediente_result', CAST(:payload AS JSONB), NOW())
+                            """
+                        ),
+                        {
+                            "id": req.case_id,
+                            "payload": json.dumps(ai_payload, ensure_ascii=False),
+                        },
+                    )
+
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE cases
+                            SET status='manual_review', updated_at=NOW()
+                            WHERE id=:id
+                            """
+                        ),
+                        {"id": req.case_id},
+                    )
+
+                    conn.execute(
+                        text(
+                            """
+                            INSERT INTO events(case_id, type, payload, created_at)
+                            VALUES (:id, 'resource_generation_blocked_manual_review', CAST(:payload AS JSONB), NOW())
+                            """
+                        ),
+                        {
+                            "id": req.case_id,
+                            "payload": json.dumps(
+                                {
+                                    "ok": True,
+                                    "mode": "safe_block",
+                                    "note": "Generación automática bloqueada por OCR/hecho/familia dudosos. Revisión manual obligatoria.",
+                                },
+                                ensure_ascii=False,
+                            ),
+                        },
+                    )
+
+                    result["note"] = "Revisión manual: no se genera recurso automático por OCR/hecho/familia dudosos."
+                    return {
+                        "ok": True,
+                        "case_id": req.case_id,
+                        "ai_payload": ai_payload,
+                        "result": result,
+                    }
+
                 gen_result = generate_dgt_for_case(conn, req.case_id)
 
                 delivery = gen_result.get("delivery") or {}
@@ -179,10 +282,10 @@ def run_ai(req: RunExpedienteAI):
                 # 2) Guardar resultado IA YA ENRIQUECIDO CON DESTINO
                 conn.execute(
                     text(
-                        '''
+                        """
                         INSERT INTO events(case_id, type, payload, created_at)
                         VALUES (:id, 'ai_expediente_result', CAST(:payload AS JSONB), NOW())
-                        '''
+                        """
                     ),
                     {
                         "id": req.case_id,
@@ -192,28 +295,28 @@ def run_ai(req: RunExpedienteAI):
 
                 conn.execute(
                     text(
-                        '''
+                        """
                         UPDATE cases
                         SET status='generated', updated_at=NOW()
                         WHERE id=:id
-                        '''
+                        """
                     ),
                     {"id": req.case_id},
                 )
 
                 conn.execute(
                     text(
-                        '''
+                        """
                         INSERT INTO events(case_id, type, payload, created_at)
                         VALUES (:id, 'resource_generated_auto', CAST(:payload AS JSONB), NOW())
-                        '''
+                        """
                     ),
                     {
                         "id": req.case_id,
                         "payload": json.dumps(
                             {
                                 "ok": True,
-                                "mode": "modo_dios",
+                                "mode": "modo_seguro",
                                 "note": "Recurso generado automáticamente para revisión",
                                 "delivery": delivery,
                             },
@@ -222,7 +325,7 @@ def run_ai(req: RunExpedienteAI):
                     },
                 )
 
-                result["note"] = "Modo Dios: recurso generado para revisión (sin presentar)"
+                result["note"] = "Modo seguro: recurso generado para revisión (sin presentar)"
             except Exception as gen_err:
                 # Si falla generate, guardamos al menos el resultado IA base
                 conn.execute(
