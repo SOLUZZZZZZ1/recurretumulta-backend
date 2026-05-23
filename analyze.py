@@ -278,6 +278,216 @@ def _clean_literal_text(text: str) -> str:
 
 
 
+
+def _looks_like_ocr_garbage_hecho(text: str) -> bool:
+    """
+    Detecta hechos que en realidad son cabeceras/pies/código de barras/OCR basura.
+    """
+    t = _normalize_for_matching(text or "")
+    if not t:
+        return True
+
+    garbage_tokens = [
+        "rin f5",
+        "emissora",
+        "sufix",
+        "dors",
+        "per a mes informacio",
+        "per a més informació",
+        "vegeu el dors",
+        "veome el dors",
+        "data notificacio",
+        "data notificació",
+        "entitat",
+        "codi de barres",
+        "referencia",
+        "organismo",
+        "planta e infraccio",
+        "emplazar cursant multa",
+        "nucpel",
+        "transig",
+    ]
+
+    if any(tok in t for tok in garbage_tokens):
+        return True
+
+    letters = sum(1 for ch in t if ch.isalpha())
+    digits = sum(1 for ch in t if ch.isdigit())
+    if digits >= 12 and letters < 80:
+        return True
+
+    narrative = [
+        "conducir",
+        "conduir",
+        "conduccion",
+        "conduccio",
+        "temeraria",
+        "temerari",
+        "negligente",
+        "atencion",
+        "atencio",
+        "mantener",
+        "mantenir",
+        "circular",
+        "circulando",
+        "circulava",
+        "velocidad",
+        "velocitat",
+        "semaforo",
+        "semafor",
+        "llum vermella",
+        "luz roja",
+        "telefono",
+        "telefon",
+        "auricular",
+        "cinturon",
+        "cinturo",
+    ]
+    if len(t) > 70 and not any(n in t for n in narrative):
+        return True
+
+    return False
+
+
+def _extract_transit_catalunya_fet_denunciat(raw_text: str) -> str:
+    """
+    Extractor específico para boletines del Servei Català de Trànsit.
+    Busca el campo 9. FET DENUNCIAT y evita capturar pie RIN F5 / dors / emissora.
+    """
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        return ""
+
+    original = raw_text.replace("\r", "\n")
+    lines = [ln.strip() for ln in original.split("\n")]
+    norm_lines = [_normalize_for_matching(ln) for ln in lines]
+
+    start = None
+    for i, nln in enumerate(norm_lines):
+        if (
+            "fet denunciat" in nln
+            or re.search(r"\b9\s*\.?\s*fet\s+denunciat\b", nln)
+        ):
+            start = i
+            break
+
+    if start is None:
+        for i, nln in enumerate(norm_lines):
+            if any(tok in nln for tok in [
+                "conduir de forma temeraria",
+                "conduccio temeraria",
+                "conduccion temeraria",
+                "conduccio negligent",
+                "conduccion negligente",
+                "sense mantenir",
+                "atencio permanent",
+                "distancia de seguretat",
+            ]):
+                start = i
+                break
+
+    if start is None:
+        return ""
+
+    collected = []
+    max_end = min(len(lines), start + 10)
+
+    for j in range(start, max_end):
+        ln = lines[j].strip()
+        nln = norm_lines[j]
+
+        if j == start:
+            ln = re.sub(r"^\s*(?:9\s*\.?\s*)?FET\s+DENUNCIAT\s*[:\-]?\s*", "", ln, flags=re.I).strip()
+            nln = _normalize_for_matching(ln)
+
+        if not ln:
+            continue
+
+        stop_tokens = [
+            "10 dades de la persona",
+            "dades de la persona conductora",
+            "persona conductora",
+            "11 diligencia",
+            "diligencia de diposit",
+            "diposit i cobrament",
+            "12 denunciant",
+            "13 denunciant",
+            "14 notificadora",
+            "15 observacions",
+            "signatura",
+            "rin f5",
+            "emissora",
+            "sufix",
+            "referencia",
+            "data limit",
+            "import a pagar",
+            "amb descompte",
+            "per a mes informacio",
+            "vegeu el dors",
+        ]
+
+        if any(tok in nln for tok in stop_tokens):
+            if collected:
+                break
+            continue
+
+        if _is_admin_line(ln):
+            if collected:
+                break
+            continue
+
+        if (
+            _looks_like_narrative_line(ln)
+            or any(tok in nln for tok in [
+                "conduir",
+                "conduccio",
+                "conduccion",
+                "temeraria",
+                "temerari",
+                "negligent",
+                "negligente",
+                "sense mantenir",
+                "atencio",
+                "atencion",
+                "distancia",
+                "seguretat",
+                "carril",
+                "via",
+            ])
+            or collected
+        ):
+            collected.append(ln)
+
+        if len(" ".join(collected)) >= 450:
+            break
+
+    out = _clean_literal_text(" ".join(collected))
+    if _looks_like_ocr_garbage_hecho(out):
+        return ""
+
+    return out
+
+
+def _protect_against_bad_hecho_fields(out: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Si el hecho extraído es basura administrativa, lo limpiamos para que
+    generate.py no use cabeceras/pies como hecho imputado.
+    """
+    out = dict(out or {})
+    for key in ("hecho_denunciado_literal", "hecho_denunciado_resumido", "hecho_imputado", "hecho_para_recurso"):
+        value = _safe_str(out.get(key)).strip()
+        if value and _looks_like_ocr_garbage_hecho(value):
+            out[key] = None
+
+    limpio = _safe_str(out.get("hecho_limpio") or out.get("hecho_reconstruido")).strip()
+    if limpio and not _looks_like_ocr_garbage_hecho(limpio):
+        if not out.get("hecho_denunciado_literal"):
+            out["hecho_denunciado_literal"] = limpio
+        if not out.get("hecho_imputado"):
+            out["hecho_imputado"] = limpio
+
+    return out
+
+
 def _is_internal_meta_line(line: str) -> bool:
     l = _normalize_for_matching(line)
     internal_tokens = [
@@ -602,12 +812,22 @@ def _extract_preferred_hecho_fields(text_blob: str, core: Optional[Dict[str, Any
                 src,
                 ["hecho imputado", "hecho infringido", "hecho infractor"],
             )
-        literal = _extract_labeled_hecho_field(
-            src,
-            ["hecho denunciado", "hecho que se notifica", "lo que se notifica"],
-        ) or _extract_hecho_denunciado_literal_from_text(src)
-        if literal and len(literal) >= 12:
+
+        transit_literal = _extract_transit_catalunya_fet_denunciat(src)
+
+        literal = (
+            transit_literal
+            or _extract_labeled_hecho_field(
+                src,
+                ["hecho denunciado", "hecho que se notifica", "lo que se notifica"],
+            )
+            or _extract_hecho_denunciado_literal_from_text(src)
+        )
+
+        if literal and len(literal) >= 12 and not _looks_like_ocr_garbage_hecho(literal):
             break
+
+        literal = ""
 
     tipo_hint = _safe_str(core.get("tipo_infraccion"))
     resumido = _build_hecho_denunciado_resumido(literal, tipo_hint) if literal else ""
@@ -2471,6 +2691,7 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
         if v:
             out[k] = v
 
+    out = _protect_against_bad_hecho_fields(out)
     out = _apply_hecho_engine(out)
 
     tipo, hecho, facts = _detect_facts_and_type(text_blob, out)
@@ -2657,6 +2878,8 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
 
     # Revisión final de calidad del hecho y coherencia con la familia.
     out = _apply_hecho_engine(out)
+    out = _protect_against_bad_hecho_fields(out)
+
     if out.get("needs_operator_review"):
         out["presentacion_automatica_recomendada"] = False
         out["resultado_estrategico"] = "revision_operador_recomendada"
