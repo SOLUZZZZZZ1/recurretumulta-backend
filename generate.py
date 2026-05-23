@@ -2273,48 +2273,116 @@ def build_camion_template(core: Dict[str, Any]) -> Dict[str, str]:
 
 def _is_strong_semaforo_generation_case(core: Dict[str, Any]) -> bool:
     """
-    Blindaje de generación: semáforo en español y catalán.
+    Blindaje de generación: semáforo SOLO cuando el hecho principal apunta
+    claramente a luz roja / semáforo.
+
+    Importante:
+    - NO reclasifica como semáforo por simples restos de OCR.
+    - NO pisa casos graves como conducción temeraria, 6 puntos, 500 €, etc.
+    - Generate debe respetar la familia resuelta por analyze salvo evidencia directa.
     """
-    blob = "\n".join([
-        _safe_str((core or {}).get("raw_text_pdf")),
-        _safe_str((core or {}).get("raw_text_vision")),
-        _safe_str((core or {}).get("raw_text_blob")),
-        _safe_str((core or {}).get("vision_raw_text")),
-        _safe_str((core or {}).get("hecho_denunciado_literal")),
-        _safe_str((core or {}).get("hecho_denunciado_resumido")),
-        _safe_str((core or {}).get("hecho_imputado_textual")),
-        _safe_str((core or {}).get("hecho_imputado")),
-        _safe_str((core or {}).get("hecho_para_recurso")),
-        json.dumps(core or {}, ensure_ascii=False),
+    core = core or {}
+
+    focused = "\n".join([
+        _safe_str(core.get("hecho_denunciado_literal")),
+        _safe_str(core.get("hecho_denunciado_resumido")),
+        _safe_str(core.get("hecho_imputado_textual")),
+        _safe_str(core.get("hecho_imputado")),
+        _safe_str(core.get("hecho_para_recurso")),
+        _safe_str(core.get("tipo_infraccion")),
+        _safe_str(core.get("subtipo_infraccion")),
+        _safe_str(core.get("norma_hint")),
     ]).lower()
 
+    if len(focused.strip()) < 20:
+        focused = "\n".join([
+            _safe_str(core.get("raw_text_pdf")),
+            _safe_str(core.get("raw_text_vision")),
+            _safe_str(core.get("raw_text_blob")),
+            _safe_str(core.get("vision_raw_text")),
+        ]).lower()
+
     norm = (
-        blob.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
+        focused.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
             .replace("à", "a").replace("è", "e").replace("ì", "i").replace("ò", "o").replace("ù", "u")
             .replace("ï", "i").replace("ü", "u").replace("ç", "c")
     )
 
-    signals = [
-        "no respetar la luz roja",
-        "luz roja no intermitente",
-        "luz roja",
-        "fase roja",
-        "semaforo",
-        "linea de detencion",
-        "art. 143",
-        "articulo 143",
-        "art. 146",
-        "articulo 146",
-        "no respectar la llum vermella",
-        "llum vermella no intermitent",
-        "llum vermella",
-        "fase vermella",
-        "semafor",
-        "linia de detencio",
+    hard_blockers = [
+        "temeraria",
+        "temerari",
+        "conduccion temeraria",
+        "conduccio temeraria",
+        "conduccio temeraria",
+        "conduccion negligente",
+        "conduccio negligent",
+        "maniobra peligrosa",
+        "maniobra perillosa",
+        "atencion permanente",
+        "atencio permanent",
+        "sin mantener la atencion",
+        "sense mantenir",
+        "6 puntos",
+        "punts 6",
+        "500,00",
+        "500.00",
+        "500 €",
+        "500 eur",
+        "art. 3",
+        "articulo 3",
+        "article 3",
     ]
 
-    return any(s in norm for s in signals)
+    if any(b in norm for b in hard_blockers):
+        return False
 
+    has_light_red = any(s in norm for s in [
+        "no respetar la luz roja",
+        "no respectar la llum vermella",
+        "luz roja no intermitente",
+        "llum vermella no intermitent",
+        "fase roja",
+        "fase vermella",
+        "semaforo en rojo",
+        "semafor en vermell",
+        "senal luminosa roja",
+        "senyal lluminosa vermella",
+    ])
+
+    has_semaphore_context = any(s in norm for s in [
+        "semaforo",
+        "semafor",
+        "linea de detencion",
+        "linia de detencio",
+        "luz roja",
+        "llum vermella",
+        "fase roja",
+        "fase vermella",
+        "art. 143",
+        "articulo 143",
+        "article 143",
+        "art. 146",
+        "articulo 146",
+        "article 146",
+    ])
+
+    if has_light_red and has_semaphore_context:
+        return True
+
+    if ("semaforo" in norm or "semafor" in norm) and any(s in norm for s in [
+        "linea de detencion",
+        "linia de detencio",
+        "rebase",
+        "rebasar",
+        "sobrepasar",
+        "creuar",
+        "cruce",
+        "interseccion",
+        "interseccio",
+    ]):
+        return True
+
+    return False
 
 def build_semaforo_pro_template(core: Dict[str, Any]) -> Dict[str, str]:
     """
@@ -2421,7 +2489,10 @@ def build_semaforo_pro_template(core: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
-    if _is_strong_semaforo_generation_case(core):
+    # No forzar semáforo si analyze.py ya resolvió otra familia.
+    # Solo usamos el detector de semáforo como fallback cuando el tipo viene vacío/genérico.
+    current_tipo = _safe_str(tipo).lower().strip()
+    if current_tipo in ("", "generic", "otro", "unknown", "desconocido") and _is_strong_semaforo_generation_case(core):
         tipo = "semaforo"
 
     if tipo == "semaforo":
@@ -2932,14 +3003,20 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
             core["hecho_denunciado_literal"] = literal
 
     tipo = forced_tipo or _resolved_tipo_from_core(core, fallback="generic")
-    if _is_strong_semaforo_generation_case(core):
+
+    # Blindaje: no pisar una familia resuelta por analyze.py.
+    # Semáforo solo se aplica como fallback cuando el tipo venga vacío/genérico
+    # y el hecho principal contenga señales claras de luz roja/semáforo.
+    current_tipo = _safe_str(tipo).lower().strip()
+    if current_tipo in ("", "generic", "otro", "unknown", "desconocido") and _is_strong_semaforo_generation_case(core):
         tipo = "semaforo"
         core["tipo_infraccion"] = "semaforo"
         semaforo_hecho = _canonical_hecho_semaforo(core)
-        core["hecho_imputado"] = semaforo_hecho
-        core["hecho_denunciado_literal"] = semaforo_hecho
-        core["hecho_denunciado_resumido"] = semaforo_hecho
-        core["hecho_para_recurso"] = semaforo_hecho
+        if semaforo_hecho:
+            core["hecho_imputado"] = semaforo_hecho
+            core["hecho_denunciado_literal"] = semaforo_hecho
+            core["hecho_denunciado_resumido"] = semaforo_hecho
+            core["hecho_para_recurso"] = semaforo_hecho
     jurisdiccion = resolve_jurisdiction(core)
 
     bicicleta_ctx = _is_bicicleta_context(core)
