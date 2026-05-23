@@ -944,6 +944,42 @@ def _sanitize_focus_hecho(value: Any) -> str:
     ]):
         return ""
 
+    # Bloqueo específico: si el OCR focalizado se ha ido a la caja 10/12/14
+    # en lugar de FET DENUNCIAT, no se acepta como hecho.
+    box10_tokens = [
+        "permis de conduir",
+        "permiso de conducir",
+        "dni",
+        "nie",
+        "passaport",
+        "pasaporte",
+        "poblacio",
+        "población",
+        "poblacion",
+        "denunciant",
+        "denunciant/ada",
+        "notificador",
+        "notificador/a",
+        "observations",
+        "observaciones",
+        "dades de la persona",
+        "persona conductora",
+        "infractora",
+        "infractor",
+    ]
+    if any(tok in low for tok in box10_tokens):
+        return ""
+
+    # Un hecho de tráfico útil debe contener un mínimo de lenguaje narrativo vial.
+    narrative_tokens = [
+        "conduir", "conducir", "circul", "temer", "neglig", "atencio", "atencion",
+        "distancia", "seguretat", "seguridad", "vehicle", "vehiculo", "via", "carril",
+        "maniobra", "velocitat", "velocidad", "semafor", "semaforo", "llum", "luz",
+        "telefono", "telefon", "auricular", "cinturon", "cinturo", "casco", "seguro",
+    ]
+    if not any(tok in low for tok in narrative_tokens):
+        return ""
+
     if _looks_like_ocr_garbage_hecho(txt):
         return ""
 

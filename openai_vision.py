@@ -1,9 +1,16 @@
 import base64
 import json
 import os
+import io
 from typing import Any, Dict, Optional
 
 import requests
+
+try:
+    from PIL import Image, ImageEnhance
+except Exception:
+    Image = None
+    ImageEnhance = None
 
 
 def _env(name: str) -> str:
@@ -16,6 +23,58 @@ def _env(name: str) -> str:
 def _b64_data_url(mime: str, content: bytes) -> str:
     b64 = base64.b64encode(content).decode("utf-8")
     return f"data:{mime};base64,{b64}"
+
+
+
+def _is_image_mime(mime: str) -> bool:
+    return bool((mime or "").lower().startswith("image/"))
+
+
+def _crop_transit_fet_denunciat_bytes(content: bytes, mime: str) -> tuple[bytes, str]:
+    """
+    Recorta visualmente la zona del campo 9. FET DENUNCIAT en boletines Trànsit.
+    Si no puede recortar, devuelve la imagen original.
+    """
+    if not _is_image_mime(mime) or Image is None:
+        return content, mime
+
+    try:
+        img = Image.open(io.BytesIO(content)).convert("RGB")
+        w, h = img.size
+        if w <= 0 or h <= 0:
+            return content, mime
+
+        if w >= h:
+            left = int(w * 0.28)
+            top = int(h * 0.34)
+            right = int(w * 0.73)
+            bottom = int(h * 0.57)
+        else:
+            left = int(w * 0.10)
+            top = int(h * 0.26)
+            right = int(w * 0.78)
+            bottom = int(h * 0.58)
+
+        left = max(0, min(left, w - 1))
+        top = max(0, min(top, h - 1))
+        right = max(left + 10, min(right, w))
+        bottom = max(top + 10, min(bottom, h))
+
+        crop = img.crop((left, top, right, bottom))
+
+        try:
+            crop = ImageEnhance.Contrast(crop).enhance(1.45)
+            crop = ImageEnhance.Sharpness(crop).enhance(1.25)
+        except Exception:
+            pass
+
+        buf = io.BytesIO()
+        crop.save(buf, format="JPEG", quality=92)
+        return buf.getvalue(), "image/jpeg"
+
+    except Exception:
+        return content, mime
+
 
 
 def extract_from_image_bytes(
@@ -124,7 +183,8 @@ def extract_fet_denunciat_focus(
     """
     api_key = _env("OPENAI_API_KEY")
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
-    data_url = _b64_data_url(mime, content)
+    focused_content, focused_mime = _crop_transit_fet_denunciat_bytes(content, mime)
+    data_url = _b64_data_url(focused_mime, focused_content)
 
     system_text = (
         "Eres un OCR jurídico especializado en boletines de denuncia de tráfico de Cataluña. "
@@ -142,8 +202,9 @@ def extract_fet_denunciat_focus(
         '  "notes": string\n'
         "}\n\n"
         "Instrucciones:\n"
-        "1) Lee SOLO el campo 9 / FET DENUNCIAT o el texto manuscrito asociado.\n"
-        "2) Ignora cabeceras, RIN F5, emissora, dors, referencias, entidad, fechas, importes, puntos y datos personales.\n"
+        "1) La imagen que recibes debería ser un RECORTE del campo 9 / FET DENUNCIAT. Lee SOLO ese campo.\n"
+        "2) Ignora cabeceras, RIN F5, emissora, dors, referencias, entidad, fechas, importes, puntos, DNI, permiso de conducir, población, denunciante, notificador y datos personales.\n"
+        "3) Si el recorte NO contiene claramente el campo FET DENUNCIAT, devuelve hecho_denunciado_focus=null, confidence=0 y needs_operator_review=true.\n"
         "3) Si el manuscrito es parcial, usa [ILEGIBLE] solo donde falte una palabra.\n"
         "4) Mantén catalán si está en catalán.\n"
         "5) En hecho_denunciado_focus_es pon traducción/resumen jurídico prudente al castellano, sin inventar.\n"
