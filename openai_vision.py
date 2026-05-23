@@ -111,3 +111,104 @@ def extract_from_image_bytes(
         obj["vision_raw_text"] = ""
 
     return obj
+
+
+def extract_fet_denunciat_focus(
+    content: bytes,
+    mime: str,
+    filename: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Segunda pasada OCR focalizada para boletines del Servei Català de Trànsit.
+    Lee únicamente el campo 'FET DENUNCIAT' y devuelve confianza.
+    """
+    api_key = _env("OPENAI_API_KEY")
+    model = os.getenv("OPENAI_MODEL", "gpt-4o")
+    data_url = _b64_data_url(mime, content)
+
+    system_text = (
+        "Eres un OCR jurídico especializado en boletines de denuncia de tráfico de Cataluña. "
+        "Lee solo el campo 'FET DENUNCIAT'. No inventes. Devuelve siempre JSON válido."
+    )
+
+    user_text = (
+        "Devuelve EXCLUSIVAMENTE un JSON válido con estas claves EXACTAS:\n"
+        "{\n"
+        '  "hecho_denunciado_focus": string|null,\n'
+        '  "hecho_denunciado_focus_es": string|null,\n'
+        '  "confidence": number,\n'
+        '  "ocr_quality": "good"|"medium"|"bad",\n'
+        '  "needs_operator_review": boolean,\n'
+        '  "notes": string\n'
+        "}\n\n"
+        "Instrucciones:\n"
+        "1) Lee SOLO el campo 9 / FET DENUNCIAT o el texto manuscrito asociado.\n"
+        "2) Ignora cabeceras, RIN F5, emissora, dors, referencias, entidad, fechas, importes, puntos y datos personales.\n"
+        "3) Si el manuscrito es parcial, usa [ILEGIBLE] solo donde falte una palabra.\n"
+        "4) Mantén catalán si está en catalán.\n"
+        "5) En hecho_denunciado_focus_es pon traducción/resumen jurídico prudente al castellano, sin inventar.\n"
+        "6) confidence de 0 a 1. Si no puedes leer con seguridad: hecho_denunciado_focus=null, confidence<0.55 y needs_operator_review=true.\n"
+        "7) No clasifiques como semáforo salvo que se lea claramente semàfor/llum vermella/fase roja.\n"
+    )
+
+    payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": system_text}]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": user_text},
+                    {"type": "input_image", "image_url": data_url},
+                ],
+            },
+        ],
+        "text": {"format": {"type": "json_object"}},
+    }
+
+    r = requests.post(
+        "https://api.openai.com/v1/responses",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=90,
+    )
+
+    if not r.ok:
+        raise RuntimeError(f"OpenAI focus OCR error {r.status_code}: {r.text[:500]}")
+
+    data = r.json()
+    output_text = ""
+    for item in data.get("output", []):
+        if item.get("type") == "message":
+            for c in item.get("content", []):
+                if c.get("type") == "output_text":
+                    output_text += c.get("text", "")
+
+    if not output_text.strip():
+        raise RuntimeError("OpenAI focus OCR no devolvió contenido.")
+
+    try:
+        obj = json.loads(output_text)
+    except Exception as e:
+        raise RuntimeError(f"JSON inválido devuelto por OpenAI focus OCR: {e}. Texto: {output_text[:400]}")
+
+    if not isinstance(obj, dict):
+        obj = {}
+
+    try:
+        conf = float(obj.get("confidence") or 0)
+    except Exception:
+        conf = 0.0
+    conf = max(0.0, min(1.0, conf))
+    obj["confidence"] = conf
+
+    quality = str(obj.get("ocr_quality") or "").strip().lower()
+    if quality not in ("good", "medium", "bad"):
+        quality = "good" if conf >= 0.78 else "medium" if conf >= 0.55 else "bad"
+    obj["ocr_quality"] = quality
+
+    obj.setdefault("needs_operator_review", bool(conf < 0.75 or quality == "bad"))
+    obj.setdefault("hecho_denunciado_focus", None)
+    obj.setdefault("hecho_denunciado_focus_es", None)
+    obj.setdefault("notes", "")
+    return obj

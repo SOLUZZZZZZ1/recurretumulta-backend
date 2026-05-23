@@ -9,7 +9,7 @@ from sqlalchemy import text
 
 from database import get_engine
 from b2_storage import upload_original
-from openai_vision import extract_from_image_bytes
+from openai_vision import extract_from_image_bytes, extract_fet_denunciat_focus
 from text_extractors import (
     extract_text_from_pdf_bytes,
     extract_text_from_docx_bytes,
@@ -838,6 +838,141 @@ def _extract_preferred_hecho_fields(text_blob: str, core: Optional[Dict[str, Any
         "hecho_imputado_textual": hecho_imputado_textual or None,
     }
 
+
+
+
+
+def _looks_like_transit_document(core: Dict[str, Any], text_blob: str = "") -> bool:
+    blob = _normalize_for_matching(
+        "\n".join([
+            _safe_str(text_blob),
+            _safe_str((core or {}).get("organismo")),
+            _safe_str((core or {}).get("vision_raw_text")),
+            _safe_str((core or {}).get("raw_text_pdf")),
+            _safe_str((core or {}).get("raw_text_vision")),
+            _safe_str((core or {}).get("raw_text_blob")),
+        ])
+    )
+    return any(s in blob for s in [
+        "servei catala de transit",
+        "servei català de trànsit",
+        "transit",
+        "trànsit",
+        "fet denunciat",
+        "data notificacio",
+        "data notificació",
+        "rin f5",
+        "emissora",
+    ])
+
+
+def _should_run_focused_fet_ocr(core: Dict[str, Any], text_blob: str = "") -> bool:
+    if not _looks_like_transit_document(core, text_blob):
+        return False
+
+    hecho = _safe_str(
+        (core or {}).get("hecho_denunciado_literal")
+        or (core or {}).get("hecho_imputado")
+        or (core or {}).get("hecho_para_recurso")
+    ).strip()
+
+    if not hecho:
+        return True
+
+    if _looks_like_ocr_garbage_hecho(hecho):
+        return True
+
+    norm = _normalize_for_matching(hecho)
+    generic_hechos = [
+        "no mantener la atencion permanente a la conduccion",
+        "no mantener la atención permanente a la conducción",
+        "no mantenir l atencio permanent a la conduccio",
+        "no mantenir latencio permanent a la conduccio",
+    ]
+    if any(g in norm for g in generic_hechos):
+        return True
+
+    try:
+        conf = float((core or {}).get("hecho_confianza") or 0)
+    except Exception:
+        conf = 0
+
+    return bool(conf and conf < 0.75)
+
+
+def _sanitize_focus_hecho(value: Any) -> str:
+    txt = _clean_literal_text(_safe_str(value))
+    if not txt:
+        return ""
+    if _looks_like_ocr_garbage_hecho(txt):
+        return ""
+
+    stop_tokens = [
+        "rin f5",
+        "emissora",
+        "dors",
+        "per a mes informacio",
+        "vegeu el dors",
+        "data notificacio",
+        "import",
+        "puntos",
+        "punts",
+        "entitat",
+    ]
+    low = _normalize_for_matching(txt)
+    for tok in stop_tokens:
+        idx = low.find(tok)
+        if idx > 0:
+            txt = txt[:idx].strip(" ,;:-")
+            low = _normalize_for_matching(txt)
+
+    if len(txt) > 450:
+        txt = txt[:450].rsplit(" ", 1)[0].strip(" ,;:-") + "…"
+    return txt
+
+
+def _apply_focused_fet_ocr_result(core: Dict[str, Any], focus: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(core or {})
+    focus = focus or {}
+
+    literal_ca = _sanitize_focus_hecho(focus.get("hecho_denunciado_focus"))
+    literal_es = _sanitize_focus_hecho(focus.get("hecho_denunciado_focus_es"))
+
+    try:
+        conf = float(focus.get("confidence") or 0)
+    except Exception:
+        conf = 0.0
+
+    quality = _safe_str(focus.get("ocr_quality")).lower().strip() or "bad"
+    needs_review = bool(focus.get("needs_operator_review") or conf < 0.75 or quality == "bad")
+
+    out["hecho_denunciado_focus"] = literal_ca or None
+    out["hecho_denunciado_focus_es"] = literal_es or None
+    out["hecho_focus_confidence"] = conf
+    out["hecho_focus_quality"] = quality
+    out["hecho_focus_notes"] = _safe_str(focus.get("notes"))
+    out["hecho_focus_needs_operator_review"] = needs_review
+
+    chosen = literal_ca or literal_es
+
+    if chosen and conf >= 0.70 and not _looks_like_ocr_garbage_hecho(chosen):
+        out["hecho_denunciado_literal"] = chosen
+        out["hecho_imputado"] = chosen
+        out["hecho_para_recurso"] = chosen
+        if literal_es:
+            out["hecho_denunciado_resumido"] = literal_es
+
+    if needs_review:
+        out["needs_operator_review"] = True
+        reasons = list(out.get("operator_review_reasons") or [])
+        if "ocr_fet_denunciat_confianza_baja" not in reasons:
+            reasons.append("ocr_fet_denunciat_confianza_baja")
+        out["operator_review_reasons"] = reasons
+        out["presentacion_automatica_recomendada"] = False
+        out["resultado_estrategico"] = "revision_operador_recomendada"
+        out["motivo_estrategico"] = "El campo FET DENUNCIAT requiere revisión manual por OCR manuscrito o baja confianza."
+
+    return out
 
 
 
@@ -3020,6 +3155,15 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             if mime.startswith("image/"):
                 extracted_core = extract_from_image_bytes(content, mime, file.filename)
                 extracted_core = _ensure_raw_fields(extracted_core, text_content="")
+
+                try:
+                    if _should_run_focused_fet_ocr(extracted_core, extracted_core.get("vision_raw_text") or ""):
+                        focus = extract_fet_denunciat_focus(content, mime, file.filename)
+                        extracted_core = _apply_focused_fet_ocr_result(extracted_core, focus)
+                except Exception as focus_err:
+                    extracted_core["hecho_focus_error"] = str(focus_err)
+                    extracted_core["needs_operator_review"] = True
+
                 model_used = "openai_vision"
                 confidence = 0.7
 
@@ -3041,6 +3185,15 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
 
                 extracted_vision = extract_from_image_bytes(content, mime, file.filename) or {}
                 extracted_vision = _ensure_raw_fields(extracted_vision, text_content="")
+
+                try:
+                    focus_blob = _flatten_text(extracted_vision, text_content=text_content)
+                    if _should_run_focused_fet_ocr(extracted_vision, focus_blob):
+                        focus = extract_fet_denunciat_focus(content, mime, file.filename)
+                        extracted_vision = _apply_focused_fet_ocr_result(extracted_vision, focus)
+                except Exception as focus_err:
+                    extracted_vision["hecho_focus_error"] = str(focus_err)
+                    extracted_vision["needs_operator_review"] = True
 
                 blob_text = _flatten_text(extracted_text, text_content=text_content) if extracted_text else (text_content or "")
                 triaged_text = _enrich_with_triage(extracted_text or {}, blob_text)
