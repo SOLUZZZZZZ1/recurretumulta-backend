@@ -980,6 +980,30 @@ def _sanitize_focus_hecho(value: Any) -> str:
     if not any(tok in low for tok in narrative_tokens):
         return ""
 
+    # Bloqueo prudente de consecuencias graves típicamente alucinadas por OCR manuscrito.
+    # Si aparecen, no se usan automáticamente como hecho: pasan a revisión manual.
+    risky_consequence_tokens = [
+        "colision",
+        "colisio",
+        "col·lisio",
+        "col·lisió",
+        "accidente",
+        "accident",
+        "choque",
+        "xoc",
+        "danys",
+        "daños",
+        "lesion",
+        "lesio",
+        "lesió",
+        "atropello",
+        "atropellament",
+        "provocando",
+        "provocant",
+    ]
+    if any(tok in low for tok in risky_consequence_tokens):
+        return ""
+
     if _looks_like_ocr_garbage_hecho(txt):
         return ""
 
@@ -1018,8 +1042,19 @@ def _apply_focused_fet_ocr_result(core: Dict[str, Any], focus: Dict[str, Any]) -
 
     # Aceptamos únicamente los dos campos explícitos de texto humano.
     # Si OpenAI o algún parser devolviera JSON/metadata como string, _sanitize_focus_hecho lo bloquea.
-    literal_ca = _sanitize_focus_hecho(focus.get("hecho_denunciado_focus"))
-    literal_es = _sanitize_focus_hecho(focus.get("hecho_denunciado_focus_es"))
+    raw_focus_ca = _safe_str(focus.get("hecho_denunciado_focus"))
+    raw_focus_es = _safe_str(focus.get("hecho_denunciado_focus_es"))
+
+    literal_ca = _sanitize_focus_hecho(raw_focus_ca)
+    literal_es = _sanitize_focus_hecho(raw_focus_es)
+
+    raw_focus_norm = _normalize_for_matching("\n".join([raw_focus_ca, raw_focus_es]))
+    risky_focus = any(tok in raw_focus_norm for tok in [
+        "colision", "colisio", "col·lisio", "col·lisió",
+        "accidente", "accident", "choque", "xoc",
+        "danys", "daños", "lesion", "lesio", "lesió",
+        "atropello", "atropellament", "provocando", "provocant",
+    ])
 
     try:
         conf = float(focus.get("confidence") or 0)
@@ -1027,7 +1062,7 @@ def _apply_focused_fet_ocr_result(core: Dict[str, Any], focus: Dict[str, Any]) -
         conf = 0.0
 
     quality = _safe_str(focus.get("ocr_quality")).lower().strip() or "bad"
-    needs_review = bool(focus.get("needs_operator_review") or conf < 0.75 or quality == "bad")
+    needs_review = bool(focus.get("needs_operator_review") or conf < 0.75 or quality == "bad" or risky_focus)
 
     out["hecho_denunciado_focus"] = literal_ca or None
     out["hecho_denunciado_focus_es"] = literal_es or None
@@ -1108,6 +1143,8 @@ def _apply_focused_fet_ocr_result(core: Dict[str, Any], focus: Dict[str, Any]) -
         reasons = list(out.get("operator_review_reasons") or [])
         if "ocr_fet_denunciat_confianza_baja" not in reasons:
             reasons.append("ocr_fet_denunciat_confianza_baja")
+        if risky_focus and "ocr_fet_denunciat_consecuencia_grave_no_verificada" not in reasons:
+            reasons.append("ocr_fet_denunciat_consecuencia_grave_no_verificada")
         out["operator_review_reasons"] = reasons
         out["presentacion_automatica_recomendada"] = False
         out["resultado_estrategico"] = "revision_operador_recomendada"
