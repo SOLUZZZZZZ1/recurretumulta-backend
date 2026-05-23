@@ -955,12 +955,70 @@ def _apply_focused_fet_ocr_result(core: Dict[str, Any], focus: Dict[str, Any]) -
 
     chosen = literal_ca or literal_es
 
-    if chosen and conf >= 0.70 and not _looks_like_ocr_garbage_hecho(chosen):
+    # OCR focalizado SOLO mejora el literal manuscrito.
+    # Nunca debe reclasificar familias ni forzar velocidades/semaforos/radar.
+    current_family = _safe_str(
+        out.get("familia_resuelta")
+        or out.get("template_usado")
+        or out.get("tipo_infraccion")
+    ).strip().lower()
+
+    chosen_norm = _normalize_for_matching(chosen)
+
+    # Detectores peligrosos que NO deben sobrescribir familias ya resueltas.
+    looks_like_velocity = (
+        ("km/h" in chosen_norm)
+        or ("velocidad" in chosen_norm)
+        or bool(re.search(r"\b\d{2,3}\s*km", chosen_norm))
+    )
+
+    looks_like_semaforo = any(tok in chosen_norm for tok in [
+        "semaforo",
+        "semàfor",
+        "semáforo",
+        "luz roja",
+        "llum vermella",
+        "fase roja",
+    ])
+
+    dangerous_cross_family = False
+
+    if current_family and current_family not in ("", "otro", "generic", "unknown", "desconocido"):
+        if current_family != "velocidad" and looks_like_velocity:
+            dangerous_cross_family = True
+
+        if current_family != "semaforo" and looks_like_semaforo:
+            dangerous_cross_family = True
+
+    # SOLO sustituimos el literal si:
+    # - confianza suficiente
+    # - no parece OCR basura
+    # - y no intenta cambiar implícitamente la familia jurídica.
+    if (
+        chosen
+        and conf >= 0.70
+        and not _looks_like_ocr_garbage_hecho(chosen)
+        and not dangerous_cross_family
+    ):
         out["hecho_denunciado_literal"] = chosen
-        out["hecho_imputado"] = chosen
-        out["hecho_para_recurso"] = chosen
+
+        # Solo tocamos hecho_imputado si no existe uno ya sólido.
+        existing_hecho = _safe_str(out.get("hecho_imputado")).strip()
+        if not existing_hecho or _looks_like_ocr_garbage_hecho(existing_hecho):
+            out["hecho_imputado"] = chosen
+
+        # NUNCA sobrescribir hecho_para_recurso aquí.
+        # Ese campo pertenece a la estrategia/familia jurídica principal.
+
         if literal_es:
             out["hecho_denunciado_resumido"] = literal_es
+
+    if dangerous_cross_family:
+        out["needs_operator_review"] = True
+        reasons = list(out.get("operator_review_reasons") or [])
+        if "focused_ocr_family_conflict" not in reasons:
+            reasons.append("focused_ocr_family_conflict")
+        out["operator_review_reasons"] = reasons
 
     if needs_review:
         out["needs_operator_review"] = True
