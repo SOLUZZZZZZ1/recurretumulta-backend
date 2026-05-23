@@ -901,9 +901,49 @@ def _should_run_focused_fet_ocr(core: Dict[str, Any], text_blob: str = "") -> bo
 
 
 def _sanitize_focus_hecho(value: Any) -> str:
-    txt = _clean_literal_text(_safe_str(value))
+    """
+    Limpia SOLO texto humano del hecho. Si recibe JSON serializado,
+    metadata interna o campos técnicos del OCR focalizado, lo bloquea.
+    """
+    # Nunca aceptar dict/list como hecho.
+    if isinstance(value, (dict, list)):
+        return ""
+
+    raw = _safe_str(value)
+    txt = _clean_literal_text(raw)
     if not txt:
         return ""
+
+    low_raw = raw.lower()
+    low = _normalize_for_matching(txt)
+
+    # Bloqueo fuerte de metadata interna colada como texto.
+    metadata_tokens = [
+        "hecho_denunciado_focus",
+        "hecho_denunciado_focus_es",
+        "hecho_focus_confidence",
+        "confidence",
+        "ocr_quality",
+        "needs_operator_review",
+        "notes",
+        "{",
+        "}",
+        "null",
+        "true",
+        "false",
+    ]
+
+    if any(tok in low_raw for tok in metadata_tokens):
+        return ""
+
+    if any(tok in low for tok in [
+        "hecho denunciado focus",
+        "hecho focus confidence",
+        "ocr quality",
+        "needs operator review",
+    ]):
+        return ""
+
     if _looks_like_ocr_garbage_hecho(txt):
         return ""
 
@@ -919,15 +959,20 @@ def _sanitize_focus_hecho(value: Any) -> str:
         "punts",
         "entitat",
     ]
-    low = _normalize_for_matching(txt)
+
     for tok in stop_tokens:
         idx = low.find(tok)
         if idx > 0:
             txt = txt[:idx].strip(" ,;:-")
             low = _normalize_for_matching(txt)
 
+    # Si tras limpiar queda una frase demasiado rara o administrativa, bloquear.
+    if len(txt.split()) < 3:
+        return ""
+
     if len(txt) > 450:
         txt = txt[:450].rsplit(" ", 1)[0].strip(" ,;:-") + "…"
+
     return txt
 
 
@@ -935,6 +980,8 @@ def _apply_focused_fet_ocr_result(core: Dict[str, Any], focus: Dict[str, Any]) -
     out = dict(core or {})
     focus = focus or {}
 
+    # Aceptamos únicamente los dos campos explícitos de texto humano.
+    # Si OpenAI o algún parser devolviera JSON/metadata como string, _sanitize_focus_hecho lo bloquea.
     literal_ca = _sanitize_focus_hecho(focus.get("hecho_denunciado_focus"))
     literal_es = _sanitize_focus_hecho(focus.get("hecho_denunciado_focus_es"))
 
@@ -3072,6 +3119,25 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
     # Revisión final de calidad del hecho y coherencia con la familia.
     out = _apply_hecho_engine(out)
     out = _protect_against_bad_hecho_fields(out)
+
+    # Limpieza defensiva final: nunca permitir que metadata del OCR focalizado
+    # llegue a generate.py como hecho imputado.
+    for _k in ("hecho_denunciado_literal", "hecho_denunciado_resumido", "hecho_imputado", "hecho_para_recurso"):
+        _v = _safe_str(out.get(_k))
+        _lv = _v.lower()
+        if any(_tok in _lv for _tok in [
+            "hecho_denunciado_focus",
+            "hecho_denunciado_focus_es",
+            "hecho_focus_confidence",
+            "ocr_quality",
+            "needs_operator_review",
+        ]):
+            out[_k] = None
+            out["needs_operator_review"] = True
+            _reasons = list(out.get("operator_review_reasons") or [])
+            if "metadata_ocr_colada_en_hecho" not in _reasons:
+                _reasons.append("metadata_ocr_colada_en_hecho")
+            out["operator_review_reasons"] = _reasons
 
     if out.get("needs_operator_review"):
         out["presentacion_automatica_recomendada"] = False
