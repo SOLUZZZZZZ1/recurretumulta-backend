@@ -2974,57 +2974,48 @@ EMAIL: {g("email")}
 
 
 def _build_suplica_pro(tipo: str = "", extra: dict | None = None) -> str:
-    """
-    Cierre PRO estándar para todos los recursos:
-    archivo principal + recalificación subsidiaria + sanción mínima + expediente íntegro + otrosí.
-    """
     return (
-        "S U P L I C A:\\n\\n"
-        "1) Que se tengan por formuladas las presentes alegaciones.\\n\\n"
+        "S U P L I C A:\n\n"
+        "1) Que se tengan por formuladas las presentes alegaciones.\n\n"
         "2) Que, en atención a las alegaciones presentadas y sus fundamentos, se acuerde el "
         "ARCHIVO DEL EXPEDIENTE por insuficiencia probatoria, falta de acreditación suficiente "
-        "del hecho imputado o ausencia de motivación individualizada.\\n\\n"
+        "del hecho imputado o ausencia de motivación individualizada.\n\n"
         "3) Subsidiariamente, para el caso de no estimarse el archivo, que se proceda a una "
         "correcta recalificación jurídica de los hechos conforme a la prueba realmente acreditada "
-        "en el expediente.\\n\\n"
+        "en el expediente.\n\n"
         "4) Subsidiariamente, que se imponga en su caso la sanción mínima legalmente procedente "
-        "dentro del tipo infractor que finalmente pudiera considerarse aplicable.\\n\\n"
+        "dentro del tipo infractor que finalmente pudiera considerarse aplicable.\n\n"
         "5) Subsidiariamente, que se aporte expediente íntegro y prueba completa para contradicción "
-        "efectiva.\\n\\n"
-        "OTROSÍ DIGO\\n\\n"
+        "efectiva.\n\n"
+        "OTROSÍ DIGO\n\n"
         "Que esta parte se reserva expresamente el ejercicio de cuantos recursos administrativos "
         "y acciones legales pudieran corresponder en defensa de sus derechos e intereses legítimos."
     )
 
 
 def _upgrade_legacy_suplica_to_pro(text: str) -> str:
-    """
-    Sustituye cierres cortos tipo 'III. SOLICITO' por el cierre PRO.
-    Si no encuentra cierre, lo añade al final.
-    """
     if not text:
         return text
 
     pro = _build_suplica_pro()
 
-    # Si ya tiene el cierre PRO, no duplicar.
     if "S U P L I C A:" in text and "recalificación jurídica" in text and "OTROSÍ DIGO" in text:
         return text
 
-    # Eliminar bloque antiguo desde III. SOLICITO / SOLICITO / SUPLICA hasta el final si existe.
     patterns = [
-        r"\\nIII\\.\\s*SOLICITO[\\s\\S]*$",
-        r"\\nIII\\.\\s*S O L I C I T O[\\s\\S]*$",
-        r"\\nSOLICITO[\\s\\S]*$",
-        r"\\nS U P L I C A\\s*:[\\s\\S]*$",
-        r"\\nSUPLICA\\s*:[\\s\\S]*$",
+        r"\nIII\.\s*SOLICITO[\s\S]*$",
+        r"\nIII\.\s*S O L I C I T O[\s\S]*$",
+        r"\nSOLICITO[\s\S]*$",
+        r"\nS U P L I C A\s*:[\s\S]*$",
+        r"\nSUPLICA\s*:[\s\S]*$",
     ]
 
     for pat in patterns:
         if re.search(pat, text, flags=re.IGNORECASE):
-            return re.sub(pat, "\\n\\n" + pro, text, flags=re.IGNORECASE).strip()
+            return re.sub(pat, "\n\n" + pro, text, flags=re.IGNORECASE).strip()
 
-    return (text.rstrip() + "\\n\\n" + pro).strip()
+    return (text.rstrip() + "\n\n" + pro).strip()
+
 
 
 def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str]] = None, forced_tipo: Optional[str] = None) -> Dict[str, Any]:
@@ -3118,6 +3109,10 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         )
 
     tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
+
+    # Cierre PRO obligatorio para todos los recursos:
+    # recalificación subsidiaria, sanción mínima y OTROSÍ DIGO.
+    tpl["cuerpo"] = _upgrade_legacy_suplica_to_pro(tpl["cuerpo"])
 
     docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
