@@ -1309,7 +1309,14 @@ def _extract_speed_and_sanction_fields(text_blob: str) -> Dict[str, Any]:
     radar_speed_context = (
         ("radar" in t)
         or ("cinemometro" in t)
-        or ("exceso de velocidad" in t)
+        or (
+            "exceso de velocidad" in t
+            and (
+                bool(re.search(r"\b\d{2,3}\s*km", t))
+                or "velocidad medida" in t
+                or "limitada la velocidad" in t
+            )
+        )
         or bool(re.search(r"\bcircular\s+a\s+\d{2,3}\s*km\s*/?\s*h\b", t))
         or bool(re.search(r"\bcirculaba\s+a\s+\d{2,3}\s*km\s*/?\s*h\b", t))
         or bool(re.search(r"\bvelocidad\s+medida\b", t))
@@ -2985,13 +2992,41 @@ def _resolve_tipo_deterministico(text_blob: str, core: Optional[Dict[str, Any]] 
     if has_any(condiciones_tokens):
         return "condiciones_vehiculo", 0.96
 
+    # VELOCIDAD SOLO con datos técnicos reales.
     velocidad_tokens = [
-        "km/h", "velocidad", "radar", "cinemometro", "cinemómetro", "multanova",
-        "exceso de velocidad", "limitada la velocidad a", "teniendo limitada la velocidad a",
-        "velocidad maxima", "velocidad máxima", "circular a", "circulaba a",
+        "km/h",
+        "radar",
+        "cinemometro",
+        "cinemómetro",
+        "multanova",
+        "velocidad medida",
+        "velocidad maxima",
+        "velocidad máxima",
+        "limitada la velocidad a",
+        "teniendo limitada la velocidad a",
+        "circular a",
+        "circulaba a",
     ]
-    if has_any(velocidad_tokens):
+
+    velocidad_hard_data = (
+        has_any(velocidad_tokens)
+        or bool(re.search(r"\b\d{2,3}\s*km\s*/?\s*h\b", blob))
+        or (
+            "velocidad" in blob
+            and bool(re.search(r"\b\d{2,3}\b", blob))
+        )
+    )
+
+    generic_speed_only = any(s in blob for s in [
+        "presunto exceso de velocidad",
+        "exceso de velocidad",
+    ])
+
+    if velocidad_hard_data:
         return "velocidad", 0.95
+
+    if generic_speed_only:
+        return "otro", 0.35
 
     return "otro", 0.0
 
