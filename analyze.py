@@ -2835,7 +2835,33 @@ def _resolve_tipo_deterministico(text_blob: str, core: Optional[Dict[str, Any]] 
     def has_any(tokens: List[str]) -> bool:
         return any(tok in blob for tok in tokens)
 
-    # SEMÁFORO primero para evitar desvíos a velocidad por cifras o importes.
+    # PRIORIDAD MÁXIMA: conducción temeraria/negligente/atención.
+    # Si aparece esto, NO puede caer en semáforo.
+    atencion_hard_priority = [
+        "conducir de forma temeraria",
+        "conduir de forma temeraria",
+        "conduir de forma temerària",
+        "conduccion temeraria",
+        "conducción temeraria",
+        "conduccio temeraria",
+        "conducció temerària",
+        "conducir de forma negligente",
+        "conduccion negligente",
+        "conducción negligente",
+        "conduccio negligent",
+        "conducció negligent",
+        "no mantener la atencion",
+        "no mantener la atención",
+        "no mantenir l'atencio",
+        "no mantenir l’atencio",
+        "atencion permanente",
+        "atención permanente",
+    ]
+
+    if has_any(atencion_hard_priority):
+        return "atencion", 0.995
+
+    # SEMÁFORO solo después de descartar temeraria/negligente.
     semaforo_tokens = [
         "semaforo", "semáforo",
         "fase roja", "fase del rojo",
@@ -2972,6 +2998,33 @@ def _is_strong_semaforo_case(text_blob: str, core: Optional[Dict[str, Any]] = No
 
     blob = _normalize_for_matching(focused)
 
+    # Bloqueadores DUROS:
+    # Si el hecho principal es temeraria/negligente/atencion,
+    # semáforo NO puede ganar aunque aparezca "llum vermella" o "semafor".
+    hard_blockers = [
+        "temeraria",
+        "temeraria invaint",
+        "temerària",
+        "conduccion temeraria",
+        "conducción temeraria",
+        "conduccio temeraria",
+        "conducció temerària",
+        "conduccion negligente",
+        "conducción negligente",
+        "conduccio negligent",
+        "conducció negligent",
+        "no mantener la atencion",
+        "no mantener la atención",
+        "no mantenir l'atencio",
+        "no mantenir l’atencio",
+        "no mantenir l atencio",
+        "atencion permanente",
+        "atención permanente",
+    ]
+
+    if any(b in blob for b in hard_blockers):
+        return False
+
     signals = [
         "no respetar la luz roja",
         "no respetar la luz roja no intermitente",
@@ -3031,9 +3084,12 @@ def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[
             confidence = max(confidence, conf_override)
 
     # BLINDAJE FINAL SEMÁFORO:
-    # Si aparece luz roja/semáforo, forzamos semáforo aunque otros clasificadores
-    # hayan detectado velocidad o condiciones del vehículo.
-    if _is_strong_semaforo_case(text_blob, out):
+    # SOLO puede forzar semáforo si la familia todavía es genérica/desconocida.
+    # Nunca debe machacar una familia fuerte como temeraria/negligente/atencion.
+    if (
+        tipo in ("otro", "", "unknown", "desconocido")
+        and _is_strong_semaforo_case(text_blob, out)
+    ):
         tipo = "semaforo"
         confidence = max(confidence, 0.99)
 
