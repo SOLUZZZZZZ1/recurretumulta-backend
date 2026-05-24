@@ -2973,6 +2973,47 @@ EMAIL: {g("email")}
 
 
 
+
+def _build_fundamentos_derecho_pro(tipo: str = "", extra: dict | None = None) -> str:
+    """
+    Fundamentos de Derecho PRO estándar para todos los recursos.
+    """
+    return (
+        "FUNDAMENTOS DE DERECHO\n\n"
+        "PRIMERO.– Resultan de aplicación los artículos 24 y 25 de la Constitución Española, "
+        "que consagran el derecho a la presunción de inocencia, la legalidad sancionadora "
+        "y el principio de tipicidad.\n\n"
+        "SEGUNDO.– Conforme a los artículos 53, 63 y concordantes de la Ley 39/2015, "
+        "de Procedimiento Administrativo Común, la potestad sancionadora exige la existencia "
+        "de un procedimiento válido, motivación suficiente, prueba bastante y pleno respeto "
+        "a las garantías del administrado.\n\n"
+        "TERCERO.– Corresponde a la Administración la carga de acreditar de forma suficiente "
+        "los hechos constitutivos de la infracción, sin que puedan bastar presunciones genéricas, "
+        "descripciones ambiguas o afirmaciones estereotipadas.\n\n"
+        "CUARTO.– En materia sancionadora, la resolución administrativa debe expresar con claridad "
+        "los hechos imputados, la prueba que los sustenta y la concreta subsunción jurídica en el "
+        "tipo infractor aplicado.\n\n"
+        "QUINTO.– La jurisprudencia del Tribunal Supremo exige una actividad probatoria suficiente, "
+        "válida, concreta e individualizada para poder enervar la presunción de inocencia "
+        "del administrado.\n\n"
+        "SEXTO.– La ausencia de prueba suficiente, la insuficiente motivación del expediente, "
+        "la falta de concreción del hecho o la ausencia de subsunción típica adecuada determinan "
+        "la improcedencia de la sanción propuesta.\n\n"
+        "JURISPRUDENCIA APLICABLE\n\n"
+        "Sin perjuicio de la normativa expresamente citada, resultan de aplicación los siguientes "
+        "criterios jurisprudenciales consolidados:\n\n"
+        "• La presunción de inocencia exige actividad probatoria suficiente, clara y concluyente, "
+        "no bastando meras presunciones o afirmaciones genéricas.\n\n"
+        "• Corresponde a la Administración la carga de acreditar los hechos constitutivos de la "
+        "infracción en el procedimiento sancionador.\n\n"
+        "• La obligación de motivación exige una fundamentación concreta, individualizada y "
+        "comprensible, que permita al interesado conocer las razones de la sanción y ejercer "
+        "eficazmente su derecho de defensa.\n\n"
+        "• La falta de prueba bastante, la ausencia de motivación suficiente o la indeterminación "
+        "del hecho imputado impiden considerar válidamente desvirtuada la presunción de inocencia."
+    )
+
+
 def _build_suplica_pro(tipo: str = "", extra: dict | None = None) -> str:
     return (
         "S U P L I C A:\n\n"
@@ -2994,15 +3035,27 @@ def _build_suplica_pro(tipo: str = "", extra: dict | None = None) -> str:
 
 
 def _upgrade_legacy_suplica_to_pro(text: str) -> str:
+    """
+    Añade cierre PRO completo:
+    FUNDAMENTOS DE DERECHO + JURISPRUDENCIA + SÚPLICA + OTROSÍ.
+    """
     if not text:
         return text
 
-    pro = _build_suplica_pro()
+    fundamentos = _build_fundamentos_derecho_pro()
+    suplica = _build_suplica_pro()
+    cierre_pro = fundamentos + "\n\n" + suplica
 
-    if "S U P L I C A:" in text and "recalificación jurídica" in text and "OTROSÍ DIGO" in text:
+    if (
+        "FUNDAMENTOS DE DERECHO" in text
+        and "S U P L I C A:" in text
+        and "recalificación jurídica" in text
+        and "OTROSÍ DIGO" in text
+    ):
         return text
 
     patterns = [
+        r"\nFUNDAMENTOS DE DERECHO[\s\S]*$",
         r"\nIII\.\s*SOLICITO[\s\S]*$",
         r"\nIII\.\s*S O L I C I T O[\s\S]*$",
         r"\nSOLICITO[\s\S]*$",
@@ -3012,10 +3065,9 @@ def _upgrade_legacy_suplica_to_pro(text: str) -> str:
 
     for pat in patterns:
         if re.search(pat, text, flags=re.IGNORECASE):
-            return re.sub(pat, "\n\n" + pro, text, flags=re.IGNORECASE).strip()
+            return re.sub(pat, "\n\n" + cierre_pro, text, flags=re.IGNORECASE).strip()
 
-    return (text.rstrip() + "\n\n" + pro).strip()
-
+    return (text.rstrip() + "\n\n" + cierre_pro).strip()
 
 
 def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str]] = None, forced_tipo: Optional[str] = None) -> Dict[str, Any]:
