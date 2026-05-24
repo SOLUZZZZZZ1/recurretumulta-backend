@@ -2975,32 +2975,46 @@ EMAIL: {g("email")}
 
 
 
+
 def _build_antecedentes_block(core: dict | None = None) -> str:
     """
     Bloque estándar de antecedentes y hecho imputado.
-    SIEMPRE debe aparecer antes de alegaciones.
+    SOLO mostrar literal OCR real. Nunca hechos canónicos IA.
     """
     core = core or {}
 
     organismo = str(core.get("organismo") or "Pendiente de identificación").strip()
     expediente = str(core.get("expediente_ref") or "[EXPEDIENTE]").strip()
 
-    literal = (
+    # SOLO texto OCR real
+    literal_real = (
         str(core.get("hecho_denunciado_literal") or "").strip()
-        or str(core.get("hecho_imputado") or "").strip()
-        or str(core.get("hecho_para_recurso") or "").strip()
+        or str(core.get("hecho_focus_literal") or "").strip()
     )
 
-    if not literal:
-        literal = "Pendiente de lectura completa del boletín original por OCR/manuscrito dudoso."
+    # Nunca mostrar hechos canónicos IA como si fueran el boletín real
+    canonical_blacklist = [
+        "NO MANTENER LA ATENCIÓN PERMANENTE A LA CONDUCCIÓN",
+        "PRESUNTO EXCESO DE VELOCIDAD",
+        "NO RESPETAR LA LUZ ROJA",
+        "USO MANUAL DEL TELÉFONO MÓVIL",
+    ]
+
+    literal_upper = literal_real.upper()
+
+    if (
+        not literal_real
+        or any(x in literal_upper for x in canonical_blacklist)
+    ):
+        literal_real = "[LECTURA MANUSCRITA PARCIAL / OCR PENDIENTE DE VALIDACIÓN]"
 
     return (
         "Extracto literal del boletín:\n"
-        f"“{literal}”\n\n"
+        f"“{literal_real}”\n\n"
         "I. ANTECEDENTES\n"
         f"1) Órgano: {organismo}\n"
         f"2) Identificación expediente: {expediente}\n"
-        f"3) Hecho imputado: {literal}\n"
+        f"3) Hecho imputado: {literal_real}\n"
     )
 
 
