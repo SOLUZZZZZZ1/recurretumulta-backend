@@ -2974,6 +2974,37 @@ EMAIL: {g("email")}
 
 
 
+
+def _build_antecedentes_block(core: dict | None = None) -> str:
+    """
+    Bloque estándar de antecedentes y hecho imputado.
+    SIEMPRE debe aparecer antes de alegaciones.
+    """
+    core = core or {}
+
+    organismo = str(core.get("organismo") or "Pendiente de identificación").strip()
+    expediente = str(core.get("expediente_ref") or "[EXPEDIENTE]").strip()
+
+    literal = (
+        str(core.get("hecho_denunciado_literal") or "").strip()
+        or str(core.get("hecho_imputado") or "").strip()
+        or str(core.get("hecho_para_recurso") or "").strip()
+    )
+
+    if not literal:
+        literal = "Pendiente de lectura completa del boletín original por OCR/manuscrito dudoso."
+
+    return (
+        "Extracto literal del boletín:\n"
+        f"“{literal}”\n\n"
+        "I. ANTECEDENTES\n"
+        f"1) Órgano: {organismo}\n"
+        f"2) Identificación expediente: {expediente}\n"
+        f"3) Hecho imputado: {literal}\n"
+    )
+
+
+
 def _build_fundamentos_derecho_pro(tipo: str = "", extra: dict | None = None) -> str:
     """
     Fundamentos de Derecho PRO estándar para todos los recursos.
@@ -3161,6 +3192,18 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         )
 
     tpl["cuerpo"] = build_v2_dgt_layout(tpl["cuerpo"], core, interesado or {})
+
+    # Antecedentes y hecho imputado SIEMPRE visibles.
+    antecedentes_block = _build_antecedentes_block(core)
+
+    if "I. ALEGACIONES" in tpl["cuerpo"] and "I. ANTECEDENTES" not in tpl["cuerpo"]:
+        tpl["cuerpo"] = tpl["cuerpo"].replace(
+            "I. ALEGACIONES",
+            antecedentes_block + "\nI. ALEGACIONES",
+            1,
+        )
+    elif "I. ANTECEDENTES" not in tpl["cuerpo"]:
+        tpl["cuerpo"] = antecedentes_block + "\n\n" + tpl["cuerpo"]
 
     # Cierre PRO obligatorio para todos los recursos:
     # recalificación subsidiaria, sanción mínima y OTROSÍ DIGO.
