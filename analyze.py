@@ -3047,28 +3047,40 @@ def _is_strong_semaforo_case(text_blob: str, core: Optional[Dict[str, Any]] = No
     if any(b in blob for b in hard_blockers):
         return False
 
-    signals = [
+    # Semáforo SOLO si el hecho principal encaja claramente
+    # con una infracción semafórica.
+    strong_prefixes = [
         "no respetar la luz roja",
         "no respetar la luz roja no intermitente",
         "no respetar la luz roja no intermitente de un semaforo",
         "no respetar la luz roja no intermitente de un semáforo",
-        "luz roja no intermitente",
-        "luz roja",
-        "fase roja",
-        "fase del rojo",
         "cruce con fase roja",
         "cruce con fase del rojo",
-        "semaforo",
-        "semáforo",
-        "linea de detencion",
-        "línea de detención",
-        "rebase la linea de detencion",
-        "rebasar la linea de detencion",
-        "articulo 146",
-        "art. 146",
+        "luz roja no intermitente",
     ]
 
-    return any(s in blob for s in signals)
+    # Hecho principal priorizado
+    principal = _normalize_for_matching(
+        "\n".join([
+            _safe_str(core.get("hecho_denunciado_literal")),
+            _safe_str(core.get("hecho_imputado")),
+            _safe_str(core.get("hecho_reconstruido")),
+            _safe_str(core.get("hecho_limpio")),
+        ])
+    ).strip()
+
+    # SOLO aceptar semáforo si el hecho principal EMPIEZA
+    # claramente por una conducta semafórica.
+    if principal:
+        return any(principal.startswith(p) for p in strong_prefixes)
+
+    # Fallback muy restrictivo si no hay hecho principal:
+    strict_combo = (
+        ("luz roja" in blob or "fase roja" in blob)
+        and ("linea de detencion" in blob or "rebase" in blob or "cruce" in blob)
+    )
+
+    return strict_combo
 
 
 def _enrich_with_triage(extracted_core: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
