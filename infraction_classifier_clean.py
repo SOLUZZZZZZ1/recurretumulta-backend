@@ -2,7 +2,7 @@
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-FAMILY_ORDER = [
+FAMILY_ORDER = 
     "semaforo",
     "movil",
     "auriculares",
