@@ -289,7 +289,6 @@ def migrate_dgt_dev_submissions(x_admin_token: str | None = Header(default=None,
 
 
 
-
 # =========================================================
 # MIGRACIÓN: RTM CORE V1
 # =========================================================
@@ -299,7 +298,8 @@ def migrate_rtm_core_v1(
     x_admin_token: str | None = Header(default=None, alias="x-admin-token")
 ):
     """
-    Añade la clasificación común de RTM sin romper los expedientes anteriores.
+    Añade a cases los campos comunes del nuevo RTM CORE.
+    Es segura: usa IF NOT EXISTS y no borra datos.
     """
     _require_admin_token(x_admin_token)
 
