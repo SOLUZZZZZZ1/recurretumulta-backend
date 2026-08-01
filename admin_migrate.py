@@ -288,6 +288,64 @@ def migrate_dgt_dev_submissions(x_admin_token: str | None = Header(default=None,
     return MigrateResponse(ok=True, message="Migración dgt_dev_submissions aplicada.", created=applied)
 
 
+
+
+# =========================================================
+# MIGRACIÓN: RTM CORE V1
+# =========================================================
+
+@router.post("/rtm_core_v1", response_model=MigrateResponse)
+def migrate_rtm_core_v1(
+    x_admin_token: str | None = Header(default=None, alias="x-admin-token")
+):
+    """
+    Añade la clasificación común de RTM sin romper los expedientes anteriores.
+    """
+    _require_admin_token(x_admin_token)
+
+    from database import get_engine
+    engine = get_engine()
+
+    ddl = [
+        (
+            "cases_department",
+            "ALTER TABLE cases ADD COLUMN IF NOT EXISTS department TEXT;",
+        ),
+        (
+            "cases_case_type",
+            "ALTER TABLE cases ADD COLUMN IF NOT EXISTS case_type TEXT;",
+        ),
+        (
+            "cases_customer_comment",
+            "ALTER TABLE cases ADD COLUMN IF NOT EXISTS customer_comment TEXT;",
+        ),
+        (
+            "cases_source_module",
+            "ALTER TABLE cases ADD COLUMN IF NOT EXISTS source_module TEXT;",
+        ),
+        (
+            "idx_cases_department",
+            "CREATE INDEX IF NOT EXISTS idx_cases_department ON cases(department);",
+        ),
+        (
+            "idx_cases_case_type",
+            "CREATE INDEX IF NOT EXISTS idx_cases_case_type ON cases(case_type);",
+        ),
+        (
+            "idx_cases_department_status",
+            "CREATE INDEX IF NOT EXISTS idx_cases_department_status ON cases(department, status);",
+        ),
+    ]
+
+    applied = _run(engine, ddl)
+
+    return MigrateResponse(
+        ok=True,
+        message="Migración RTM CORE v1 aplicada.",
+        created=applied,
+    )
+
+
 # =========================================================
 # OPS: LIMPIEZA OPERATIVA — MARCAR PRUEBAS ANTERIORES COMO LAB
 # =========================================================

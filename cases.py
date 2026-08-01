@@ -1,10 +1,11 @@
 import json
 import os
 import smtplib
+import uuid
 from email.message import EmailMessage
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, BackgroundTasks, Request, Response
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import text
 
@@ -14,6 +15,7 @@ from b2_storage import upload_bytes
 # Import interno del engine (Modo Dios)
 from ai.expediente_engine import run_expediente_ai
 from authorization_pdf import ensure_authorization_pdf, get_request_ip, _get_case_snapshot, _authorization_payload_from_case, generate_authorization_pdf
+from pdf_builder import build_pdf
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
@@ -157,6 +159,225 @@ def _event(case_id: str, typ: str, payload: Dict[str, Any]) -> None:
             ),
             {"c": case_id, "t": typ, "p": json.dumps(payload)},
         )
+
+
+
+# =========================
+# RTM CORE — ALTA PREVIA Y AUTORIZACIÓN GENÉRICA
+# =========================
+def _rtm_next_path(department: str, case_type: str) -> str:
+    if department == "traffic":
+        return "/eliminar-coche" if case_type == "vehicle_removal" else "/multas"
+    if department == "debt":
+        return "/deudas/documentos"
+    if department == "administration":
+        return "/administracion/documentos"
+    if department == "claims":
+        return "/reclamaciones/documentos"
+    return "/otros/documentos"
+
+
+def _rtm_auth_scope(department: str) -> str:
+    if department == "traffic":
+        return (
+            "actuar ante la DGT, ayuntamientos y otros organismos sancionadores, "
+            "incluyendo alegaciones, recursos y solicitudes vinculadas al expediente."
+        )
+    if department == "debt":
+        return (
+            "actuar ante Equifax, ASNEF, Experian, BADEXCUG, acreedores y entidades financieras, "
+            "incluyendo derechos de acceso, rectificación, supresión, oposición y reclamación."
+        )
+    if department == "administration":
+        return (
+            "actuar ante la AEAT, Seguridad Social, ayuntamientos y demás administraciones "
+            "u organismos públicos relacionados con el expediente."
+        )
+    if department == "claims":
+        return (
+            "actuar ante compañías aéreas, aseguradoras, empresas, organismos de consumo "
+            "y otras entidades relacionadas con la reclamación."
+        )
+    return "realizar las gestiones extrajudiciales y administrativas necesarias para este expediente."
+
+
+async def _rtm_store_file(case_id: str, file: UploadFile, kind: str, folder: str):
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail=f"El archivo {kind} está vacío")
+    filename = (file.filename or kind).replace("/", "_").replace("\\", "_")[:140]
+    mime = file.content_type or "application/octet-stream"
+    ext = ".bin"
+    if "." in filename:
+        candidate = "." + filename.rsplit(".", 1)[-1].lower()
+        if 2 <= len(candidate) <= 10:
+            ext = candidate
+    bucket, key = upload_bytes(case_id, folder, content, ext, mime)
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
+            VALUES (:case_id, :kind, :bucket, :key, :mime, :size_bytes, NOW())
+        """), {
+            "case_id": case_id, "kind": kind, "bucket": bucket, "key": key,
+            "mime": mime, "size_bytes": len(content)
+        })
+    return {"kind": kind, "bucket": bucket, "key": key, "mime": mime, "size_bytes": len(content)}
+
+
+@router.post("/intake-draft")
+async def create_rtm_intake_draft(
+    department: str = Form(...),
+    case_type: str = Form(...),
+    source_module: str = Form("rtm_web"),
+    full_name: str = Form(...),
+    dni_nie: str = Form(...),
+    domicilio_notif: str = Form(...),
+    street: str = Form(...),
+    street_number: str = Form(...),
+    floor: str = Form(""),
+    door: str = Form(""),
+    postal_code: str = Form(...),
+    city: str = Form(...),
+    province: str = Form(...),
+    email: EmailStr = Form(...),
+    telefono: str = Form(...),
+    preferred_contact: str = Form("email"),
+    customer_comment: str = Form(...),
+    representation_confirmed: bool = Form(...),
+    privacy_accepted: bool = Form(...),
+    dni_front: UploadFile = File(...),
+    dni_back: UploadFile = File(...),
+):
+    department = (department or "").strip().lower()
+    case_type = (case_type or "").strip().lower()
+    if department not in {"traffic", "debt", "administration", "claims", "other"}:
+        raise HTTPException(status_code=400, detail="Departamento RTM no válido")
+    if not representation_confirmed or not privacy_accepted:
+        raise HTTPException(status_code=400, detail="Faltan consentimientos obligatorios")
+
+    case_id = str(uuid.uuid4())
+    interested = {
+        "full_name": full_name.strip(),
+        "dni_nie": dni_nie.strip().upper(),
+        "dni": dni_nie.strip().upper(),
+        "domicilio_notif": domicilio_notif.strip(),
+        "domicilio": domicilio_notif.strip(),
+        "address": {
+            "street": street.strip(), "street_number": street_number.strip(),
+            "floor": floor.strip(), "door": door.strip(),
+            "postal_code": postal_code.strip(), "city": city.strip(), "province": province.strip()
+        },
+        "email": str(email).strip(),
+        "telefono": telefono.strip(),
+        "preferred_contact": preferred_contact.strip().lower(),
+        "customer_comment": customer_comment.strip(),
+        "department": department,
+        "case_type": case_type,
+        "source_module": (source_module or "rtm_web").strip().lower(),
+    }
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO cases(
+                id, contact_email, contact_name, status, payment_status, authorized,
+                interested_data, department, case_type, customer_comment, source_module,
+                category, created_at, updated_at
+            ) VALUES (
+                CAST(:id AS UUID), :email, :name, 'authorization_pending', NULL, FALSE,
+                CAST(:interested AS JSONB), :department, :case_type, :comment, :source,
+                :category, NOW(), NOW()
+            )
+        """), {
+            "id": case_id, "email": str(email).strip(), "name": full_name.strip(),
+            "interested": json.dumps(interested, ensure_ascii=False),
+            "department": department, "case_type": case_type,
+            "comment": customer_comment.strip(),
+            "source": (source_module or "rtm_web").strip().lower(),
+            "category": department,
+        })
+        conn.execute(text("""
+            INSERT INTO events(case_id, type, payload, created_at)
+            VALUES (CAST(:id AS UUID), 'rtm_intake_created', CAST(:payload AS JSONB), NOW())
+        """), {"id": case_id, "payload": json.dumps({"department": department, "case_type": case_type})})
+
+    docs = [
+        await _rtm_store_file(case_id, dni_front, "identity_front", "identity"),
+        await _rtm_store_file(case_id, dni_back, "identity_back", "identity"),
+    ]
+    _event(case_id, "rtm_identity_documents_saved", {"documents": docs})
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "status": "authorization_pending",
+        "authorized": False,
+        "authorization_download_url": f"/cases/{case_id}/rtm-authorization-pdf",
+        "next_path": _rtm_next_path(department, case_type),
+    }
+
+
+@router.get("/{case_id}/rtm-authorization-pdf")
+def download_rtm_authorization_pdf(case_id: str):
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(text("""
+            SELECT COALESCE(interested_data, '{}'::jsonb), COALESCE(department, ''), COALESCE(case_type, '')
+            FROM cases WHERE id=:id
+        """), {"id": case_id}).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Expediente no encontrado")
+
+    interested = row[0] if isinstance(row[0], dict) else {}
+    department = row[1] or interested.get("department") or "other"
+    case_type = row[2] or interested.get("case_type") or ""
+    name = interested.get("full_name") or ""
+    dni = interested.get("dni_nie") or interested.get("dni") or ""
+    address = interested.get("domicilio_notif") or interested.get("domicilio") or ""
+    email = interested.get("email") or ""
+    phone = interested.get("telefono") or ""
+
+    body = f"""
+AUTORIZACIÓN DE REPRESENTACIÓN RTM
+
+Expediente RTM: {case_id}
+Departamento: {department}
+Tipo de expediente: {case_type}
+
+DATOS DEL INTERESADO
+
+Nombre y apellidos: {name}
+DNI/NIE/Pasaporte: {dni}
+Domicilio: {address}
+Email: {email}
+Teléfono: {phone}
+
+AUTORIZACIÓN
+
+Yo, {name}, con documento identificativo {dni}, autorizo expresamente a
+LA TALAMANQUINA, S.L. (RTM / RecurreTuMulta), con NIF B75440115, para {_rtm_auth_scope(department)}
+
+Esta autorización queda limitada exclusivamente a las actuaciones necesarias para la gestión
+del expediente RTM {case_id} y no comprende facultades ajenas a dicho asunto.
+
+El interesado declara que los datos y documentos aportados son veraces y que dispone de
+legitimación suficiente para solicitar la gestión.
+
+Firma del interesado:
+
+
+
+____________________________________
+
+Nombre: {name}
+DNI/NIE/Pasaporte: {dni}
+Fecha: _____________________________
+"""
+    pdf_bytes = build_pdf("AUTORIZACIÓN DE REPRESENTACIÓN RTM", body)
+    headers = {"Content-Disposition": f'attachment; filename="autorizacion_RTM_{case_id}.pdf"'}
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
 
 # =========================
 # CONTACTO (PRE-PAGO)
