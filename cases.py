@@ -167,7 +167,7 @@ def _event(case_id: str, typ: str, payload: Dict[str, Any]) -> None:
 # =========================
 def _rtm_next_path(department: str, case_type: str) -> str:
     if department == "traffic":
-        return "/eliminar-coche" if case_type == "vehicle_removal" else "/multas"
+        return "/eliminar-coche" if case_type == "vehicle_removal" else "/multas/documentos"
     if department == "debt":
         return "/deudas/documentos"
     if department == "administration":
