@@ -23,14 +23,14 @@ from analyze import (
 )
 
 try:
-    from PIL import Image, ImageOps
+    from PIL import Image, ImageOps, ImageEnhance
 except Exception:  # pragma: no cover
     Image = None
     ImageOps = None
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_2"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_3"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
 
@@ -171,65 +171,71 @@ def _data_url_jpeg(content: bytes) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(content).decode("ascii")
 
 
-def _choose_upright_landscape_image(img) -> Tuple[Any, Dict[str, Any]]:
-    """Para imágenes apaisadas compara original + dos giros y pide a visión
-    que elija cuál está realmente derecha. Si el selector falla, usa giro horario,
-    que corrige el patrón observado en el caso patrón sin tocar el original de B2.
+def _choose_upright_document_image(img) -> Tuple[Any, Dict[str, Any]]:
+    """Selecciona la orientación legible de una página documental.
+
+    V1.3 corrige también páginas verticales invertidas 180º. No modifica nunca
+    el original de B2: solo la copia JPEG utilizada por los analizadores.
     """
-    if img.width <= img.height:
-        return img, {"rotation_applied": 0, "orientation_selector": "not_needed"}
-
     original = img
-    clockwise = img.rotate(270, expand=True)
-    counterclockwise = img.rotate(90, expand=True)
 
+    if img.width > img.height:
+        candidates = [
+            ("A", original, 0),
+            ("B", img.rotate(270, expand=True), 90),
+            ("C", img.rotate(180, expand=True), 180),
+            ("D", img.rotate(90, expand=True), -90),
+        ]
+        fallback_index = 1
+    else:
+        candidates = [
+            ("A", original, 0),
+            ("B", img.rotate(180, expand=True), 180),
+        ]
+        fallback_index = 0
+
+    _fallback_label, fallback_img, fallback_rotation = candidates[fallback_index]
     meta: Dict[str, Any] = {
-        "rotation_applied": 90,
-        "orientation_selector": "fallback_clockwise",
+        "rotation_applied": fallback_rotation,
+        "orientation_selector": "fallback",
         "orientation_confidence": 0.0,
     }
 
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key:
-        return clockwise, meta
+        return fallback_img, meta
 
     try:
         model = (os.getenv("OPENAI_MODEL") or "gpt-4o").strip()
-        a = _jpeg_bytes(original)
-        b = _jpeg_bytes(clockwise)
-        c = _jpeg_bytes(counterclockwise)
+        content_parts: List[Dict[str, Any]] = [
+            {
+                "type": "input_text",
+                "text": (
+                    "Las imágenes siguientes son rotaciones de la MISMA página. "
+                    "Elige la que esté completamente derecha: cabecera arriba, texto horizontal "
+                    "y lectura natural de izquierda a derecha y de arriba abajo. "
+                    "Devuelve solo JSON con upright y confidence."
+                ),
+            }
+        ]
+        for label, candidate, _rotation in candidates:
+            content_parts.append({"type": "input_text", "text": f"Versión {label}:"})
+            content_parts.append({"type": "input_image", "image_url": _data_url_jpeg(_jpeg_bytes(candidate))})
+
         payload = {
             "model": model,
             "input": [
                 {
                     "role": "system",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": (
-                                "Eres un selector de orientación documental. "
-                                "Recibirás tres versiones de la misma página administrativa española. "
-                                "Indica cuál está derecha y se puede leer de arriba abajo sin estar invertida. "
-                                "No analices el fondo jurídico. Devuelve JSON válido."
-                            ),
-                        }
-                    ],
+                    "content": [{
+                        "type": "input_text",
+                        "text": (
+                            "Eres un selector de orientación documental. No extraigas datos ni interpretes "
+                            "el contenido; solo decide qué rotación deja la página derecha."
+                        ),
+                    }],
                 },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": (
-                                "Las imágenes aparecen en orden A, B y C. "
-                                "Devuelve exactamente: {\"upright\":\"A\"|\"B\"|\"C\",\"confidence\":0..1}."
-                            ),
-                        },
-                        {"type": "input_image", "image_url": _data_url_jpeg(a)},
-                        {"type": "input_image", "image_url": _data_url_jpeg(b)},
-                        {"type": "input_image", "image_url": _data_url_jpeg(c)},
-                    ],
-                },
+                {"role": "user", "content": content_parts},
             ],
             "text": {"format": {"type": "json_object"}},
         }
@@ -240,50 +246,32 @@ def _choose_upright_landscape_image(img) -> Tuple[Any, Dict[str, Any]]:
             timeout=60,
         )
         if r.ok:
-            data = r.json()
-            output_text = ""
-            for item in data.get("output", []):
-                if item.get("type") == "message":
-                    for part in item.get("content", []):
-                        if part.get("type") == "output_text":
-                            output_text += part.get("text", "")
-            obj = json.loads(output_text or "{}")
+            obj = json.loads(_response_output_text(r.json()) or "{}")
             choice = str(obj.get("upright") or "").strip().upper()
             try:
                 confidence = float(obj.get("confidence") or 0)
             except Exception:
                 confidence = 0.0
             confidence = max(0.0, min(1.0, confidence))
-
-            if choice == "A":
-                return original, {
-                    "rotation_applied": 0,
-                    "orientation_selector": "openai",
-                    "orientation_confidence": confidence,
-                }
-            if choice == "B":
-                return clockwise, {
-                    "rotation_applied": 90,
-                    "orientation_selector": "openai",
-                    "orientation_confidence": confidence,
-                }
-            if choice == "C":
-                return counterclockwise, {
-                    "rotation_applied": -90,
-                    "orientation_selector": "openai",
-                    "orientation_confidence": confidence,
-                }
+            for label, candidate, rotation in candidates:
+                if choice == label:
+                    return candidate, {
+                        "rotation_applied": rotation,
+                        "orientation_selector": "openai",
+                        "orientation_confidence": confidence,
+                    }
     except Exception as exc:
         meta["orientation_selector_error"] = f"{type(exc).__name__}: {exc}"
 
-    return clockwise, meta
+    return fallback_img, meta
+
 
 def _normalize_image_for_analysis(content: bytes, mime: str) -> Tuple[bytes, str, Dict[str, Any]]:
     """Crea una copia JPEG para análisis, sin modificar el original de B2.
 
     - corrige EXIF;
     - convierte TIFF/PNG/WebP a JPEG;
-    - si una foto de página llega girada 90°, la pone en vertical antes del OCR.
+    - corrige páginas giradas 90° y páginas verticales invertidas 180° antes del OCR.
     """
     meta: Dict[str, Any] = {"rotation_applied": 0, "orientation_selector": "none"}
     if not (mime or "").startswith("image/"):
@@ -305,7 +293,7 @@ def _normalize_image_for_analysis(content: bytes, mime: str) -> Tuple[bytes, str
                 pass
 
         img = img.convert("RGB")
-        img, orientation_meta = _choose_upright_landscape_image(img)
+        img, orientation_meta = _choose_upright_document_image(img)
         meta.update(orientation_meta)
         meta["normalized_width"] = int(img.width)
         meta["normalized_height"] = int(img.height)
@@ -559,6 +547,190 @@ Reglas críticas:
         }
 
 
+def _enhanced_crop_bytes(img, box: Tuple[float, float, float, float], min_width: int = 1800) -> bytes:
+    """Recorta por proporciones y amplía la zona para lectura carácter a carácter."""
+    w, h = img.size
+    left = max(0, min(w - 1, int(w * box[0])))
+    top = max(0, min(h - 1, int(h * box[1])))
+    right = max(left + 10, min(w, int(w * box[2])))
+    bottom = max(top + 10, min(h, int(h * box[3])))
+    crop = img.crop((left, top, right, bottom)).convert("RGB")
+
+    if crop.width < min_width:
+        scale = min(3.0, max(1.0, float(min_width) / max(1, crop.width)))
+        crop = crop.resize((int(crop.width * scale), int(crop.height * scale)))
+
+    try:
+        if ImageOps is not None:
+            crop = ImageOps.autocontrast(crop)
+        if ImageEnhance is not None:
+            crop = ImageEnhance.Contrast(crop).enhance(1.12)
+            crop = ImageEnhance.Sharpness(crop).enhance(1.65)
+    except Exception:
+        pass
+    return _jpeg_bytes(crop)
+
+
+def _valid_sct_expediente(value: Any) -> bool:
+    raw = str(value or "").strip().replace(" ", "")
+    return bool(re.fullmatch(r"\d{2}/\d{8}-\d", raw))
+
+
+def _critical_fields_from_zoomed_crops(analyzed_pages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Tercera lectura: zoom de las zonas donde Trànsit imprime los datos críticos.
+
+    No sustituye al lector general. Su finalidad es resolver errores de un solo carácter
+    (matrícula, expediente) y distinguir campos tabulares que en la página completa
+    pueden verse demasiado pequeños. Si el diseño no coincide, devuelve nulls y no
+    fuerza ningún dato.
+    """
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key or Image is None:
+        return {"values": {}, "confidence": {}, "evidence": {}, "error": "zoom_unavailable"}
+
+    crop_parts: List[Dict[str, Any]] = []
+    crop_count = 0
+    for page in analyzed_pages:
+        content = page.get("analysis_content")
+        mime = str(page.get("analysis_mime") or "")
+        if not isinstance(content, (bytes, bytearray)) or not mime.startswith("image/"):
+            continue
+        try:
+            with Image.open(io.BytesIO(bytes(content))) as source:
+                img = source.convert("RGB")
+        except Exception:
+            continue
+
+        page_index = int(page.get("page_index") or 0)
+        header_crop = _enhanced_crop_bytes(img, (0.42, 0.11, 0.94, 0.33), min_width=1500)
+        basic_crop = _enhanced_crop_bytes(img, (0.14, 0.31, 0.94, 0.69), min_width=1900)
+
+        crop_parts += [
+            {"type": "input_text", "text": f"Página {page_index}, ZOOM CABECERA:"},
+            {"type": "input_image", "image_url": _data_url_jpeg(header_crop)},
+            {"type": "input_text", "text": f"Página {page_index}, ZOOM DATOS BÁSICOS:"},
+            {"type": "input_image", "image_url": _data_url_jpeg(basic_crop)},
+        ]
+        crop_count += 2
+
+    if not crop_parts:
+        return {"values": {}, "confidence": {}, "evidence": {}, "error": "no_zoom_crops"}
+
+    system_text = (
+        "Eres un transcriptor documental carácter-a-carácter. Recibes RECORTES AMPLIADOS de "
+        "notificaciones de tráfico. No completes por contexto. Si una letra o dígito no es inequívoco, "
+        "devuelve null. Da prioridad a la lectura literal de las etiquetas impresas."
+    )
+    user_text = """
+Devuelve EXCLUSIVAMENTE JSON válido:
+{
+  "values": {
+    "expediente_ref": string|null,
+    "matricula": string|null,
+    "velocidad_medida_kmh": integer|null,
+    "velocidad_limite_kmh": integer|null,
+    "radar_modelo_hint": string|null,
+    "radar_antena": string|null,
+    "sancion_importe_eur": number|null,
+    "puntos_detraccion": integer|null,
+    "lugar_infraccion": string|null,
+    "fecha_infraccion": string|null,
+    "hora_infraccion": string|null
+  },
+  "confidence": {},
+  "evidence": {}
+}
+
+Reglas:
+1) expediente_ref: lee "NÚMERO D'EXPEDIENT" / "Número d'expedient". NO uses "Número d'enviament".
+   Si aparece dos veces, comprueba que ambas lecturas coinciden. Conserva / y -.
+2) matricula: lee SOLO la fila "Matrícula". Debe ser 4 dígitos + 3 letras. En evidence separa
+   las tres letras con espacios, por ejemplo "1579 M X V", para demostrar lectura carácter a carácter.
+3) fecha_infraccion: usa SOLO la columna "Data" del bloque "Dades bàsiques de la infracció".
+   No uses fecha de notificación, certificado, verificación o disponibilidad de datos.
+4) lugar_infraccion: combina "Via / Carrer" y "Km / Núm." cuando ambos sean visibles.
+5) velocidad medida/límite: usa SOLO la frase "Fet denunciat"; no calcules.
+6) radar_modelo_hint y radar_antena: usa SOLO la frase "Fet denunciat".
+7) sancion_importe_eur y puntos_detraccion: usa las filas "Import de la sanció" y "Punts a detreure".
+8) confidence 0..1 y evidence literal breve para cada campo no nulo.
+9) Si un carácter es dudoso, null. Es preferible omitir a adivinar.
+"""
+
+    payload = {
+        "model": (os.getenv("OPENAI_MODEL") or "gpt-4o").strip(),
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": system_text}]},
+            {"role": "user", "content": [{"type": "input_text", "text": user_text}] + crop_parts},
+        ],
+        "text": {"format": {"type": "json_object"}},
+    }
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=90,
+        )
+        if not r.ok:
+            return {"values": {}, "confidence": {}, "evidence": {}, "error": f"OpenAI {r.status_code}: {r.text[:300]}"}
+        obj = json.loads(_response_output_text(r.json()) or "{}")
+        values = obj.get("values") if isinstance(obj, dict) else {}
+        confidence = obj.get("confidence") if isinstance(obj, dict) else {}
+        evidence = obj.get("evidence") if isinstance(obj, dict) else {}
+        if not isinstance(values, dict):
+            values = {}
+        if not isinstance(confidence, dict):
+            confidence = {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+
+        cleaned: Dict[str, Any] = {}
+        for key, value in values.items():
+            if value in (None, "", "null"):
+                continue
+            if key == "matricula":
+                value = _normalise_plate(value)
+            elif key == "fecha_infraccion":
+                value = _normalise_date(value)
+            elif key in ("velocidad_medida_kmh", "velocidad_limite_kmh"):
+                value = _normalise_int(value, 10, 250)
+            elif key == "puntos_detraccion":
+                value = _normalise_int(value, 0, 15)
+            elif key == "sancion_importe_eur":
+                value = _normalise_float(value)
+            elif key == "radar_antena":
+                m = re.search(r"\d{3,10}", str(value))
+                value = m.group(0) if m else None
+            elif key == "expediente_ref":
+                value = str(value).strip().replace(" ", "")
+            else:
+                value = str(value).strip()
+            if value not in (None, ""):
+                cleaned[key] = value
+
+        conf_clean: Dict[str, float] = {}
+        for key in cleaned:
+            try:
+                c = float(confidence.get(key) or 0)
+            except Exception:
+                c = 0.0
+            conf_clean[key] = max(0.0, min(1.0, c))
+        ev_clean = {k: str(evidence.get(k) or "")[:200] for k in cleaned if evidence.get(k)}
+
+        return {
+            "values": cleaned,
+            "confidence": conf_clean,
+            "evidence": ev_clean,
+            "crop_count": crop_count,
+        }
+    except Exception as exc:
+        return {
+            "values": {}, "confidence": {}, "evidence": {},
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def _critical_fields_from_blob(text_blob: str) -> Dict[str, Any]:
     """Capa determinista de respaldo para campos críticos.
 
@@ -713,15 +885,23 @@ def _apply_critical_fields(
     core: Dict[str, Any],
     text_blob: str,
     vision_meta: Optional[Dict[str, Any]] = None,
+    zoom_meta: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     out = dict(core or {})
     deterministic = _critical_fields_from_blob(text_blob)
     vision_meta = vision_meta or {"values": {}, "confidence": {}, "evidence": {}}
+    zoom_meta = zoom_meta or {"values": {}, "confidence": {}, "evidence": {}}
+
     vision_values = vision_meta.get("values") if isinstance(vision_meta.get("values"), dict) else {}
     vision_conf = vision_meta.get("confidence") if isinstance(vision_meta.get("confidence"), dict) else {}
     vision_evidence = vision_meta.get("evidence") if isinstance(vision_meta.get("evidence"), dict) else {}
 
+    zoom_values = zoom_meta.get("values") if isinstance(zoom_meta.get("values"), dict) else {}
+    zoom_conf = zoom_meta.get("confidence") if isinstance(zoom_meta.get("confidence"), dict) else {}
+    zoom_evidence = zoom_meta.get("evidence") if isinstance(zoom_meta.get("evidence"), dict) else {}
+
     conflicts: List[Dict[str, Any]] = []
+    unresolved_fields: set[str] = set()
     sources: Dict[str, str] = {}
     override_fields = {
         "organismo", "expediente_ref", "matricula", "velocidad_medida_kmh",
@@ -730,22 +910,23 @@ def _apply_critical_fields(
         "fecha_infraccion", "hora_infraccion",
     }
 
-    # 1) Texto explícito determinista corrige la extracción general.
     for key, value in deterministic.items():
         if key not in override_fields:
             continue
         old = out.get(key)
         if old not in (None, "", [], {}) and not _same_value(old, value):
             conflicts.append({
-                "field": key, "ai_value": old, "deterministic_value": value,
-                "chosen": value, "source": "explicit_text",
+                "field": key,
+                "current_value": old,
+                "deterministic_value": value,
+                "chosen": value,
+                "source": "explicit_text",
+                "resolved": True,
             })
         out[key] = value
         sources[key] = "explicit_text"
 
-    # 2) Lectura visual focalizada. Para caracteres OCR sensibles y campos de tabla,
-    # una visión >= 0.90 con evidencia literal puede corregir el OCR determinista.
-    vision_priority_fields = {
+    full_priority = {
         "matricula", "radar_antena", "sancion_importe_eur", "puntos_detraccion",
         "lugar_infraccion", "fecha_infraccion", "hora_infraccion",
     }
@@ -760,29 +941,114 @@ def _apply_critical_fields(
         current = out.get(key)
 
         if current in (None, "", [], {}):
-            if conf >= 0.78:
+            if conf >= 0.80:
                 out[key] = value
                 sources[key] = "targeted_vision"
             continue
 
         if _same_value(current, value):
-            sources[key] = "explicit_text+targeted_vision" if key in deterministic else "targeted_vision_confirmed"
+            if sources.get(key) == "explicit_text":
+                sources[key] = "explicit_text+targeted_vision"
             continue
 
-        prefer_vision = key in vision_priority_fields and conf >= 0.90 and bool(evidence)
-        chosen = value if prefer_vision else current
+        trusted_current = sources.get(key) == "explicit_text"
+        prefer_vision = key in full_priority and conf >= 0.92 and bool(evidence) and not trusted_current
+
+        if prefer_vision:
+            chosen = value
+            out[key] = value
+            sources[key] = "targeted_vision"
+        else:
+            chosen = current
+            if not trusted_current and conf >= 0.88:
+                unresolved_fields.add(key)
+
         conflicts.append({
             "field": key,
             "current_value": current,
             "vision_value": value,
             "vision_confidence": round(conf, 3),
-            "vision_evidence": evidence[:160],
+            "vision_evidence": evidence[:180],
             "chosen": chosen,
-            "source": "targeted_vision" if prefer_vision else sources.get(key, "existing_extraction"),
+            "source": sources.get(key, "existing_extraction"),
+            "resolved": trusted_current or prefer_vision,
         })
-        if prefer_vision:
+
+    zoom_priority = {
+        "expediente_ref", "matricula", "radar_modelo_hint", "radar_antena",
+        "sancion_importe_eur", "puntos_detraccion", "lugar_infraccion",
+        "fecha_infraccion", "hora_infraccion",
+    }
+    for key, value in zoom_values.items():
+        if key not in override_fields or value in (None, ""):
+            continue
+        try:
+            conf = float(zoom_conf.get(key) or 0)
+        except Exception:
+            conf = 0.0
+        evidence = str(zoom_evidence.get(key) or "").strip()
+        current = out.get(key)
+
+        if key == "expediente_ref" and not _valid_sct_expediente(value):
+            continue
+
+        if current in (None, "", [], {}):
+            if conf >= 0.86:
+                out[key] = value
+                sources[key] = "zoomed_crop"
+                unresolved_fields.discard(key)
+            continue
+
+        if _same_value(current, value):
+            sources[key] = (
+                f"{sources.get(key)}+zoomed_crop" if sources.get(key) else "zoomed_crop_confirmed"
+            )
+            unresolved_fields.discard(key)
+            continue
+
+        explicit_speed = (
+            key in {"velocidad_medida_kmh", "velocidad_limite_kmh"}
+            and deterministic.get("speed_pair_source") == "explicit_fact_sentence"
+            and key in deterministic
+        )
+        if explicit_speed:
+            conflicts.append({
+                "field": key,
+                "current_value": current,
+                "zoom_value": value,
+                "zoom_confidence": round(conf, 3),
+                "zoom_evidence": evidence[:180],
+                "chosen": current,
+                "source": sources.get(key, "explicit_text"),
+                "resolved": True,
+            })
+            unresolved_fields.discard(key)
+            continue
+
+        threshold = 0.90 if key == "expediente_ref" else 0.92 if key == "matricula" else 0.88
+        prefer_zoom = key in zoom_priority and conf >= threshold and bool(evidence)
+        if prefer_zoom:
             out[key] = value
-            sources[key] = "targeted_vision"
+            sources[key] = "zoomed_crop"
+            unresolved_fields.discard(key)
+            resolved = True
+            chosen = value
+        else:
+            chosen = current
+            resolved = sources.get(key, "").startswith("explicit_text")
+            if not resolved:
+                unresolved_fields.add(key)
+
+        conflicts.append({
+            "field": key,
+            "current_value": current,
+            "zoom_value": value,
+            "zoom_confidence": round(conf, 3),
+            "zoom_evidence": evidence[:180],
+            "chosen": chosen,
+            "source": sources.get(key, "existing_extraction"),
+            "resolved": resolved,
+        })
 
     measured = out.get("velocidad_medida_kmh")
     limit = out.get("velocidad_limite_kmh")
@@ -797,23 +1063,34 @@ def _apply_critical_fields(
         out["hecho_para_recurso"] = hecho
         out["tipo_infraccion_confidence"] = max(float(out.get("tipo_infraccion_confidence") or 0), 0.99)
 
-    required = ["expediente_ref", "matricula", "velocidad_medida_kmh", "velocidad_limite_kmh", "organismo"]
+    required = ["expediente_ref", "matricula", "organismo"]
+    if (out.get("tipo_infraccion") or "").lower() == "velocidad":
+        required += [
+            "velocidad_medida_kmh", "velocidad_limite_kmh",
+            "fecha_infraccion", "lugar_infraccion",
+        ]
     missing_required = [k for k in required if out.get(k) in (None, "", [], {})]
+
+    organismo_blob = _fold(str(out.get("organismo") or "")).upper()
+    if "TRANSIT" in organismo_blob and out.get("expediente_ref") and not _valid_sct_expediente(out.get("expediente_ref")):
+        unresolved_fields.add("expediente_ref")
 
     out["critical_fields_deterministic"] = deterministic
     out["critical_fields_vision"] = vision_values
+    out["critical_fields_zoomed"] = zoom_values
     out["critical_field_sources"] = sources
     out["critical_field_conflicts"] = conflicts
+    out["unresolved_critical_fields"] = sorted(unresolved_fields)
     out["critical_fields_validation"] = {
         "extractor_version": _EXTRACTOR_VERSION,
         "conflicts_detected": len(conflicts),
+        "unresolved_fields": sorted(unresolved_fields),
         "missing_required": missing_required,
         "targeted_vision_error": vision_meta.get("error"),
+        "zoomed_vision_error": zoom_meta.get("error"),
     }
 
-    # En V1 mantenemos revisión humana cuando ha habido conflicto. Esto no impide
-    # guardar la extraction; evita tratarla silenciosamente como incontrovertida.
-    if conflicts or missing_required:
+    if conflicts or missing_required or unresolved_fields:
         out["requires_operator_review"] = True
         reasons = list(out.get("operator_review_reasons") or [])
         reason = "critical_fields_need_operator_validation"
@@ -821,17 +1098,20 @@ def _apply_critical_fields(
             reasons.append(reason)
         out["operator_review_reasons"] = reasons
 
-    ready_for_generate = not missing_required
+    ready_for_generate = not missing_required and not unresolved_fields
     out["ready_for_generate"] = ready_for_generate
 
     return out, {
         "deterministic": deterministic,
         "vision": vision_meta,
+        "zoom": zoom_meta,
         "sources": sources,
         "conflicts": conflicts,
+        "unresolved_fields": sorted(unresolved_fields),
         "missing_required": missing_required,
         "ready_for_generate": ready_for_generate,
     }
+
 
 def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if not analyzed_pages:
@@ -866,7 +1146,8 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
 
     combined_core = _enrich_with_triage(combined_core, combined_blob or _flatten_text(combined_core))
     vision_meta = _critical_fields_from_images(analyzed_pages)
-    combined_core, critical_meta = _apply_critical_fields(combined_core, combined_blob, vision_meta)
+    zoom_meta = _critical_fields_from_zoomed_crops(analyzed_pages)
+    combined_core, critical_meta = _apply_critical_fields(combined_core, combined_blob, vision_meta, zoom_meta)
     combined_core["document_role"] = "primary_case_document"
     combined_core["document_group_type"] = "traffic_fine"
     combined_core["document_page_count"] = len(analyzed_pages)
@@ -927,7 +1208,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_2",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_3",
             },
         )
 
@@ -1061,9 +1342,11 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "fecha_infraccion": core.get("fecha_infraccion"),
             "critical_fields_detected": deterministic,
             "critical_fields_vision": (critical_meta.get("vision") or {}).get("values") or {},
+            "critical_fields_zoomed": (critical_meta.get("zoom") or {}).get("values") or {},
             "critical_field_sources": critical_meta.get("sources") or {},
             "critical_conflicts_resolved": conflicts,
             "missing_required_fields": critical_meta.get("missing_required") or [],
+            "unresolved_critical_fields": critical_meta.get("unresolved_fields") or [],
             "requires_operator_review": bool(core.get("requires_operator_review")),
             "ready_for_generate": bool(critical_meta.get("ready_for_generate")),
         }
@@ -1088,11 +1371,13 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "lugar_infraccion": core.get("lugar_infraccion"),
             "fecha_infraccion": core.get("fecha_infraccion"),
             "requires_operator_review": bool(core.get("requires_operator_review")),
+            "critical_fields_zoomed": (critical_meta.get("zoom") or {}).get("values") or {},
             "critical_field_sources": critical_meta.get("sources") or {},
             "critical_conflicts_resolved": conflicts,
             "missing_required_fields": critical_meta.get("missing_required") or [],
+            "unresolved_critical_fields": critical_meta.get("unresolved_fields") or [],
             "ready_for_generate": bool(critical_meta.get("ready_for_generate")),
-            "message": "Reanálisis completado. Extracción consolidada con validación textual y visual focalizada.",
+            "message": "Reanálisis completado. Extracción consolidada con texto, visión de página y zoom de campos críticos.",
         }
 
     except HTTPException as exc:
