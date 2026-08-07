@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_3"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_4"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
 
@@ -577,19 +577,83 @@ def _valid_sct_expediente(value: Any) -> bool:
 
 
 def _critical_fields_from_zoomed_crops(analyzed_pages: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Tercera lectura: zoom de las zonas donde Trànsit imprime los datos críticos.
+    """Lectura visual de precisión por página.
 
-    No sustituye al lector general. Su finalidad es resolver errores de un solo carácter
-    (matrícula, expediente) y distinguir campos tabulares que en la página completa
-    pueden verse demasiado pequeños. Si el diseño no coincide, devuelve nulls y no
-    fuerza ningún dato.
+    V1.4 evita mezclar recortes de páginas distintas en una sola llamada. Cada página
+    se analiza por separado con dos recortes grandes:
+      - cabecera derecha: número de expediente;
+      - bloque central: datos básicos, matrícula, hecho, importe y puntos.
+
+    Se escoge como página principal la que produzca más campos válidos y se usan las
+    demás solo como respaldo. Esto reduce confusiones de caracteres (M/H, X/V/G) y
+    evita que una segunda página contamine los campos de la primera.
     """
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key or Image is None:
         return {"values": {}, "confidence": {}, "evidence": {}, "error": "zoom_unavailable"}
 
-    crop_parts: List[Dict[str, Any]] = []
+    model = (os.getenv("OPENAI_MODEL") or "gpt-4o").strip()
+    page_candidates: List[Dict[str, Any]] = []
+    errors: List[str] = []
     crop_count = 0
+
+    fields = [
+        "expediente_ref", "matricula", "velocidad_medida_kmh",
+        "velocidad_limite_kmh", "radar_modelo_hint", "radar_antena",
+        "sancion_importe_eur", "puntos_detraccion", "lugar_infraccion",
+        "fecha_infraccion", "hora_infraccion",
+    ]
+
+    def _clean_values(obj: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, float], Dict[str, str]]:
+        values = obj.get("values") if isinstance(obj, dict) else {}
+        confidence = obj.get("confidence") if isinstance(obj, dict) else {}
+        evidence = obj.get("evidence") if isinstance(obj, dict) else {}
+        if not isinstance(values, dict):
+            values = {}
+        if not isinstance(confidence, dict):
+            confidence = {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+
+        cleaned: Dict[str, Any] = {}
+        for key in fields:
+            value = values.get(key)
+            if value in (None, "", "null"):
+                continue
+            if key == "matricula":
+                value = _normalise_plate(value)
+            elif key == "expediente_ref":
+                value = str(value).strip().replace(" ", "")
+                if not _valid_sct_expediente(value):
+                    value = None
+            elif key == "fecha_infraccion":
+                value = _normalise_date(value)
+            elif key in ("velocidad_medida_kmh", "velocidad_limite_kmh"):
+                value = _normalise_int(value, 10, 250)
+            elif key == "puntos_detraccion":
+                value = _normalise_int(value, 0, 15)
+            elif key == "sancion_importe_eur":
+                value = _normalise_float(value)
+            elif key == "radar_antena":
+                m = re.search(r"\d{3,10}", str(value))
+                value = m.group(0) if m else None
+            else:
+                value = re.sub(r"\s+", " ", str(value)).strip()
+            if value not in (None, ""):
+                cleaned[key] = value
+
+        conf_clean: Dict[str, float] = {}
+        ev_clean: Dict[str, str] = {}
+        for key in cleaned:
+            try:
+                c = float(confidence.get(key) or 0)
+            except Exception:
+                c = 0.0
+            conf_clean[key] = max(0.0, min(1.0, c))
+            if evidence.get(key):
+                ev_clean[key] = str(evidence.get(key) or "")[:220]
+        return cleaned, conf_clean, ev_clean
+
     for page in analyzed_pages:
         content = page.get("analysis_content")
         mime = str(page.get("analysis_mime") or "")
@@ -598,30 +662,22 @@ def _critical_fields_from_zoomed_crops(analyzed_pages: List[Dict[str, Any]]) -> 
         try:
             with Image.open(io.BytesIO(bytes(content))) as source:
                 img = source.convert("RGB")
-        except Exception:
+        except Exception as exc:
+            errors.append(f"page_{page.get('page_index')}:open:{type(exc).__name__}")
             continue
 
-        page_index = int(page.get("page_index") or 0)
-        header_crop = _enhanced_crop_bytes(img, (0.42, 0.11, 0.94, 0.33), min_width=1500)
-        basic_crop = _enhanced_crop_bytes(img, (0.14, 0.31, 0.94, 0.69), min_width=1900)
-
-        crop_parts += [
-            {"type": "input_text", "text": f"Página {page_index}, ZOOM CABECERA:"},
-            {"type": "input_image", "image_url": _data_url_jpeg(header_crop)},
-            {"type": "input_text", "text": f"Página {page_index}, ZOOM DATOS BÁSICOS:"},
-            {"type": "input_image", "image_url": _data_url_jpeg(basic_crop)},
-        ]
+        # Las páginas normalizadas deberían estar verticales. Los recortes son
+        # deliberadamente amplios para tolerar fotos con márgenes/mesa alrededor.
+        header_crop = _enhanced_crop_bytes(img, (0.44, 0.10, 0.90, 0.29), min_width=2200)
+        basic_crop = _enhanced_crop_bytes(img, (0.12, 0.27, 0.89, 0.62), min_width=2600)
         crop_count += 2
 
-    if not crop_parts:
-        return {"values": {}, "confidence": {}, "evidence": {}, "error": "no_zoom_crops"}
-
-    system_text = (
-        "Eres un transcriptor documental carácter-a-carácter. Recibes RECORTES AMPLIADOS de "
-        "notificaciones de tráfico. No completes por contexto. Si una letra o dígito no es inequívoco, "
-        "devuelve null. Da prioridad a la lectura literal de las etiquetas impresas."
-    )
-    user_text = """
+        system_text = (
+            "Eres un transcriptor documental extremadamente estricto. Recibes dos ZOOMS "
+            "de UNA SOLA página de una notificación del Servei Català de Trànsit. "
+            "Copia caracteres visibles; no completes por contexto. Si una letra es dudosa, usa null."
+        )
+        user_text = """
 Devuelve EXCLUSIVAMENTE JSON válido:
 {
   "values": {
@@ -641,94 +697,129 @@ Devuelve EXCLUSIVAMENTE JSON válido:
   "evidence": {}
 }
 
-Reglas:
-1) expediente_ref: lee "NÚMERO D'EXPEDIENT" / "Número d'expedient". NO uses "Número d'enviament".
-   Si aparece dos veces, comprueba que ambas lecturas coinciden. Conserva / y -.
-2) matricula: lee SOLO la fila "Matrícula". Debe ser 4 dígitos + 3 letras. En evidence separa
-   las tres letras con espacios, por ejemplo "1579 M X V", para demostrar lectura carácter a carácter.
-3) fecha_infraccion: usa SOLO la columna "Data" del bloque "Dades bàsiques de la infracció".
-   No uses fecha de notificación, certificado, verificación o disponibilidad de datos.
-4) lugar_infraccion: combina "Via / Carrer" y "Km / Núm." cuando ambos sean visibles.
-5) velocidad medida/límite: usa SOLO la frase "Fet denunciat"; no calcules.
-6) radar_modelo_hint y radar_antena: usa SOLO la frase "Fet denunciat".
-7) sancion_importe_eur y puntos_detraccion: usa las filas "Import de la sanció" y "Punts a detreure".
-8) confidence 0..1 y evidence literal breve para cada campo no nulo.
-9) Si un carácter es dudoso, null. Es preferible omitir a adivinar.
+REGLAS OBLIGATORIAS:
+1) expediente_ref: SOLO "NÚMERO D'EXPEDIENT" / "Número d'expedient". Ignora "Número d'enviament".
+   Conserva exactamente "/" y "-".
+2) matrícula: SOLO la fila "Matrícula". Debe ser 4 dígitos + 3 letras.
+   Examina las letras una a una. En evidence escríbelas separadas, ej. "1579 M X V".
+   No confundas M con H/N/W, X con V/Y/K, ni V con Y/G/X.
+3) fecha_infraccion, hora_infraccion y lugar_infraccion: SOLO el bloque
+   "Dades bàsiques de la infracció". Para lugar combina "Via / Carrer" con "Km / Núm."
+   usando "p.k." entre ambos.
+4) velocidad medida/límite, radar_modelo_hint y radar_antena: SOLO "Fet denunciat".
+   Copia el modelo literalmente, incluida letra final o guion si se ve.
+5) sancion_importe_eur y puntos_detraccion: SOLO "Import de la sanció" y "Punts a detreure".
+6) No uses fechas de notificación, disponibilidad de datos, verificación del radar ni certificado.
+7) confidence entre 0 y 1 para cada campo no nulo. evidence debe citar el texto visible.
+8) Si una letra o dígito no es inequívoco: null. Es mejor no responder que adivinar.
 """
 
-    payload = {
-        "model": (os.getenv("OPENAI_MODEL") or "gpt-4o").strip(),
-        "input": [
-            {"role": "system", "content": [{"type": "input_text", "text": system_text}]},
-            {"role": "user", "content": [{"type": "input_text", "text": user_text}] + crop_parts},
-        ],
-        "text": {"format": {"type": "json_object"}},
-    }
-
-    try:
-        r = requests.post(
-            "https://api.openai.com/v1/responses",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=90,
-        )
-        if not r.ok:
-            return {"values": {}, "confidence": {}, "evidence": {}, "error": f"OpenAI {r.status_code}: {r.text[:300]}"}
-        obj = json.loads(_response_output_text(r.json()) or "{}")
-        values = obj.get("values") if isinstance(obj, dict) else {}
-        confidence = obj.get("confidence") if isinstance(obj, dict) else {}
-        evidence = obj.get("evidence") if isinstance(obj, dict) else {}
-        if not isinstance(values, dict):
-            values = {}
-        if not isinstance(confidence, dict):
-            confidence = {}
-        if not isinstance(evidence, dict):
-            evidence = {}
-
-        cleaned: Dict[str, Any] = {}
-        for key, value in values.items():
-            if value in (None, "", "null"):
-                continue
-            if key == "matricula":
-                value = _normalise_plate(value)
-            elif key == "fecha_infraccion":
-                value = _normalise_date(value)
-            elif key in ("velocidad_medida_kmh", "velocidad_limite_kmh"):
-                value = _normalise_int(value, 10, 250)
-            elif key == "puntos_detraccion":
-                value = _normalise_int(value, 0, 15)
-            elif key == "sancion_importe_eur":
-                value = _normalise_float(value)
-            elif key == "radar_antena":
-                m = re.search(r"\d{3,10}", str(value))
-                value = m.group(0) if m else None
-            elif key == "expediente_ref":
-                value = str(value).strip().replace(" ", "")
-            else:
-                value = str(value).strip()
-            if value not in (None, ""):
-                cleaned[key] = value
-
-        conf_clean: Dict[str, float] = {}
-        for key in cleaned:
-            try:
-                c = float(confidence.get(key) or 0)
-            except Exception:
-                c = 0.0
-            conf_clean[key] = max(0.0, min(1.0, c))
-        ev_clean = {k: str(evidence.get(k) or "")[:200] for k in cleaned if evidence.get(k)}
-
-        return {
-            "values": cleaned,
-            "confidence": conf_clean,
-            "evidence": ev_clean,
-            "crop_count": crop_count,
+        payload = {
+            "model": model,
+            "input": [
+                {"role": "system", "content": [{"type": "input_text", "text": system_text}]},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": user_text},
+                        {"type": "input_text", "text": "ZOOM CABECERA / EXPEDIENTE:"},
+                        {"type": "input_image", "image_url": _data_url_jpeg(header_crop)},
+                        {"type": "input_text", "text": "ZOOM DATOS BÁSICOS / MATRÍCULA / HECHO / SANCIÓN:"},
+                        {"type": "input_image", "image_url": _data_url_jpeg(basic_crop)},
+                    ],
+                },
+            ],
+            "text": {"format": {"type": "json_object"}},
         }
-    except Exception as exc:
+
+        try:
+            r = requests.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=90,
+            )
+            if not r.ok:
+                errors.append(f"page_{page.get('page_index')}:openai_{r.status_code}")
+                continue
+            obj = json.loads(_response_output_text(r.json()) or "{}")
+            values, conf, evidence = _clean_values(obj)
+
+            # Puntúa la página: matrícula/expediente pesan más, luego el bloque sancionador.
+            score = 0.0
+            if _valid_sct_expediente(values.get("expediente_ref")):
+                score += 4.0
+            if _normalise_plate(values.get("matricula")):
+                score += 4.0
+            for k in (
+                "velocidad_medida_kmh", "velocidad_limite_kmh", "radar_modelo_hint",
+                "radar_antena", "sancion_importe_eur", "puntos_detraccion",
+                "lugar_infraccion", "fecha_infraccion", "hora_infraccion",
+            ):
+                if values.get(k) not in (None, ""):
+                    score += 1.0
+            score += sum(float(conf.get(k) or 0) for k in values) * 0.05
+
+            page_candidates.append({
+                "page_index": int(page.get("page_index") or 0),
+                "values": values,
+                "confidence": conf,
+                "evidence": evidence,
+                "score": round(score, 3),
+            })
+        except Exception as exc:
+            errors.append(f"page_{page.get('page_index')}:{type(exc).__name__}:{exc}")
+
+    if not page_candidates:
         return {
             "values": {}, "confidence": {}, "evidence": {},
-            "error": f"{type(exc).__name__}: {exc}",
+            "crop_count": crop_count,
+            "error": "; ".join(errors)[:500] if errors else "no_zoom_candidates",
         }
+
+    page_candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
+    primary = page_candidates[0]
+
+    merged_values = dict(primary.get("values") or {})
+    merged_conf = dict(primary.get("confidence") or {})
+    merged_evidence = dict(primary.get("evidence") or {})
+
+    # Suplementa solo campos ausentes, nunca pisa una lectura de la mejor página
+    # con una página secundaria.
+    for candidate in page_candidates[1:]:
+        vals = candidate.get("values") or {}
+        confs = candidate.get("confidence") or {}
+        evid = candidate.get("evidence") or {}
+        for key, value in vals.items():
+            if key in merged_values or value in (None, ""):
+                continue
+            try:
+                c = float(confs.get(key) or 0)
+            except Exception:
+                c = 0.0
+            if c >= 0.90:
+                merged_values[key] = value
+                merged_conf[key] = c
+                if evid.get(key):
+                    merged_evidence[key] = evid[key]
+
+    return {
+        "values": merged_values,
+        "confidence": merged_conf,
+        "evidence": merged_evidence,
+        "crop_count": crop_count,
+        "selected_page": primary.get("page_index"),
+        "selected_page_score": primary.get("score"),
+        "candidate_pages": [
+            {
+                "page_index": c.get("page_index"),
+                "score": c.get("score"),
+                "fields": sorted((c.get("values") or {}).keys()),
+            }
+            for c in page_candidates
+        ],
+        "error": "; ".join(errors)[:500] if errors else None,
+    }
 
 
 def _critical_fields_from_blob(text_blob: str) -> Dict[str, Any]:
@@ -952,16 +1043,25 @@ def _apply_critical_fields(
             continue
 
         trusted_current = sources.get(key) == "explicit_text"
+        strict_identity_field = key in {"matricula", "expediente_ref"}
         prefer_vision = key in full_priority and conf >= 0.92 and bool(evidence) and not trusted_current
 
         if prefer_vision:
             chosen = value
             out[key] = value
             sources[key] = "targeted_vision"
+            resolved = True
         else:
             chosen = current
-            if not trusted_current and conf >= 0.88:
+            # En matrícula/expediente, dos lectores que discrepan NO quedan resueltos
+            # solo porque uno proceda del OCR textual. Exigimos confirmación por zoom.
+            if strict_identity_field:
                 unresolved_fields.add(key)
+                resolved = False
+            else:
+                resolved = trusted_current
+                if not resolved and conf >= 0.88:
+                    unresolved_fields.add(key)
 
         conflicts.append({
             "field": key,
@@ -971,7 +1071,7 @@ def _apply_critical_fields(
             "vision_evidence": evidence[:180],
             "chosen": chosen,
             "source": sources.get(key, "existing_extraction"),
-            "resolved": trusted_current or prefer_vision,
+            "resolved": resolved,
         })
 
     zoom_priority = {
@@ -1343,6 +1443,9 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "critical_fields_detected": deterministic,
             "critical_fields_vision": (critical_meta.get("vision") or {}).get("values") or {},
             "critical_fields_zoomed": (critical_meta.get("zoom") or {}).get("values") or {},
+            "critical_fields_zoom_selected_page": (critical_meta.get("zoom") or {}).get("selected_page"),
+            "critical_fields_zoom_candidates": (critical_meta.get("zoom") or {}).get("candidate_pages") or [],
+            "critical_fields_zoom_error": (critical_meta.get("zoom") or {}).get("error"),
             "critical_field_sources": critical_meta.get("sources") or {},
             "critical_conflicts_resolved": conflicts,
             "missing_required_fields": critical_meta.get("missing_required") or [],
@@ -1372,6 +1475,9 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "fecha_infraccion": core.get("fecha_infraccion"),
             "requires_operator_review": bool(core.get("requires_operator_review")),
             "critical_fields_zoomed": (critical_meta.get("zoom") or {}).get("values") or {},
+            "critical_fields_zoom_selected_page": (critical_meta.get("zoom") or {}).get("selected_page"),
+            "critical_fields_zoom_candidates": (critical_meta.get("zoom") or {}).get("candidate_pages") or [],
+            "critical_fields_zoom_error": (critical_meta.get("zoom") or {}).get("error"),
             "critical_field_sources": critical_meta.get("sources") or {},
             "critical_conflicts_resolved": conflicts,
             "missing_required_fields": critical_meta.get("missing_required") or [],
