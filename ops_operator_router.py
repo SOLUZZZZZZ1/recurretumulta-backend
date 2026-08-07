@@ -12,6 +12,7 @@ from generate import GenerateRequest, generate_dgt
 from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
+from rtm_intelligence.reanalysis import reanalyze_traffic_fine_case
 
 router = APIRouter(prefix="/ops/cases", tags=["ops-operator"])
 
@@ -276,6 +277,20 @@ def _latest_final_resource(conn, case_id: str) -> Optional[Dict[str, Any]]:
         "created_at": row[5],
         "updated_at": row[6],
     }
+
+
+@router.post("/{case_id}/reanalyze")
+def reanalyze_case(
+    case_id: str,
+    x_operator_token: Optional[str] = Header(default=None),
+):
+    """Reanaliza los originales existentes sin crear caso ni repetir pago.
+
+    V1: especialista Tráfico / Multa. El resultado final es una única extraction
+    consolidada que queda lista para el generate existente.
+    """
+    require_operator_token(x_operator_token)
+    return reanalyze_traffic_fine_case(case_id)
 
 
 @router.get("/{case_id}/final-resource")
