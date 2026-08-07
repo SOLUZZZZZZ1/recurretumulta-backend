@@ -16,6 +16,7 @@ from b2_storage import upload_bytes
 from ai.expediente_engine import run_expediente_ai
 from authorization_pdf import ensure_authorization_pdf, get_request_ip, _get_case_snapshot, _authorization_payload_from_case, generate_authorization_pdf
 from pdf_builder import build_pdf
+from analyze import analyze_existing_case_document
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
@@ -491,16 +492,45 @@ async def append_documents(case_id: str, files: List[UploadFile] = File(...)):
     engine = get_engine()
     with engine.begin() as conn:
         _case_exists(conn, case_id)
+        case_row = conn.execute(
+            text(
+                "SELECT COALESCE(department,''), COALESCE(case_type,'') "
+                "FROM cases WHERE id=:id"
+            ),
+            {"id": case_id},
+        ).fetchone()
+
+    department = (case_row[0] or "").strip().lower() if case_row else ""
+    case_type = (case_row[1] or "").strip().lower() if case_row else ""
+    is_traffic_fine = (
+        department == "traffic"
+        and case_type in {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
+    )
+
+    _event(case_id, "append_documents_case_type_detected", {
+        "department": department,
+        "case_type": case_type,
+        "is_traffic_fine": is_traffic_fine,
+    })
 
     uploaded_docs = []
+    analyzed_docs = []
     for uf in files:
         data = await uf.read()
         if not data:
             continue
 
-        b2_bucket, b2_key = upload_bytes(case_id, "original", data, ".bin", (uf.content_type or "application/octet-stream"))
+        filename = (uf.filename or "documento").replace("/", "_").replace("\\", "_")[:140]
+        ext = ".bin"
+        if "." in filename:
+            candidate = "." + filename.rsplit(".", 1)[-1].lower()
+            if 2 <= len(candidate) <= 10:
+                ext = candidate
+        mime = uf.content_type or "application/octet-stream"
 
-        uploaded_docs.append({"bucket": b2_bucket, "key": b2_key})
+        b2_bucket, b2_key = upload_bytes(case_id, "original", data, ext, mime)
+
+        uploaded_docs.append({"bucket": b2_bucket, "key": b2_key, "filename": filename, "mime": mime})
 
         with engine.begin() as conn:
             conn.execute(
@@ -517,14 +547,52 @@ async def append_documents(case_id: str, files: List[UploadFile] = File(...)):
                 },
             )
 
+        # RTM CORE -> motor legacy de multas, SOLO para traffic/fine.
+        # El mismo case_id recibe la extraction que luego consume generate.py.
+        if is_traffic_fine:
+            try:
+                analysis_result = analyze_existing_case_document(
+                    case_id=case_id,
+                    content=data,
+                    filename=filename,
+                    mime=mime,
+                    b2_bucket=b2_bucket,
+                    b2_key=b2_key,
+                )
+                analyzed_docs.append({
+                    "filename": filename,
+                    "ok": True,
+                    "tipo_infraccion": (
+                        ((analysis_result.get("extracted") or {}).get("extracted") or {}).get("tipo_infraccion")
+                    ),
+                })
+            except HTTPException:
+                raise
+            except Exception as exc:
+                _event(case_id, "traffic_fine_analysis_failed", {
+                    "filename": filename,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"No se pudo analizar la multa {filename}: {type(exc).__name__}: {exc}",
+                )
+
     with engine.begin() as conn:
         conn.execute(
             text("UPDATE cases SET status='uploaded', updated_at=NOW() WHERE id=:id"),
             {"id": case_id},
         )
 
-    _event(case_id, "expediente_documents_appended", {"documents": uploaded_docs})
-    return {"ok": True}
+    _event(case_id, "expediente_documents_appended", {
+        "documents": uploaded_docs,
+        "traffic_fine_analysis": analyzed_docs if is_traffic_fine else [],
+    })
+    return {
+        "ok": True,
+        "traffic_fine_analyzed": bool(is_traffic_fine and analyzed_docs),
+        "analyzed_documents": analyzed_docs,
+    }
 
 # =========================
 # REVIEW

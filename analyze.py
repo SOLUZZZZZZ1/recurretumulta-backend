@@ -3432,6 +3432,315 @@ def _ensure_raw_fields(core: Dict[str, Any], text_content: str = "") -> Dict[str
     return out
 
 
+
+# =========================
+# RTM CORE BRIDGE — ANALIZAR DOCUMENTO EN CASE EXISTENTE
+# =========================
+def analyze_existing_case_document(
+    case_id: str,
+    content: bytes,
+    filename: str,
+    mime: str,
+    b2_bucket: str,
+    b2_key: str,
+) -> Dict[str, Any]:
+    """
+    Reutiliza el motor especializado de multas sobre un expediente RTM CORE
+    ya existente. NO crea un case nuevo y NO vuelve a subir el documento.
+    Genera la fila de `extractions` que necesita generate.py.
+    """
+    if not content:
+        raise HTTPException(status_code=400, detail="Archivo vacío.")
+    if len(content) > 12 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Archivo demasiado grande (máx 12MB).")
+
+    filename = filename or "documento"
+    mime = mime or (mimetypes.guess_type(filename)[0] or "application/octet-stream")
+    sha256 = _sha256_bytes(content)
+    size_bytes = len(content)
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO events(case_id, type, payload, created_at) "
+                "VALUES (:case_id, 'traffic_fine_bridge_started', CAST(:payload AS JSONB), NOW())"
+            ),
+            {
+                "case_id": case_id,
+                "payload": json.dumps({"filename": filename, "mime": mime}, ensure_ascii=False),
+            },
+        )
+
+        exists = conn.execute(
+            text("SELECT 1 FROM cases WHERE id=:case_id"),
+            {"case_id": case_id},
+        ).fetchone()
+        if not exists:
+            raise HTTPException(status_code=404, detail="case_id no existe")
+
+        model_used = "mock"
+        confidence = 0.1
+        extracted_core: Dict[str, Any] = {}
+        text_content = ""
+
+        if mime.startswith("image/"):
+            extracted_core = extract_from_image_bytes(content, mime, filename)
+            extracted_core = _ensure_raw_fields(extracted_core, text_content="")
+
+            try:
+                if _should_run_focused_fet_ocr(extracted_core, extracted_core.get("vision_raw_text") or ""):
+                    focus = extract_fet_denunciat_focus(content, mime, filename)
+                    extracted_core = _apply_focused_fet_ocr_result(extracted_core, focus)
+            except Exception as focus_err:
+                extracted_core["hecho_focus_error"] = str(focus_err)
+                extracted_core["needs_operator_review"] = True
+
+            model_used = "openai_vision"
+            confidence = 0.7
+
+        elif mime == "application/pdf":
+            text_content = extract_text_from_pdf_bytes(content)
+            _raise_if_generated_resource_text(text_content)
+
+            extracted_text: Dict[str, Any] = {}
+            extracted_vision: Dict[str, Any] = {}
+
+            if has_enough_text(text_content):
+                extracted_text = extract_from_text(text_content) or {}
+                extracted_text = _ensure_raw_fields(extracted_text, text_content=text_content)
+                model_used = "openai_text"
+                confidence = 0.8
+            else:
+                model_used = "openai_vision"
+                confidence = 0.6
+
+            extracted_vision = extract_from_image_bytes(content, mime, filename) or {}
+            extracted_vision = _ensure_raw_fields(extracted_vision, text_content="")
+
+            try:
+                focus_blob = _flatten_text(extracted_vision, text_content=text_content)
+                if _should_run_focused_fet_ocr(extracted_vision, focus_blob):
+                    focus = extract_fet_denunciat_focus(content, mime, filename)
+                    extracted_vision = _apply_focused_fet_ocr_result(extracted_vision, focus)
+            except Exception as focus_err:
+                extracted_vision["hecho_focus_error"] = str(focus_err)
+                extracted_vision["needs_operator_review"] = True
+
+            blob_text = _flatten_text(extracted_text, text_content=text_content) if extracted_text else (text_content or "")
+            triaged_text = _enrich_with_triage(extracted_text or {}, blob_text)
+
+            blob_vision = _flatten_text(extracted_vision, text_content="")
+            triaged_vision = _enrich_with_triage(extracted_vision or {}, blob_vision)
+
+            extracted_core = _merge_extracted(triaged_text, triaged_vision)
+            extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
+
+            if extracted_text and not _needs_speed_retry(extracted_core):
+                model_used = "openai_text"
+                confidence = 0.8
+            else:
+                model_used = "openai_vision+text"
+                confidence = 0.75
+
+        elif mime in DOCX_MIMES:
+            text_content = extract_text_from_docx_bytes(content)
+            _raise_if_generated_resource_text(text_content)
+            if has_enough_text(text_content):
+                extracted_core = extract_from_text(text_content) or {}
+                extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
+                model_used = "openai_text"
+                confidence = 0.8
+            else:
+                extracted_core = {
+                    "observaciones": "DOCX sin texto suficiente.",
+                    "raw_text_pdf": text_content or "",
+                }
+
+        else:
+            extracted_core = {"observaciones": "Tipo de archivo no soportado."}
+
+        blob = _flatten_text(extracted_core, text_content=text_content)
+        extracted_core = _enrich_with_triage(extracted_core, blob)
+        extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
+
+        wrapper = {
+            "filename": filename,
+            "mime": mime,
+            "size_bytes": size_bytes,
+            "sha256": sha256,
+            "storage": {"bucket": b2_bucket, "key": b2_key},
+            "extracted": extracted_core,
+        }
+
+        conn.execute(
+            text(
+                "INSERT INTO extractions (case_id, extracted_json, confidence, model, created_at) "
+                "VALUES (:case_id, CAST(:json AS JSONB), :confidence, :model, NOW())"
+            ),
+            {
+                "case_id": case_id,
+                "json": json.dumps(wrapper, ensure_ascii=False),
+                "confidence": confidence,
+                "model": model_used,
+            },
+        )
+
+        conn.execute(
+            text(
+                "INSERT INTO events(case_id, type, payload, created_at) "
+                "VALUES (:case_id, 'analyze_ok', CAST(:payload AS JSONB), NOW())"
+            ),
+            {
+                "case_id": case_id,
+                "payload": json.dumps(
+                    {
+                        "model": model_used,
+                        "confidence": confidence,
+                        "tipo_infraccion": extracted_core.get("tipo_infraccion"),
+                        "jurisdiccion": extracted_core.get("jurisdiccion"),
+                    }
+                ),
+            },
+        )
+
+
+        # 🔒 SINCRONIZAR DATOS DETECTADOS CON CASES
+        # Estos datos alimentan formulario de autorización, PDF y encabezamiento del recurso.
+        def _first_sync(*vals):
+            for v in vals:
+                if v is not None and str(v).strip():
+                    return str(v).strip()
+            return ""
+
+        raw_sync_text = ""
+        try:
+            raw_sync_text = text_blob or ""
+        except Exception:
+            raw_sync_text = ""
+
+        dni_ocr = ""
+        try:
+            m_dni = re.search(r"\b\d{7,8}[A-Z]\b", raw_sync_text or "", re.I)
+            dni_ocr = m_dni.group(0).upper() if m_dni else ""
+        except Exception:
+            dni_ocr = ""
+
+        name_ocr = ""
+        try:
+            if dni_ocr:
+                idx = (raw_sync_text or "").upper().find(dni_ocr.upper())
+                after = (raw_sync_text or "")[idx + len(dni_ocr): idx + len(dni_ocr) + 180] if idx >= 0 else ""
+                after = re.sub(r"\b\d{2}[-/]\d{2}[-/]\d{4}\b", " ", after)
+                after = re.sub(r"\b\d{6,}\b", " ", after)
+                for line in [x.strip(" :;-") for x in re.split(r"[\n\r]+", after) if x.strip()]:
+                    cand = re.sub(r"[^A-ZÁÉÍÓÚÜÑa-záéíóúüñ\s]", " ", line)
+                    cand = re.sub(r"\s+", " ", cand).strip()
+                    words = cand.split()
+                    if 2 <= len(words) <= 5 and not any(w.upper() in {"DATA", "FECHA", "IMPORT", "IMPORTE", "REFERENCIA"} for w in words):
+                        name_ocr = cand.title()
+                        break
+        except Exception:
+            name_ocr = ""
+
+        detected_full_name = _first_sync(
+            extracted_core.get("full_name"),
+            extracted_core.get("nombre_completo"),
+            extracted_core.get("titular"),
+            extracted_core.get("nombre_multado"),
+            extracted_core.get("interesado"),
+            name_ocr,
+        )
+        detected_dni = _first_sync(
+            extracted_core.get("dni_nie"),
+            extracted_core.get("dni"),
+            extracted_core.get("nie"),
+            extracted_core.get("documento_identidad"),
+            dni_ocr,
+        )
+        detected_address = _first_sync(
+            extracted_core.get("domicilio_notif"),
+            extracted_core.get("domicilio"),
+            extracted_core.get("direccion"),
+            extracted_core.get("domicilio_multado"),
+        )
+        detected_email = _first_sync(extracted_core.get("email"), extracted_core.get("contact_email"))
+        detected_phone = _first_sync(extracted_core.get("telefono"), extracted_core.get("phone"))
+        detected_matricula = _first_sync(extracted_core.get("matricula"))
+        detected_organismo = _first_sync(extracted_core.get("organismo"), extracted_core.get("organismo_cabecera"))
+        detected_expediente = _first_sync(
+            extracted_core.get("expediente_ref"),
+            extracted_core.get("numero_expediente"),
+            extracted_core.get("referencia"),
+        )
+
+        if not detected_organismo and re.search(r"Ajuntament\s+de\s+Terrassa", raw_sync_text or "", re.I):
+            detected_organismo = "Ajuntament de Terrassa"
+        if not detected_expediente:
+            m_exp = re.search(r"\b[Vv]\d{8,}\b", raw_sync_text or "")
+            if m_exp:
+                detected_expediente = m_exp.group(0).upper()
+
+        interested_patch = {}
+        if detected_full_name:
+            interested_patch["full_name"] = detected_full_name
+        if detected_dni:
+            interested_patch["dni_nie"] = detected_dni.upper()
+        if detected_address:
+            interested_patch["domicilio_notif"] = detected_address
+        if detected_email:
+            interested_patch["email"] = detected_email
+        if detected_phone:
+            interested_patch["telefono"] = detected_phone
+        if detected_matricula:
+            interested_patch["matricula"] = detected_matricula.upper().replace(" ", "").replace("-", "")
+        if detected_organismo:
+            interested_patch["organismo"] = detected_organismo
+        if detected_expediente:
+            interested_patch["expediente_ref"] = detected_expediente
+
+        conn.execute(
+            text("""
+                UPDATE cases SET
+                    organismo = COALESCE(:organismo, organismo),
+                    expediente_ref = COALESCE(:expediente_ref, expediente_ref),
+                    interested_data = COALESCE(interested_data, '{}'::jsonb) || CAST(:interested_data AS JSONB),
+                    updated_at = NOW()
+                WHERE id = :case_id
+            """),
+            {
+                "case_id": case_id,
+                "organismo": detected_organismo or None,
+                "expediente_ref": detected_expediente or None,
+                "interested_data": json.dumps(interested_patch, ensure_ascii=False),
+            },
+        )
+
+        conn.execute(
+            text("""
+                INSERT INTO events(case_id, type, payload, created_at)
+                VALUES (:case_id, 'case_extracted_fields_synced', CAST(:payload AS JSONB), NOW())
+            """),
+            {
+                "case_id": case_id,
+                "payload": json.dumps(interested_patch, ensure_ascii=False),
+            },
+        )
+
+
+        conn.execute(
+            text("UPDATE cases SET status=CASE WHEN COALESCE(payment_status, '') = 'paid' AND COALESCE(authorized, FALSE) = TRUE THEN 'manual_review' ELSE 'pending_client_data' END, updated_at=NOW() WHERE id=:case_id"),
+            {"case_id": case_id},
+        )
+
+    return {
+        "ok": True,
+        "message": "Documento analizado dentro del expediente CORE.",
+        "case_id": str(case_id),
+        "extracted": wrapper,
+    }
+
+
 @router.post("/analyze")
 async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
     try:
