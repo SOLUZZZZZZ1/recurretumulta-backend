@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_1"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_2"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
 
@@ -342,12 +342,229 @@ def _first_match(patterns: List[str], text_value: str, flags: int = re.I | re.S)
     return None
 
 
-def _critical_fields_from_blob(text_blob: str) -> Dict[str, Any]:
-    """Segunda capa determinista para campos críticos de una multa de tráfico.
+def _response_output_text(data: Dict[str, Any]) -> str:
+    output_text = ""
+    for item in (data or {}).get("output", []):
+        if item.get("type") != "message":
+            continue
+        for part in item.get("content", []):
+            if part.get("type") == "output_text":
+                output_text += str(part.get("text") or "")
+    return output_text.strip()
 
-    Solo corrige cuando existe una señal textual explícita (etiqueta o frase del
-    hecho). Su función es impedir que un barcode, fecha accesoria o número aislado
-    sustituya silenciosamente al dato jurídico principal.
+
+def _normalise_plate(value: Any) -> Optional[str]:
+    raw = re.sub(r"[^A-Z0-9]", "", _fold(str(value or "")).upper())
+    m = re.fullmatch(r"(\d{4})([A-Z]{3})", raw)
+    if not m:
+        return None
+    return f"{m.group(1)} {m.group(2)}"
+
+
+def _normalise_date(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    m = re.search(r"\b(\d{2})[-/](\d{2})[-/](\d{4})\b", raw)
+    if not m:
+        return None
+    return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+
+
+def _normalise_float(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            return float(value)
+        raw = str(value).replace("€", "").replace("EUR", "").replace(" ", "").replace(",", ".")
+        m = re.search(r"\d+(?:\.\d+)?", raw)
+        return float(m.group(0)) if m else None
+    except Exception:
+        return None
+
+
+def _normalise_int(value: Any, min_value: int = 0, max_value: int = 999999) -> Optional[int]:
+    try:
+        if value in (None, ""):
+            return None
+        m = re.search(r"\d+", str(value))
+        if not m:
+            return None
+        n = int(m.group(0))
+        return n if min_value <= n <= max_value else None
+    except Exception:
+        return None
+
+
+def _critical_fields_from_images(analyzed_pages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Segunda lectura visual, focalizada SOLO en campos críticos.
+
+    No interpreta jurídicamente la multa y no infiere datos: transcribe etiquetas y
+    valores visibles. Se usa para corregir errores OCR típicos (p. ej. letras de la
+    matrícula, fechas próximas entre sí o identificadores de antena).
+    """
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return {"values": {}, "confidence": {}, "evidence": {}, "error": "OPENAI_API_KEY_missing"}
+
+    image_parts: List[Dict[str, Any]] = []
+    page_labels: List[str] = []
+    for page in analyzed_pages:
+        content = page.get("analysis_content")
+        mime = str(page.get("analysis_mime") or "")
+        if not isinstance(content, (bytes, bytearray)) or not mime.startswith("image/"):
+            continue
+        # La normalización previa convierte imágenes a JPEG vertical, así evitamos
+        # depender de EXIF o del nombre/extensión original.
+        if mime != "image/jpeg" and Image is not None:
+            try:
+                with Image.open(io.BytesIO(bytes(content))) as img:
+                    content = _jpeg_bytes(img.convert("RGB"))
+                mime = "image/jpeg"
+            except Exception:
+                pass
+        page_index = int(page.get("page_index") or 0)
+        page_labels.append(f"Página lógica {page_index}")
+        image_parts.append({"type": "input_text", "text": f"Página lógica {page_index}:"})
+        image_parts.append({
+            "type": "input_image",
+            "image_url": f"data:{mime};base64," + base64.b64encode(bytes(content)).decode("ascii"),
+        })
+
+    if not image_parts:
+        return {"values": {}, "confidence": {}, "evidence": {}, "error": "no_image_pages"}
+
+    fields = [
+        "organismo", "expediente_ref", "matricula", "velocidad_medida_kmh",
+        "velocidad_limite_kmh", "radar_modelo_hint", "radar_antena",
+        "sancion_importe_eur", "puntos_detraccion", "lugar_infraccion",
+        "fecha_infraccion", "hora_infraccion",
+    ]
+    schema_hint = ", ".join(fields)
+    system_text = (
+        "Eres un lector documental de alta precisión para sanciones de tráfico en España. "
+        "Tu única tarea es TRANSCRIBIR campos críticos visibles en las imágenes. "
+        "No interpretes el Derecho, no calcules, no completes por contexto y no confundas fechas. "
+        "Si un valor no es claramente legible, devuelve null. "
+        "Distingue especialmente: fecha de la infracción frente a fecha de notificación o verificación; "
+        "número de expediente frente a número de envío; importe total de sanción frente a importe reducido; "
+        "matrícula frente a códigos/barcodes."
+    )
+    user_text = f"""
+Lee conjuntamente todas las páginas y devuelve EXCLUSIVAMENTE un JSON válido con esta forma:
+{{
+  "values": {{
+    "organismo": string|null,
+    "expediente_ref": string|null,
+    "matricula": string|null,
+    "velocidad_medida_kmh": integer|null,
+    "velocidad_limite_kmh": integer|null,
+    "radar_modelo_hint": string|null,
+    "radar_antena": string|null,
+    "sancion_importe_eur": number|null,
+    "puntos_detraccion": integer|null,
+    "lugar_infraccion": string|null,
+    "fecha_infraccion": string|null,
+    "hora_infraccion": string|null
+  }},
+  "confidence": {{"{fields[0]}": 0.0}},
+  "evidence": {{"{fields[0]}": "texto literal breve"}}
+}}
+
+Incluye en confidence y evidence una entrada para cada campo no nulo de values.
+Campos: {schema_hint}.
+Reglas críticas:
+- matrícula: transcribe exactamente los 4 dígitos y 3 letras del vehículo; verifica visualmente cada letra.
+- fecha_infraccion: SOLO la fecha del hecho dentro del bloque de datos básicos de la infracción; no uses fecha de notificación, emisión, pago, certificado o verificación.
+- lugar_infraccion: incluye carretera/vía y punto kilométrico si ambos son legibles.
+- radar_antena: número de antena del cinemómetro, no número de serie, código de barras o expediente.
+- sancion_importe_eur: importe total/propuesto de la sanción, no pago reducido.
+- velocidad_medida_kmh y velocidad_limite_kmh: solo valores expresamente escritos en el hecho o tabla.
+- expediente_ref: número del expediente sancionador, no número de envío.
+- confidence: 0..1 según legibilidad visual real.
+- evidence: máximo 140 caracteres, copiando la etiqueta/fragmento donde se ve el dato.
+- No inventes. Si dudas entre dos caracteres, usa null para ese campo.
+"""
+
+    payload = {
+        "model": (os.getenv("OPENAI_MODEL") or "gpt-4o").strip(),
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": system_text}]},
+            {"role": "user", "content": [{"type": "input_text", "text": user_text}] + image_parts},
+        ],
+        "text": {"format": {"type": "json_object"}},
+    }
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=90,
+        )
+        if not r.ok:
+            return {"values": {}, "confidence": {}, "evidence": {}, "error": f"OpenAI {r.status_code}: {r.text[:300]}"}
+        obj = json.loads(_response_output_text(r.json()) or "{}")
+        values = obj.get("values") if isinstance(obj, dict) else {}
+        confidence = obj.get("confidence") if isinstance(obj, dict) else {}
+        evidence = obj.get("evidence") if isinstance(obj, dict) else {}
+        if not isinstance(values, dict):
+            values = {}
+        if not isinstance(confidence, dict):
+            confidence = {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+
+        cleaned: Dict[str, Any] = {}
+        for key in fields:
+            value = values.get(key)
+            if value in (None, "", "null"):
+                continue
+            if key == "matricula":
+                value = _normalise_plate(value)
+            elif key == "fecha_infraccion":
+                value = _normalise_date(value)
+            elif key in ("velocidad_medida_kmh", "velocidad_limite_kmh"):
+                value = _normalise_int(value, 10, 250)
+            elif key == "puntos_detraccion":
+                value = _normalise_int(value, 0, 15)
+            elif key == "sancion_importe_eur":
+                value = _normalise_float(value)
+            elif key == "radar_antena":
+                m = re.search(r"\d{3,10}", str(value))
+                value = m.group(0) if m else None
+            else:
+                value = str(value).strip()
+            if value not in (None, ""):
+                cleaned[key] = value
+
+        conf_clean: Dict[str, float] = {}
+        for key in cleaned:
+            try:
+                c = float(confidence.get(key) or 0)
+            except Exception:
+                c = 0.0
+            conf_clean[key] = max(0.0, min(1.0, c))
+
+        ev_clean = {k: str(evidence.get(k) or "")[:180] for k in cleaned if evidence.get(k)}
+        return {
+            "values": cleaned,
+            "confidence": conf_clean,
+            "evidence": ev_clean,
+            "pages": page_labels,
+        }
+    except Exception as exc:
+        return {
+            "values": {}, "confidence": {}, "evidence": {},
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _critical_fields_from_blob(text_blob: str) -> Dict[str, Any]:
+    """Capa determinista de respaldo para campos críticos.
+
+    Se apoya en etiquetas/frases explícitas del documento. La V1.2 refuerza el
+    bloque tabular catalán de datos básicos y evita elegir la primera fecha cercana
+    a la carretera, que podía ser la fecha de notificación.
     """
     raw = str(text_blob or "")
     folded = _fold(raw)
@@ -359,45 +576,40 @@ def _critical_fields_from_blob(text_blob: str) -> Dict[str, Any]:
 
     expediente = _first_match(
         [
-            r"NUMERO\s+D[' ]EXPEDIENT\s*[:#-]?\s*([A-Z0-9][A-Z0-9./-]{5,30})",
+            r"NUMERO\s+D['’ ]EXPEDIENT\s*[:#-]?\s*([A-Z0-9][A-Z0-9./-]{5,30})",
             r"NUMERO\s+DE\s+EXPEDIENTE\s*[:#-]?\s*([A-Z0-9][A-Z0-9./-]{5,30})",
             r"N[ºO]\.?\s*EXPEDIENTE\s*[:#-]?\s*([A-Z0-9][A-Z0-9./-]{5,30})",
             r"EXPEDIENTE\s+SANCIONADOR\s*[:#-]?\s*([A-Z0-9][A-Z0-9./-]{5,30})",
-        ],
-        upper,
+        ], upper,
     )
     if expediente:
         out["expediente_ref"] = expediente
 
     matricula = _first_match(
         [
-            r"MATRICULA\s*[:#-]?\s*(\d{4}\s*[A-Z]{3})\b",
-            r"MATRICULA\s*[:#-]?\s*([A-Z]{1,2}\s*\d{4}\s*[A-Z]{1,2})\b",
-        ],
-        upper,
+            r"\bMATRICULA\b\s*[:#-]?\s*(\d{4}\s*[A-Z]{3})\b",
+            r"\bMATRICULA\b.{0,90}?\b(\d{4}\s*[A-Z]{3})\b",
+        ], upper,
     )
-    if matricula:
-        out["matricula"] = re.sub(r"\s+", " ", matricula).strip()
+    plate = _normalise_plate(matricula)
+    if plate:
+        out["matricula"] = plate
 
-    # Frase fuerte: "velocitat de 121 km/h ... limitada ... a 90 km/h"
     speed_pair = re.search(
         r"(?:VELOCITAT|VELOCIDAD)\s+(?:MESURADA\s+)?(?:DE|A)?\s*(\d{2,3})\s*KM\s*/?\s*H"
-        r".{0,220}?(?:LIMITAD[AOA]*|LIMIT\w*)"
-        r".{0,100}?(?:A|DE)\s*(\d{2,3})\s*KM\s*/?\s*H",
-        upper,
-        flags=re.S,
+        r".{0,240}?(?:LIMITAD[AOA]*|LIMIT\w*)"
+        r".{0,120}?(?:A|DE|UN\s+SENYAL\s+A)\s*(\d{2,3})\s*KM\s*/?\s*H",
+        upper, flags=re.S,
     )
     if not speed_pair:
         speed_pair = re.search(
-            r"(?:CIRCULAR|CIRCULABA|CIRCULANT|CIRCULANDO).{0,100}?"
-            r"(?:VELOCITAT|VELOCIDAD).{0,40}?(\d{2,3})\s*KM\s*/?\s*H"
-            r".{0,220}?(?:LIMITAD[AOA]*|LIMIT\w*).{0,100}?(\d{2,3})\s*KM\s*/?\s*H",
-            upper,
-            flags=re.S,
+            r"(?:CIRCULAR|CIRCULABA|CIRCULANT|CIRCULANDO).{0,160}?"
+            r"(\d{2,3})\s*KM\s*/?\s*H.{0,260}?"
+            r"(?:LIMITAD[AOA]*|LIMIT\w*).{0,130}?(\d{2,3})\s*KM\s*/?\s*H",
+            upper, flags=re.S,
         )
     if speed_pair:
-        measured = int(speed_pair.group(1))
-        limit = int(speed_pair.group(2))
+        measured, limit = int(speed_pair.group(1)), int(speed_pair.group(2))
         if 10 <= measured <= 250 and 10 <= limit <= 200 and measured > limit:
             out["velocidad_medida_kmh"] = measured
             out["velocidad_limite_kmh"] = limit
@@ -405,82 +617,87 @@ def _critical_fields_from_blob(text_blob: str) -> Dict[str, Any]:
 
     radar = _first_match(
         [
-            r"CINEMOMETR[EO].{0,30}?((?:MULTI?RADAR|MULTARADAR|MULTANOVA)[ -]?[A-Z0-9-]*)",
+            r"CINEMOMETR[EO].{0,40}?((?:MULTI?RADAR|MULTARADAR|MULTANOVA)[ -]?[A-Z0-9-]*)",
             r"\b((?:MULTI?RADAR|MULTARADAR|MULTANOVA)[ -]?[A-Z0-9-]*)\b",
-        ],
-        upper,
+        ], upper,
     )
     if radar:
         radar_clean = re.sub(r"\s+", " ", radar).strip(" .,-")
-        # Forma legible del modelo más frecuente, sin hardcodear el caso.
-        radar_clean = re.sub(r"^MULTIRADAR\s*[- ]?\s*C$", "MULTIRADAR C", radar_clean, flags=re.I)
         radar_clean = re.sub(r"^MULTARADAR\s*[- ]?\s*C$", "MULTIRADAR C", radar_clean, flags=re.I)
+        radar_clean = re.sub(r"^MULTIRADAR\s*[- ]?\s*C$", "MULTIRADAR C", radar_clean, flags=re.I)
         out["radar_modelo_hint"] = radar_clean
 
     antena = _first_match(
         [
-            r"N[UÚ]M\.?\s*D[' ]ANTENA\s*[:#-]?\s*(\d{3,10})",
-            r"ANTENA\s*(?:NUMERO|N[UÚ]M\.?)?\s*[:#-]?\s*(\d{3,10})",
-        ],
-        upper,
+            r"N(?:UM|ÚM)\.?\s*(?:D\s*['’]?\s*)?ANTENA\s*[:#.-]?\s*(\d{3,10})",
+            r"D\s*['’]\s*ANTENA\s*[:#.-]?\s*(\d{3,10})",
+            r"ANTENA\s*(?:NUMERO|N(?:UM|ÚM)\.?)?\s*[:#.-]?\s*(\d{3,10})",
+        ], upper,
     )
     if antena:
         out["radar_antena"] = antena
 
-    importe = _first_match(
-        [
-            r"IMPORT(?:E)?\s+DE\s+LA\s+SANCIO[NÓ]?\s*[:#-]?\s*(\d{2,4}(?:[.,]\d{1,2})?)\s*(?:EUR|€)",
-            r"IMPORT\s+DE\s+LA\s+SANCIO\s*[:#-]?\s*(\d{2,4}(?:[.,]\d{1,2})?)\s*(?:EUR|€)",
-        ],
-        upper,
+    # Tabla de datos básicos: Via/Carrer | Km/Núm. | ... | Data | Hora
+    facts_table = re.search(
+        r"VIA\s*/\s*CARRER.{0,180}?KM\s*/\s*N(?:UM|ÚM)\.?"
+        r".{0,450}?\b([A-Z]{1,5}-?\d{1,4})\b"
+        r".{0,100}?\b(\d{1,4}(?:[.,]\d{1,2}))\b"
+        r".{0,240}?\b(\d{2}[-/]\d{2}[-/]\d{4})\b"
+        r".{0,80}?\b([0-2]\d:[0-5]\d)\b",
+        upper, flags=re.S,
     )
-    if importe:
-        try:
-            out["sancion_importe_eur"] = float(importe.replace(",", "."))
-        except Exception:
-            pass
-
-    points = _first_match(
-        [
-            r"PUNTS\s+A\s+DETREURE\s*[:#-]?\s*(\d)",
-            r"PUNTOS\s+A\s+DETRAER\s*[:#-]?\s*(\d)",
-            r"DETRACCION\s+DE\s*(\d)\s*PUNTOS",
-        ],
-        upper,
-    )
-    if points:
-        try:
-            out["puntos_detraccion"] = int(points)
-        except Exception:
-            pass
-
-    via = _first_match(
-        [r"VIA\s*/\s*CARRER\s*[:#-]?\s*([A-Z]{1,4}-?\d{1,4})"],
-        upper,
-    )
-    km = _first_match(
-        [r"KM\s*/\s*N[UÚ]M\.?\s*[:#-]?\s*(\d{1,4}(?:[.,]\d{1,2})?)"],
-        upper,
-    )
-    if via and km:
+    if facts_table:
+        via, km, date_value, time_value = facts_table.groups()
         out["lugar_infraccion"] = f"{via}, p.k. {km}"
-    elif via:
-        out["lugar_infraccion"] = via
+        out["fecha_infraccion"] = _normalise_date(date_value)
+        out["hora_infraccion"] = time_value
+    else:
+        via = _first_match([r"\bVIA\s*/\s*CARRER\b.{0,180}?\b([A-Z]{1,5}-?\d{1,4})\b"], upper)
+        km = _first_match([r"\bKM\s*/\s*N(?:UM|ÚM)\.?\b.{0,180}?\b(\d{1,4}(?:[.,]\d{1,2}))\b"], upper)
+        if via and km:
+            out["lugar_infraccion"] = f"{via}, p.k. {km}"
+        elif via:
+            out["lugar_infraccion"] = via
 
-    # Fecha/hora: preferimos un valor próximo al bloque de vía/km para evitar
-    # confundir fecha de notificación, pago o certificado con fecha del hecho.
-    if via:
-        idx = upper.find(via.upper())
-        window = upper[max(0, idx - 120): idx + 500] if idx >= 0 else upper[:1000]
-        m_date = re.search(r"\b(\d{2}[-/]\d{2}[-/]\d{4})\b", window)
-        m_time = re.search(r"\b([0-2]\d:[0-5]\d)\b", window)
-        if m_date:
-            out["fecha_infraccion"] = m_date.group(1)
-        if m_time:
-            out["hora_infraccion"] = m_time.group(1)
+    # Bloque sanción/puntos. Primero busca la fila completa, luego etiquetas aisladas.
+    sanction_row = re.search(
+        r"IMPORT\s+DE\s+LA\s+SANCIO\w*.{0,160}?PUNTS\s+A\s+DETREURE"
+        r".{0,260}?(\d{2,4}[.,]\d{2})\s*(?:EUR|€)?"
+        r".{0,80}?\b([0-9]|1[0-5])\b",
+        upper, flags=re.S,
+    )
+    if sanction_row:
+        amount = _normalise_float(sanction_row.group(1))
+        points = _normalise_int(sanction_row.group(2), 0, 15)
+        if amount is not None:
+            out["sancion_importe_eur"] = amount
+        if points is not None:
+            out["puntos_detraccion"] = points
 
-    return out
+    if "sancion_importe_eur" not in out:
+        importe = _first_match(
+            [
+                r"IMPORT(?:E)?\s+DE\s+LA\s+SANCIO\w*\s*[:#-]?\s*(\d{2,4}(?:[.,]\d{1,2})?)\s*(?:EUR|€)?",
+                r"IMPORT\s+DE\s+LA\s+SANCIO\s*[:#-]?\s*(\d{2,4}(?:[.,]\d{1,2})?)",
+            ], upper,
+        )
+        amount = _normalise_float(importe)
+        if amount is not None:
+            out["sancion_importe_eur"] = amount
 
+    if "puntos_detraccion" not in out:
+        points = _first_match(
+            [
+                r"PUNTS\s+A\s+DETREURE\s*[:#-]?\s*(\d{1,2})",
+                r"PUNTOS\s+A\s+DETRAER\s*[:#-]?\s*(\d{1,2})",
+                r"DETRACCION\s+DE\s*(\d{1,2})\s*PUNTOS",
+            ], upper,
+        )
+        pnum = _normalise_int(points, 0, 15)
+        if pnum is not None:
+            out["puntos_detraccion"] = pnum
+
+    return {k: v for k, v in out.items() if v not in (None, "")}
 
 def _same_value(a: Any, b: Any) -> bool:
     if a in (None, "") or b in (None, ""):
@@ -492,33 +709,80 @@ def _same_value(a: Any, b: Any) -> bool:
     return na == nb
 
 
-def _apply_critical_fields(core: Dict[str, Any], text_blob: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _apply_critical_fields(
+    core: Dict[str, Any],
+    text_blob: str,
+    vision_meta: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     out = dict(core or {})
     deterministic = _critical_fields_from_blob(text_blob)
-    conflicts: List[Dict[str, Any]] = []
+    vision_meta = vision_meta or {"values": {}, "confidence": {}, "evidence": {}}
+    vision_values = vision_meta.get("values") if isinstance(vision_meta.get("values"), dict) else {}
+    vision_conf = vision_meta.get("confidence") if isinstance(vision_meta.get("confidence"), dict) else {}
+    vision_evidence = vision_meta.get("evidence") if isinstance(vision_meta.get("evidence"), dict) else {}
 
+    conflicts: List[Dict[str, Any]] = []
+    sources: Dict[str, str] = {}
     override_fields = {
-        "organismo",
-        "expediente_ref",
-        "matricula",
-        "velocidad_medida_kmh",
-        "velocidad_limite_kmh",
-        "radar_modelo_hint",
-        "radar_antena",
-        "sancion_importe_eur",
-        "puntos_detraccion",
-        "lugar_infraccion",
-        "fecha_infraccion",
-        "hora_infraccion",
+        "organismo", "expediente_ref", "matricula", "velocidad_medida_kmh",
+        "velocidad_limite_kmh", "radar_modelo_hint", "radar_antena",
+        "sancion_importe_eur", "puntos_detraccion", "lugar_infraccion",
+        "fecha_infraccion", "hora_infraccion",
     }
 
+    # 1) Texto explícito determinista corrige la extracción general.
     for key, value in deterministic.items():
         if key not in override_fields:
             continue
         old = out.get(key)
         if old not in (None, "", [], {}) and not _same_value(old, value):
-            conflicts.append({"field": key, "ai_value": old, "deterministic_value": value})
+            conflicts.append({
+                "field": key, "ai_value": old, "deterministic_value": value,
+                "chosen": value, "source": "explicit_text",
+            })
         out[key] = value
+        sources[key] = "explicit_text"
+
+    # 2) Lectura visual focalizada. Para caracteres OCR sensibles y campos de tabla,
+    # una visión >= 0.90 con evidencia literal puede corregir el OCR determinista.
+    vision_priority_fields = {
+        "matricula", "radar_antena", "sancion_importe_eur", "puntos_detraccion",
+        "lugar_infraccion", "fecha_infraccion", "hora_infraccion",
+    }
+    for key, value in vision_values.items():
+        if key not in override_fields or value in (None, ""):
+            continue
+        try:
+            conf = float(vision_conf.get(key) or 0)
+        except Exception:
+            conf = 0.0
+        evidence = str(vision_evidence.get(key) or "").strip()
+        current = out.get(key)
+
+        if current in (None, "", [], {}):
+            if conf >= 0.78:
+                out[key] = value
+                sources[key] = "targeted_vision"
+            continue
+
+        if _same_value(current, value):
+            sources[key] = "explicit_text+targeted_vision" if key in deterministic else "targeted_vision_confirmed"
+            continue
+
+        prefer_vision = key in vision_priority_fields and conf >= 0.90 and bool(evidence)
+        chosen = value if prefer_vision else current
+        conflicts.append({
+            "field": key,
+            "current_value": current,
+            "vision_value": value,
+            "vision_confidence": round(conf, 3),
+            "vision_evidence": evidence[:160],
+            "chosen": chosen,
+            "source": "targeted_vision" if prefer_vision else sources.get(key, "existing_extraction"),
+        })
+        if prefer_vision:
+            out[key] = value
+            sources[key] = "targeted_vision"
 
     measured = out.get("velocidad_medida_kmh")
     limit = out.get("velocidad_limite_kmh")
@@ -533,23 +797,41 @@ def _apply_critical_fields(core: Dict[str, Any], text_blob: str) -> Tuple[Dict[s
         out["hecho_para_recurso"] = hecho
         out["tipo_infraccion_confidence"] = max(float(out.get("tipo_infraccion_confidence") or 0), 0.99)
 
+    required = ["expediente_ref", "matricula", "velocidad_medida_kmh", "velocidad_limite_kmh", "organismo"]
+    missing_required = [k for k in required if out.get(k) in (None, "", [], {})]
+
     out["critical_fields_deterministic"] = deterministic
+    out["critical_fields_vision"] = vision_values
+    out["critical_field_sources"] = sources
     out["critical_field_conflicts"] = conflicts
     out["critical_fields_validation"] = {
         "extractor_version": _EXTRACTOR_VERSION,
         "conflicts_detected": len(conflicts),
-        "conflicts_resolved_by_explicit_text": bool(conflicts),
+        "missing_required": missing_required,
+        "targeted_vision_error": vision_meta.get("error"),
     }
 
-    if conflicts:
+    # En V1 mantenemos revisión humana cuando ha habido conflicto. Esto no impide
+    # guardar la extraction; evita tratarla silenciosamente como incontrovertida.
+    if conflicts or missing_required:
         out["requires_operator_review"] = True
         reasons = list(out.get("operator_review_reasons") or [])
-        if "critical_fields_corrected_from_explicit_document_text" not in reasons:
-            reasons.append("critical_fields_corrected_from_explicit_document_text")
+        reason = "critical_fields_need_operator_validation"
+        if reason not in reasons:
+            reasons.append(reason)
         out["operator_review_reasons"] = reasons
 
-    return out, {"deterministic": deterministic, "conflicts": conflicts}
+    ready_for_generate = not missing_required
+    out["ready_for_generate"] = ready_for_generate
 
+    return out, {
+        "deterministic": deterministic,
+        "vision": vision_meta,
+        "sources": sources,
+        "conflicts": conflicts,
+        "missing_required": missing_required,
+        "ready_for_generate": ready_for_generate,
+    }
 
 def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if not analyzed_pages:
@@ -583,7 +865,8 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
         combined_core["vision_raw_text"] = combined_blob[:16000]
 
     combined_core = _enrich_with_triage(combined_core, combined_blob or _flatten_text(combined_core))
-    combined_core, critical_meta = _apply_critical_fields(combined_core, combined_blob)
+    vision_meta = _critical_fields_from_images(analyzed_pages)
+    combined_core, critical_meta = _apply_critical_fields(combined_core, combined_blob, vision_meta)
     combined_core["document_role"] = "primary_case_document"
     combined_core["document_group_type"] = "traffic_fine"
     combined_core["document_page_count"] = len(analyzed_pages)
@@ -644,7 +927,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_1",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_2",
             },
         )
 
@@ -742,6 +1025,7 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
                     "sha256": sha256,
                     "mime_detected": mime_detected,
                     "analysis_mime": analysis_mime,
+                    "analysis_content": analysis_content,  # solo memoria; nunca se serializa en DB/eventos
                     "orientation": orientation_meta,
                     "wrapper": wrapper,
                     "confidence": 0.75,
@@ -776,9 +1060,12 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "lugar_infraccion": core.get("lugar_infraccion"),
             "fecha_infraccion": core.get("fecha_infraccion"),
             "critical_fields_detected": deterministic,
+            "critical_fields_vision": (critical_meta.get("vision") or {}).get("values") or {},
+            "critical_field_sources": critical_meta.get("sources") or {},
             "critical_conflicts_resolved": conflicts,
+            "missing_required_fields": critical_meta.get("missing_required") or [],
             "requires_operator_review": bool(core.get("requires_operator_review")),
-            "ready_for_generate": True,
+            "ready_for_generate": bool(critical_meta.get("ready_for_generate")),
         }
         _append_event(case_id, "case_reanalysis_completed", event_payload)
 
@@ -801,9 +1088,11 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "lugar_infraccion": core.get("lugar_infraccion"),
             "fecha_infraccion": core.get("fecha_infraccion"),
             "requires_operator_review": bool(core.get("requires_operator_review")),
+            "critical_field_sources": critical_meta.get("sources") or {},
             "critical_conflicts_resolved": conflicts,
-            "ready_for_generate": True,
-            "message": "Reanálisis completado. Extracción consolidada y validada contra texto explícito.",
+            "missing_required_fields": critical_meta.get("missing_required") or [],
+            "ready_for_generate": bool(critical_meta.get("ready_for_generate")),
+            "message": "Reanálisis completado. Extracción consolidada con validación textual y visual focalizada.",
         }
 
     except HTTPException as exc:
