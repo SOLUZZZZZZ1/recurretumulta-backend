@@ -40,7 +40,7 @@ from ai.infractions.dispatch import dispatch_deterministic_template
 
 router = APIRouter(tags=["generate"])
 
-_GENERATOR_VERSION = "traffic_generate_v1_3"
+_GENERATOR_VERSION = "traffic_generate_v1_4"
 
 
 _ADMIN_PREFIXES = [
@@ -3228,6 +3228,29 @@ def _identity_tokens(value: Any) -> set[str]:
     return {x for x in _identity_fold(value).split() if len(x) >= 2}
 
 
+def _normalize_traffic_location(value: Any) -> str:
+    """Normaliza ubicaciones de carretera sin inventar datos.
+
+    Convierte formas ya extraídas como 'AP-7, 204,6' o 'AP-7 / PK 204,6'
+    a 'AP-7, p.k. 204,6'. Si no reconoce el patrón, conserva el texto.
+    """
+    txt = re.sub(r"\s+", " ", _safe_str(value)).strip()
+    if not txt:
+        return ""
+
+    m = re.match(r"^([A-Z]{1,5}-\d{1,4})\s*[,;/]\s*(?:P\.?\s*K\.?\s*)?(\d{1,4}(?:[.,]\d+)?)$", txt, flags=re.I)
+    if m:
+        road = m.group(1).upper()
+        km = m.group(2).replace(".", ",") if "." in m.group(2) and "," not in m.group(2) else m.group(2)
+        return f"{road}, p.k. {km}"
+
+    m = re.match(r"^([A-Z]{1,5}-\d{1,4})\s+P\.?\s*K\.?\s*(\d{1,4}(?:[.,]\d+)?)$", txt, flags=re.I)
+    if m:
+        return f"{m.group(1).upper()}, p.k. {m.group(2)}"
+
+    return txt
+
+
 def _speed_identity_check(speed_intelligence: Dict[str, Any], interesado: Dict[str, Any]) -> Dict[str, Any]:
     """Compara identidad documental de la sanción con identidad declarada en RTM.
 
@@ -3400,6 +3423,12 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         detected_make = _safe_str(((speed_intelligence.get("facts") or {}).get("vehicle_make_model"))).strip()
         if detected_make and not _safe_str(core.get("marca_modelo")).strip():
             core["marca_modelo"] = detected_make
+
+        # Presentación del lugar: conserva el dato validado y normaliza únicamente
+        # la notación del punto kilométrico cuando el patrón es inequívoco.
+        if _safe_str(core.get("lugar_infraccion")).strip():
+            core["lugar_infraccion"] = _normalize_traffic_location(core.get("lugar_infraccion"))
+
         # Trazabilidad OPS: guarda la lectura jurídica estructurada que alimenta el borrador.
         try:
             conn.execute(
@@ -3408,6 +3437,27 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
             )
         except Exception:
             pass
+
+        # Alerta dedicada para OPS. No bloquea la generación del borrador interno,
+        # pero deja explícito que jamás debe presentarse sin revisar la identidad.
+        identity_check = speed_intelligence.get("identity_check") if isinstance(speed_intelligence, dict) else {}
+        if isinstance(identity_check, dict) and identity_check.get("mismatch") is True:
+            try:
+                conn.execute(
+                    text("INSERT INTO events(case_id, type, payload, created_at) VALUES (:id, 'document_identity_mismatch', CAST(:payload AS JSONB), NOW())"),
+                    {
+                        "id": case_id,
+                        "payload": json.dumps({
+                            "ok": False,
+                            "severity": "high",
+                            "message": "La identidad del documento sancionador no coincide con la identidad del cliente RTM. Revisar antes de cualquier presentación.",
+                            "identity_check": identity_check,
+                            "generator_version": _GENERATOR_VERSION,
+                        }, ensure_ascii=False),
+                    },
+                )
+            except Exception:
+                pass
 
     bicicleta_ctx = _is_bicicleta_context(core)
 
