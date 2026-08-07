@@ -28,6 +28,8 @@ from ai.infractions.municipal_generic import build_municipal_generic_template
 from ai.infractions.velocidad import (
     build_velocity_calc_paragraph,
     build_tramo_error_paragraph,
+    build_velocity_legal_intelligence,
+    VELOCITY_LEGAL_INTELLIGENCE_VERSION,
 )
 
 from b2_storage import upload_bytes
@@ -37,7 +39,7 @@ from ai.infractions.dispatch import dispatch_deterministic_template
 
 router = APIRouter(tags=["generate"])
 
-_GENERATOR_VERSION = "traffic_generate_v1_1"
+_GENERATOR_VERSION = "traffic_generate_v1_2"
 
 
 _ADMIN_PREFIXES = [
@@ -1682,7 +1684,7 @@ def _build_strategy_prefix(core: Dict[str, Any], tipo: str) -> str:
             "secuencia_incompleta": "No se aporta secuencia íntegra o soporte completo que permita reconstruir la dinámica del hecho.",
             "falta_motivacion": "La motivación del expediente aparece formulada en términos genéricos o estereotipados.",
             "metrologia_no_acreditada": "No consta acreditación metrológica bastante del dispositivo de medición utilizado.",
-            "fotograma_no_aportado": "No se acompaña fotograma íntegro y legible con individualización inequívoca del vehículo.",
+            "fotograma_no_aportado": "Debe comprobarse y, en su caso, aportarse la imagen o fotograma íntegro y legible con individualización inequívoca del vehículo.",
             "margen_no_aplicado": "No se justifica de forma transparente el margen de corrección aplicado o aplicable.",
             "observacion_subjetiva": "La imputación descansa esencialmente en una observación subjetiva insuficientemente circunstanciada.",
             "falta_concrecion": "El boletín no concreta con precisión suficiente la conducta material imputada.",
@@ -2618,26 +2620,61 @@ def ensure_tpl_dict(tpl: Any, core: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _velocity_boundary_paragraph(core: Dict[str, Any], measured: Optional[float], limit: Optional[float]) -> str:
-    """Refuerzo específico cuando la cifra está en un umbral sancionador conocido del Anexo IV."""
-    amount = core.get("sancion_importe_eur")
-    points = core.get("puntos_detraccion")
-    if measured == 121 and limit == 90:
-        sanction_note = ""
-        if amount not in (None, "") or points not in (None, ""):
-            sanction_note = f" La documentación analizada consigna una sanción de {amount or '300'} euros y {points if points not in (None, '') else '2'} puntos."
+    intelligence = core.get("_velocity_legal_intelligence") if isinstance(core.get("_velocity_legal_intelligence"), dict) else build_velocity_legal_intelligence(core)
+    boundary = (intelligence or {}).get("sanction_boundary") or {}
+    band = boundary.get("band") or {}
+    previous = band.get("previous") or {}
+    if not band or not band.get("is_lower_boundary") or not previous:
+        return ""
+    return (
+        f"El cuadro del Anexo IV sitúa la cifra de {band.get('value')} km/h exactamente en el primer valor del tramo de "
+        f"{band.get('fine')} euros y {band.get('points')} puntos. El tramo inmediatamente anterior finaliza en "
+        f"{previous.get('upper')} km/h y lleva aparejados {previous.get('fine')} euros y {previous.get('points')} puntos. "
+        "Esta proximidad al umbral hace especialmente relevante identificar qué magnitud fue utilizada jurídicamente para sancionar, "
+        "la modalidad real de funcionamiento del cinemómetro y el tratamiento metrológico efectivamente aplicado."
+    )
+
+
+def _velocity_verification_paragraph(intelligence: Dict[str, Any]) -> str:
+    facts = (intelligence or {}).get("facts") or {}
+    verification = facts.get("verification") or {}
+    vdate = verification.get("date")
+    relation = verification.get("relation_to_fact")
+    fact_date = facts.get("fact_date")
+    if vdate and relation == "after_fact":
         return (
-            "Para un límite de 90 km/h, el Anexo IV de la Ley de Tráfico sitúa el tramo de 91 a 120 km/h en 100 euros sin pérdida de puntos, "
-            "mientras que el tramo de 121 a 140 km/h comporta 300 euros y 2 puntos. La cifra de 121 km/h es, por tanto, el primer valor del tramo más gravoso."
-            + sanction_note +
-            " Por ello resulta decisivo conocer si los 121 km/h son la lectura bruta captada por el cinemómetro o una velocidad ya corregida, "
-            "así como la modalidad real de funcionamiento del equipo y el margen efectivamente aplicado por la Administración."
+            f"La lectura documental ha identificado una referencia expresa de verificación fechada el {vdate}, posterior a la fecha del hecho ({fact_date}). "
+            "Ese dato debe ser contrastado con el certificado íntegro y, en particular, con la verificación que estuviera vigente el día de la medición. "
+            "No basta una referencia posterior para acreditar por sí sola la situación metrológica del equipo en la fecha del hecho."
         )
-    return ""
+    if vdate:
+        return (
+            f"La documentación contiene una referencia de verificación fechada el {vdate}. Debe aportarse el certificado íntegro correspondiente, "
+            "con identificación del equipo y de sus componentes, alcance, clase de verificación, resultado y período de validez, a fin de comprobar su vigencia en la fecha del hecho."
+        )
+    return (
+        "De la documentación analizada no puede extraerse de forma inequívoca una fecha asociada a la verificación metrológica del cinemómetro. "
+        "Ello no permite afirmar que la verificación no exista; exige obtener el certificado que estuviera vigente el día del hecho y comprobar su correspondencia con el equipo y la antena identificados."
+    )
+
+
+def _velocity_capture_paragraph(intelligence: Dict[str, Any]) -> str:
+    facts = (intelligence or {}).get("facts") or {}
+    if not facts.get("capture_automatic"):
+        return ""
+    return (
+        "La propia notificación indica que la captación fue automática. En consecuencia, la comprobación debe descansar en la integridad de la evidencia técnica: "
+        "imagen o secuencia original, datos asociados a la captación, fecha y hora, ubicación, carril u objetivo asignado y trazabilidad entre el registro del cinemómetro y el vehículo denunciado. "
+        "La mención a una captación automática no equivale, por sí sola, a tener por acreditada la integridad y correcta asignación de la evidencia."
+    )
 
 
 def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     expediente = core.get("expediente_ref") or core.get("numero_expediente") or "[EXPEDIENTE]"
     organo = core.get("organo") or core.get("organismo") or "No consta acreditado."
+
+    intelligence = core.get("_velocity_legal_intelligence") if isinstance(core.get("_velocity_legal_intelligence"), dict) else build_velocity_legal_intelligence(core)
+    intel_facts = (intelligence or {}).get("facts") or {}
 
     facts = _resolve_velocity_facts(core)
     measured = facts.get("measured")
@@ -2658,6 +2695,7 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     antenna = _safe_str(core.get("radar_antena")).strip()
     amount = core.get("sancion_importe_eur")
     points = core.get("puntos_detraccion")
+    make_model = _safe_str(intel_facts.get("vehicle_make_model") or core.get("marca_modelo")).strip()
 
     tech_lines = []
     if measured:
@@ -2668,6 +2706,8 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         tech_lines.append(f"• Dispositivo de control: {radar}")
     if antenna and antenna not in radar:
         tech_lines.append(f"• Antena / unidad identificada: {antenna}")
+    if make_model:
+        tech_lines.append(f"• Marca / modelo del vehículo detectado: {make_model}")
     if amount not in (None, ""):
         try:
             amount_txt = f"{float(amount):.2f}".replace(".", ",")
@@ -2676,8 +2716,11 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         tech_lines.append(f"• Sanción económica consignada: {amount_txt} €")
     if points not in (None, ""):
         tech_lines.append(f"• Puntos a detraer consignados: {points}")
-    if not radar_profile.get("installation_mode_known"):
-        tech_lines.append("• Modalidad de funcionamiento/instalación del cinemómetro: no consta acreditada en la documentación analizada")
+    if not (intel_facts.get("installation_mode") or {}).get("known"):
+        tech_lines.append("• Modalidad de funcionamiento/instalación del cinemómetro: no identificada de forma inequívoca en la documentación analizada")
+    article = intel_facts.get("normative_reference") or {}
+    if article.get("article"):
+        tech_lines.append(f"• Precepto indicado en la notificación: {article.get('norm') or 'norma de tráfico'}, art. {article.get('article')}")
     if conflict:
         tech_lines.append("• Observación: existen discrepancias numéricas que requieren validación con el expediente administrativo íntegro")
 
@@ -2685,13 +2728,11 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     if tech_lines:
         tech_block = "DATOS TÉCNICOS EXTRAÍDOS DEL EXPEDIENTE\n" + "\n".join(tech_lines) + "\n\n"
 
-    calc_paragraph = (
-        "La documentación debe permitir distinguir entre la velocidad bruta o directamente captada por el instrumento y la velocidad jurídicamente utilizada para sancionar. "
-        "Debe constar la modalidad real de funcionamiento del cinemómetro, el margen metrológico efectivamente considerado y la operación de cálculo practicada. "
-        "No cabe presumir automáticamente un margen concreto cuando la documentación no identifica de forma suficiente esa modalidad ni explica si la cifra consignada ya incorpora una corrección."
-    )
+    verification_paragraph = _velocity_verification_paragraph(intelligence)
+    capture_paragraph = _velocity_capture_paragraph(intelligence)
     boundary_paragraph = _velocity_boundary_paragraph(core, measured, limit)
 
+    boundary_section = f"{boundary_paragraph}\n\n" if boundary_paragraph else ""
     cuerpo = (
         "A la atención del órgano competente,\n\n"
         "I. ANTECEDENTES\n"
@@ -2699,26 +2740,36 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"2) Identificación expediente: {expediente}\n"
         f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
         "II. ALEGACIONES\n\n"
-        "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y TRAZABILIDAD DEL DISPOSITIVO DE CONTROL\n\n"
+        "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y TRAZABILIDAD DEL CINEMÓMETRO\n\n"
         "La imputación por exceso de velocidad exige una acreditación técnica completa, verificable y trazable del dispositivo utilizado. "
-        "Debe constar la identificación exacta del cinemómetro, su control metrológico vigente en la fecha de los hechos, la modalidad concreta de funcionamiento y la correspondencia entre el equipo, la captura y el vehículo denunciado. "
+        "Debe constar la identificación exacta del cinemómetro y de sus componentes relevantes, el control metrológico vigente en la fecha de los hechos, "
+        "la modalidad concreta de funcionamiento y la correspondencia entre el equipo, la captación y el vehículo denunciado. "
         f"{radar_focus}\n\n"
-        "La Sentencia del Tribunal Supremo 184/2018, de 17 de abril (ECLI:ES:TS:2018:1387), destaca la relevancia de distinguir entre cinemómetros fijos o móviles estáticos y cinemómetros móviles en sentido estricto, precisamente porque la modalidad real de utilización condiciona el margen de error aplicable.\n\n"
-        "No consta acreditado de forma completa en el expediente:\n"
-        "1) Identificación completa del cinemómetro y de sus componentes relevantes.\n"
-        "2) Certificado de verificación metrológica vigente en la fecha del hecho.\n"
+        f"{verification_paragraph}\n\n"
+        "La Orden ICT/155/2020 distingue, a efectos metrológicos, entre cinemómetros fijos, estáticos y móviles en movimiento y establece errores máximos diferentes según la modalidad y la fase de control. "
+        "Por ello, cuando la modalidad real no consta de forma inequívoca, no debe presumirse automáticamente un único margen ni una velocidad corregida concreta.\n\n"
+        "La Sentencia del Tribunal Supremo 184/2018, de 17 de abril (ECLI:ES:TS:2018:1387), constituye un criterio jurisprudencial relevante sobre la necesidad de diferenciar entre mediciones desde ubicación fija o estática y mediciones efectuadas con el dispositivo en movimiento.\n\n"
+        "Se interesa, en particular, la aportación y comprobación de:\n"
+        "1) Identificación completa del cinemómetro, antena/unidad de captación y demás componentes relevantes.\n"
+        "2) Certificado de verificación metrológica que estuviera vigente en la fecha del hecho, completo y legible.\n"
         "3) Modalidad concreta de funcionamiento o instalación en el momento de la captación.\n"
-        "4) Captura o fotograma íntegro y legible con identificación inequívoca del vehículo.\n"
-        "5) Indicación de la velocidad bruta captada, de la velocidad utilizada para sancionar y del margen efectivamente aplicado.\n"
-        "6) Trazabilidad entre el equipo, sus unidades o antenas, la imagen, la medición y la denuncia generada.\n\n"
+        "4) Imagen o secuencia original y datos técnicos asociados que permitan comprobar la asignación inequívoca al vehículo denunciado.\n"
+        "5) Indicación de la velocidad captada, de la velocidad jurídicamente utilizada para sancionar y del tratamiento metrológico efectivamente aplicado.\n"
+        "6) Trazabilidad entre el equipo, sus componentes, la evidencia registrada, la medición y la denuncia generada.\n\n"
         f"{tech_block}"
-        f"{calc_paragraph}\n\n"
-        + (f"{boundary_paragraph}\n\n" if boundary_paragraph else "") +
-        "ALEGACIÓN SEGUNDA — MOTIVACIÓN DE LA VELOCIDAD JURÍDICAMENTE SANCIONABLE\n\n"
-        "La Administración debe motivar de forma individualizada por qué la velocidad consignada encaja en el concreto tramo sancionador aplicado. "
-        "Cuando la cifra se encuentra en un umbral que determina un incremento de multa o pérdida de puntos, es especialmente relevante documentar la lectura obtenida, la modalidad del cinemómetro, el margen considerado y el resultado final utilizado para sancionar.\n\n"
-        "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA\n\n"
-        "Se solicita la incorporación y entrega de copia íntegra del expediente, incluida la denuncia completa, imagen o secuencia original, certificado metrológico, identificación del equipo y sus componentes, documentación sobre la modalidad de funcionamiento y explicación de la velocidad bruta, margen aplicado y velocidad finalmente utilizada para sancionar."
+        "ALEGACIÓN SEGUNDA — UMBRAL SANCIONADOR Y MOTIVACIÓN DE LA VELOCIDAD JURÍDICAMENTE RELEVANTE\n\n"
+        f"{boundary_section}"
+    )
+
+    cuerpo += (
+        "La documentación debe permitir distinguir entre la lectura obtenida por el instrumento y la magnitud finalmente utilizada para subsumir el hecho en el tramo sancionador. "
+        "La Administración debe explicar de forma individualizada la modalidad del cinemómetro, el tratamiento metrológico considerado y el resultado utilizado para imponer la concreta multa y detracción de puntos. "
+        "La especial proximidad a un umbral sancionador refuerza la necesidad de una motivación técnica verificable.\n\n"
+        "ALEGACIÓN TERCERA — CAPTACIÓN AUTOMÁTICA Y EVIDENCIA ORIGINAL\n\n"
+        + (capture_paragraph if capture_paragraph else "Debe aportarse, cuando la denuncia descanse en evidencia técnica registrada, el soporte original y los datos necesarios para comprobar su integridad y asignación al vehículo denunciado.") +
+        "\n\nALEGACIÓN CUARTA — PROPOSICIÓN DE PRUEBA Y ACCESO AL EXPEDIENTE ÍNTEGRO\n\n"
+        "Al amparo del procedimiento sancionador ordinario, se solicita la incorporación y entrega de copia íntegra de la documentación técnica y probatoria necesaria para verificar los extremos anteriores. "
+        "La eventual denegación de prueba pertinente deberá ser expresa y motivada."
     )
 
     return {"asunto": "ESCRITO DE ALEGACIONES", "cuerpo": cuerpo}
@@ -3072,85 +3123,84 @@ def _build_antecedentes_block(core: dict | None = None) -> str:
 
 
 def _build_fundamentos_derecho_pro(tipo: str = "", extra: dict | None = None) -> str:
-    """
-    Fundamentos de Derecho PRO estándar para todos los recursos.
-    """
-    return (
+    base = (
         "FUNDAMENTOS DE DERECHO\n\n"
         "PRIMERO.– Resultan de aplicación los artículos 24 y 25 de la Constitución Española, "
-        "que consagran el derecho a la presunción de inocencia, la legalidad sancionadora "
-        "y el principio de tipicidad.\n\n"
-        "SEGUNDO.– Conforme a los artículos 53, 63 y concordantes de la Ley 39/2015, "
-        "de Procedimiento Administrativo Común, la potestad sancionadora exige la existencia "
-        "de un procedimiento válido, motivación suficiente, prueba bastante y pleno respeto "
-        "a las garantías del administrado.\n\n"
-        "TERCERO.– Corresponde a la Administración la carga de acreditar de forma suficiente "
-        "los hechos constitutivos de la infracción, sin que puedan bastar presunciones genéricas, "
-        "descripciones ambiguas o afirmaciones estereotipadas.\n\n"
-        "CUARTO.– En materia sancionadora, la resolución administrativa debe expresar con claridad "
-        "los hechos imputados, la prueba que los sustenta y la concreta subsunción jurídica en el "
-        "tipo infractor aplicado.\n\n"
-        "QUINTO.– La jurisprudencia del Tribunal Supremo exige una actividad probatoria suficiente, "
-        "válida, concreta e individualizada para poder enervar la presunción de inocencia "
-        "del administrado.\n\n"
-        "SEXTO.– La ausencia de prueba suficiente, la insuficiente motivación del expediente, "
-        "la falta de concreción del hecho o la ausencia de subsunción típica adecuada determinan "
-        "la improcedencia de la sanción propuesta.\n\n"
-        "JURISPRUDENCIA APLICABLE\n\n"
-        "Sin perjuicio de la normativa expresamente citada, resultan de aplicación los siguientes "
-        "criterios jurisprudenciales consolidados:\n\n"
-        "• La presunción de inocencia exige actividad probatoria suficiente, clara y concluyente, "
-        "no bastando meras presunciones o afirmaciones genéricas.\n\n"
-        "• Corresponde a la Administración la carga de acreditar los hechos constitutivos de la "
-        "infracción en el procedimiento sancionador.\n\n"
-        "• La obligación de motivación exige una fundamentación concreta, individualizada y "
-        "comprensible, que permita al interesado conocer las razones de la sanción y ejercer "
-        "eficazmente su derecho de defensa.\n\n"
-        "• La falta de prueba bastante, la ausencia de motivación suficiente o la indeterminación "
-        "del hecho imputado impiden considerar válidamente desvirtuada la presunción de inocencia."
+        "que consagran las garantías de defensa, la presunción de inocencia y el principio de legalidad sancionadora.\n\n"
+        "SEGUNDO.– Conforme a la Ley 39/2015, el interesado tiene derecho a conocer el expediente, formular alegaciones y proponer prueba, "
+        "y la decisión administrativa debe apoyarse en hechos suficientemente acreditados y motivados.\n\n"
+        "TERCERO.– En el procedimiento sancionador la Administración debe acreditar de forma suficiente los elementos constitutivos de la infracción "
+        "y motivar la concreta subsunción jurídica y la consecuencia sancionadora aplicada."
+    )
+    if tipo == "velocidad":
+        intel = extra or {}
+        band = ((intel.get("sanction_boundary") or {}).get("band") or {}) if isinstance(intel, dict) else {}
+        boundary_text = ""
+        if band and band.get("is_lower_boundary") and band.get("previous"):
+            prev = band.get("previous") or {}
+            boundary_text = (
+                f" Para el límite de {band.get('limit')} km/h analizado, el Anexo IV sitúa hasta {prev.get('upper')} km/h en el tramo de "
+                f"{prev.get('fine')} euros y {prev.get('points')} puntos, y desde {band.get('lower')} km/h en el de {band.get('fine')} euros y {band.get('points')} puntos."
+            )
+        return base + (
+            "\n\nCUARTO.– El artículo 95 del texto refundido de la Ley sobre Tráfico, Circulación de Vehículos a Motor y Seguridad Vial reconoce, "
+            "en el procedimiento ordinario, el derecho a formular alegaciones y proponer o aportar pruebas; la denegación de la práctica de pruebas pertinentes debe ser motivada.\n\n"
+            "QUINTO.– El Anexo IV de la Ley de Tráfico establece el cuadro de sanciones y puntos por exceso de velocidad."
+            + boundary_text +
+            "\n\nSEXTO.– El Anexo XII de la Orden ICT/155/2020 regula el control metrológico de los cinemómetros, distingue modalidades de instalación/uso y establece una verificación periódica anual, "
+            "con errores máximos permitidos diferenciados según la modalidad y la fase de control.\n\n"
+            "SÉPTIMO.– La STS 184/2018, de 17 de abril (ECLI:ES:TS:2018:1387), es un criterio jurisprudencial relevante para distinguir la medición desde ubicación fija o estática de la efectuada con el dispositivo en movimiento."
+        )
+    return base + (
+        "\n\nCUARTO.– La prueba y motivación han de ser suficientes, concretas e individualizadas para desvirtuar la presunción de inocencia."
     )
 
 
 def _build_suplica_pro(tipo: str = "", extra: dict | None = None) -> str:
+    if tipo == "velocidad":
+        intel = extra or {}
+        band = ((intel.get("sanction_boundary") or {}).get("band") or {}) if isinstance(intel, dict) else {}
+        prev = band.get("previous") or {}
+        recal = (
+            f"6) Que, si de la prueba técnica resulta que la velocidad jurídicamente sancionable no alcanza {band.get('lower')} km/h, "
+            f"se rectifique la calificación y se aplique el tramo que legalmente corresponda; en el supuesto analizado, el tramo anterior finaliza en {prev.get('upper')} km/h, "
+            f"con {prev.get('fine')} euros y {prev.get('points')} puntos.\n\n"
+            if band and prev else
+            "6) Que, si de la prueba técnica resulta una velocidad jurídicamente sancionable inferior a la utilizada para imponer la sanción, se rectifique la calificación y se aplique el tramo legalmente procedente.\n\n"
+        )
+        return (
+            "S U P L I C A:\n\n"
+            "1) Que se tengan por formuladas en tiempo y forma las presentes alegaciones y por propuesta la prueba relacionada.\n\n"
+            "2) Que se incorpore al expediente el certificado metrológico que estuviera vigente en la fecha de los hechos, completo, legible y referido al equipo y componentes identificados.\n\n"
+            "3) Que se identifique la modalidad concreta de funcionamiento del cinemómetro en el momento de la medición y el tratamiento metrológico efectivamente aplicado.\n\n"
+            "4) Que se aporte la imagen o secuencia original de la captación y los datos técnicos necesarios para comprobar su integridad, fecha, hora, ubicación y asignación inequívoca al vehículo.\n\n"
+            "5) Que se aclare y documente qué velocidad fue captada por el instrumento y cuál fue la velocidad jurídicamente utilizada para sancionar, con explicación del cálculo o corrección aplicada.\n\n"
+            + recal +
+            "7) Que, si no se acredita de forma suficiente la vigencia metrológica del equipo, la trazabilidad de la captación, la modalidad de funcionamiento o la determinación de la velocidad sancionable, se acuerde el archivo del expediente.\n\n"
+            "8) Subsidiariamente, que cualquier denegación de la prueba propuesta y cualquier decisión desestimatoria respondan de forma expresa, individualizada y motivada a las cuestiones planteadas.\n\n"
+            "OTROSÍ DIGO\n\n"
+            "Que esta parte solicita acceso a la documentación técnica y probatoria que vaya a constituir fundamento esencial de la resolución y se reserva el ejercicio de los recursos y acciones que correspondan."
+        )
     return (
         "S U P L I C A:\n\n"
         "1) Que se tengan por formuladas las presentes alegaciones.\n\n"
-        "2) Que, en atención a las alegaciones presentadas y sus fundamentos, se acuerde el "
-        "ARCHIVO DEL EXPEDIENTE por insuficiencia probatoria, falta de acreditación suficiente "
-        "del hecho imputado o ausencia de motivación individualizada.\n\n"
-        "3) Subsidiariamente, para el caso de no estimarse el archivo, que se proceda a una "
-        "correcta recalificación jurídica de los hechos conforme a la prueba realmente acreditada "
-        "en el expediente.\n\n"
-        "4) Subsidiariamente, que se imponga en su caso la sanción mínima legalmente procedente "
-        "dentro del tipo infractor que finalmente pudiera considerarse aplicable.\n\n"
-        "5) Subsidiariamente, que se aporte expediente íntegro y prueba completa para contradicción "
-        "efectiva.\n\n"
+        "2) Que, en atención a las alegaciones presentadas y sus fundamentos, se acuerde el ARCHIVO DEL EXPEDIENTE por insuficiencia probatoria, falta de acreditación suficiente del hecho imputado o ausencia de motivación individualizada.\n\n"
+        "3) Subsidiariamente, para el caso de no estimarse el archivo, que se proceda a una correcta recalificación jurídica de los hechos conforme a la prueba realmente acreditada en el expediente.\n\n"
+        "4) Subsidiariamente, que se imponga en su caso la sanción mínima legalmente procedente dentro del tipo infractor que finalmente pudiera considerarse aplicable.\n\n"
+        "5) Subsidiariamente, que se aporte expediente íntegro y prueba completa para contradicción efectiva.\n\n"
         "OTROSÍ DIGO\n\n"
-        "Que esta parte se reserva expresamente el ejercicio de cuantos recursos administrativos "
-        "y acciones legales pudieran corresponder en defensa de sus derechos e intereses legítimos."
+        "Que esta parte se reserva expresamente el ejercicio de cuantos recursos administrativos y acciones legales pudieran corresponder en defensa de sus derechos e intereses legítimos."
     )
 
 
-def _upgrade_legacy_suplica_to_pro(text: str) -> str:
-    """
-    Añade cierre PRO completo:
-    FUNDAMENTOS DE DERECHO + JURISPRUDENCIA + SÚPLICA + OTROSÍ.
-    """
+def _upgrade_legacy_suplica_to_pro(text: str, tipo: str = "", extra: dict | None = None) -> str:
     if not text:
         return text
-
-    fundamentos = _build_fundamentos_derecho_pro()
-    suplica = _build_suplica_pro()
+    fundamentos = _build_fundamentos_derecho_pro(tipo=tipo, extra=extra)
+    suplica = _build_suplica_pro(tipo=tipo, extra=extra)
     cierre_pro = fundamentos + "\n\n" + suplica
 
-    if (
-        "FUNDAMENTOS DE DERECHO" in text
-        and "S U P L I C A:" in text
-        and "recalificación jurídica" in text
-        and "OTROSÍ DIGO" in text
-    ):
-        return text
-
+    # En V10 se reemplaza siempre el cierre previo para VELOCIDAD y así evitar que sobreviva una súplica genérica.
     patterns = [
         r"\nFUNDAMENTOS DE DERECHO[\s\S]*$",
         r"\nIII\.\s*SOLICITO[\s\S]*$",
@@ -3159,11 +3209,9 @@ def _upgrade_legacy_suplica_to_pro(text: str) -> str:
         r"\nS U P L I C A\s*:[\s\S]*$",
         r"\nSUPLICA\s*:[\s\S]*$",
     ]
-
     for pat in patterns:
         if re.search(pat, text, flags=re.IGNORECASE):
             return re.sub(pat, "\n\n" + cierre_pro, text, flags=re.IGNORECASE).strip()
-
     return (text.rstrip() + "\n\n" + cierre_pro).strip()
 
 
@@ -3228,6 +3276,22 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
             core["hecho_para_recurso"] = semaforo_hecho
     jurisdiccion = resolve_jurisdiction(core)
 
+    speed_intelligence = None
+    if tipo == "velocidad":
+        speed_intelligence = build_velocity_legal_intelligence(core)
+        core["_velocity_legal_intelligence"] = speed_intelligence
+        detected_make = _safe_str(((speed_intelligence.get("facts") or {}).get("vehicle_make_model"))).strip()
+        if detected_make and not _safe_str(core.get("marca_modelo")).strip():
+            core["marca_modelo"] = detected_make
+        # Trazabilidad OPS: guarda la lectura jurídica estructurada que alimenta el borrador.
+        try:
+            conn.execute(
+                text("INSERT INTO events(case_id, type, payload, created_at) VALUES (:id, 'velocity_legal_intelligence_result', CAST(:payload AS JSONB), NOW())"),
+                {"id": case_id, "payload": json.dumps(speed_intelligence, ensure_ascii=False)},
+            )
+        except Exception:
+            pass
+
     bicicleta_ctx = _is_bicicleta_context(core)
 
     # V5 bloqueada: no redispatch heurístico si ya hay familia resuelta upstream.
@@ -3240,7 +3304,10 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         cuerpo = _sanitize_bicicleta_body(cuerpo)
 
     cuerpo = _inject_tipicidad_material_en_alegaciones(cuerpo, core)
-    cuerpo = _inject_strategic_legal_reinforcement(cuerpo, core, tipo)
+    # Intelligence CORE: en VELOCIDAD validada no inyectamos la estrategia legacy,
+    # porque podía introducir nulidad/fotograma/margen como afirmaciones genéricas.
+    if not (tipo == "velocidad" and _is_rtm_validated_extraction(core)):
+        cuerpo = _inject_strategic_legal_reinforcement(cuerpo, core, tipo)
     cuerpo = re.sub(r'\bREFUERZO\s*[—-]\s*', '', cuerpo, flags=re.IGNORECASE)
     cuerpo = re.sub(r'\bESTRATEGIA PRINCIPAL\b', 'INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS', cuerpo, flags=re.IGNORECASE)
     cuerpo = re.sub(r'\bFACTORES ADICIONALES\b', 'CONSIDERACIONES COMPLEMENTARIAS', cuerpo, flags=re.IGNORECASE)
@@ -3286,7 +3353,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
 
     # Cierre PRO obligatorio para todos los recursos:
     # recalificación subsidiaria, sanción mínima y OTROSÍ DIGO.
-    tpl["cuerpo"] = _upgrade_legacy_suplica_to_pro(tpl["cuerpo"])
+    tpl["cuerpo"] = _upgrade_legacy_suplica_to_pro(tpl["cuerpo"], tipo=tipo, extra=speed_intelligence or {})
 
     docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
@@ -3330,6 +3397,8 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         "tipo_infraccion": tipo,
         "jurisdiccion": jurisdiccion,
         "generator_version": _GENERATOR_VERSION,
+        "legal_intelligence_version": (speed_intelligence or {}).get("version") if isinstance(speed_intelligence, dict) else None,
+        "legal_intelligence": speed_intelligence if tipo == "velocidad" else None,
         "delivery": {
             "destination_text": destination_text,
             "source": "generate",
