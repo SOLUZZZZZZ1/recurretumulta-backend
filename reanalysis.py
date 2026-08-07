@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_4"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_5"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
 
@@ -577,16 +577,19 @@ def _valid_sct_expediente(value: Any) -> bool:
 
 
 def _critical_fields_from_zoomed_crops(analyzed_pages: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Lectura visual de precisión por página.
+    """Tercera lectura visual de precisión, orientada a plantillas SCT.
 
-    V1.4 evita mezclar recortes de páginas distintas en una sola llamada. Cada página
-    se analiza por separado con dos recortes grandes:
-      - cabecera derecha: número de expediente;
-      - bloque central: datos básicos, matrícula, hecho, importe y puntos.
+    V1.5 no confía en la orientación previa para los campos de identidad.
+    Para cada página crea variantes 0º/180º (y 90º/270º si hiciera falta) y
+    recortes mucho más estrechos de:
+      - cabecera / NÚMERO D'EXPEDIENT;
+      - Dades bàsiques de la infracció;
+      - fila Matrícula;
+      - fila final Número d'expedient / Import / Punts.
 
-    Se escoge como página principal la que produzca más campos válidos y se usan las
-    demás solo como respaldo. Esto reduce confusiones de caracteres (M/H, X/V/G) y
-    evita que una segunda página contamine los campos de la primera.
+    El objetivo no es interpretar: solo transcribir caracteres inequívocos.
+    Si la lectura de matrícula o expediente sigue siendo dudosa, devuelve null
+    y el expediente queda bloqueado para Generate.
     """
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key or Image is None:
@@ -654,6 +657,17 @@ def _critical_fields_from_zoomed_crops(analyzed_pages: List[Dict[str, Any]]) -> 
                 ev_clean[key] = str(evidence.get(key) or "")[:220]
         return cleaned, conf_clean, ev_clean
 
+    def _variants(img):
+        # La normalización suele dejar la página vertical, pero en fotografías
+        # sin EXIF una página puede seguir invertida. La lectura fina prueba
+        # ambas orientaciones sin modificar el original.
+        variants = [("0", img)]
+        variants.append(("180", img.rotate(180, expand=True)))
+        if img.width > img.height:
+            variants.append(("90", img.rotate(90, expand=True)))
+            variants.append(("270", img.rotate(270, expand=True)))
+        return variants
+
     for page in analyzed_pages:
         content = page.get("analysis_content")
         mime = str(page.get("analysis_mime") or "")
@@ -661,23 +675,27 @@ def _critical_fields_from_zoomed_crops(analyzed_pages: List[Dict[str, Any]]) -> 
             continue
         try:
             with Image.open(io.BytesIO(bytes(content))) as source:
-                img = source.convert("RGB")
+                base_img = source.convert("RGB")
         except Exception as exc:
             errors.append(f"page_{page.get('page_index')}:open:{type(exc).__name__}")
             continue
 
-        # Las páginas normalizadas deberían estar verticales. Los recortes son
-        # deliberadamente amplios para tolerar fotos con márgenes/mesa alrededor.
-        header_crop = _enhanced_crop_bytes(img, (0.44, 0.10, 0.90, 0.29), min_width=2200)
-        basic_crop = _enhanced_crop_bytes(img, (0.12, 0.27, 0.89, 0.62), min_width=2600)
-        crop_count += 2
+        for rotation_label, img in _variants(base_img):
+            # Plantilla de la notificación SCT fotografiada a página completa.
+            # Los recortes son deliberadamente solapados para tolerar márgenes.
+            header_crop = _enhanced_crop_bytes(img, (0.48, 0.115, 0.88, 0.265), min_width=2400)
+            basic_crop = _enhanced_crop_bytes(img, (0.145, 0.285, 0.855, 0.535), min_width=3000)
+            plate_crop = _enhanced_crop_bytes(img, (0.145, 0.335, 0.545, 0.445), min_width=2600)
+            sanction_crop = _enhanced_crop_bytes(img, (0.145, 0.465, 0.820, 0.545), min_width=2600)
+            crop_count += 4
 
-        system_text = (
-            "Eres un transcriptor documental extremadamente estricto. Recibes dos ZOOMS "
-            "de UNA SOLA página de una notificación del Servei Català de Trànsit. "
-            "Copia caracteres visibles; no completes por contexto. Si una letra es dudosa, usa null."
-        )
-        user_text = """
+            system_text = (
+                "Eres un transcriptor visual forense de documentos administrativos. "
+                "Recibes recortes ampliados de UNA MISMA página. Tu tarea es copiar "
+                "solo caracteres inequívocos. No completes por contexto ni por conocimiento. "
+                "Si una letra o dígito no se distingue, devuelve null para ese campo."
+            )
+            user_text = """
 Devuelve EXCLUSIVAMENTE JSON válido:
 {
   "values": {
@@ -697,84 +715,94 @@ Devuelve EXCLUSIVAMENTE JSON válido:
   "evidence": {}
 }
 
-REGLAS OBLIGATORIAS:
-1) expediente_ref: SOLO "NÚMERO D'EXPEDIENT" / "Número d'expedient". Ignora "Número d'enviament".
-   Conserva exactamente "/" y "-".
-2) matrícula: SOLO la fila "Matrícula". Debe ser 4 dígitos + 3 letras.
-   Examina las letras una a una. En evidence escríbelas separadas, ej. "1579 M X V".
-   No confundas M con H/N/W, X con V/Y/K, ni V con Y/G/X.
-3) fecha_infraccion, hora_infraccion y lugar_infraccion: SOLO el bloque
-   "Dades bàsiques de la infracció". Para lugar combina "Via / Carrer" con "Km / Núm."
-   usando "p.k." entre ambos.
-4) velocidad medida/límite, radar_modelo_hint y radar_antena: SOLO "Fet denunciat".
-   Copia el modelo literalmente, incluida letra final o guion si se ve.
-5) sancion_importe_eur y puntos_detraccion: SOLO "Import de la sanció" y "Punts a detreure".
-6) No uses fechas de notificación, disponibilidad de datos, verificación del radar ni certificado.
-7) confidence entre 0 y 1 para cada campo no nulo. evidence debe citar el texto visible.
-8) Si una letra o dígito no es inequívoco: null. Es mejor no responder que adivinar.
+REGLAS:
+1) expediente_ref: SOLO la línea NÚMERO D'EXPEDIENT / Número d'expedient.
+   Ignora NÚMERO D'ENVIAMENT. Debe conservar formato 00/00000000-0.
+2) matrícula: SOLO la fila MATRÍCULA. Debe ser 4 dígitos + 3 letras.
+   Lee las tres letras carácter a carácter. En evidence escribe por ejemplo:
+   "Matrícula 1579 M X V". No sustituyas M/H/N, X/V/Y/K ni V/Y/G por contexto.
+3) lugar_infraccion, fecha_infraccion y hora_infraccion:
+   SOLO Dades bàsiques de la infracció. Para lugar combina Via/Carrer y Km/Núm.
+   como "AP-7, p.k. 204,6" si ambos son visibles.
+4) velocidad_medida_kmh, velocidad_limite_kmh, radar_modelo_hint, radar_antena:
+   SOLO Fet denunciat. Transcribe el modelo literalmente.
+5) sancion_importe_eur y puntos_detraccion:
+   SOLO Import de la sanció y Punts a detreure.
+6) No uses fechas de notificación, envío, verificación del radar o certificado.
+7) confidence 0..1 por cada campo no nulo; evidence copia el fragmento visible.
+8) Si el recorte está boca abajo, no contiene la etiqueta solicitada o existe duda:
+   devuelve null. No adivines.
 """
 
-        payload = {
-            "model": model,
-            "input": [
-                {"role": "system", "content": [{"type": "input_text", "text": system_text}]},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": user_text},
-                        {"type": "input_text", "text": "ZOOM CABECERA / EXPEDIENTE:"},
-                        {"type": "input_image", "image_url": _data_url_jpeg(header_crop)},
-                        {"type": "input_text", "text": "ZOOM DATOS BÁSICOS / MATRÍCULA / HECHO / SANCIÓN:"},
-                        {"type": "input_image", "image_url": _data_url_jpeg(basic_crop)},
-                    ],
-                },
-            ],
-            "text": {"format": {"type": "json_object"}},
-        }
+            payload = {
+                "model": model,
+                "input": [
+                    {"role": "system", "content": [{"type": "input_text", "text": system_text}]},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": user_text},
+                            {"type": "input_text", "text": "CABECERA / EXPEDIENTE:"},
+                            {"type": "input_image", "image_url": _data_url_jpeg(header_crop)},
+                            {"type": "input_text", "text": "DATOS BÁSICOS / HECHO:"},
+                            {"type": "input_image", "image_url": _data_url_jpeg(basic_crop)},
+                            {"type": "input_text", "text": "FILA MATRÍCULA (zoom máximo):"},
+                            {"type": "input_image", "image_url": _data_url_jpeg(plate_crop)},
+                            {"type": "input_text", "text": "EXPEDIENTE / IMPORTE / PUNTOS (zoom inferior):"},
+                            {"type": "input_image", "image_url": _data_url_jpeg(sanction_crop)},
+                        ],
+                    },
+                ],
+                "text": {"format": {"type": "json_object"}},
+            }
 
-        try:
-            r = requests.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json=payload,
-                timeout=90,
-            )
-            if not r.ok:
-                errors.append(f"page_{page.get('page_index')}:openai_{r.status_code}")
-                continue
-            obj = json.loads(_response_output_text(r.json()) or "{}")
-            values, conf, evidence = _clean_values(obj)
+            try:
+                r = requests.post(
+                    "https://api.openai.com/v1/responses",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=90,
+                )
+                if not r.ok:
+                    errors.append(
+                        f"page_{page.get('page_index')}_rot_{rotation_label}:openai_{r.status_code}"
+                    )
+                    continue
+                obj = json.loads(_response_output_text(r.json()) or "{}")
+                values, conf, evidence = _clean_values(obj)
 
-            # Puntúa la página: matrícula/expediente pesan más, luego el bloque sancionador.
-            score = 0.0
-            if _valid_sct_expediente(values.get("expediente_ref")):
-                score += 4.0
-            if _normalise_plate(values.get("matricula")):
-                score += 4.0
-            for k in (
-                "velocidad_medida_kmh", "velocidad_limite_kmh", "radar_modelo_hint",
-                "radar_antena", "sancion_importe_eur", "puntos_detraccion",
-                "lugar_infraccion", "fecha_infraccion", "hora_infraccion",
-            ):
-                if values.get(k) not in (None, ""):
-                    score += 1.0
-            score += sum(float(conf.get(k) or 0) for k in values) * 0.05
+                score = 0.0
+                if _valid_sct_expediente(values.get("expediente_ref")):
+                    score += 7.0
+                if _normalise_plate(values.get("matricula")):
+                    score += 7.0
+                for k in (
+                    "velocidad_medida_kmh", "velocidad_limite_kmh", "radar_modelo_hint",
+                    "radar_antena", "sancion_importe_eur", "puntos_detraccion",
+                    "lugar_infraccion", "fecha_infraccion", "hora_infraccion",
+                ):
+                    if values.get(k) not in (None, ""):
+                        score += 1.0
+                score += sum(float(conf.get(k) or 0) for k in values) * 0.05
 
-            page_candidates.append({
-                "page_index": int(page.get("page_index") or 0),
-                "values": values,
-                "confidence": conf,
-                "evidence": evidence,
-                "score": round(score, 3),
-            })
-        except Exception as exc:
-            errors.append(f"page_{page.get('page_index')}:{type(exc).__name__}:{exc}")
+                page_candidates.append({
+                    "page_index": int(page.get("page_index") or 0),
+                    "rotation": rotation_label,
+                    "values": values,
+                    "confidence": conf,
+                    "evidence": evidence,
+                    "score": round(score, 3),
+                })
+            except Exception as exc:
+                errors.append(
+                    f"page_{page.get('page_index')}_rot_{rotation_label}:{type(exc).__name__}:{exc}"
+                )
 
     if not page_candidates:
         return {
             "values": {}, "confidence": {}, "evidence": {},
             "crop_count": crop_count,
-            "error": "; ".join(errors)[:500] if errors else "no_zoom_candidates",
+            "error": "; ".join(errors)[:800] if errors else "no_zoom_candidates",
         }
 
     page_candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
@@ -784,8 +812,8 @@ REGLAS OBLIGATORIAS:
     merged_conf = dict(primary.get("confidence") or {})
     merged_evidence = dict(primary.get("evidence") or {})
 
-    # Suplementa solo campos ausentes, nunca pisa una lectura de la mejor página
-    # con una página secundaria.
+    # Solo suplementa un campo ausente desde otra variante/página con lectura
+    # de confianza muy alta. Nunca usa una lectura secundaria para pisar la mejor.
     for candidate in page_candidates[1:]:
         vals = candidate.get("values") or {}
         confs = candidate.get("confidence") or {}
@@ -797,7 +825,7 @@ REGLAS OBLIGATORIAS:
                 c = float(confs.get(key) or 0)
             except Exception:
                 c = 0.0
-            if c >= 0.90:
+            if c >= 0.94:
                 merged_values[key] = value
                 merged_conf[key] = c
                 if evid.get(key):
@@ -809,18 +837,19 @@ REGLAS OBLIGATORIAS:
         "evidence": merged_evidence,
         "crop_count": crop_count,
         "selected_page": primary.get("page_index"),
+        "selected_rotation": primary.get("rotation"),
         "selected_page_score": primary.get("score"),
         "candidate_pages": [
             {
                 "page_index": c.get("page_index"),
+                "rotation": c.get("rotation"),
                 "score": c.get("score"),
                 "fields": sorted((c.get("values") or {}).keys()),
             }
             for c in page_candidates
         ],
-        "error": "; ".join(errors)[:500] if errors else None,
+        "error": "; ".join(errors)[:800] if errors else None,
     }
-
 
 def _critical_fields_from_blob(text_blob: str) -> Dict[str, Any]:
     """Capa determinista de respaldo para campos críticos.
@@ -1444,6 +1473,7 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "critical_fields_vision": (critical_meta.get("vision") or {}).get("values") or {},
             "critical_fields_zoomed": (critical_meta.get("zoom") or {}).get("values") or {},
             "critical_fields_zoom_selected_page": (critical_meta.get("zoom") or {}).get("selected_page"),
+            "critical_fields_zoom_selected_rotation": (critical_meta.get("zoom") or {}).get("selected_rotation"),
             "critical_fields_zoom_candidates": (critical_meta.get("zoom") or {}).get("candidate_pages") or [],
             "critical_fields_zoom_error": (critical_meta.get("zoom") or {}).get("error"),
             "critical_field_sources": critical_meta.get("sources") or {},
@@ -1476,6 +1506,7 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "requires_operator_review": bool(core.get("requires_operator_review")),
             "critical_fields_zoomed": (critical_meta.get("zoom") or {}).get("values") or {},
             "critical_fields_zoom_selected_page": (critical_meta.get("zoom") or {}).get("selected_page"),
+            "critical_fields_zoom_selected_rotation": (critical_meta.get("zoom") or {}).get("selected_rotation"),
             "critical_fields_zoom_candidates": (critical_meta.get("zoom") or {}).get("candidate_pages") or [],
             "critical_fields_zoom_error": (critical_meta.get("zoom") or {}).get("error"),
             "critical_field_sources": critical_meta.get("sources") or {},
