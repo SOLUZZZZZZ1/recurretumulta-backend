@@ -26,6 +26,65 @@ class CheckoutRequest(BaseModel):
     product: str
     email: EmailStr
     locale: str | None = "es"
+    payment_stage: str | None = "review"
+
+
+def _normalize_code(value: str | None) -> str:
+    return (value or "").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _resolve_stripe_product(product: str, payment_stage: str | None = "review") -> dict:
+    product_code = _normalize_code(product)
+    stage = _normalize_code(payment_stage) or "review"
+
+    admin_codes = {
+        "admin", "administration", "administracion", "administracion_publica",
+        "aeat", "hacienda", "social_security", "seguridad_social",
+        "town_hall", "ayuntamiento", "ayuntamientos", "catastro",
+        "general_administration",
+    }
+    vehicle_codes = {
+        "vehicle", "vehiculo", "vehiculos", "vehicle_removal",
+        "eliminacion_vehiculo", "eliminacion_vehiculos",
+    }
+    asnef_codes = {"asnef", "asnef_equifax", "equifax", "badexcug"}
+    fine_codes = {"dgt", "fine", "multa", "multas", "trafico", "traffic"}
+
+    if stage in {"review", "revision", "initial", "inicial", "revision_inicial"}:
+        if product_code in admin_codes:
+            return {
+                "price_id": _env("STRIPE_PRICE_ID_ADMIN"),
+                "billing_code": "ADMIN_REVIEW",
+                "service_code": product_code or "administration",
+                "payment_stage": "review",
+            }
+        return {
+            "price_id": _env("STRIPE_PRICE_ID_REVIEW_BASIC"),
+            "billing_code": "REVIEW_BASIC",
+            "service_code": product_code or "review",
+            "payment_stage": "review",
+        }
+
+    if stage in {"final", "gestion", "management"}:
+        if product_code in asnef_codes:
+            raise HTTPException(status_code=409, detail="ASNEF requiere presupuesto después de la revisión inicial")
+        if product_code in vehicle_codes:
+            return {
+                "price_id": _env("STRIPE_PRICE_ID_VEHICLE"),
+                "billing_code": "VEHICLE",
+                "service_code": product_code,
+                "payment_stage": "final",
+            }
+        if product_code in fine_codes:
+            return {
+                "price_id": _env("STRIPE_PRICE_ID_DGT"),
+                "billing_code": "DGT",
+                "service_code": product_code,
+                "payment_stage": "final",
+            }
+        raise HTTPException(status_code=409, detail="La gestión final requiere valoración y presupuesto previo")
+
+    raise HTTPException(status_code=400, detail=f"Fase de pago no reconocida: {payment_stage}")
 
 
 def _pick(mapping, *paths):
@@ -328,6 +387,9 @@ def create_checkout(req: CheckoutRequest):
     stripe.api_key = _env("STRIPE_SECRET_KEY")
     frontend_url = _env("FRONTEND_URL").rstrip("/")
 
+    stripe_product = _resolve_stripe_product(req.product, req.payment_stage)
+    price_id = stripe_product["price_id"]
+
     engine = get_engine()
     with engine.begin() as conn:
         auth_meta = _require_case_authorized_before_payment(conn, req.case_id)
@@ -350,7 +412,7 @@ def create_checkout(req: CheckoutRequest):
                 WHERE id=:id
                 """
             ),
-            {"id": req.case_id, "product": req.product, "email": req.email},
+            {"id": req.case_id, "product": stripe_product["billing_code"], "email": req.email},
         )
 
         _append_event(
@@ -358,14 +420,16 @@ def create_checkout(req: CheckoutRequest):
             req.case_id,
             "checkout_started",
             {
-                "product": req.product,
+                "requested_product": req.product,
+                "service_code": stripe_product["service_code"],
+                "billing_code": stripe_product["billing_code"],
+                "payment_stage": stripe_product["payment_stage"],
                 "email": req.email,
                 "authorized": True,
                 "authorized_at": str(auth_meta["authorized_at"] or ""),
             },
         )
 
-    price_id = _env("STRIPE_PRICE_ID_DGT")
     success_url = f"{frontend_url}/#/pago-ok?case={req.case_id}"
     cancel_url = f"{frontend_url}/#/resumen?case={req.case_id}"
 
@@ -375,11 +439,22 @@ def create_checkout(req: CheckoutRequest):
         line_items=[{"price": price_id, "quantity": 1}],
         success_url=success_url,
         cancel_url=cancel_url,
-        metadata={"case_id": req.case_id},
+        metadata={
+            "case_id": req.case_id,
+            "requested_product": req.product,
+            "service_code": stripe_product["service_code"],
+            "billing_code": stripe_product["billing_code"],
+            "payment_stage": stripe_product["payment_stage"],
+        },
         locale=req.locale or "es",
     )
 
-    return {"ok": True, "url": session.url}
+    return {
+        "ok": True,
+        "url": session.url,
+        "billing_code": stripe_product["billing_code"],
+        "payment_stage": stripe_product["payment_stage"],
+    }
 
 
 @router.post("/billing/webhook")
