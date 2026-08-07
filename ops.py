@@ -55,79 +55,82 @@ def ops_login(pin: str = Form(...)) -> Dict[str, Any]:
 @router.get("/queue")
 def queue(
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
-    status: str = Query("ready_to_submit"),
-    limit: int = Query(100, ge=1, le=500),
+    status: str = Query("all"),
+    limit: int = Query(300, ge=1, le=500),
 ) -> Dict[str, Any]:
-    """
-    Cola de casos para operador.
-
-    Mantiene el formato que el frontend espera:
-    {"ok": True, "status": "...", "count": N, "items": [...]}
-    """
+    """OPS CORE v1: cola común enriquecida con familia, tipo y datos humanos."""
     _require_operator(x_operator_token)
+
+    select_sql = """
+        SELECT id, status, payment_status, product_code, contact_email,
+               created_at, updated_at, contact_name, department, case_type,
+               category, organismo, expediente_ref,
+               COALESCE(interested_data, '{}'::jsonb) AS interested_data,
+               customer_comment, source_module
+        FROM cases
+    """
 
     engine = get_engine()
     with engine.begin() as conn:
         if status == "ready_to_submit":
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT id, status, payment_status, product_code, contact_email, created_at, updated_at
-                    FROM cases
-                    WHERE status = 'ready_to_submit'
-                      AND payment_status = 'paid'
-                      AND authorized = TRUE
-                    ORDER BY created_at ASC
-                    LIMIT :limit
-                    """
-                ),
-                {"limit": limit},
-            ).fetchall()
-
+            rows = conn.execute(text(select_sql + """
+                WHERE status='ready_to_submit'
+                  AND payment_status='paid'
+                  AND authorized=TRUE
+                ORDER BY created_at ASC LIMIT :limit
+            """), {"limit": limit}).fetchall()
         elif status == "all":
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT id, status, payment_status, product_code, contact_email, created_at, updated_at
-                    FROM cases
-                    WHERE status NOT IN ('closed','archived')
-                    ORDER BY updated_at DESC
-                    LIMIT :limit
-                    """
-                ),
-                {"limit": limit},
-            ).fetchall()
-
+            rows = conn.execute(text(select_sql + """
+                WHERE COALESCE(status,'') <> 'archived_test'
+                ORDER BY updated_at DESC LIMIT :limit
+            """), {"limit": limit}).fetchall()
         else:
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT id, status, payment_status, product_code, contact_email, created_at, updated_at
-                    FROM cases
-                    WHERE status = :status
-                    ORDER BY updated_at DESC
-                    LIMIT :limit
-                    """
-                ),
-                {"status": status, "limit": limit},
-            ).fetchall()
+            rows = conn.execute(text(select_sql + """
+                WHERE status=:status
+                ORDER BY updated_at DESC LIMIT :limit
+            """), {"status": status, "limit": limit}).fetchall()
 
     items = []
     for r in rows:
-        items.append(
-            {
-                "case_id": str(r[0]),
-                "status": r[1],
-                "payment_status": r[2],
-                "product_code": r[3],
-                "contact_email": r[4],
-                "created_at": r[5],
-                "updated_at": r[6],
-            }
-        )
+        interested = r[13] if isinstance(r[13], dict) else {}
+        department = (r[8] or interested.get("department") or "").strip().lower()
+        case_type = (r[9] or interested.get("case_type") or "").strip().lower()
+        category = (r[10] or "").strip().lower()
+
+        # Compatibilidad con expedientes anteriores al RTM CORE.
+        if not department:
+            if category == "vehicle_removal" or str(r[1] or "").startswith("vehicle_removal"):
+                department = "traffic"
+                case_type = case_type or "vehicle_removal"
+            elif category in ("traffic", "debt", "administration", "claims", "other"):
+                department = category
+            else:
+                department = "other"
+
+        if department == "traffic" and not case_type:
+            case_type = "vehicle_removal" if category == "vehicle_removal" else "fine"
+
+        items.append({
+            "case_id": str(r[0]),
+            "status": r[1],
+            "payment_status": r[2],
+            "product_code": r[3],
+            "contact_email": r[4] or interested.get("email"),
+            "created_at": r[5],
+            "updated_at": r[6],
+            "contact_name": r[7] or interested.get("full_name") or interested.get("name"),
+            "department": department,
+            "case_type": case_type or "other",
+            "category": r[10],
+            "organismo": r[11] or interested.get("organismo"),
+            "expediente_ref": r[12] or interested.get("expediente_ref"),
+            "customer_comment": r[14] or interested.get("customer_comment"),
+            "source_module": r[15] or interested.get("source_module"),
+            "matricula": interested.get("matricula") or interested.get("plate"),
+            "phone": interested.get("telefono") or interested.get("phone"),
+        })
 
     return {"ok": True, "status": status, "count": len(items), "items": items}
-
 
 
 @router.get("/presented-cases")
