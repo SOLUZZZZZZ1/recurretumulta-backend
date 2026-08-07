@@ -266,7 +266,7 @@ def velocity_strict_missing(body: str) -> List[str]:
 import unicodedata
 from datetime import datetime
 
-VELOCITY_LEGAL_INTELLIGENCE_VERSION = "velocity_legal_v1_1"
+VELOCITY_LEGAL_INTELLIGENCE_VERSION = "velocity_legal_v1_2"
 
 
 def _v_safe(v: Any) -> str:
@@ -394,6 +394,11 @@ def _v_vehicle_make(core: Dict[str, Any], blob: str) -> Dict[str, Any]:
     patterns = [
         r"MATR[IÍ]CULA\s+[A-Z0-9 ]{5,12}\s+MARCA\s+([A-ZÁÉÍÓÚÜÑ0-9-]{2,24})",
         r"\bMARCA\s*[:\-]?\s*([A-ZÁÉÍÓÚÜÑ0-9-]{2,24})\b",
+        # Algunos OCR eliminan la etiqueta MARCA pero conservan la secuencia
+        # matrícula + marca + calificación (p.ej. '1579MGV CITROEN GREU').
+        # La matrícula puede estar mal leída; aquí solo usamos la palabra que
+        # ocupa inequívocamente la posición de la marca.
+        r"\b[0-9]{4}\s*[A-Z]{3}\s+([A-ZÁÉÍÓÚÜÑ0-9-]{2,24})\s+(?:GREU|GRAVE|LLEU|LEVE|MOLT\s+GREU|MUY\s+GRAVE)\b",
     ]
     bad = {"QUALIFICACIO", "QUALIFICACIÓ", "CALIFICACION", "CALIFICACIÓN", "MODEL", "MODELO"}
     for pat in patterns:
