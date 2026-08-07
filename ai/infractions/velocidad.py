@@ -266,7 +266,7 @@ def velocity_strict_missing(body: str) -> List[str]:
 import unicodedata
 from datetime import datetime
 
-VELOCITY_LEGAL_INTELLIGENCE_VERSION = "velocity_legal_v1_0"
+VELOCITY_LEGAL_INTELLIGENCE_VERSION = "velocity_legal_v1_1"
 
 
 def _v_safe(v: Any) -> str:
@@ -493,6 +493,28 @@ def _v_band_for(limit: Any, value: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+
+def _v_secondary(core: Dict[str, Any]) -> Dict[str, Any]:
+    sec = (core or {}).get("velocity_secondary_facts")
+    return dict(sec) if isinstance(sec, dict) else {}
+
+
+def _v_secondary_meta(core: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "version": _v_safe((core or {}).get("velocity_secondary_facts_version")).strip() or None,
+        "confidence": (
+            dict((core or {}).get("velocity_secondary_facts_confidence") or {})
+            if isinstance((core or {}).get("velocity_secondary_facts_confidence"), dict)
+            else {}
+        ),
+        "evidence": (
+            dict((core or {}).get("velocity_secondary_facts_evidence") or {})
+            if isinstance((core or {}).get("velocity_secondary_facts_evidence"), dict)
+            else {}
+        ),
+    }
+
+
 def build_velocity_legal_intelligence(core: Dict[str, Any]) -> Dict[str, Any]:
     """Construye inteligencia jurídica estructurada para expedientes de velocidad.
 
@@ -506,6 +528,9 @@ def build_velocity_legal_intelligence(core: Dict[str, Any]) -> Dict[str, Any]:
     core = dict(core or {})
     blob = _v_blob(core)
     folded_blob = _v_fold(blob)
+    secondary = _v_secondary(core)
+    secondary_meta = _v_secondary_meta(core)
+    secondary_evidence = secondary_meta.get("evidence") or {}
 
     measured = core.get("velocidad_medida_kmh")
     limit = core.get("velocidad_limite_kmh")
@@ -513,39 +538,86 @@ def build_velocity_legal_intelligence(core: Dict[str, Any]) -> Dict[str, Any]:
     points = sanitize_imposed_points(core.get("puntos_detraccion"))
     fact_date = _v_normalize_date(core.get("fecha_infraccion") or core.get("fecha_hecho"))
 
-    verification = _v_context_date(
-        blob,
-        include_keywords=[
-            "verificacio periodica", "verificacion periodica", "darrera data de verificacio",
-            "ultima fecha de verificacion", "certificat de verificacio", "certificado de verificacion",
-        ],
-        exclude_keywords=["dades del conductor", "datos del conductor", "facilitades pel titular"],
-    )
-    driver_data = _v_context_date(
-        blob,
-        include_keywords=["dades del conductor", "datos del conductor", "facilitades pel titular", "facilitados por el titular"],
-    )
-    notice_date = _v_context_date(
-        blob,
-        include_keywords=["notificacio d'acord d'incoacio", "notificacion de acuerdo de incoacion", "us notifico", "notifico el acuerdo"],
-        exclude_keywords=["dades del conductor", "datos del conductor"],
-    )
+    if _v_normalize_date(secondary.get("verification_date")):
+        verification = {
+            "date": _v_normalize_date(secondary.get("verification_date")),
+            "evidence": _v_safe(secondary_evidence.get("verification_date")),
+        }
+    else:
+        verification = _v_context_date(
+            blob,
+            include_keywords=[
+                "verificacio periodica", "verificacion periodica", "darrera data de verificacio",
+                "ultima fecha de verificacion", "certificat de verificacio", "certificado de verificacion",
+            ],
+            exclude_keywords=["dades del conductor", "datos del conductor", "facilitades pel titular"],
+        )
 
-    capture_automatic = any(x in folded_blob for x in [
-        "imatge captada automaticament", "imagen captada automaticamente",
-        "captacio automatica", "captacion automatica",
-    ])
-    capture_evidence = ""
-    if capture_automatic:
-        for segment in _v_segments(blob):
-            if any(x in _v_fold(segment) for x in ["imatge captada automaticament", "imagen captada automaticamente"]):
-                capture_evidence = segment[:420]
-                break
+    if _v_normalize_date(secondary.get("driver_data_date")):
+        driver_data = {
+            "date": _v_normalize_date(secondary.get("driver_data_date")),
+            "evidence": _v_safe(secondary_evidence.get("driver_data_date")),
+        }
+    else:
+        driver_data = _v_context_date(
+            blob,
+            include_keywords=["dades del conductor", "datos del conductor", "facilitades pel titular", "facilitados por el titular"],
+        )
+
+    if _v_normalize_date(secondary.get("initiation_document_date")):
+        initiation_document_date = {
+            "date": _v_normalize_date(secondary.get("initiation_document_date")),
+            "evidence": _v_safe(secondary_evidence.get("initiation_document_date")),
+        }
+    else:
+        initiation_document_date = _v_context_date(
+            blob,
+            include_keywords=[
+                "acord d'incoacio de data", "acuerdo de incoacion de fecha",
+                "acord d'incoacio dictat en data", "acuerdo de incoacion dictado en fecha",
+            ],
+            exclude_keywords=["dades del conductor", "datos del conductor"],
+        )
+
+    capture_secondary = secondary.get("capture_automatic")
+    if isinstance(capture_secondary, bool):
+        capture_automatic = capture_secondary
+        capture_evidence = _v_safe(secondary_evidence.get("capture_automatic"))
+    else:
+        capture_automatic = any(x in folded_blob for x in [
+            "imatge captada automaticament", "imagen captada automaticamente",
+            "captacio automatica", "captacion automatica",
+        ])
+        capture_evidence = ""
+        if capture_automatic:
+            for segment in _v_segments(blob):
+                if any(x in _v_fold(segment) for x in ["imatge captada automaticament", "imagen captada automaticamente"]):
+                    capture_evidence = segment[:420]
+                    break
 
     installation = _v_installation_mode(core, blob)
     semantics = _v_speed_semantics(blob)
     make = _v_vehicle_make(core, blob)
-    article = _v_article(blob)
+
+    secondary_article = secondary.get("normative_reference")
+    if isinstance(secondary_article, dict) and (
+        _v_safe(secondary_article.get("norm")).strip() or _v_safe(secondary_article.get("article")).strip()
+    ):
+        article = {
+            "norm": _v_safe(secondary_article.get("norm")).strip() or None,
+            "article": _v_safe(secondary_article.get("article")).strip().upper() or None,
+            "evidence": _v_safe(secondary_evidence.get("normative_reference")),
+        }
+    else:
+        article = _v_article(blob)
+
+    document_subject = secondary.get("document_subject") if isinstance(secondary.get("document_subject"), dict) else {}
+    vehicle_photo_present = secondary.get("vehicle_photo_present") if isinstance(secondary.get("vehicle_photo_present"), bool) else None
+    certificate_reproduction_present = (
+        secondary.get("certificate_reproduction_present")
+        if isinstance(secondary.get("certificate_reproduction_present"), bool)
+        else None
+    )
     band = _v_band_for(limit, measured)
 
     verification_relation = "unknown"
@@ -632,11 +704,20 @@ def build_velocity_legal_intelligence(core: Dict[str, Any]) -> Dict[str, Any]:
                 "date": driver_data.get("date"),
                 "evidence": driver_data.get("evidence"),
             },
-            "notice_date": {
-                "date": notice_date.get("date"),
-                "evidence": notice_date.get("evidence"),
+            "initiation_document_date": {
+                "date": initiation_document_date.get("date"),
+                "evidence": initiation_document_date.get("evidence"),
             },
             "normative_reference": article,
+            "document_subject": {
+                "full_name": _v_safe(document_subject.get("full_name")).strip() or None,
+                "id_number": _v_safe(document_subject.get("id_number")).strip().upper() or None,
+                "evidence": _v_safe(secondary_evidence.get("document_subject")),
+            },
+            "vehicle_photo_present": vehicle_photo_present,
+            "vehicle_photo_evidence": _v_safe(secondary_evidence.get("vehicle_photo_present")),
+            "certificate_reproduction_present": certificate_reproduction_present,
+            "certificate_reproduction_evidence": _v_safe(secondary_evidence.get("certificate_reproduction_present")),
         },
         "sanction_boundary": {
             "band": band,
@@ -647,8 +728,10 @@ def build_velocity_legal_intelligence(core: Dict[str, Any]) -> Dict[str, Any]:
         "requires_operator_review": bool(operator_review_reasons),
         "operator_review_reasons": operator_review_reasons,
         "provenance": {
-            "source": "validated_extraction_raw_text",
+            "source": "validated_extraction_raw_text+secondary_visual_facts",
             "verification_date_context_strict": True,
             "driver_date_separated_from_verification": True,
+            "secondary_facts_version": secondary_meta.get("version"),
+            "secondary_facts_confidence": secondary_meta.get("confidence") or {},
         },
     }
