@@ -12,7 +12,7 @@ from generate import GenerateRequest, generate_dgt
 from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
-from rtm_intelligence.reanalysis import reanalyze_traffic_fine_case
+from reanalysis import reanalyze_traffic_fine_case
 
 router = APIRouter(prefix="/ops/cases", tags=["ops-operator"])
 
@@ -282,7 +282,7 @@ def _latest_final_resource(conn, case_id: str) -> Optional[Dict[str, Any]]:
 @router.post("/{case_id}/reanalyze")
 def reanalyze_case(
     case_id: str,
-    x_operator_token: Optional[str] = Header(default=None),
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     """Reanaliza los originales existentes sin crear caso ni repetir pago.
 
