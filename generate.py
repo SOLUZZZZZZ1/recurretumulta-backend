@@ -37,6 +37,8 @@ from ai.infractions.dispatch import dispatch_deterministic_template
 
 router = APIRouter(tags=["generate"])
 
+_GENERATOR_VERSION = "traffic_generate_v1_1"
+
 
 _ADMIN_PREFIXES = [
     "organismo:",
@@ -515,6 +517,41 @@ def _velocity_margin_info(measured: Optional[float], radar_hint: str = "") -> Di
     }
 
 
+def _is_rtm_validated_extraction(core: Dict[str, Any]) -> bool:
+    """True cuando el core procede del reanálisis consolidado y sus campos críticos están validados."""
+    core = core or {}
+    version = _safe_str(core.get("extractor_version")).strip()
+    if not version.startswith("traffic_fine_reanalysis_"):
+        return False
+    if core.get("ready_for_generate") is False:
+        return False
+    unresolved = core.get("unresolved_critical_fields") or []
+    missing = ((core.get("critical_fields_validation") or {}).get("missing_required") or [])
+    return not bool(unresolved or missing)
+
+
+def _explicit_tramo_radar_signal(blob: str) -> bool:
+    """No confundir 'tramo limitado a 90' con un cinemómetro de tramo."""
+    low = _safe_str(blob).lower()
+    patterns = [
+        r"radar\s+de\s+tramo",
+        r"cinem[oó]metro\s+de\s+tramo",
+        r"control\s+de\s+velocidad\s+por\s+tramo",
+        r"sistema\s+de\s+control\s+de\s+velocidad\s+por\s+tramo",
+        r"velocidad\s+media\s+en\s+el\s+tramo",
+        r"punto\s+inicial.*punto\s+final.*medici[oó]n",
+    ]
+    return any(re.search(p, low, flags=re.S) for p in patterns)
+
+
+def _radar_model_from_core(core: Dict[str, Any]) -> str:
+    for key in ("radar_modelo_hint", "radar_modelo", "cinemometro_modelo", "modelo_cinemometro"):
+        value = _safe_str(core.get(key)).strip()
+        if value and value.lower() not in ("cinemometro", "cinemómetro", "no especificado", "desconocido"):
+            return value
+    return ""
+
+
 def _resolve_radar_profile(core: Dict[str, Any]) -> Dict[str, Any]:
     raw_sources = [
         _safe_str(core.get("radar_modelo_hint")),
@@ -528,104 +565,123 @@ def _resolve_radar_profile(core: Dict[str, Any]) -> Dict[str, Any]:
         _safe_str(core.get("vision_raw_text")),
     ]
     blob = "\n".join(s for s in raw_sources if s.strip()).lower()
+    model_hint = _radar_model_from_core(core)
+    antenna = _safe_str(core.get("radar_antena")).strip()
 
     profile = {
         "kind": "cinemometro_no_especificado",
-        "label": "cinemómetro (modelo no consignado en la copia)",
-        "margin_percent_high": 5.0,
-        "margin_kmh_low": 5.0,
-        "attack_focus": "Debe aportarse identificación completa del equipo, certificado metrológico vigente y prueba técnica bastante."
+        "label": model_hint or "cinemómetro (modelo no consignado en la copia)",
+        "installation_mode": "",
+        "installation_mode_known": False,
+        "attack_focus": (
+            "Debe aportarse la identificación completa del equipo, su certificado metrológico vigente, "
+            "la modalidad concreta de funcionamiento y la prueba técnica que vincule la medición con el vehículo denunciado."
+        ),
     }
+
+    # El modelo se respeta tal como aparece en la extracción validada. No se sustituye por otro fabricante.
+    model_low = model_hint.lower()
+    if any(k in model_low for k in ["multaradar", "multiradar", "multanova"]):
+        label = model_hint
+        if antenna and antenna not in label:
+            label = f"{label}, antena {antenna}"
+        profile.update({
+            "kind": "cinemometro_modelo_identificado",
+            "label": label,
+            "attack_focus": (
+                f"Tratándose del cinemómetro {model_hint}, debe acreditarse la correspondencia exacta entre el equipo, "
+                "la antena o unidad de captación, el certificado metrológico vigente, la imagen original y la medición atribuida. "
+                "También debe constar si operaba como instalación fija, estática o móvil, pues esa modalidad condiciona el régimen metrológico aplicable."
+            ),
+        })
+        return profile
 
     if "pegasus" in blob or "helicoptero" in blob or "helicóptero" in blob:
         profile.update({
             "kind": "pegasus",
-            "label": "sistema aéreo Pegasus (modelo pendiente de acreditación)",
-            "margin_percent_high": 7.0,
-            "margin_kmh_low": 7.0,
-            "attack_focus": "Tratándose de medición aérea, debe acreditarse de forma especialmente rigurosa la identificación del sistema, la secuencia completa de captación y la trazabilidad técnica de la medición.",
+            "label": model_hint or "sistema aéreo Pegasus",
+            "installation_mode": "aereo",
+            "installation_mode_known": True,
+            "attack_focus": (
+                "Tratándose de medición aérea, debe acreditarse de forma especialmente rigurosa la identificación del sistema, "
+                "la secuencia completa de captación y la trazabilidad técnica de la medición."
+            ),
         })
         return profile
 
-    if "tramo" in blob:
+    if _explicit_tramo_radar_signal(blob):
         profile.update({
             "kind": "radar_tramo",
-            "label": "sistema de control de velocidad por tramo (modelo pendiente de acreditación)",
-            "margin_percent_high": 5.0,
-            "margin_kmh_low": 5.0,
-            "attack_focus": "En controles de tramo debe acreditarse con precisión el punto inicial y final de medición, la sincronización temporal del sistema y la integridad del cálculo efectuado.",
+            "label": model_hint or "sistema de control de velocidad por tramo",
+            "installation_mode": "tramo",
+            "installation_mode_known": True,
+            "attack_focus": (
+                "En controles de velocidad por tramo debe acreditarse el punto inicial y final de medición, "
+                "la sincronización temporal del sistema, la identificación del vehículo en ambos puntos y la integridad del cálculo."
+            ),
         })
         return profile
 
     if any(k in blob for k in ["velolaser", "lasertech", "lti 20/20", "lti20/20", "ultralyte"]):
-        exact = "Velolaser" if "velolaser" in blob else "cinemómetro láser portátil"
         profile.update({
             "kind": "velolaser_laser",
-            "label": f"{exact} (modelo pendiente de acreditación)",
-            "margin_percent_high": 7.0,
-            "margin_kmh_low": 7.0,
-            "attack_focus": "En mediciones con láser portátil debe acreditarse con especial detalle la instalación, alineación, verificación y la concreta operativa de captación del vehículo denunciado.",
+            "label": model_hint or ("Velolaser" if "velolaser" in blob else "cinemómetro láser portátil"),
+            "attack_focus": (
+                "En mediciones con láser portátil debe acreditarse la instalación, alineación, verificación y la concreta "
+                "operativa de captación del vehículo denunciado."
+            ),
         })
         return profile
 
-    if "multanova" in blob:
-        label = "cinemómetro Multanova"
-        if "antena" in blob:
-            label += " antena"
-        profile.update({
-            "kind": "multanova",
-            "label": f"{label} (modelo pendiente de acreditación)",
-            "margin_percent_high": 5.0,
-            "margin_kmh_low": 5.0,
-            "attack_focus": "En controles con Multanova debe acreditarse la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la correspondencia inequívoca con el vehículo denunciado.",
-        })
-        return profile
-
-    if any(k in blob for k in ["antena", "cabina", "radar fijo", "pórtico", "portico"]):
-        subtype = "cinemómetro fijo de cabina" if ("cabina" in blob or "radar fijo" in blob) else "cinemómetro fijo tipo antena"
+    # Solo se fija modalidad si el documento la expresa de forma específica. La mera palabra 'antena' no convierte el radar en fijo.
+    if any(k in blob for k in ["radar fijo", "instalación fija", "instalacion fija", "cabina fija", "pórtico fijo", "portico fijo"]):
         profile.update({
             "kind": "radar_fijo",
-            "label": f"{subtype} (modelo pendiente de acreditación)",
-            "margin_percent_high": 5.0,
-            "margin_kmh_low": 5.0,
-            "attack_focus": "En controles fijos debe acreditarse la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la correspondencia inequívoca con el vehículo denunciado.",
+            "label": model_hint or "cinemómetro en instalación fija",
+            "installation_mode": "fija",
+            "installation_mode_known": True,
+            "attack_focus": (
+                "Debe acreditarse la instalación fija concreta, la verificación metrológica vigente y la correspondencia "
+                "entre equipo, captura y vehículo denunciado."
+            ),
         })
         return profile
 
-    if any(k in blob for k in ["vehiculo patrulla", "vehículo patrulla", "movil", "móvil", "coche patrulla"]):
+    if any(k in blob for k in ["vehículo en movimiento", "vehiculo en movimiento", "radar móvil en movimiento", "radar movil en movimiento"]):
         profile.update({
             "kind": "radar_movil",
-            "label": "cinemómetro móvil (modelo pendiente de acreditación)",
-            "margin_percent_high": 7.0,
-            "margin_kmh_low": 7.0,
-            "attack_focus": "En controles móviles debe acreditarse la modalidad concreta de captación, la posición del vehículo policial, la verificación metrológica del equipo y la secuencia completa de medición.",
+            "label": model_hint or "cinemómetro móvil sobre vehículo",
+            "installation_mode": "movil_en_movimiento",
+            "installation_mode_known": True,
+            "attack_focus": (
+                "Debe acreditarse la modalidad de medición con el vehículo en movimiento, la verificación metrológica "
+                "del equipo y la secuencia completa de captación."
+            ),
+        })
+        return profile
+
+    if any(k in blob for k in ["radar estático", "radar estatico", "vehículo parado", "vehiculo parado", "ubicación estática", "ubicacion estatica"]):
+        profile.update({
+            "kind": "radar_estatico",
+            "label": model_hint or "cinemómetro en ubicación estática",
+            "installation_mode": "estatica",
+            "installation_mode_known": True,
+            "attack_focus": (
+                "Debe acreditarse la ubicación estática concreta, la verificación metrológica vigente y la correspondencia "
+                "entre equipo, captura y vehículo denunciado."
+            ),
         })
         return profile
 
     return profile
 
-
 def _velocity_margin_info_from_profile(measured: Optional[float], profile: Dict[str, Any]) -> Dict[str, Any]:
-    if not isinstance(measured, (int, float)) or measured <= 0:
-        return {"margin_value": None, "corrected_speed": None, "margin_label": ""}
+    """No calcula márgenes presuntos.
 
-    pct = float(profile.get("margin_percent_high") or 5.0)
-    low_kmh = float(profile.get("margin_kmh_low") or 5.0)
-
-    if measured > 100:
-        margin_value = round(float(measured) * (pct / 100.0), 2)
-        margin_label = f"{int(pct) if pct.is_integer() else pct} %"
-    else:
-        margin_value = round(low_kmh, 2)
-        margin_label = f"{int(low_kmh) if low_kmh.is_integer() else low_kmh} km/h"
-
-    corrected_speed = round(float(measured) - margin_value, 2)
-    return {
-        "margin_value": margin_value,
-        "corrected_speed": corrected_speed,
-        "margin_label": margin_label,
-    }
-
+    El margen depende, entre otros extremos, de la modalidad real de instalación/uso y de la fase metrológica.
+    Solo se devolverá un cálculo si el propio core aporta un margen aplicado de forma expresa y verificable.
+    """
+    return {"margin_value": None, "corrected_speed": None, "margin_label": ""}
 
 def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
     measured = core.get("velocidad_medida_kmh")
@@ -672,6 +728,14 @@ def _resolve_velocity_facts(core: Dict[str, Any]) -> Dict[str, Any]:
                 measured = min(above)
             else:
                 conflict = True
+
+    # Una extracción Intelligence CORE validada ya ha resuelto los pares críticos mediante
+    # lectura focalizada/zoom y trazabilidad. No reabrimos un falso conflicto por otros números
+    # presentes en el documento (importe, antena, expediente, fechas, etc.).
+    if _is_rtm_validated_extraction(core) and isinstance(measured, (int, float)) and isinstance(limit, (int, float)) and measured > limit:
+        unresolved = set(core.get("unresolved_critical_fields") or [])
+        if not ({"velocidad_medida_kmh", "velocidad_limite_kmh"} & unresolved):
+            conflict = False
 
     return {
         "measured": measured if isinstance(measured, (int, float)) and measured > 0 else None,
@@ -1887,6 +1951,39 @@ def _build_comparecencia_text(core: Dict[str, Any], asunto_out: str) -> str:
     )
 
 
+def _infer_sct_territory(core: Dict[str, Any]) -> str:
+    """Busca la unidad territorial del Servei Català de Trànsit sin inferirla del domicilio del recurrente."""
+    parts = [
+        _safe_str(core.get("organismo")),
+        _safe_str(core.get("organo")),
+        _safe_str(core.get("raw_text_blob")),
+        _safe_str(core.get("vision_raw_text")),
+    ]
+    for nested_key in ("critical_fields_vision", "critical_fields_zoomed"):
+        nested = core.get(nested_key) or {}
+        if isinstance(nested, dict):
+            parts.append(_safe_str(nested.get("organismo")))
+    blob = "\n".join(x for x in parts if x.strip())
+    folded = blob.upper()
+    patterns = [
+        r"SERVEI\s+TERRITORIAL\s+(?:DE|DEL)\s+TR[ÀA]NSIT\s+DE\s+([A-ZÀ-Ü ]{3,30})",
+        r"SERVICIO\s+TERRITORIAL\s+DE\s+TR[ÁA]NSITO\s+DE\s+([A-ZÁÉÍÓÚÜÑ ]{3,30})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, folded)
+        if m:
+            value = re.split(r"[\n,;.]", m.group(1))[0].strip(" -")
+            for known in ("BARCELONA", "GIRONA", "LLEIDA", "TARRAGONA"):
+                if known in value:
+                    return known
+    return ""
+
+
+def _is_sct_organism(value: str) -> bool:
+    low = _safe_str(value).lower()
+    return ("servei" in low and ("trànsit" in low or "transit" in low)) or "servicio territorial de tránsito" in low or "servicio territorial de transito" in low
+
+
 def _resolve_header_destination(core: Dict[str, Any]) -> Dict[str, str]:
     blob = json.dumps(core or {}, ensure_ascii=False).lower()
     organismo_raw = _safe_str(core.get("organismo")).strip()
@@ -1895,48 +1992,23 @@ def _resolve_header_destination(core: Dict[str, Any]) -> Dict[str, str]:
     provincia_fmt = "............................................"
 
     provincia_aliases = {
-        "barcelona": "BARCELONA",
-        "girona": "GIRONA",
-        "gerona": "GIRONA",
-        "madrid": "MADRID",
-        "oviedo": "OVIEDO",
-        "asturias": "ASTURIAS",
-        "valencia": "VALENCIA",
-        "sevilla": "SEVILLA",
-        "zaragoza": "ZARAGOZA",
-        "malaga": "MÁLAGA",
-        "málaga": "MÁLAGA",
-        "alicante": "ALICANTE",
-        "murcia": "MURCIA",
-        "bilbao": "BILBAO",
-        "vizcaya": "VIZCAYA",
-        "bizkaia": "BIZKAIA",
-        "granada": "GRANADA",
-        "cordoba": "CÓRDOBA",
-        "córdoba": "CÓRDOBA",
-        "valladolid": "VALLADOLID",
-        "coruña": "A CORUÑA",
-        "a coruña": "A CORUÑA",
-        "pontevedra": "PONTEVEDRA",
-        "tarragona": "TARRAGONA",
-        "lleida": "LLEIDA",
-        "lerida": "LLEIDA",
-        "castellon": "CASTELLÓN",
-        "castellón": "CASTELLÓN",
-        "badajoz": "BADAJOZ",
-        "cadiz": "CÁDIZ",
-        "cádiz": "CÁDIZ",
-        "huelva": "HUELVA",
-        "jaen": "JAÉN",
-        "jaén": "JAÉN",
-        "leon": "LEÓN",
-        "león": "LEÓN",
-        "salamanca": "SALAMANCA",
-        "toledo": "TOLEDO",
-        "burgos": "BURGOS",
-        "palma": "PALMA",
-        "mallorca": "MALLORCA",
+        "barcelona": "BARCELONA", "girona": "GIRONA", "gerona": "GIRONA", "madrid": "MADRID",
+        "oviedo": "OVIEDO", "asturias": "ASTURIAS", "valencia": "VALENCIA", "sevilla": "SEVILLA",
+        "zaragoza": "ZARAGOZA", "malaga": "MÁLAGA", "málaga": "MÁLAGA", "alicante": "ALICANTE",
+        "murcia": "MURCIA", "bilbao": "BILBAO", "vizcaya": "VIZCAYA", "bizkaia": "BIZKAIA",
+        "granada": "GRANADA", "cordoba": "CÓRDOBA", "córdoba": "CÓRDOBA", "valladolid": "VALLADOLID",
+        "coruña": "A CORUÑA", "a coruña": "A CORUÑA", "pontevedra": "PONTEVEDRA", "tarragona": "TARRAGONA",
+        "lleida": "LLEIDA", "lerida": "LLEIDA", "castellon": "CASTELLÓN", "castellón": "CASTELLÓN",
+        "badajoz": "BADAJOZ", "cadiz": "CÁDIZ", "cádiz": "CÁDIZ", "huelva": "HUELVA", "jaen": "JAÉN",
+        "jaén": "JAÉN", "leon": "LEÓN", "león": "LEÓN", "salamanca": "SALAMANCA", "toledo": "TOLEDO",
+        "burgos": "BURGOS", "palma": "PALMA", "mallorca": "MALLORCA",
     }
+
+    if _is_sct_organism(organismo_raw) or ("servei català de trànsit" in blob or "servei catala de transit" in blob):
+        territory = _infer_sct_territory(core)
+        organismo_fmt = "SERVEI CATALÀ DE TRÀNSIT"
+        provincia_fmt = territory or "CATALUNYA"
+        return {"organismo_cabecera": organismo_fmt, "provincia_cabecera": provincia_fmt}
 
     for k, v in provincia_aliases.items():
         if k in blob:
@@ -1956,11 +2028,7 @@ def _resolve_header_destination(core: Dict[str, Any]) -> Dict[str, str]:
     elif organismo_raw:
         organismo_fmt = organismo_raw.upper()
 
-    return {
-        "organismo_cabecera": organismo_fmt,
-        "provincia_cabecera": provincia_fmt,
-    }
-
+    return {"organismo_cabecera": organismo_fmt, "provincia_cabecera": provincia_fmt}
 
 def _integrate_extract_after_comparecencia(body: str, hecho: str, core: Dict[str, Any] = None, forced_tipo: Optional[str] = None) -> str:
     txt = _safe_str(body)
@@ -2549,6 +2617,24 @@ def ensure_tpl_dict(tpl: Any, core: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
+def _velocity_boundary_paragraph(core: Dict[str, Any], measured: Optional[float], limit: Optional[float]) -> str:
+    """Refuerzo específico cuando la cifra está en un umbral sancionador conocido del Anexo IV."""
+    amount = core.get("sancion_importe_eur")
+    points = core.get("puntos_detraccion")
+    if measured == 121 and limit == 90:
+        sanction_note = ""
+        if amount not in (None, "") or points not in (None, ""):
+            sanction_note = f" La documentación analizada consigna una sanción de {amount or '300'} euros y {points if points not in (None, '') else '2'} puntos."
+        return (
+            "Para un límite de 90 km/h, el Anexo IV de la Ley de Tráfico sitúa el tramo de 91 a 120 km/h en 100 euros sin pérdida de puntos, "
+            "mientras que el tramo de 121 a 140 km/h comporta 300 euros y 2 puntos. La cifra de 121 km/h es, por tanto, el primer valor del tramo más gravoso."
+            + sanction_note +
+            " Por ello resulta decisivo conocer si los 121 km/h son la lectura bruta captada por el cinemómetro o una velocidad ya corregida, "
+            "así como la modalidad real de funcionamiento del equipo y el margen efectivamente aplicado por la Administración."
+        )
+    return ""
+
+
 def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
     expediente = core.get("expediente_ref") or core.get("numero_expediente") or "[EXPEDIENTE]"
     organo = core.get("organo") or core.get("organismo") or "No consta acreditado."
@@ -2568,58 +2654,43 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
 
     radar_profile = _resolve_radar_profile(core)
     radar = radar_profile.get("label") or "cinemómetro (modelo no consignado en la copia)"
-    margin_info = _velocity_margin_info_from_profile(measured, radar_profile)
-    margin_value = margin_info.get("margin_value")
-    corrected_speed = margin_info.get("corrected_speed")
-    margin_label = margin_info.get("margin_label")
     radar_focus = radar_profile.get("attack_focus") or ""
+    antenna = _safe_str(core.get("radar_antena")).strip()
+    amount = core.get("sancion_importe_eur")
+    points = core.get("puntos_detraccion")
 
     tech_lines = []
-    margin_txt = ""
-    corrected_txt = ""
     if measured:
-        tech_lines.append(f"• Velocidad medida: {int(measured)} km/h")
+        tech_lines.append(f"• Velocidad medida/consignada: {int(measured)} km/h")
     if limit:
         tech_lines.append(f"• Velocidad límite: {int(limit)} km/h")
     if radar:
         tech_lines.append(f"• Dispositivo de control: {radar}")
-    if margin_value is not None:
-        if isinstance(margin_value, float) and not margin_value.is_integer():
-            margin_txt = f"{margin_value:.2f}".replace(".", ",")
-        else:
-            margin_txt = str(int(margin_value))
-        if isinstance(corrected_speed, float) and not corrected_speed.is_integer():
-            corrected_txt = f"{corrected_speed:.2f}".replace(".", ",")
-        else:
-            corrected_txt = str(int(corrected_speed))
-        tech_lines.append(f"• Margen mínimo de corrección aplicable: {margin_txt} km/h ({margin_label})")
-        tech_lines.append(f"• Velocidad resultante tras la corrección: {corrected_txt} km/h")
+    if antenna and antenna not in radar:
+        tech_lines.append(f"• Antena / unidad identificada: {antenna}")
+    if amount not in (None, ""):
+        try:
+            amount_txt = f"{float(amount):.2f}".replace(".", ",")
+        except Exception:
+            amount_txt = _safe_str(amount)
+        tech_lines.append(f"• Sanción económica consignada: {amount_txt} €")
+    if points not in (None, ""):
+        tech_lines.append(f"• Puntos a detraer consignados: {points}")
+    if not radar_profile.get("installation_mode_known"):
+        tech_lines.append("• Modalidad de funcionamiento/instalación del cinemómetro: no consta acreditada en la documentación analizada")
     if conflict:
-        tech_lines.append("• Observación: del examen de la copia aportada se desprenden discrepancias numéricas que exigen la exhibición del expediente íntegro y de la prueba técnica original.")
+        tech_lines.append("• Observación: existen discrepancias numéricas que requieren validación con el expediente administrativo íntegro")
 
     tech_block = ""
     if tech_lines:
         tech_block = "DATOS TÉCNICOS EXTRAÍDOS DEL EXPEDIENTE\n" + "\n".join(tech_lines) + "\n\n"
 
-    if measured and limit and measured > limit and not conflict:
-        calc_paragraph = (
-            "A efectos de contradicción, la Administración debe acreditar de forma documental la velocidad "
-            "medida, el límite aplicable, el margen efectivamente aplicado y la velocidad corregida resultante. "
-            f"Tomando como referencia la medición consignada de {int(measured)} km/h, el margen mínimo de corrección aplicable "
-            f"sería de {margin_txt} km/h, lo que dejaría una velocidad resultante tras la corrección de {corrected_txt} km/h."
-        )
-        tramo_paragraph = build_tramo_error_paragraph({
-            **core,
-            "velocidad_medida_kmh": measured,
-            "velocidad_limite_kmh": limit,
-        })
-    else:
-        calc_paragraph = (
-            "A efectos de contradicción, la Administración debe acreditar de forma documental la velocidad "
-            "medida, el límite aplicable, el margen efectivamente aplicado y la velocidad corregida resultante, "
-            "evitando cualquier duda derivada de lecturas automatizadas o transcripciones defectuosas del boletín."
-        )
-        tramo_paragraph = ""
+    calc_paragraph = (
+        "La documentación debe permitir distinguir entre la velocidad bruta o directamente captada por el instrumento y la velocidad jurídicamente utilizada para sancionar. "
+        "Debe constar la modalidad real de funcionamiento del cinemómetro, el margen metrológico efectivamente considerado y la operación de cálculo practicada. "
+        "No cabe presumir automáticamente un margen concreto cuando la documentación no identifica de forma suficiente esa modalidad ni explica si la cifra consignada ya incorpora una corrección."
+    )
+    boundary_paragraph = _velocity_boundary_paragraph(core, measured, limit)
 
     cuerpo = (
         "A la atención del órgano competente,\n\n"
@@ -2628,47 +2699,29 @@ def build_velocity_strong_template(core: Dict[str, Any]) -> Dict[str, str]:
         f"2) Identificación expediente: {expediente}\n"
         f"3) Hecho imputado: {hecho}{fecha_line}\n\n"
         "II. ALEGACIONES\n\n"
-        "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y CADENA DE CUSTODIA DEL DISPOSITIVO DE CONTROL\n\n"
-        "La imputación por exceso de velocidad exige una acreditación técnica completa, rigurosa y plenamente verificable. Tal como ha reiterado el Tribunal Supremo, la validez de los medios técnicos de control de velocidad requiere una acreditación íntegra, trazable y documentalmente sustentada del dispositivo utilizado, no bastando referencias genéricas o incompletas. Debe constar de forma precisa el dispositivo empleado, su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. En controles con Multanova debe acreditarse la concreta homologación del equipo, su verificación vigente, el fotograma íntegro y la correspondencia inequívoca con el vehículo denunciado. "
-        "su situación exacta, su verificación metrológica vigente y la trazabilidad íntegra del dato captado. "
+        "ALEGACIÓN PRIMERA — PRUEBA TÉCNICA, METROLOGÍA Y TRAZABILIDAD DEL DISPOSITIVO DE CONTROL\n\n"
+        "La imputación por exceso de velocidad exige una acreditación técnica completa, verificable y trazable del dispositivo utilizado. "
+        "Debe constar la identificación exacta del cinemómetro, su control metrológico vigente en la fecha de los hechos, la modalidad concreta de funcionamiento y la correspondencia entre el equipo, la captura y el vehículo denunciado. "
         f"{radar_focus}\n\n"
+        "La Sentencia del Tribunal Supremo 184/2018, de 17 de abril (ECLI:ES:TS:2018:1387), destaca la relevancia de distinguir entre cinemómetros fijos o móviles estáticos y cinemómetros móviles en sentido estricto, precisamente porque la modalidad real de utilización condiciona el margen de error aplicable.\n\n"
         "No consta acreditado de forma completa en el expediente:\n"
-        "1) Identificación completa del cinemómetro utilizado (marca/modelo/número de serie).\n"
+        "1) Identificación completa del cinemómetro y de sus componentes relevantes.\n"
         "2) Certificado de verificación metrológica vigente en la fecha del hecho.\n"
-        "3) Acreditación del control metrológico conforme a la normativa aplicable (Orden ICT/155/2020 o la normativa metrológica que corresponda en la fecha del hecho).\n"
-        "4) Captura o fotograma completo y legible, con identificación inequívoca del vehículo.\n"
-        "5) Aplicación concreta del margen y determinación de la velocidad corregida.\n"
-        "6) Acreditación de la cadena de custodia del dato y su correspondencia inequívoca con el vehículo denunciado.\n"
-        "7) Acreditación del límite aplicable y de su señalización en el punto exacto.\n\n"
+        "3) Modalidad concreta de funcionamiento o instalación en el momento de la captación.\n"
+        "4) Captura o fotograma íntegro y legible con identificación inequívoca del vehículo.\n"
+        "5) Indicación de la velocidad bruta captada, de la velocidad utilizada para sancionar y del margen efectivamente aplicado.\n"
+        "6) Trazabilidad entre el equipo, sus unidades o antenas, la imagen, la medición y la denuncia generada.\n\n"
         f"{tech_block}"
         f"{calc_paragraph}\n\n"
-    )
-
-    if tramo_paragraph:
-        cuerpo += f"{tramo_paragraph}\n\n"
-
-    cuerpo += (
-        "ALEGACIÓN SEGUNDA — DEFECTOS DE MOTIVACIÓN Y FALTA DE SOPORTE COMPLETO\n\n"
-        "La Administración debe motivar de forma individualizada por qué la velocidad atribuida, una vez aplicado "
-        "el margen correspondiente, encaja exactamente en el tramo sancionador impuesto. Sin fotograma completo, "
-        "certificado metrológico, identificación técnica del equipo y acreditación de la cadena de custodia, no puede "
-        "enervarse la presunción de inocencia con el rigor exigible en Derecho sancionador.\n\n"
+        + (f"{boundary_paragraph}\n\n" if boundary_paragraph else "") +
+        "ALEGACIÓN SEGUNDA — MOTIVACIÓN DE LA VELOCIDAD JURÍDICAMENTE SANCIONABLE\n\n"
+        "La Administración debe motivar de forma individualizada por qué la velocidad consignada encaja en el concreto tramo sancionador aplicado. "
+        "Cuando la cifra se encuentra en un umbral que determina un incremento de multa o pérdida de puntos, es especialmente relevante documentar la lectura obtenida, la modalidad del cinemómetro, el margen considerado y el resultado final utilizado para sancionar.\n\n"
         "ALEGACIÓN TERCERA — SOLICITUD DE EXPEDIENTE ÍNTEGRO Y PRUEBA TÉCNICA\n\n"
-        "Se solicita la aportación íntegra del expediente, incluyendo: boletín/denuncia completa, fotograma o secuencia "
-        "completa, certificado de verificación metrológica, identificación del equipo, documentación técnica del control "
-        "y motivación detallada del tramo sancionador aplicado.\n\n"
-        "III. SOLICITO\n"
-        "1) Que se tengan por formuladas las presentes alegaciones.\n"
-        "2) Que se acuerde el ARCHIVO del expediente por insuficiencia probatoria y falta de acreditación técnica suficiente.\n"
-        "3) Subsidiariamente, que se aporte expediente íntegro y prueba técnica completa para contradicción efectiva.\n"
+        "Se solicita la incorporación y entrega de copia íntegra del expediente, incluida la denuncia completa, imagen o secuencia original, certificado metrológico, identificación del equipo y sus componentes, documentación sobre la modalidad de funcionamiento y explicación de la velocidad bruta, margen aplicado y velocidad finalmente utilizada para sancionar."
     )
 
-    return {
-        "asunto": "ESCRITO DE ALEGACIONES — SOLICITA ARCHIVO DEL EXPEDIENTE",
-        "cuerpo": fix_roman_headings(cuerpo),
-    }
-
-
+    return {"asunto": "ESCRITO DE ALEGACIONES", "cuerpo": cuerpo}
 
 def _split_full_name_for_header(full_name: str) -> Dict[str, str]:
     """
@@ -2796,25 +2849,35 @@ def _load_interesado_from_case_for_generate(conn, case_id: str) -> Dict[str, Any
 
 
 def _merge_form_data_over_ocr(core: Dict[str, Any], form_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    El formulario de autorización manda sobre el OCR para datos personales,
-    matrícula y destino. Así evitamos errores como provincia='MATRÍCULA'.
+    """Fusiona formulario y extracción respetando la procedencia del dato.
+
+    - Los datos personales del interesado proceden del formulario/autorización.
+    - En una extracción RTM validada, los datos del expediente (matrícula, organismo y nº de expediente)
+      proceden del documento y NO se pisan con valores antiguos guardados en cases.
+    - Para extracciones legacy se conserva el comportamiento histórico.
     """
     merged = dict(core or {})
     clean = _normalize_interesado_for_resource(form_data)
+    validated = _is_rtm_validated_extraction(core)
 
-    priority_keys = [
+    personal_keys = [
         "full_name", "nombre", "apellido1", "apellido2",
-        "dni", "dni_nie", "matricula",
-        "domicilio", "domicilio_notif", "localidad", "provincia", "cp",
+        "dni", "dni_nie", "domicilio", "domicilio_notif", "localidad", "provincia", "cp",
         "email", "telefono",
-        "organismo", "expediente_ref",
     ]
-    for key in priority_keys:
+    for key in personal_keys:
         if clean.get(key) not in (None, "", [], {}):
             merged[key] = clean[key]
 
-    # Limpieza defensiva de basura OCR típica.
+    document_keys = ["matricula", "organismo", "expediente_ref"]
+    for key in document_keys:
+        value = clean.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if validated and merged.get(key) not in (None, "", [], {}):
+            continue
+        merged[key] = value
+
     for key in ("provincia", "localidad"):
         if _safe_str(merged.get(key)).strip().upper() in ("MATRÍCULA", "MATRICULA"):
             merged.pop(key, None)
@@ -2827,25 +2890,25 @@ def _merge_form_data_over_ocr(core: Dict[str, Any], form_data: Dict[str, Any]) -
     return merged
 
 def build_v2_dgt_layout(cuerpo: str, core: Dict[str, Any], interesado: Dict[str, Any]) -> str:
-    """
-    Cabecera tipo DGT/municipal usando primero los datos del formulario de
-    autorización. El OCR solo se usa como respaldo.
-    """
+    """Cabecera DGT/municipal/SCT con separación estricta entre datos personales y datos del expediente."""
     core = core or {}
     form = _normalize_interesado_for_resource(interesado or {})
+    validated = _is_rtm_validated_extraction(core)
 
-    # El formulario manda sobre el OCR.
     merged = dict(core)
+    protected_document_keys = {"matricula", "organismo", "expediente_ref"}
     for k, v in form.items():
-        if v not in (None, "", [], {}):
-            merged[k] = v
+        if v in (None, "", [], {}):
+            continue
+        if validated and k in protected_document_keys and merged.get(k) not in (None, "", [], {}):
+            continue
+        merged[k] = v
 
     def g(k: str, default: str = "") -> str:
         value = merged.get(k)
         if value in (None, "", [], {}):
             value = default
         value = str(value)
-        # Limpieza específica: nunca dejar que el OCR arrastre "Matrícula" a domicilio/provincia.
         if k in ("domicilio", "domicilio_notif"):
             value = re.sub(r"\bMATR[IÍ]CULA\b.*$", "", value, flags=re.IGNORECASE).strip(" ,.-")
         if k in ("provincia", "localidad") and value.strip().upper() in ("MATRÍCULA", "MATRICULA"):
@@ -2859,29 +2922,26 @@ def build_v2_dgt_layout(cuerpo: str, core: Dict[str, Any], interesado: Dict[str,
         org = _cleanup(g("organismo", "") or g("organismo_cabecera", ""))
         if not org:
             return ""
-        # Ajuntament de Terrassa / Ayuntamiento de Madrid / Policía Local de X
         m = re.search(r"\b(?:AJUNTAMENT|AYUNTAMIENTO|POLIC[IÍ]A LOCAL|GUARDIA URBANA)\s+(?:DE|D['’])\s+(.+)$", org, flags=re.I)
         if m:
             loc = m.group(1).strip(" .,-")
-            # cortar restos raros de OCR
             loc = re.sub(r"\bMATR[IÍ]CULA\b.*$", "", loc, flags=re.I).strip(" .,-")
             if loc:
                 return loc.upper()
-        # Caso simple: contiene Terrassa aunque no haya patrón perfecto.
         if "terrassa" in org.lower():
             return "TERRASSA"
         return ""
 
     def _infer_provincia() -> str:
+        # En SCT solo usamos territorio si figura en el documento, nunca el domicilio del recurrente.
+        if _is_sct_organism(g("organismo", "")):
+            return _infer_sct_territory(merged) or ""
         prov = _cleanup(g("provincia", ""))
         if prov and prov.upper() not in ("MATRÍCULA", "MATRICULA"):
             return prov.upper().replace("TRÁFICO DE", "").replace("TRAFICO DE", "").strip(" .,-")
-
         candidates = [
-            _cleanup(g("organismo", "")),
-            _cleanup(g("organismo_cabecera", "")),
-            _cleanup(g("destination", "")),
-            _cleanup(g("delivery_destination", "")),
+            _cleanup(g("organismo", "")), _cleanup(g("organismo_cabecera", "")),
+            _cleanup(g("destination", "")), _cleanup(g("delivery_destination", "")),
         ]
         for cand in candidates:
             upper = cand.upper()
@@ -2889,9 +2949,7 @@ def build_v2_dgt_layout(cuerpo: str, core: Dict[str, Any], interesado: Dict[str,
                 if marker in upper:
                     return upper.split(marker, 1)[1].strip(" .,-")
         loc = _infer_location_from_organismo()
-        if loc:
-            return loc
-        return "........"
+        return loc or "........"
 
     def _build_destination_line() -> str:
         org = _cleanup(g("organismo", "") or g("organismo_cabecera", ""))
@@ -2899,6 +2957,11 @@ def build_v2_dgt_layout(cuerpo: str, core: Dict[str, Any], interesado: Dict[str,
         loc = _infer_location_from_organismo()
         provincia = _infer_provincia()
 
+        if _is_sct_organism(org):
+            territory = _infer_sct_territory(merged)
+            if territory:
+                return f"AL/A LA JEFE/A DEL SERVICIO TERRITORIAL DE TRÁNSITO DE {territory}\nSERVEI CATALÀ DE TRÀNSIT"
+            return "AL SERVEI CATALÀ DE TRÀNSIT"
         if "AJUNTAMENT" in upper:
             return f"A L'AJUNTAMENT DE {loc or provincia}"
         if "AYUNTAMIENTO" in upper:
@@ -2913,26 +2976,20 @@ def build_v2_dgt_layout(cuerpo: str, core: Dict[str, Any], interesado: Dict[str,
             return f"A LA JEFATURA PROVINCIAL DE TRÁFICO DE {provincia}"
         if "MINISTERIO DEL INTERIOR" in upper and "TRAFICO" in upper:
             return f"A LA JEFATURA PROVINCIAL DE TRÁFICO DE {provincia}"
-        return f"A LA JEFATURA PROVINCIAL DE TRÁFICO DE {provincia}"
+        return f"A LA {org.upper()}" if org else "A LA AUTORIDAD COMPETENTE"
 
     def _strip_old_header(text: str) -> str:
         txt = str(text or "").replace("\r\n", "\n")
         txt = txt.replace("A la atención del órgano competente,", "")
         txt = txt.replace("A la atención del órgano competente", "")
-        markers = [
-            "Extracto literal del boletín:",
-            "Extracto literal del boletin:",
-            "I. ALEGACIONES",
-        ]
+        markers = ["Extracto literal del boletín:", "Extracto literal del boletin:", "I. ALEGACIONES"]
         for marker in markers:
             idx = txt.find(marker)
             if idx >= 0:
                 return txt[idx:].lstrip()
         return txt.strip()
 
-    body = _strip_old_header(cuerpo)
-    body = _strip_duplicate_extractos(body)
-
+    body = _strip_duplicate_extractos(_strip_old_header(cuerpo))
     destino_line = _build_destination_line()
 
     header = f"""REFERENCIA: EXPTE. {g("expediente_ref", "........")}
@@ -2970,11 +3027,6 @@ EMAIL: {g("email")}
 ------------------------------------------------------------"""
 
     return header.strip() + "\n\n" + body.strip()
-
-
-
-
-
 
 def _build_antecedentes_block(core: dict | None = None) -> str:
     """
@@ -3127,7 +3179,20 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     wrapper = row[0] if isinstance(row[0], dict) else json.loads(row[0])
     core = wrapper.get("extracted") or {}
 
-    # Datos fiables del formulario de autorización: mandan sobre OCR.
+    # Intelligence CORE: si una extracción moderna declara que NO está lista, Generate debe bloquearse.
+    # Las extracciones legacy que no tienen este campo continúan funcionando como hasta ahora.
+    unresolved = core.get("unresolved_critical_fields") or []
+    missing_required = ((core.get("critical_fields_validation") or {}).get("missing_required") or [])
+    if core.get("ready_for_generate") is False or unresolved or missing_required:
+        details = []
+        if unresolved:
+            details.append("conflictos: " + ", ".join(map(str, unresolved)))
+        if missing_required:
+            details.append("faltan: " + ", ".join(map(str, missing_required)))
+        suffix = (" (" + "; ".join(details) + ")") if details else ""
+        raise HTTPException(status_code=409, detail="La extracción requiere validación antes de generar el recurso" + suffix)
+
+    # Datos del formulario: prioridad para identidad/contacto; los hechos documentales validados se conservan.
     case_form_data = _load_interesado_from_case_for_generate(conn, case_id)
     if interesado:
         case_form_data.update(dict(interesado or {}))
@@ -3264,6 +3329,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         "pdf": {"bucket": b2_bucket, "key": b2_key_pdf},
         "tipo_infraccion": tipo,
         "jurisdiccion": jurisdiccion,
+        "generator_version": _GENERATOR_VERSION,
         "delivery": {
             "destination_text": destination_text,
             "source": "generate",
@@ -3280,21 +3346,19 @@ def _extract_destination_from_generated_body(body: str) -> str:
     for line in txt.splitlines():
         clean = line.strip()
         upper = clean.upper()
+        if upper.startswith("AL/A LA JEFE/A DEL SERVICIO TERRITORIAL DE TRÁNSITO DE "):
+            return clean
+        if upper.startswith("AL SERVEI CATALÀ DE TRÀNSIT") or upper.startswith("AL SERVEI CATALA DE TRANSIT"):
+            return clean
         if upper.startswith("A LA JEFATURA PROVINCIAL DE TRÁFICO DE "):
             return clean
         if upper.startswith("A LA JEFATURA PROVINCIAL DE TRAFICO DE "):
             return clean
-        if upper.startswith("A LA DIRECCIÓN GENERAL DE TRÁFICO"):
+        if upper.startswith("A LA DIRECCIÓN GENERAL DE TRÁFICO") or upper.startswith("A LA DIRECCION GENERAL DE TRAFICO"):
             return clean
-        if upper.startswith("A LA DIRECCION GENERAL DE TRAFICO"):
+        if upper.startswith("AL AYUNTAMIENTO DE ") or upper.startswith("A L'AJUNTAMENT DE "):
             return clean
-        if upper.startswith("AL AYUNTAMIENTO DE "):
-            return clean
-        if upper.startswith("A L'AJUNTAMENT DE "):
-            return clean
-        if upper.startswith("A LA POLICÍA LOCAL DE "):
-            return clean
-        if upper.startswith("A LA POLICIA LOCAL DE "):
+        if upper.startswith("A LA POLICÍA LOCAL DE ") or upper.startswith("A LA POLICIA LOCAL DE "):
             return clean
         if upper.startswith("A LA GUARDIA URBANA DE "):
             return clean
