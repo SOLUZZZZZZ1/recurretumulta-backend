@@ -30,7 +30,8 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_5"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_6"
+_SECONDARY_FACTS_VERSION = "velocity_secondary_v1_0"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
 
@@ -1242,6 +1243,275 @@ def _apply_critical_fields(
     }
 
 
+
+def _fold_for_match(value: Any) -> str:
+    txt = unicodedata.normalize("NFKD", str(value or ""))
+    txt = "".join(ch for ch in txt if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", txt).lower().strip()
+
+
+def _velocity_secondary_facts_from_images(analyzed_pages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    # Segunda lectura visual de hechos secundarios. No pisa campos primarios V8.
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return {
+            "version": _SECONDARY_FACTS_VERSION,
+            "facts": {},
+            "confidence": {},
+            "evidence": {},
+            "error": "OPENAI_API_KEY_not_configured",
+        }
+
+    image_parts: List[Dict[str, Any]] = []
+    for page in analyzed_pages:
+        content = page.get("analysis_content")
+        mime = str(page.get("analysis_mime") or "")
+        if not content or not mime.startswith("image/"):
+            continue
+        image_parts.append({
+            "type": "input_text",
+            "text": f"PÁGINA {int(page.get('page_index') or 0)}:",
+        })
+        image_parts.append({
+            "type": "input_image",
+            "image_url": _data_url_jpeg(content),
+        })
+
+    if not image_parts:
+        return {
+            "version": _SECONDARY_FACTS_VERSION,
+            "facts": {},
+            "confidence": {},
+            "evidence": {},
+            "error": "no_image_pages",
+        }
+
+    system_text = (
+        "Eres un transcriptor jurídico-documental de alta precisión para sanciones de tráfico en España. "
+        "Lees TODAS las páginas como un único documento, pero tu tarea es extraer exclusivamente HECHOS SECUNDARIOS. "
+        "No corrijas, no completes por contexto, no hagas cálculos y no extraigas matrícula, número de expediente, "
+        "velocidad, límite, radar, antena, importe o puntos: esos campos ya han sido validados por otra capa. "
+        "Cada fecha debe atribuirse únicamente a la etiqueta o frase visible que la acompaña. "
+        "Si una fecha pertenece a datos del conductor, nunca la conviertas en fecha de verificación metrológica. "
+        "Si un dato no se ve inequívocamente, devuelve null."
+    )
+
+    user_text = r'''
+Devuelve EXCLUSIVAMENTE JSON válido:
+
+{
+  "facts": {
+    "capture_automatic": true|false|null,
+    "initiation_document_date": "DD-MM-YYYY"|null,
+    "driver_data_date": "DD-MM-YYYY"|null,
+    "verification_date": "DD-MM-YYYY"|null,
+    "normative_reference": {
+      "norm": string|null,
+      "article": string|null
+    },
+    "document_subject": {
+      "full_name": string|null,
+      "id_number": string|null
+    },
+    "vehicle_photo_present": true|false|null,
+    "certificate_reproduction_present": true|false|null
+  },
+  "confidence": {
+    "capture_automatic": 0.0,
+    "initiation_document_date": 0.0,
+    "driver_data_date": 0.0,
+    "verification_date": 0.0,
+    "normative_reference": 0.0,
+    "document_subject": 0.0,
+    "vehicle_photo_present": 0.0,
+    "certificate_reproduction_present": 0.0
+  },
+  "evidence": {
+    "capture_automatic": "fragmento literal",
+    "initiation_document_date": "fragmento literal",
+    "driver_data_date": "fragmento literal",
+    "verification_date": "fragmento literal",
+    "normative_reference": "fragmento literal",
+    "document_subject": "fragmento literal",
+    "vehicle_photo_present": "descripción visual breve",
+    "certificate_reproduction_present": "descripción visual breve"
+  }
+}
+
+REGLAS OBLIGATORIAS:
+
+1) capture_automatic:
+   true SOLO si se lee expresamente algo equivalente a
+   "IMATGE CAPTADA AUTOMÀTICAMENT", "imagen captada automáticamente",
+   "captació automàtica" o equivalente inequívoco.
+   false SOLO si el documento dice expresamente que NO fue automática.
+   Si no consta, null.
+
+2) initiation_document_date:
+   SOLO la fecha del acuerdo/documento de incoación cuando se vea una frase
+   equivalente a "acord d'incoació ... de data", "acuerdo de incoación de fecha",
+   "dictat en data" o similar.
+   NO la llames fecha de notificación y NO uses fecha del hecho.
+
+3) driver_data_date:
+   SOLO la fecha que aparezca asociada a frases como
+   "Dades del conductor facilitades pel titular del vehicle en data..."
+   o "datos del conductor facilitados por el titular...".
+   Lee día, mes y año carácter a carácter. No confundas 05 con 06.
+
+4) verification_date:
+   SOLO si la MISMA zona visible contiene términos inequívocos como
+   "verificació periòdica", "verificación periódica",
+   "certificat/certificado de verificación", "darrera/última data de verificació".
+   Una fecha junto a "dades/datos del conductor" está PROHIBIDO usarla aquí.
+   Si no existe una etiqueta de verificación inequívoca, null.
+
+5) normative_reference:
+   Extrae la norma y artículo/apartado que el documento indique como infringido,
+   por ejemplo "Reglament General de Circulació 52.1.A".
+   No completes artículos no visibles.
+
+6) document_subject:
+   Nombre completo y DNI/NIE SOLO si aparecen como interesado/infractor/conductor
+   en la notificación sancionadora. No uses datos de autorización RTM ni de otros anexos.
+
+7) vehicle_photo_present:
+   true si en alguna página se ve claramente una fotografía/captura del vehículo;
+   false solo si puede afirmarse visualmente que ninguna página contiene fotografía;
+   si no puedes comprobarlo, null.
+
+8) certificate_reproduction_present:
+   true si se reproduce visualmente un certificado metrológico/verificación;
+   false solo si puede afirmarse con seguridad que no aparece;
+   si hay duda, null.
+
+9) confidence debe reflejar LEGIBILIDAD, no plausibilidad.
+   Evidence máximo 220 caracteres y debe copiar la etiqueta/frase o describir
+   exactamente el elemento visual que sustenta el dato.
+
+10) No uses conocimiento jurídico para completar información no visible.
+'''
+
+    payload = {
+        "model": (os.getenv("OPENAI_MODEL") or "gpt-4o").strip(),
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": system_text}]},
+            {"role": "user", "content": [{"type": "input_text", "text": user_text}] + image_parts},
+        ],
+        "text": {"format": {"type": "json_object"}},
+    }
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=90,
+        )
+        if not r.ok:
+            return {
+                "version": _SECONDARY_FACTS_VERSION,
+                "facts": {},
+                "confidence": {},
+                "evidence": {},
+                "error": f"OpenAI {r.status_code}: {r.text[:300]}",
+            }
+
+        obj = json.loads(_response_output_text(r.json()) or "{}")
+        facts = obj.get("facts") if isinstance(obj, dict) else {}
+        confidence = obj.get("confidence") if isinstance(obj, dict) else {}
+        evidence = obj.get("evidence") if isinstance(obj, dict) else {}
+        if not isinstance(facts, dict):
+            facts = {}
+        if not isinstance(confidence, dict):
+            confidence = {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+
+        cleaned: Dict[str, Any] = {}
+
+        for key in ("capture_automatic", "vehicle_photo_present", "certificate_reproduction_present"):
+            val = facts.get(key)
+            if isinstance(val, bool):
+                cleaned[key] = val
+
+        for key in ("initiation_document_date", "driver_data_date", "verification_date"):
+            val = _normalise_date(facts.get(key))
+            if val:
+                cleaned[key] = val
+
+        nr = facts.get("normative_reference")
+        if isinstance(nr, dict):
+            norm = str(nr.get("norm") or "").strip()
+            article = str(nr.get("article") or "").strip().upper()
+            if norm or article:
+                cleaned["normative_reference"] = {
+                    "norm": norm or None,
+                    "article": article or None,
+                }
+
+        subject = facts.get("document_subject")
+        if isinstance(subject, dict):
+            full_name = re.sub(r"\s+", " ", str(subject.get("full_name") or "")).strip()
+            id_number = re.sub(r"[^0-9A-Za-z]", "", str(subject.get("id_number") or "")).upper()
+            if full_name or id_number:
+                cleaned["document_subject"] = {
+                    "full_name": full_name or None,
+                    "id_number": id_number or None,
+                }
+
+        conf_clean: Dict[str, float] = {}
+        for key in cleaned:
+            try:
+                val = float(confidence.get(key) or 0)
+            except Exception:
+                val = 0.0
+            conf_clean[key] = max(0.0, min(1.0, val))
+
+        evidence_clean: Dict[str, str] = {}
+        for key in cleaned:
+            txt = re.sub(r"\s+", " ", str(evidence.get(key) or "")).strip()
+            if txt:
+                evidence_clean[key] = txt[:260]
+
+        # Salvaguarda: fecha de datos del conductor != verificación.
+        driver_date = cleaned.get("driver_data_date")
+        verification_date = cleaned.get("verification_date")
+        verification_ev = _fold_for_match(evidence_clean.get("verification_date") or "")
+        if verification_date and (
+            any(x in verification_ev for x in (
+                "dades del conductor", "datos del conductor",
+                "facilitades pel titular", "facilitados por el titular"
+            ))
+            or (
+                driver_date
+                and verification_date == driver_date
+                and not any(x in verification_ev for x in (
+                    "verificacio", "verificacion", "certificat", "certificado"
+                ))
+            )
+        ):
+            cleaned.pop("verification_date", None)
+            conf_clean.pop("verification_date", None)
+            evidence_clean.pop("verification_date", None)
+
+        return {
+            "version": _SECONDARY_FACTS_VERSION,
+            "facts": cleaned,
+            "confidence": conf_clean,
+            "evidence": evidence_clean,
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "version": _SECONDARY_FACTS_VERSION,
+            "facts": {},
+            "confidence": {},
+            "evidence": {},
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if not analyzed_pages:
         raise HTTPException(status_code=422, detail="No se pudo analizar ningún documento original")
@@ -1277,6 +1547,16 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
     vision_meta = _critical_fields_from_images(analyzed_pages)
     zoom_meta = _critical_fields_from_zoomed_crops(analyzed_pages)
     combined_core, critical_meta = _apply_critical_fields(combined_core, combined_blob, vision_meta, zoom_meta)
+
+    secondary_meta = _velocity_secondary_facts_from_images(analyzed_pages)
+    secondary_facts = secondary_meta.get("facts") if isinstance(secondary_meta, dict) else {}
+    if isinstance(secondary_facts, dict) and secondary_facts:
+        combined_core["velocity_secondary_facts"] = secondary_facts
+        combined_core["velocity_secondary_facts_version"] = secondary_meta.get("version")
+        combined_core["velocity_secondary_facts_confidence"] = secondary_meta.get("confidence") or {}
+        combined_core["velocity_secondary_facts_evidence"] = secondary_meta.get("evidence") or {}
+    critical_meta["secondary"] = secondary_meta
+
     combined_core["document_role"] = "primary_case_document"
     combined_core["document_group_type"] = "traffic_fine"
     combined_core["document_page_count"] = len(analyzed_pages)
@@ -1337,7 +1617,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_3",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_6",
             },
         )
 
@@ -1477,6 +1757,11 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "critical_fields_zoom_candidates": (critical_meta.get("zoom") or {}).get("candidate_pages") or [],
             "critical_fields_zoom_error": (critical_meta.get("zoom") or {}).get("error"),
             "critical_field_sources": critical_meta.get("sources") or {},
+            "velocity_secondary_facts_version": ((critical_meta.get("secondary") or {}).get("version")),
+            "velocity_secondary_facts": ((critical_meta.get("secondary") or {}).get("facts") or {}),
+            "velocity_secondary_facts_confidence": ((critical_meta.get("secondary") or {}).get("confidence") or {}),
+            "velocity_secondary_facts_evidence": ((critical_meta.get("secondary") or {}).get("evidence") or {}),
+            "velocity_secondary_facts_error": ((critical_meta.get("secondary") or {}).get("error")),
             "critical_conflicts_resolved": conflicts,
             "missing_required_fields": critical_meta.get("missing_required") or [],
             "unresolved_critical_fields": critical_meta.get("unresolved_fields") or [],
@@ -1510,6 +1795,11 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "critical_fields_zoom_candidates": (critical_meta.get("zoom") or {}).get("candidate_pages") or [],
             "critical_fields_zoom_error": (critical_meta.get("zoom") or {}).get("error"),
             "critical_field_sources": critical_meta.get("sources") or {},
+            "velocity_secondary_facts_version": ((critical_meta.get("secondary") or {}).get("version")),
+            "velocity_secondary_facts": ((critical_meta.get("secondary") or {}).get("facts") or {}),
+            "velocity_secondary_facts_confidence": ((critical_meta.get("secondary") or {}).get("confidence") or {}),
+            "velocity_secondary_facts_evidence": ((critical_meta.get("secondary") or {}).get("evidence") or {}),
+            "velocity_secondary_facts_error": ((critical_meta.get("secondary") or {}).get("error")),
             "critical_conflicts_resolved": conflicts,
             "missing_required_fields": critical_meta.get("missing_required") or [],
             "unresolved_critical_fields": critical_meta.get("unresolved_fields") or [],

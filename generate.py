@@ -1,5 +1,6 @@
 import json
 import re
+import unicodedata
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -39,7 +40,7 @@ from ai.infractions.dispatch import dispatch_deterministic_template
 
 router = APIRouter(tags=["generate"])
 
-_GENERATOR_VERSION = "traffic_generate_v1_2"
+_GENERATOR_VERSION = "traffic_generate_v1_3"
 
 
 _ADMIN_PREFIXES = [
@@ -3215,6 +3216,121 @@ def _upgrade_legacy_suplica_to_pro(text: str, tipo: str = "", extra: dict | None
     return (text.rstrip() + "\n\n" + cierre_pro).strip()
 
 
+
+def _identity_fold(value: Any) -> str:
+    txt = unicodedata.normalize("NFKD", _safe_str(value))
+    txt = "".join(ch for ch in txt if not unicodedata.combining(ch))
+    txt = re.sub(r"[^0-9A-Za-z ]+", " ", txt).upper()
+    return re.sub(r"\s+", " ", txt).strip()
+
+
+def _identity_tokens(value: Any) -> set[str]:
+    return {x for x in _identity_fold(value).split() if len(x) >= 2}
+
+
+def _speed_identity_check(speed_intelligence: Dict[str, Any], interesado: Dict[str, Any]) -> Dict[str, Any]:
+    """Compara identidad documental de la sanción con identidad declarada en RTM.
+
+    No cambia el recurrente ni bloquea la generación del borrador. Solo crea una
+    alerta de OPS cuando la evidencia documental es suficientemente confiable.
+    """
+    facts = (speed_intelligence or {}).get("facts") or {}
+    doc_subject = facts.get("document_subject") or {}
+    provenance = (speed_intelligence or {}).get("provenance") or {}
+    conf_map = provenance.get("secondary_facts_confidence") or {}
+    try:
+        subject_conf = float(conf_map.get("document_subject") or 0)
+    except Exception:
+        subject_conf = 0.0
+
+    doc_name = _safe_str(doc_subject.get("full_name")).strip()
+    doc_id = re.sub(r"[^0-9A-Za-z]", "", _safe_str(doc_subject.get("id_number"))).upper()
+
+    client_name = _safe_str((interesado or {}).get("full_name")).strip()
+    if not client_name:
+        client_name = " ".join(
+            x for x in [
+                _safe_str((interesado or {}).get("nombre")).strip(),
+                _safe_str((interesado or {}).get("apellido1")).strip(),
+                _safe_str((interesado or {}).get("apellido2")).strip(),
+            ] if x
+        ).strip()
+    client_id = re.sub(
+        r"[^0-9A-Za-z]", "",
+        _safe_str((interesado or {}).get("dni_nie") or (interesado or {}).get("dni"))
+    ).upper()
+
+    reasons = []
+    id_match = None
+    name_match = None
+    name_overlap = None
+
+    if doc_id and client_id and subject_conf >= 0.75:
+        id_match = bool(doc_id == client_id)
+        if not id_match:
+            reasons.append("document_id_differs_from_rtm_client")
+
+    if doc_name and client_name and subject_conf >= 0.85:
+        dset = _identity_tokens(doc_name)
+        cset = _identity_tokens(client_name)
+        if dset and cset:
+            overlap = len(dset & cset) / max(1, len(dset | cset))
+            name_overlap = round(overlap, 3)
+            name_match = bool(overlap >= 0.50)
+            if overlap < 0.25:
+                reasons.append("document_name_differs_from_rtm_client")
+
+    mismatch = bool(reasons)
+    return {
+        "status": "mismatch" if mismatch else ("consistent" if (id_match is True or name_match is True) else "not_enough_data"),
+        "mismatch": mismatch,
+        "reasons": reasons,
+        "document_subject": {
+            "full_name": doc_name or None,
+            "id_number": doc_id or None,
+            "confidence": subject_conf,
+        },
+        "rtm_client": {
+            "full_name": client_name or None,
+            "id_number": client_id or None,
+        },
+        "id_match": id_match,
+        "name_match": name_match,
+        "name_token_overlap": name_overlap,
+        "action": (
+            "Revisar identidad antes de cualquier presentación. No fusionar automáticamente datos del documento con los del cliente."
+            if mismatch else None
+        ),
+    }
+
+
+def _apply_speed_identity_check(speed_intelligence: Dict[str, Any], interesado: Dict[str, Any]) -> Dict[str, Any]:
+    intel = dict(speed_intelligence or {})
+    check = _speed_identity_check(intel, interesado or {})
+    intel["identity_check"] = check
+
+    if check.get("mismatch"):
+        issues = list(intel.get("issues") or [])
+        if not any(x.get("code") == "DOCUMENT_IDENTITY_MISMATCH" for x in issues if isinstance(x, dict)):
+            issues.append({
+                "code": "DOCUMENT_IDENTITY_MISMATCH",
+                "severity": "high",
+                "message": (
+                    "La identidad que figura en la documentación sancionadora no coincide con la identidad declarada "
+                    "para el cliente de RTM. Debe revisarse antes de cualquier presentación."
+                ),
+            })
+        intel["issues"] = issues
+
+        reasons = list(intel.get("operator_review_reasons") or [])
+        if "DOCUMENT_IDENTITY_MISMATCH" not in reasons:
+            reasons.append("DOCUMENT_IDENTITY_MISMATCH")
+        intel["operator_review_reasons"] = reasons
+        intel["requires_operator_review"] = True
+
+    return intel
+
+
 def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str]] = None, forced_tipo: Optional[str] = None) -> Dict[str, Any]:
     row = conn.execute(
         text("SELECT extracted_json FROM extractions WHERE case_id=:case_id ORDER BY created_at DESC LIMIT 1"),
@@ -3279,6 +3395,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     speed_intelligence = None
     if tipo == "velocidad":
         speed_intelligence = build_velocity_legal_intelligence(core)
+        speed_intelligence = _apply_speed_identity_check(speed_intelligence, interesado or {})
         core["_velocity_legal_intelligence"] = speed_intelligence
         detected_make = _safe_str(((speed_intelligence.get("facts") or {}).get("vehicle_make_model"))).strip()
         if detected_make and not _safe_str(core.get("marca_modelo")).strip():
@@ -3398,6 +3515,10 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         "jurisdiccion": jurisdiccion,
         "generator_version": _GENERATOR_VERSION,
         "legal_intelligence_version": (speed_intelligence or {}).get("version") if isinstance(speed_intelligence, dict) else None,
+        "secondary_facts_version": (
+            ((speed_intelligence or {}).get("provenance") or {}).get("secondary_facts_version")
+            if isinstance(speed_intelligence, dict) else None
+        ),
         "legal_intelligence": speed_intelligence if tipo == "velocidad" else None,
         "delivery": {
             "destination_text": destination_text,
