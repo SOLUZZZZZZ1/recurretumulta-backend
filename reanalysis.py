@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_15"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_16"
 _SECONDARY_FACTS_VERSION = "velocity_secondary_v1_0"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
@@ -2083,7 +2083,7 @@ def _traffic_generic_document_facts_from_images(
             "values": {},
             "confidence": {},
             "evidence": {},
-            "version": "traffic_generic_facts_v1_1",
+            "version": "traffic_generic_facts_v1_2",
             "error": "OPENAI_API_KEY_missing",
         }
 
@@ -2111,7 +2111,7 @@ def _traffic_generic_document_facts_from_images(
             "values": {},
             "confidence": {},
             "evidence": {},
-            "version": "traffic_generic_facts_v1_1",
+            "version": "traffic_generic_facts_v1_2",
             "error": "no_image_pages",
         }
 
@@ -2207,7 +2207,7 @@ def _traffic_generic_document_facts_from_images(
                 "values": {},
                 "confidence": {},
                 "evidence": {},
-                "version": "traffic_generic_facts_v1_1",
+                "version": "traffic_generic_facts_v1_2",
                 "error": f"OpenAI {r.status_code}: {r.text[:300]}",
             }
 
@@ -2327,7 +2327,7 @@ def _traffic_generic_document_facts_from_images(
             "values": out,
             "confidence": conf_out,
             "evidence": ev_out,
-            "version": "traffic_generic_facts_v1_1",
+            "version": "traffic_generic_facts_v1_2",
         }
 
     except Exception as exc:
@@ -2335,7 +2335,7 @@ def _traffic_generic_document_facts_from_images(
             "values": {},
             "confidence": {},
             "evidence": {},
-            "version": "traffic_generic_facts_v1_1",
+            "version": "traffic_generic_facts_v1_2",
             "error": f"{type(exc).__name__}: {exc}",
         }
 
@@ -2351,6 +2351,27 @@ def _apply_traffic_generic_document_facts(
 
     sources: Dict[str, str] = {}
     conflicts: List[Dict[str, Any]] = []
+
+    # El organismo de TRAFFIC_GENERIC solo se considera válido si ESTA
+    # ejecución lo ha identificado expresamente. Nunca heredamos un emisor
+    # de una extracción anterior: podría proceder de una inferencia errónea
+    # basada en domicilio, CP o población.
+    legacy_organismo = out.get("organismo")
+    current_organismo = values.get("organismo")
+
+    if current_organismo in (None, "", [], {}):
+        if legacy_organismo not in (None, "", [], {}):
+            conflicts.append({
+                "field": "organismo",
+                "current_value": legacy_organismo,
+                "vision_value": None,
+                "resolved": True,
+                "chosen": None,
+                "source": "current_run_no_explicit_issuer",
+                "reason": "legacy_issuer_not_confirmed_in_current_run",
+            })
+        out["organismo"] = None
+        sources["organismo"] = "current_run_no_explicit_issuer"
 
     direct_map = {
         "organismo": "organismo",
@@ -2423,12 +2444,20 @@ def _apply_traffic_generic_document_facts(
     generic_facts = {
         "issuer_status": (
             "resolved"
-            if out.get("organismo")
+            if values.get("organismo") and out.get("organismo")
             else "unresolved"
         ),
         "issuer_candidate_rejected": (
             str(values.get("organismo") or "").strip() or None
-            if not out.get("organismo")
+            if not (values.get("organismo") and out.get("organismo"))
+            else None
+        ),
+        "legacy_issuer_rejected": (
+            str(legacy_organismo).strip()
+            if (
+                legacy_organismo not in (None, "", [], {})
+                and not values.get("organismo")
+            )
             else None
         ),
         "document_title": values.get("document_title"),
@@ -2467,7 +2496,7 @@ def _apply_traffic_generic_document_facts(
 
     out["traffic_generic_facts"] = generic_facts
     out["traffic_generic_facts_version"] = (
-        (meta or {}).get("version") or "traffic_generic_facts_v1_1"
+        (meta or {}).get("version") or "traffic_generic_facts_v1_2"
     )
     out["traffic_generic_facts_confidence"] = confidence
     out["traffic_generic_facts_evidence"] = evidence
@@ -3040,7 +3069,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_15",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_16",
             },
         )
 
