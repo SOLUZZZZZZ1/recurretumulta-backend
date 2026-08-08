@@ -1,0 +1,43 @@
+"""RTM Intelligence CORE: contratos, autoridad y observabilidad comunes."""
+
+from rtm_core.contracts import (
+    CORE_CONTRACTS_VERSION,
+    FAMILY_RESOLUTION_VERSION,
+    LEGAL_PREVIEW_VERSION,
+    VALIDATED_FACTS_VERSION,
+    Deadline,
+    DocumentUse,
+    FactStatus,
+    FamilyConflict,
+    FamilyEvidence,
+    FamilyResolution,
+    LegalPreview,
+    MissingItem,
+    MissingItemSeverity,
+    PreviewStatus,
+    ResolutionStatus,
+    SourceReference,
+    ValidatedFact,
+    ValidatedFacts,
+)
+
+__all__ = [
+    "CORE_CONTRACTS_VERSION",
+    "FAMILY_RESOLUTION_VERSION",
+    "LEGAL_PREVIEW_VERSION",
+    "VALIDATED_FACTS_VERSION",
+    "Deadline",
+    "DocumentUse",
+    "FactStatus",
+    "FamilyConflict",
+    "FamilyEvidence",
+    "FamilyResolution",
+    "LegalPreview",
+    "MissingItem",
+    "MissingItemSeverity",
+    "PreviewStatus",
+    "ResolutionStatus",
+    "SourceReference",
+    "ValidatedFact",
+    "ValidatedFacts",
+]
