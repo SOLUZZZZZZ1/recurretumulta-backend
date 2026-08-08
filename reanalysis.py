@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_8"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_9"
 _SECONDARY_FACTS_VERSION = "velocity_secondary_v1_0"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
@@ -1575,7 +1575,28 @@ def _resolved_traffic_family(core: Dict[str, Any], text_blob: str = "") -> str:
         "parking": "estacionamiento",
     }
     value = aliases.get(value, value)
-    if value:
+
+    # "otro", "generic", "unknown", etc. NO son una familia especializada.
+    # Son resultados provisionales de la extracción base y deben permitir
+    # que el dispatcher inspeccione el texto completo del documento.
+    unresolved_family_values = {
+        "",
+        "otro",
+        "otros",
+        "otra",
+        "otras",
+        "unknown",
+        "generic",
+        "generico",
+        "genérico",
+        "traffic_generic",
+        "municipal_generico",
+        "municipal_genérico",
+        "sin_clasificar",
+        "unclassified",
+    }
+
+    if value not in unresolved_family_values:
         return value
 
     blob = _fold_for_match(
@@ -1587,8 +1608,16 @@ def _resolved_traffic_family(core: Dict[str, Any], text_blob: str = "") -> str:
     )
 
     if any(x in blob for x in (
-        "llum vermella", "luz roja", "fase roja",
-        "semaforo", "semáforo",
+        "llum vermella",
+        "luz roja",
+        "fase roja",
+        "semàfor",
+        "semafor",
+        "semaforo",
+        "semáforo",
+        "no respetar la luz roja",
+        "no respectar el llum vermell",
+        "no respectar la llum vermella",
     )):
         return "semaforo"
 
@@ -2015,7 +2044,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_8",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_9",
             },
         )
 
