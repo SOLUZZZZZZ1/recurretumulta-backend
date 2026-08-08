@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_16"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_17"
 _SECONDARY_FACTS_VERSION = "velocity_secondary_v1_0"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
@@ -2343,11 +2343,25 @@ def _traffic_generic_document_facts_from_images(
 def _apply_traffic_generic_document_facts(
     core: Dict[str, Any],
     meta: Dict[str, Any],
+    specialist_family: str = "traffic_generic",
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     out = dict(core or {})
     values = (meta or {}).get("values") or {}
     confidence = (meta or {}).get("confidence") or {}
     evidence = (meta or {}).get("evidence") or {}
+
+    specialist_family = (
+        str(specialist_family or "traffic_generic").strip().lower()
+        or "traffic_generic"
+    )
+
+    # Si la familia específica ha sido resuelta por señales inequívocas,
+    # la conservamos como clasificación del caso. La capa común solo
+    # completa hechos documentales; no inventa estrategia jurídica.
+    out["specialist_dispatch"] = specialist_family
+    if specialist_family == "temeraria":
+        out["tipo_infraccion"] = "temeraria"
+        out["familia_resuelta"] = "temeraria"
 
     sources: Dict[str, str] = {}
     conflicts: List[Dict[str, Any]] = []
@@ -2519,10 +2533,14 @@ def _apply_traffic_generic_document_facts(
     out["requires_operator_review"] = True
 
     reasons = list(out.get("operator_review_reasons") or [])
-    if missing and "traffic_generic_basic_fields_missing" not in reasons:
-        reasons.append("traffic_generic_basic_fields_missing")
-    if "traffic_generic_legal_specialist_pending" not in reasons:
-        reasons.append("traffic_generic_legal_specialist_pending")
+
+    missing_reason = f"{specialist_family}_basic_fields_missing"
+    specialist_reason = f"{specialist_family}_legal_specialist_pending"
+
+    if missing and missing_reason not in reasons:
+        reasons.append(missing_reason)
+    if specialist_reason not in reasons:
+        reasons.append(specialist_reason)
 
     stage = str(values.get("procedural_stage_hint") or "").strip()
     if stage == "payment_requirement":
@@ -2541,8 +2559,8 @@ def _apply_traffic_generic_document_facts(
         "unresolved_fields": [],
         "missing_required": missing,
         "ready_for_generate": False,
-        "specialist_dispatch": "traffic_generic",
-        "deep_analysis": "traffic_generic_document_facts",
+        "specialist_dispatch": specialist_family,
+        "deep_analysis": f"{specialist_family}_document_facts",
     }
 
 
@@ -2569,6 +2587,46 @@ def _resolved_traffic_family(core: Dict[str, Any], text_blob: str = "") -> str:
     }
     value = aliases.get(value, value)
 
+    blob = _fold_for_match(
+        " ".join([
+            str((core or {}).get("hecho_imputado") or ""),
+            str((core or {}).get("hecho_denunciado_literal") or ""),
+            str((core or {}).get("hecho_para_recurso") or ""),
+            str(text_blob or ""),
+        ])
+    )
+
+    # TEMERARIA es más específica y grave que la familia amplia ATENCIÓN.
+    # Si el documento dice expresamente "conducción/conducció temeraria",
+    # no debe quedar absorbido por "atencion".
+    temeraria_signals = (
+        "conduir de forma temeraria",
+        "conducir de forma temeraria",
+        "conduccio temeraria",
+        "conducción temeraria",
+        "conduccion temeraria",
+        "forma temeraria",
+        "greu risc",
+        "grave riesgo",
+        "riesgo grave",
+        "maniobra perillosa",
+        "maniobra peligrosa",
+    )
+
+    broad_attention_values = {
+        "atencion",
+        "atención",
+        "negligente",
+        "conduccion_negligente",
+        "conducción_negligente",
+    }
+
+    if (
+        value in broad_attention_values
+        and any(signal in blob for signal in temeraria_signals)
+    ):
+        return "temeraria"
+
     # "otro", "generic", "unknown", etc. NO son una familia especializada.
     # Son resultados provisionales de la extracción base y deben permitir
     # que el dispatcher inspeccione el texto completo del documento.
@@ -2592,13 +2650,8 @@ def _resolved_traffic_family(core: Dict[str, Any], text_blob: str = "") -> str:
     if value not in unresolved_family_values:
         return value
 
-    blob = _fold_for_match(
-        " ".join([
-            str((core or {}).get("hecho_imputado") or ""),
-            str((core or {}).get("hecho_denunciado_literal") or ""),
-            str(text_blob or ""),
-        ])
-    )
+    if any(signal in blob for signal in temeraria_signals):
+        return "temeraria"
 
     if any(x in blob for x in (
         "llum vermella",
@@ -2951,63 +3004,19 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
         sema_meta = _merge_semaforo_precision(sema_meta, sema_precision_meta)
         combined_core, critical_meta = _apply_semaforo_fields(combined_core, sema_meta)
         critical_meta["semaforo_precision"] = sema_precision_meta
-    elif dispatched_family == "traffic_generic":
+    else:
+        # Cualquier familia sin extractor profundo propio pasa primero por
+        # la capa documental común. Así ATENCIÓN, TEMERARIA, CARRIL, CASCO,
+        # etc. recuperan matrícula/fecha/lugar/importe/puntos/documento/fase
+        # sin ejecutar especialistas ajenos.
         generic_meta = _traffic_generic_document_facts_from_images(
             analyzed_pages
         )
         combined_core, critical_meta = _apply_traffic_generic_document_facts(
             combined_core,
             generic_meta,
+            specialist_family=dispatched_family,
         )
-    else:
-        basic_required = [
-            "expediente_ref",
-            "organismo",
-            "matricula",
-            "fecha_infraccion",
-            "lugar_infraccion",
-        ]
-        missing_required = [
-            key for key in basic_required
-            if combined_core.get(key) in (None, "", [], {})
-        ]
-
-        combined_core["requires_operator_review"] = True
-        reasons = list(combined_core.get("operator_review_reasons") or [])
-        reason = f"{dispatched_family}_specialist_pending"
-        if reason not in reasons:
-            reasons.append(reason)
-        combined_core["operator_review_reasons"] = reasons
-        combined_core["ready_for_generate"] = False
-
-        critical_meta = {
-            "deterministic": {},
-            "vision": {
-                "values": {},
-                "confidence": {},
-                "evidence": {},
-                "skipped": True,
-            },
-            "zoom": {
-                "values": {},
-                "confidence": {},
-                "evidence": {},
-                "skipped": True,
-            },
-            "secondary": {
-                "facts": {},
-                "confidence": {},
-                "evidence": {},
-                "skipped": True,
-            },
-            "sources": {},
-            "conflicts": [],
-            "unresolved_fields": [],
-            "missing_required": missing_required,
-            "ready_for_generate": False,
-            "specialist_dispatch": dispatched_family,
-            "deep_analysis": "skipped_specialist_pending",
-        }
 
     combined_core["document_role"] = "primary_case_document"
     combined_core["document_group_type"] = "traffic_fine"
@@ -3069,7 +3078,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_16",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_17",
             },
         )
 
