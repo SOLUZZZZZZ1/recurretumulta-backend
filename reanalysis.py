@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_9"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_10"
 _SECONDARY_FACTS_VERSION = "velocity_secondary_v1_0"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
@@ -390,10 +390,20 @@ def _normalise_plate(value: Any) -> Optional[str]:
 
 def _normalise_date(value: Any) -> Optional[str]:
     raw = str(value or "").strip()
+
     m = re.search(r"\b(\d{2})[-/](\d{2})[-/](\d{4})\b", raw)
-    if not m:
-        return None
-    return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+
+    m = re.search(r"\b(\d{4})[-/](\d{2})[-/](\d{2})\b", raw)
+    if m:
+        return f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+
+    m = re.search(r"\b(\d{4})(\d{2})(\d{2})\b", raw)
+    if m:
+        return f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+
+    return None
 
 
 def _normalise_float(value: Any) -> Optional[float]:
@@ -1333,7 +1343,9 @@ Lee todas las páginas y devuelve EXCLUSIVAMENTE JSON con esta estructura:
     "fecha_infraccion": string|null,
     "hora_infraccion": string|null,
     "lugar_infraccion": string|null,
-    "sancion_importe_eur": number|null,
+    "hecho_denunciado_literal": string|null,
+    "sancion_ordinaria_eur": number|null,
+    "importe_reducido_eur": number|null,
     "puntos_detraccion": integer|null,
     "capture_method": string|null,
     "capture_automatic": boolean|null,
@@ -1354,11 +1366,14 @@ Reglas:
 - matrícula: exactamente 4 dígitos y 3 letras.
 - fecha_infraccion y hora_infraccion: fecha/hora del HECHO, no fecha de emisión ni fecha límite de pago.
 - lugar_infraccion: vía/calle y número o punto kilométrico si aparece.
-- sancion_importe_eur: importe de la sanción correspondiente al hecho, no una cifra de código o referencia.
+- hecho_denunciado_literal: transcribe SOLO la frase que describe la conducta imputada.
+- sancion_ordinaria_eur: importe íntegro/ordinario de la sanción, por ejemplo el indicado como "Sanció a partir de..." o equivalente.
+- importe_reducido_eur: importe reducido o importe actualmente pagable cuando el documento muestre una reducción.
+- Si aparecen 100 € como importe pagable y 200 € como sanción a partir de una fecha, NO elijas uno: devuelve ambos en sus campos.
 - puntos_detraccion: puntos asociados a la infracción.
 - capture_method: copia la expresión del documento; ejemplos: "CONTROL PER CÀMERA DE VÍDEO", "agente", "radar".
 - capture_automatic: true solo si el documento indica captación/control automático o por cámara sin observación directa como soporte principal; false si consta observación presencial; null si no se puede saber.
-- norma / articulo: copia literalmente la norma y el artículo/apartado indicados. NO sustituyas por el artículo que creas correcto.
+- norma / articulo: copia carácter por carácter la norma y el artículo/apartado indicados. Distingue RGC de RFGC. NO sustituyas por el artículo que creas correcto.
 - document_subject_name / document_subject_id: persona identificada como infractor/interesado en la notificación.
 - vehicle_photo_present: true si la página contiene una fotografía del vehículo asociada a la denuncia.
 - confidence: 0..1 para cada valor no nulo.
@@ -1403,6 +1418,7 @@ Reglas:
 
         for key in (
             "organismo", "expediente_ref", "hora_infraccion", "lugar_infraccion",
+            "hecho_denunciado_literal",
             "capture_method", "norma", "articulo", "document_subject_name",
             "document_subject_id",
         ):
@@ -1415,9 +1431,13 @@ Reglas:
             if value:
                 out[key] = value
 
-        amount = _normalise_float(values.get("sancion_importe_eur"))
-        if amount is not None:
-            out["sancion_importe_eur"] = amount
+        ordinary_amount = _normalise_float(values.get("sancion_ordinaria_eur"))
+        if ordinary_amount is not None:
+            out["sancion_ordinaria_eur"] = ordinary_amount
+
+        reduced_amount = _normalise_float(values.get("importe_reducido_eur"))
+        if reduced_amount is not None:
+            out["importe_reducido_eur"] = reduced_amount
 
         points = _normalise_int(values.get("puntos_detraccion"), 0, 15)
         if points is not None:
@@ -1442,12 +1462,12 @@ Reglas:
             "values": out,
             "confidence": conf_out,
             "evidence": ev_out,
-            "version": "semaforo_secondary_v1_0",
+            "version": "semaforo_secondary_v1_1",
         }
     except Exception as exc:
         return {
             "values": {}, "confidence": {}, "evidence": {},
-            "version": "semaforo_secondary_v1_0",
+            "version": "semaforo_secondary_v1_1",
             "error": f"{type(exc).__name__}: {exc}",
         }
 
@@ -1463,6 +1483,11 @@ def _apply_semaforo_fields(
     sources: Dict[str, str] = {}
     conflicts: List[Dict[str, Any]] = []
 
+    # El dispatcher especializado ya ha resuelto la familia.
+    out["tipo_infraccion"] = "semaforo"
+    out["familia_resuelta"] = "semaforo"
+    out["specialist_dispatch"] = "semaforo"
+
     direct_map = {
         "organismo": "organismo",
         "expediente_ref": "expediente_ref",
@@ -1470,7 +1495,6 @@ def _apply_semaforo_fields(
         "fecha_infraccion": "fecha_infraccion",
         "hora_infraccion": "hora_infraccion",
         "lugar_infraccion": "lugar_infraccion",
-        "sancion_importe_eur": "sancion_importe_eur",
         "puntos_detraccion": "puntos_detraccion",
     }
 
@@ -1494,7 +1518,28 @@ def _apply_semaforo_fields(
             out[dst] = value
             sources[dst] = "semaforo_targeted_vision"
 
+    fact = str(values.get("hecho_denunciado_literal") or "").strip()
+    fact_conf = float(confidence.get("hecho_denunciado_literal") or 0)
+    if fact and fact_conf >= 0.80:
+        out["hecho_imputado"] = fact
+        out["hecho_denunciado_literal"] = fact
+        sources["hecho_imputado"] = "semaforo_targeted_vision"
+
+    # Importes con semántica separada.
+    ordinary = values.get("sancion_ordinaria_eur")
+    reduced = values.get("importe_reducido_eur")
+
+    if ordinary not in (None, ""):
+        out["sancion_importe_eur"] = ordinary
+        out["sancion_ordinaria_eur"] = ordinary
+        sources["sancion_importe_eur"] = "semaforo_targeted_vision"
+
+    if reduced not in (None, ""):
+        out["importe_reducido_eur"] = reduced
+        sources["importe_reducido_eur"] = "semaforo_targeted_vision"
+
     sema_facts = {
+        "hecho_denunciado_literal": fact or None,
         "capture_method": values.get("capture_method"),
         "capture_automatic": values.get("capture_automatic"),
         "normative_reference": {
@@ -1507,8 +1552,11 @@ def _apply_semaforo_fields(
         },
         "fecha_emision": values.get("fecha_emision"),
         "fecha_limite_pago": values.get("fecha_limite_pago"),
+        "sancion_ordinaria_eur": ordinary,
+        "importe_reducido_eur": reduced,
         "vehicle_photo_present": values.get("vehicle_photo_present"),
     }
+
     sema_facts = {
         k: v for k, v in sema_facts.items()
         if v not in (None, "", [], {}) and not (
@@ -1518,16 +1566,25 @@ def _apply_semaforo_fields(
 
     if sema_facts:
         out["semaforo_secondary_facts"] = sema_facts
-        out["semaforo_secondary_facts_version"] = (sema_meta or {}).get("version") or "semaforo_secondary_v1_0"
+        out["semaforo_secondary_facts_version"] = (
+            (sema_meta or {}).get("version") or "semaforo_secondary_v1_1"
+        )
         out["semaforo_secondary_facts_confidence"] = confidence
         out["semaforo_secondary_facts_evidence"] = evidence
 
     required = [
-        "expediente_ref", "organismo", "matricula", "fecha_infraccion",
-        "lugar_infraccion", "sancion_importe_eur", "puntos_detraccion",
+        "expediente_ref",
+        "organismo",
+        "matricula",
+        "fecha_infraccion",
+        "lugar_infraccion",
+        "hecho_imputado",
+        "sancion_importe_eur",
+        "puntos_detraccion",
     ]
     missing = [k for k in required if out.get(k) in (None, "", [], {})]
 
+    # Aún no hay especialista jurídico de semáforo: no se genera automáticamente.
     out["ready_for_generate"] = False
     out["requires_operator_review"] = True
 
@@ -1551,6 +1608,7 @@ def _apply_semaforo_fields(
         "specialist_dispatch": "semaforo",
         "deep_analysis": "semaforo",
     }
+
 
 
 def _resolved_traffic_family(core: Dict[str, Any], text_blob: str = "") -> str:
@@ -2044,7 +2102,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_9",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_10",
             },
         )
 
@@ -2186,11 +2244,15 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "critical_fields_zoom_candidates": (critical_meta.get("zoom") or {}).get("candidate_pages") or [],
             "critical_fields_zoom_error": (critical_meta.get("zoom") or {}).get("error"),
             "critical_field_sources": critical_meta.get("sources") or {},
-            "velocity_secondary_facts_version": ((critical_meta.get("secondary") or {}).get("version")),
-            "velocity_secondary_facts": ((critical_meta.get("secondary") or {}).get("facts") or {}),
-            "velocity_secondary_facts_confidence": ((critical_meta.get("secondary") or {}).get("confidence") or {}),
-            "velocity_secondary_facts_evidence": ((critical_meta.get("secondary") or {}).get("evidence") or {}),
-            "velocity_secondary_facts_error": ((critical_meta.get("secondary") or {}).get("error")),
+            "velocity_secondary_facts_version": core.get("velocity_secondary_facts_version"),
+            "velocity_secondary_facts": core.get("velocity_secondary_facts") or {},
+            "velocity_secondary_facts_confidence": core.get("velocity_secondary_facts_confidence") or {},
+            "velocity_secondary_facts_evidence": core.get("velocity_secondary_facts_evidence") or {},
+            "velocity_secondary_facts_error": (
+                (critical_meta.get("secondary") or {}).get("error")
+                if (critical_meta.get("specialist_dispatch") == "velocidad")
+                else None
+            ),
             "semaforo_secondary_facts_version": core.get("semaforo_secondary_facts_version"),
             "semaforo_secondary_facts": core.get("semaforo_secondary_facts") or {},
             "semaforo_secondary_facts_confidence": core.get("semaforo_secondary_facts_confidence") or {},
@@ -2230,11 +2292,15 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "critical_fields_zoom_candidates": (critical_meta.get("zoom") or {}).get("candidate_pages") or [],
             "critical_fields_zoom_error": (critical_meta.get("zoom") or {}).get("error"),
             "critical_field_sources": critical_meta.get("sources") or {},
-            "velocity_secondary_facts_version": ((critical_meta.get("secondary") or {}).get("version")),
-            "velocity_secondary_facts": ((critical_meta.get("secondary") or {}).get("facts") or {}),
-            "velocity_secondary_facts_confidence": ((critical_meta.get("secondary") or {}).get("confidence") or {}),
-            "velocity_secondary_facts_evidence": ((critical_meta.get("secondary") or {}).get("evidence") or {}),
-            "velocity_secondary_facts_error": ((critical_meta.get("secondary") or {}).get("error")),
+            "velocity_secondary_facts_version": core.get("velocity_secondary_facts_version"),
+            "velocity_secondary_facts": core.get("velocity_secondary_facts") or {},
+            "velocity_secondary_facts_confidence": core.get("velocity_secondary_facts_confidence") or {},
+            "velocity_secondary_facts_evidence": core.get("velocity_secondary_facts_evidence") or {},
+            "velocity_secondary_facts_error": (
+                (critical_meta.get("secondary") or {}).get("error")
+                if (critical_meta.get("specialist_dispatch") == "velocidad")
+                else None
+            ),
             "semaforo_secondary_facts_version": core.get("semaforo_secondary_facts_version"),
             "semaforo_secondary_facts": core.get("semaforo_secondary_facts") or {},
             "semaforo_secondary_facts_confidence": core.get("semaforo_secondary_facts_confidence") or {},
