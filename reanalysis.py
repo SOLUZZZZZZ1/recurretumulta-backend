@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_17"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_18"
 _SECONDARY_FACTS_VERSION = "velocity_secondary_v1_0"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
@@ -2340,6 +2340,444 @@ def _traffic_generic_document_facts_from_images(
         }
 
 
+
+def _traffic_handwritten_precision_from_images(
+    analyzed_pages: List[Dict[str, Any]],
+    generic_meta: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Lectura de precisión para boletines manuscritos / baja legibilidad.
+
+    Solo se ejecuta cuando la lectura común indica una DENUNCIA y:
+    - falta un campo crítico visible (p. ej. puntos), o
+    - el hecho tiene confianza baja.
+
+    Usa UNA llamada de IA con DOS recortes pequeños:
+    - cabecera/datos estructurados;
+    - campo FET DENUNCIAT.
+    """
+    generic_values = (generic_meta or {}).get("values") or {}
+    generic_conf = (generic_meta or {}).get("confidence") or {}
+
+    document_type = str(generic_values.get("document_type") or "").strip().lower()
+    try:
+        fact_conf = float(generic_conf.get("hecho_denunciado_literal") or 0)
+    except Exception:
+        fact_conf = 0.0
+
+    should_run = bool(
+        document_type == "denuncia"
+        and (
+            generic_values.get("puntos_detraccion") in (None, "", [], {})
+            or generic_values.get("matricula") in (None, "", [], {})
+            or generic_values.get("fecha_infraccion") in (None, "", [], {})
+            or fact_conf < 0.90
+        )
+    )
+
+    if not should_run:
+        return {
+            "values": {},
+            "confidence": {},
+            "evidence": {},
+            "quality": {},
+            "version": "traffic_handwritten_precision_v1_0",
+            "skipped": True,
+        }
+
+    if Image is None:
+        return {
+            "values": {},
+            "confidence": {},
+            "evidence": {},
+            "quality": {},
+            "version": "traffic_handwritten_precision_v1_0",
+            "error": "Pillow_not_available",
+        }
+
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return {
+            "values": {},
+            "confidence": {},
+            "evidence": {},
+            "quality": {},
+            "version": "traffic_handwritten_precision_v1_0",
+            "error": "OPENAI_API_KEY_missing",
+        }
+
+    page = None
+    for candidate in analyzed_pages or []:
+        content = candidate.get("analysis_content")
+        mime = str(candidate.get("analysis_mime") or "")
+        if isinstance(content, (bytes, bytearray)) and mime.startswith("image/"):
+            page = candidate
+            break
+
+    if not page:
+        return {
+            "values": {},
+            "confidence": {},
+            "evidence": {},
+            "quality": {},
+            "version": "traffic_handwritten_precision_v1_0",
+            "error": "no_image_page",
+        }
+
+    try:
+        img = Image.open(io.BytesIO(bytes(page["analysis_content"]))).convert("RGB")
+        w, h = img.size
+
+        # Cabecera amplia: expediente / fecha / puntos / lugar / vehículo / cuantía.
+        if w >= h:
+            header = img.crop((
+                int(w * 0.25),
+                int(h * 0.10),
+                int(w * 0.78),
+                int(h * 0.43),
+            ))
+            # Crop compatible con boletines SCT fotografiados en horizontal.
+            fact = img.crop((
+                int(w * 0.28),
+                int(h * 0.34),
+                int(w * 0.56),
+                int(h * 0.59),
+            ))
+        else:
+            header = img.crop((
+                int(w * 0.03),
+                int(h * 0.02),
+                int(w * 0.97),
+                int(h * 0.43),
+            ))
+            fact = img.crop((
+                int(w * 0.05),
+                int(h * 0.25),
+                int(w * 0.82),
+                int(h * 0.61),
+            ))
+
+        def _prepare(crop):
+            max_dim = 1800
+            if max(crop.size) < max_dim:
+                ratio = min(2.4, max_dim / max(1, max(crop.size)))
+                crop = crop.resize((
+                    max(1, int(crop.width * ratio)),
+                    max(1, int(crop.height * ratio)),
+                ))
+            try:
+                crop = ImageEnhance.Contrast(crop).enhance(1.45)
+                crop = ImageEnhance.Sharpness(crop).enhance(1.30)
+            except Exception:
+                pass
+            return crop
+
+        header = _prepare(header)
+        fact = _prepare(fact)
+
+        header_url = _data_url_jpeg(_jpeg_bytes(header))
+        fact_url = _data_url_jpeg(_jpeg_bytes(fact))
+
+        system_text = (
+            "Eres un transcriptor forense de boletines manuscritos de tráfico. "
+            "No completes por sentido común. No conviertas una palabra dudosa en otra infracción. "
+            "Si una cifra o palabra no es legible, devuelve null o baja la confianza."
+        )
+
+        user_text = (
+            "Tienes DOS recortes del mismo boletín: CABECERA y FET DENUNCIAT.\n"
+            "Devuelve SOLO JSON:\n"
+            "{\n"
+            '  "values": {\n'
+            '    "familia_hint": "temeraria"|"velocidad"|"semaforo"|"atencion"|"otro"|null,\n'
+            '    "expediente_ref": string|null,\n'
+            '    "matricula": string|null,\n'
+            '    "fecha_infraccion": string|null,\n'
+            '    "hora_infraccion": string|null,\n'
+            '    "lugar_infraccion": string|null,\n'
+            '    "puntos_detraccion": integer|null,\n'
+            '    "sancion_ordinaria_eur": number|null,\n'
+            '    "vehicle_make_model": string|null,\n'
+            '    "hecho_denunciado_literal": string|null\n'
+            "  },\n"
+            '  "quality": {\n'
+            '    "handwriting_legibility": "good"|"medium"|"bad",\n'
+            '    "requires_operator_review": boolean\n'
+            "  },\n"
+            '  "confidence": {},\n'
+            '  "evidence": {}\n'
+            "}\n\n"
+            "REGLAS CRÍTICAS:\n"
+            "- familia_hint=temeraria SOLO si puedes leer expresamente temeraria/temerària o una expresión inequívoca equivalente.\n"
+            "- NO clasifiques como velocidad solo porque aparezcan números o porque el formulario tenga casillas de velocidad.\n"
+            "- hecho_denunciado_literal: copia lo que realmente se ve; usa [ILEGIBLE] para palabras dudosas.\n"
+            "- puntos_detraccion: lee únicamente el campo PUNTS/PUNTOS.\n"
+            "- sancion_ordinaria_eur: lee únicamente QUANTIA/CUANTÍA.\n"
+            "- fecha/hora/lugar/matrícula: usa sus campos etiquetados, no texto inferido del hecho.\n"
+            "- matrícula: 4 dígitos + 3 letras si es legible; si dudas entre letras, null.\n"
+            "- confidence DEBE incluir 0..1 para cada valor no nulo.\n"
+            "- evidence DEBE citar el fragmento/campo visible para cada valor no nulo.\n"
+            "- Con manuscrito de mala calidad es CORRECTO devolver null."
+        )
+
+        payload = {
+            "model": (os.getenv("OPENAI_MODEL") or "gpt-4o").strip(),
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_text}],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": user_text},
+                        {"type": "input_text", "text": "RECORTE 1 — CABECERA / CAMPOS"},
+                        {"type": "input_image", "image_url": header_url},
+                        {"type": "input_text", "text": "RECORTE 2 — FET DENUNCIAT"},
+                        {"type": "input_image", "image_url": fact_url},
+                    ],
+                },
+            ],
+            "text": {"format": {"type": "json_object"}},
+        }
+
+        r = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=90,
+        )
+
+        if not r.ok:
+            return {
+                "values": {},
+                "confidence": {},
+                "evidence": {},
+                "quality": {},
+                "version": "traffic_handwritten_precision_v1_0",
+                "error": f"OpenAI {r.status_code}: {r.text[:300]}",
+            }
+
+        obj = json.loads(_response_output_text(r.json()) or "{}")
+        values = obj.get("values") if isinstance(obj, dict) else {}
+        confidence = obj.get("confidence") if isinstance(obj, dict) else {}
+        evidence = obj.get("evidence") if isinstance(obj, dict) else {}
+        quality = obj.get("quality") if isinstance(obj, dict) else {}
+
+        if not isinstance(values, dict):
+            values = {}
+        if not isinstance(confidence, dict):
+            confidence = {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+        if not isinstance(quality, dict):
+            quality = {}
+
+        out: Dict[str, Any] = {}
+
+        family = str(values.get("familia_hint") or "").strip().lower()
+        if family in {"temeraria", "velocidad", "semaforo", "atencion", "otro"}:
+            out["familia_hint"] = family
+
+        plate = _normalise_plate(values.get("matricula"))
+        if plate:
+            out["matricula"] = plate
+
+        date = _normalise_date(values.get("fecha_infraccion"))
+        if date:
+            out["fecha_infraccion"] = date
+
+        for key in (
+            "expediente_ref",
+            "hora_infraccion",
+            "lugar_infraccion",
+            "vehicle_make_model",
+            "hecho_denunciado_literal",
+        ):
+            value = values.get(key)
+            if value not in (None, "", "null"):
+                out[key] = str(value).strip()
+
+        points = _normalise_int(values.get("puntos_detraccion"), 0, 15)
+        if points is not None:
+            out["puntos_detraccion"] = points
+
+        amount = _normalise_float(values.get("sancion_ordinaria_eur"))
+        if amount is not None:
+            out["sancion_ordinaria_eur"] = amount
+
+        conf_out: Dict[str, float] = {}
+        ev_out: Dict[str, str] = {}
+        for key in out:
+            try:
+                conf_out[key] = max(
+                    0.0,
+                    min(1.0, float(confidence.get(key) or 0)),
+                )
+            except Exception:
+                conf_out[key] = 0.0
+            if evidence.get(key):
+                ev_out[key] = str(evidence.get(key))[:260]
+
+        legibility = str(quality.get("handwriting_legibility") or "").strip().lower()
+        if legibility not in {"good", "medium", "bad"}:
+            legibility = "medium"
+
+        return {
+            "values": out,
+            "confidence": conf_out,
+            "evidence": ev_out,
+            "quality": {
+                "handwriting_legibility": legibility,
+                "requires_operator_review": bool(
+                    quality.get("requires_operator_review", legibility != "good")
+                ),
+            },
+            "version": "traffic_handwritten_precision_v1_0",
+            "page_index": int(page.get("page_index") or 0),
+        }
+
+    except Exception as exc:
+        return {
+            "values": {},
+            "confidence": {},
+            "evidence": {},
+            "quality": {},
+            "version": "traffic_handwritten_precision_v1_0",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _apply_handwritten_precision(
+    core: Dict[str, Any],
+    precision_meta: Dict[str, Any],
+    base_meta: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    out = dict(core or {})
+    values = (precision_meta or {}).get("values") or {}
+    confidence = (precision_meta or {}).get("confidence") or {}
+    quality = (precision_meta or {}).get("quality") or {}
+
+    conflicts: List[Dict[str, Any]] = []
+    sources: Dict[str, str] = {}
+
+    field_map = {
+        "expediente_ref": "expediente_ref",
+        "matricula": "matricula",
+        "fecha_infraccion": "fecha_infraccion",
+        "hora_infraccion": "hora_infraccion",
+        "lugar_infraccion": "lugar_infraccion",
+        "puntos_detraccion": "puntos_detraccion",
+        "vehicle_make_model": "vehicle_make_model",
+    }
+
+    for src, dst in field_map.items():
+        value = values.get(src)
+        if value in (None, "", [], {}):
+            continue
+        try:
+            conf = float(confidence.get(src) or 0)
+        except Exception:
+            conf = 0.0
+
+        current = out.get(dst)
+        if current not in (None, "", [], {}) and str(current).strip() != str(value).strip():
+            conflicts.append({
+                "field": dst,
+                "current_value": current,
+                "precision_value": value,
+                "precision_confidence": conf,
+                "resolved": conf >= 0.90,
+                "chosen": value if conf >= 0.90 else current,
+                "source": "handwritten_precision",
+            })
+
+        if conf >= 0.90:
+            out[dst] = value
+            sources[dst] = "handwritten_precision"
+
+    amount = values.get("sancion_ordinaria_eur")
+    if amount not in (None, ""):
+        try:
+            amount_conf = float(confidence.get("sancion_ordinaria_eur") or 0)
+        except Exception:
+            amount_conf = 0.0
+        if amount_conf >= 0.90:
+            current = out.get("sancion_importe_eur")
+            if current not in (None, "") and float(current) != float(amount):
+                conflicts.append({
+                    "field": "sancion_importe_eur",
+                    "current_value": current,
+                    "precision_value": amount,
+                    "precision_confidence": amount_conf,
+                    "resolved": True,
+                    "chosen": amount,
+                    "source": "handwritten_precision",
+                })
+            out["sancion_importe_eur"] = amount
+            out["sancion_ordinaria_eur"] = amount
+            sources["sancion_importe_eur"] = "handwritten_precision"
+
+    fact = str(values.get("hecho_denunciado_literal") or "").strip()
+    try:
+        fact_conf = float(confidence.get("hecho_denunciado_literal") or 0)
+    except Exception:
+        fact_conf = 0.0
+
+    if fact and fact_conf >= 0.75:
+        out["hecho_imputado"] = fact
+        out["hecho_denunciado_literal"] = fact
+        sources["hecho_imputado"] = "handwritten_precision"
+
+    family = str(values.get("familia_hint") or "").strip().lower()
+    try:
+        family_conf = float(confidence.get("familia_hint") or 0)
+    except Exception:
+        family_conf = 0.0
+
+    fact_folded = _fold_for_match(fact)
+    temeraria_explicit = (
+        "temeraria" in fact_folded
+        or "temerària" in str(fact or "").lower()
+    )
+
+    if (
+        family == "temeraria"
+        and family_conf >= 0.75
+        and temeraria_explicit
+    ):
+        out["specialist_dispatch"] = "temeraria"
+        out["tipo_infraccion"] = "temeraria"
+        out["familia_resuelta"] = "temeraria"
+
+    legibility = str(quality.get("handwriting_legibility") or "medium").lower()
+    if legibility in {"medium", "bad"} or quality.get("requires_operator_review"):
+        out["requires_operator_review"] = True
+        reasons = list(out.get("operator_review_reasons") or [])
+        if "handwritten_low_legibility" not in reasons:
+            reasons.append("handwritten_low_legibility")
+        out["operator_review_reasons"] = reasons
+
+    out["ready_for_generate"] = False
+
+    meta = dict(base_meta or {})
+    meta.setdefault("conflicts", [])
+    meta["conflicts"] = list(meta.get("conflicts") or []) + conflicts
+    meta.setdefault("sources", {})
+    meta["sources"].update(sources)
+    meta["handwritten_precision"] = precision_meta or {}
+    meta["specialist_dispatch"] = out.get("specialist_dispatch") or meta.get("specialist_dispatch")
+    meta["deep_analysis"] = (
+        f"{meta['specialist_dispatch']}_handwritten_precision"
+        if meta.get("specialist_dispatch")
+        else "handwritten_precision"
+    )
+    meta["ready_for_generate"] = False
+    return out, meta
+
+
 def _apply_traffic_generic_document_facts(
     core: Dict[str, Any],
     meta: Dict[str, Any],
@@ -3006,9 +3444,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
         critical_meta["semaforo_precision"] = sema_precision_meta
     else:
         # Cualquier familia sin extractor profundo propio pasa primero por
-        # la capa documental común. Así ATENCIÓN, TEMERARIA, CARRIL, CASCO,
-        # etc. recuperan matrícula/fecha/lugar/importe/puntos/documento/fase
-        # sin ejecutar especialistas ajenos.
+        # la capa documental común.
         generic_meta = _traffic_generic_document_facts_from_images(
             analyzed_pages
         )
@@ -3017,6 +3453,19 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
             generic_meta,
             specialist_family=dispatched_family,
         )
+
+        # Si la denuncia tiene campos críticos no resueltos o el hecho tiene
+        # baja confianza, hacemos UNA única lectura de precisión manuscrita.
+        handwritten_meta = _traffic_handwritten_precision_from_images(
+            analyzed_pages,
+            generic_meta,
+        )
+        if not handwritten_meta.get("skipped"):
+            combined_core, critical_meta = _apply_handwritten_precision(
+                combined_core,
+                handwritten_meta,
+                critical_meta,
+            )
 
     combined_core["document_role"] = "primary_case_document"
     combined_core["document_group_type"] = "traffic_fine"
@@ -3078,7 +3527,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_17",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_18",
             },
         )
 
@@ -3248,6 +3697,12 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
                 if critical_meta.get("specialist_dispatch") == "traffic_generic"
                 else None
             ),
+            "handwritten_precision_version": ((critical_meta.get("handwritten_precision") or {}).get("version")),
+            "handwritten_precision_values": ((critical_meta.get("handwritten_precision") or {}).get("values") or {}),
+            "handwritten_precision_confidence": ((critical_meta.get("handwritten_precision") or {}).get("confidence") or {}),
+            "handwritten_precision_evidence": ((critical_meta.get("handwritten_precision") or {}).get("evidence") or {}),
+            "handwritten_precision_quality": ((critical_meta.get("handwritten_precision") or {}).get("quality") or {}),
+            "handwritten_precision_error": ((critical_meta.get("handwritten_precision") or {}).get("error")),
             "critical_conflicts_resolved": conflicts,
             "missing_required_fields": critical_meta.get("missing_required") or [],
             "unresolved_critical_fields": critical_meta.get("unresolved_fields") or [],
@@ -3311,6 +3766,12 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
                 if critical_meta.get("specialist_dispatch") == "traffic_generic"
                 else None
             ),
+            "handwritten_precision_version": ((critical_meta.get("handwritten_precision") or {}).get("version")),
+            "handwritten_precision_values": ((critical_meta.get("handwritten_precision") or {}).get("values") or {}),
+            "handwritten_precision_confidence": ((critical_meta.get("handwritten_precision") or {}).get("confidence") or {}),
+            "handwritten_precision_evidence": ((critical_meta.get("handwritten_precision") or {}).get("evidence") or {}),
+            "handwritten_precision_quality": ((critical_meta.get("handwritten_precision") or {}).get("quality") or {}),
+            "handwritten_precision_error": ((critical_meta.get("handwritten_precision") or {}).get("error")),
             "critical_conflicts_resolved": conflicts,
             "missing_required_fields": critical_meta.get("missing_required") or [],
             "unresolved_critical_fields": critical_meta.get("unresolved_fields") or [],
