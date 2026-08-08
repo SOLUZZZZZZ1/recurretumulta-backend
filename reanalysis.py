@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_10"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_11"
 _SECONDARY_FACTS_VERSION = "velocity_secondary_v1_0"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
@@ -1462,14 +1462,280 @@ Reglas:
             "values": out,
             "confidence": conf_out,
             "evidence": ev_out,
-            "version": "semaforo_secondary_v1_1",
+            "version": "semaforo_secondary_v1_2",
         }
     except Exception as exc:
         return {
             "values": {}, "confidence": {}, "evidence": {},
-            "version": "semaforo_secondary_v1_1",
+            "version": "semaforo_secondary_v1_2",
             "error": f"{type(exc).__name__}: {exc}",
         }
+
+
+
+def _semaforo_precision_from_crops(analyzed_pages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    '''Lectura mínima de precisión para fecha de emisión, hecho y precepto.'''
+    if Image is None:
+        return {
+            "values": {},
+            "confidence": {},
+            "evidence": {},
+            "version": "semaforo_precision_v1_0",
+            "error": "Pillow_not_available",
+        }
+
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return {
+            "values": {},
+            "confidence": {},
+            "evidence": {},
+            "version": "semaforo_precision_v1_0",
+            "error": "OPENAI_API_KEY_missing",
+        }
+
+    page = None
+    for candidate in analyzed_pages or []:
+        content = candidate.get("analysis_content")
+        mime = str(candidate.get("analysis_mime") or "")
+        if isinstance(content, (bytes, bytearray)) and mime.startswith("image/"):
+            page = candidate
+            break
+
+    if not page:
+        return {
+            "values": {},
+            "confidence": {},
+            "evidence": {},
+            "version": "semaforo_precision_v1_0",
+            "error": "no_image_page",
+        }
+
+    try:
+        img = Image.open(io.BytesIO(bytes(page["analysis_content"]))).convert("RGB")
+        w, h = img.size
+
+        top = img.crop((
+            int(w * 0.03),
+            int(h * 0.23),
+            int(w * 0.72),
+            int(h * 0.48),
+        ))
+
+        infraction = img.crop((
+            int(w * 0.02),
+            int(h * 0.49),
+            int(w * 0.62),
+            int(h * 0.78),
+        ))
+
+        def _enlarge(crop):
+            max_dim = 1500
+            if max(crop.size) < max_dim:
+                ratio = min(2.2, max_dim / max(1, max(crop.size)))
+                crop = crop.resize((
+                    max(1, int(crop.width * ratio)),
+                    max(1, int(crop.height * ratio)),
+                ))
+            try:
+                crop = ImageEnhance.Contrast(crop).enhance(1.2)
+                crop = ImageEnhance.Sharpness(crop).enhance(1.15)
+            except Exception:
+                pass
+            return crop
+
+        top = _enlarge(top)
+        infraction = _enlarge(infraction)
+
+        top_url = _data_url_jpeg(_jpeg_bytes(top))
+        fact_url = _data_url_jpeg(_jpeg_bytes(infraction))
+
+        system_text = (
+            "Eres un transcriptor documental de precisión. "
+            "No interpretes, no traduzcas, no corrijas jurídicamente. "
+            "Copia carácter por carácter únicamente los datos pedidos."
+        )
+
+        user_text = (
+            "Tienes DOS recortes del mismo documento.\n\n"
+            "RECORTE A contiene datos administrativos.\n"
+            "RECORTE B contiene el bloque de la infracción.\n\n"
+            "Devuelve SOLO JSON con esta estructura:\n"
+            "{\n"
+            '  "values": {\n'
+            '    "fecha_emision_raw": string|null,\n'
+            '    "hecho_denunciado_literal": string|null,\n'
+            '    "norma_literal": string|null,\n'
+            '    "articulo_literal": string|null\n'
+            "  },\n"
+            '  "confidence": {},\n'
+            '  "evidence": {}\n'
+            "}\n\n"
+            "REGLAS:\n"
+            "1) fecha_emision_raw: copia exactamente el valor impreso junto a "
+            "DATA D'EMISSIÓ / FECHA DE EMISIÓN. Si aparece 20260307, devuelve exactamente 20260307.\n"
+            "2) hecho_denunciado_literal: copia literalmente la frase de conducta denunciada, en catalán, "
+            "incluyendo expresiones como 'no intermitent' si aparecen. No sustituyas palabras.\n"
+            "3) norma_literal y articulo_literal: copia carácter por carácter. Distingue estrictamente RGC de RFGC. "
+            "No corrijas el precepto aunque te parezca extraño.\n"
+            "4) confidence de 0 a 1. evidence: fragmento literal breve.\n"
+            "5) Si no se ve claramente, null. No inventes."
+        )
+
+        payload = {
+            "model": (os.getenv("OPENAI_MODEL") or "gpt-4o").strip(),
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_text}],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": user_text},
+                        {"type": "input_text", "text": "RECORTE A — DATOS ADMINISTRATIVOS"},
+                        {"type": "input_image", "image_url": top_url},
+                        {"type": "input_text", "text": "RECORTE B — HECHO Y PRECEPTO"},
+                        {"type": "input_image", "image_url": fact_url},
+                    ],
+                },
+            ],
+            "text": {"format": {"type": "json_object"}},
+        }
+
+        r = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=75,
+        )
+
+        if not r.ok:
+            return {
+                "values": {},
+                "confidence": {},
+                "evidence": {},
+                "version": "semaforo_precision_v1_0",
+                "error": f"OpenAI {r.status_code}: {r.text[:300]}",
+            }
+
+        obj = json.loads(_response_output_text(r.json()) or "{}")
+        values = obj.get("values") if isinstance(obj, dict) else {}
+        confidence = obj.get("confidence") if isinstance(obj, dict) else {}
+        evidence = obj.get("evidence") if isinstance(obj, dict) else {}
+
+        if not isinstance(values, dict):
+            values = {}
+        if not isinstance(confidence, dict):
+            confidence = {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+
+        out_values: Dict[str, Any] = {}
+
+        raw_date = str(values.get("fecha_emision_raw") or "").strip()
+        if raw_date:
+            out_values["fecha_emision_raw"] = raw_date
+            normalised = _normalise_date(raw_date)
+            if normalised:
+                out_values["fecha_emision"] = normalised
+
+        for key in ("hecho_denunciado_literal", "norma_literal", "articulo_literal"):
+            value = values.get(key)
+            if value not in (None, "", "null"):
+                out_values[key] = str(value).strip()
+
+        conf_out: Dict[str, float] = {}
+        ev_out: Dict[str, str] = {}
+
+        for key in ("fecha_emision_raw", "hecho_denunciado_literal", "norma_literal", "articulo_literal"):
+            if key in out_values:
+                try:
+                    conf_out[key] = max(0.0, min(1.0, float(confidence.get(key) or 0)))
+                except Exception:
+                    conf_out[key] = 0.0
+                if evidence.get(key):
+                    ev_out[key] = str(evidence.get(key))[:240]
+
+        return {
+            "values": out_values,
+            "confidence": conf_out,
+            "evidence": ev_out,
+            "version": "semaforo_precision_v1_0",
+            "page_index": int(page.get("page_index") or 0),
+        }
+
+    except Exception as exc:
+        return {
+            "values": {},
+            "confidence": {},
+            "evidence": {},
+            "version": "semaforo_precision_v1_0",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _merge_semaforo_precision(
+    sema_meta: Dict[str, Any],
+    precision_meta: Dict[str, Any],
+) -> Dict[str, Any]:
+    result = dict(sema_meta or {})
+    base_values = dict(result.get("values") or {})
+    base_conf = dict(result.get("confidence") or {})
+    base_ev = dict(result.get("evidence") or {})
+
+    p_values = (precision_meta or {}).get("values") or {}
+    p_conf = (precision_meta or {}).get("confidence") or {}
+    p_ev = (precision_meta or {}).get("evidence") or {}
+
+    corrections: List[Dict[str, Any]] = []
+
+    mapping = {
+        "fecha_emision": "fecha_emision",
+        "hecho_denunciado_literal": "hecho_denunciado_literal",
+        "norma_literal": "norma",
+        "articulo_literal": "articulo",
+    }
+
+    for p_key, base_key in mapping.items():
+        value = p_values.get(p_key)
+        if value in (None, "", [], {}):
+            continue
+
+        confidence_key = "fecha_emision_raw" if p_key == "fecha_emision" else p_key
+        try:
+            conf = float(p_conf.get(confidence_key) or 0)
+        except Exception:
+            conf = 0.0
+
+        if conf < 0.92:
+            continue
+
+        previous = base_values.get(base_key)
+        if str(previous or "").strip() != str(value).strip():
+            corrections.append({
+                "field": base_key,
+                "previous": previous,
+                "precision_value": value,
+                "precision_confidence": conf,
+                "source": "semaforo_precision_crop",
+            })
+
+        base_values[base_key] = value
+        base_conf[base_key] = conf
+        if p_ev.get(confidence_key):
+            base_ev[base_key] = str(p_ev.get(confidence_key))[:240]
+
+    result["values"] = base_values
+    result["confidence"] = base_conf
+    result["evidence"] = base_ev
+    result["precision"] = precision_meta or {}
+    result["precision_corrections"] = corrections
+    result["version"] = "semaforo_secondary_v1_2"
+    return result
 
 
 def _apply_semaforo_fields(
@@ -1567,7 +1833,7 @@ def _apply_semaforo_fields(
     if sema_facts:
         out["semaforo_secondary_facts"] = sema_facts
         out["semaforo_secondary_facts_version"] = (
-            (sema_meta or {}).get("version") or "semaforo_secondary_v1_1"
+            (sema_meta or {}).get("version") or "semaforo_secondary_v1_2"
         )
         out["semaforo_secondary_facts_confidence"] = confidence
         out["semaforo_secondary_facts_evidence"] = evidence
@@ -2012,7 +2278,10 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
         critical_meta["deep_analysis"] = "velocity"
     elif dispatched_family == "semaforo":
         sema_meta = _semaforo_critical_fields_from_images(analyzed_pages)
+        sema_precision_meta = _semaforo_precision_from_crops(analyzed_pages)
+        sema_meta = _merge_semaforo_precision(sema_meta, sema_precision_meta)
         combined_core, critical_meta = _apply_semaforo_fields(combined_core, sema_meta)
+        critical_meta["semaforo_precision"] = sema_precision_meta
     else:
         basic_required = ["expediente_ref", "organismo", "matricula", "fecha_infraccion", "lugar_infraccion"]
         missing_required = [
@@ -2102,7 +2371,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_10",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_11",
             },
         )
 
@@ -2257,6 +2526,12 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "semaforo_secondary_facts": core.get("semaforo_secondary_facts") or {},
             "semaforo_secondary_facts_confidence": core.get("semaforo_secondary_facts_confidence") or {},
             "semaforo_secondary_facts_evidence": core.get("semaforo_secondary_facts_evidence") or {},
+            "semaforo_precision_version": ((critical_meta.get("semaforo_precision") or {}).get("version")),
+            "semaforo_precision_values": ((critical_meta.get("semaforo_precision") or {}).get("values") or {}),
+            "semaforo_precision_confidence": ((critical_meta.get("semaforo_precision") or {}).get("confidence") or {}),
+            "semaforo_precision_evidence": ((critical_meta.get("semaforo_precision") or {}).get("evidence") or {}),
+            "semaforo_precision_error": ((critical_meta.get("semaforo_precision") or {}).get("error")),
+            "semaforo_precision_corrections": ((critical_meta.get("secondary") or {}).get("precision_corrections") or []),
             "critical_conflicts_resolved": conflicts,
             "missing_required_fields": critical_meta.get("missing_required") or [],
             "unresolved_critical_fields": critical_meta.get("unresolved_fields") or [],
@@ -2305,6 +2580,12 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "semaforo_secondary_facts": core.get("semaforo_secondary_facts") or {},
             "semaforo_secondary_facts_confidence": core.get("semaforo_secondary_facts_confidence") or {},
             "semaforo_secondary_facts_evidence": core.get("semaforo_secondary_facts_evidence") or {},
+            "semaforo_precision_version": ((critical_meta.get("semaforo_precision") or {}).get("version")),
+            "semaforo_precision_values": ((critical_meta.get("semaforo_precision") or {}).get("values") or {}),
+            "semaforo_precision_confidence": ((critical_meta.get("semaforo_precision") or {}).get("confidence") or {}),
+            "semaforo_precision_evidence": ((critical_meta.get("semaforo_precision") or {}).get("evidence") or {}),
+            "semaforo_precision_error": ((critical_meta.get("semaforo_precision") or {}).get("error")),
+            "semaforo_precision_corrections": ((critical_meta.get("secondary") or {}).get("precision_corrections") or []),
             "critical_conflicts_resolved": conflicts,
             "missing_required_fields": critical_meta.get("missing_required") or [],
             "unresolved_critical_fields": critical_meta.get("unresolved_fields") or [],
