@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_12"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_13"
 _SECONDARY_FACTS_VERSION = "velocity_secondary_v1_0"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
@@ -1462,12 +1462,12 @@ Reglas:
             "values": out,
             "confidence": conf_out,
             "evidence": ev_out,
-            "version": "semaforo_secondary_v1_3",
+            "version": "semaforo_secondary_v1_4",
         }
     except Exception as exc:
         return {
             "values": {}, "confidence": {}, "evidence": {},
-            "version": "semaforo_secondary_v1_3",
+            "version": "semaforo_secondary_v1_4",
             "error": f"{type(exc).__name__}: {exc}",
         }
 
@@ -1750,9 +1750,12 @@ def _merge_semaforo_precision(
         except Exception:
             conf = 0.0
 
-        if conf < 0.92:
-            # Robustez ante una respuesta que devuelva el valor pero omita confidence.
-            # Solo admitimos fallback en valores con validación formal fuerte.
+        # Umbral específico de la lectura de precisión.
+        # Los campos semánticos se aceptan desde 0.90 SOLO si además
+        # cumplen validaciones de forma/contenido muy estrictas.
+        accepted = conf >= 0.92
+
+        if not accepted:
             fallback_ok = False
 
             if p_key == "fecha_emision":
@@ -1765,12 +1768,33 @@ def _merge_semaforo_precision(
             elif p_key == "puntos_detraccion":
                 fallback_ok = _normalise_int(value, 0, 15) is not None
 
-            # Para hecho/norma/artículo NO usamos fallback sin confianza:
-            # requieren lectura semántica/visual inequívoca.
+            elif p_key == "norma_literal" and conf >= 0.90:
+                norm_txt = _fold_for_match(value).upper().replace(" ", "")
+                fallback_ok = norm_txt in {"RGC", "RFGC"}
+
+            elif p_key == "articulo_literal" and conf >= 0.90:
+                art_txt = str(value or "").strip()
+                fallback_ok = bool(
+                    re.fullmatch(
+                        r"(?i)(?:art\.?\s*:?\s*)?\d{1,3}(?:\s*(?:apa\.?|ap\.?|apartado)?\s*:?\s*\d+)?",
+                        art_txt.replace(" ", "")
+                    )
+                    or re.search(r"(?i)143", art_txt)
+                )
+
+            elif p_key == "hecho_denunciado_literal" and conf >= 0.90:
+                fact_txt = _fold_for_match(value)
+                fallback_ok = (
+                    len(fact_txt) >= 35
+                    and "conductor" in fact_txt
+                    and ("llum vermella" in fact_txt or "luz roja" in fact_txt)
+                    and ("semafor" in fact_txt or "semaforo" in fact_txt)
+                )
+
             if not fallback_ok:
                 continue
 
-            conf = 0.93
+            conf = max(conf, 0.93)
 
         previous = base_values.get(base_key)
         if str(previous or "").strip() != str(value).strip():
@@ -1792,7 +1816,7 @@ def _merge_semaforo_precision(
     result["evidence"] = base_ev
     result["precision"] = precision_meta or {}
     result["precision_corrections"] = corrections
-    result["version"] = "semaforo_secondary_v1_3"
+    result["version"] = "semaforo_secondary_v1_4"
     return result
 
 
@@ -1862,6 +1886,16 @@ def _apply_semaforo_fields(
         out["importe_reducido_eur"] = reduced
         sources["importe_reducido_eur"] = "semaforo_targeted_vision"
 
+    # Si la capa de precisión corrigió un campo, esa procedencia debe
+    # quedar visible en el resultado final y no como targeted vision.
+    precision_corrections = list((sema_meta or {}).get("precision_corrections") or [])
+    for correction in precision_corrections:
+        field = str(correction.get("field") or "").strip()
+        if field:
+            sources[field] = "semaforo_precision_crop"
+            if field == "hecho_denunciado_literal":
+                sources["hecho_imputado"] = "semaforo_precision_crop"
+
     sema_facts = {
         "hecho_denunciado_literal": fact or None,
         "capture_method": values.get("capture_method"),
@@ -1891,7 +1925,7 @@ def _apply_semaforo_fields(
     if sema_facts:
         out["semaforo_secondary_facts"] = sema_facts
         out["semaforo_secondary_facts_version"] = (
-            (sema_meta or {}).get("version") or "semaforo_secondary_v1_3"
+            (sema_meta or {}).get("version") or "semaforo_secondary_v1_4"
         )
         out["semaforo_secondary_facts_confidence"] = confidence
         out["semaforo_secondary_facts_evidence"] = evidence
@@ -2429,7 +2463,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_12",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_13",
             },
         )
 
