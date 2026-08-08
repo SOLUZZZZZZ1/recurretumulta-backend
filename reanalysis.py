@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_14"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_15"
 _SECONDARY_FACTS_VERSION = "velocity_secondary_v1_0"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
@@ -1836,6 +1836,12 @@ def _apply_semaforo_fields(
     out["familia_resuelta"] = "semaforo"
     out["specialist_dispatch"] = "semaforo"
 
+    if not values.get("organismo") and _looks_like_postal_address_not_authority(
+        out.get("organismo")
+    ):
+        out["organismo"] = None
+        sources["organismo"] = "rejected_postal_address_as_issuer"
+
     direct_map = {
         "organismo": "organismo",
         "expediente_ref": "expediente_ref",
@@ -1970,6 +1976,96 @@ def _apply_semaforo_fields(
 
 
 
+
+def _authority_text_has_explicit_issuer(value: Any, evidence: Any) -> bool:
+    """Acepta organismo solo si la evidencia contiene señales explícitas de autoridad.
+
+    Evita convertir direcciones postales o localidades en organismo emisor.
+    """
+    val = _fold_for_match(value)
+    ev = _fold_for_match(evidence)
+
+    if not val or not ev:
+        return False
+
+    authority_tokens = (
+        "ajuntament",
+        "ayuntamiento",
+        "servei catala de transit",
+        "servei territorial de transit",
+        "direccion general de trafico",
+        "dirección general de tráfico",
+        "dgt",
+        "jefatura",
+        "generalitat",
+        "diputacio",
+        "diputación",
+        "ministerio",
+        "policia",
+        "policía",
+        "guardia civil",
+        "organisme",
+        "organismo",
+        "autoritat",
+        "autoridad",
+    )
+
+    if any(token in ev for token in authority_tokens):
+        return True
+
+    # También aceptamos cuando el propio nombre candidato aparece casi literal
+    # en la evidencia y contiene una señal institucional.
+    institutional_in_value = any(token in val for token in authority_tokens)
+    return bool(institutional_in_value and val in ev)
+
+
+def _looks_like_postal_address_not_authority(value: Any) -> bool:
+    txt = _fold_for_match(value)
+    if not txt:
+        return False
+
+    authority_tokens = (
+        "ajuntament",
+        "ayuntamiento",
+        "servei",
+        "direccion general",
+        "dirección general",
+        "dgt",
+        "jefatura",
+        "generalitat",
+        "diputacio",
+        "diputación",
+        "ministerio",
+        "policia",
+        "policía",
+        "guardia civil",
+    )
+    if any(token in txt for token in authority_tokens):
+        return False
+
+    # Una dirección con CP de 5 cifras o prefijos viales no es un organismo.
+    if re.search(r"\b\d{5}\b", txt):
+        return True
+
+    street_tokens = (
+        " carrer ",
+        " calle ",
+        " av ",
+        " av. ",
+        " avenida ",
+        " cr ",
+        " cr. ",
+        " paseo ",
+        " pg ",
+        " psg ",
+        " plaça ",
+        " plaza ",
+        " carretera ",
+    )
+    padded = f" {txt} "
+    return any(token in padded for token in street_tokens)
+
+
 def _traffic_generic_document_facts_from_images(
     analyzed_pages: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
@@ -1987,7 +2083,7 @@ def _traffic_generic_document_facts_from_images(
             "values": {},
             "confidence": {},
             "evidence": {},
-            "version": "traffic_generic_facts_v1_0",
+            "version": "traffic_generic_facts_v1_1",
             "error": "OPENAI_API_KEY_missing",
         }
 
@@ -2015,7 +2111,7 @@ def _traffic_generic_document_facts_from_images(
             "values": {},
             "confidence": {},
             "evidence": {},
-            "version": "traffic_generic_facts_v1_0",
+            "version": "traffic_generic_facts_v1_1",
             "error": "no_image_pages",
         }
 
@@ -2058,6 +2154,9 @@ def _traffic_generic_document_facts_from_images(
         '  "evidence": {}\n'
         "}\n\n"
         "REGLAS:\n"
+        "- organismo: SOLO la autoridad EMISORA si aparece expresamente identificada por nombre/logo/cabecera. "
+        "Nunca infieras organismo a partir de una dirección postal, código postal, ciudad del destinatario, lugar de la infracción o población. "
+        "Si solo ves una dirección como 08860 CASTELLDEFELS BARCELONA y no aparece la autoridad, devuelve null.\n"
         "- document_title: copia el título principal literalmente.\n"
         "- document_type/procedural_stage_hint: usa solo señales EXPRESAS del documento.\n"
         "- Si aparece 'Requeriment de pagament' / 'Requerimiento de pago', document_type=requerimiento_pago y procedural_stage_hint=payment_requirement.\n"
@@ -2108,7 +2207,7 @@ def _traffic_generic_document_facts_from_images(
                 "values": {},
                 "confidence": {},
                 "evidence": {},
-                "version": "traffic_generic_facts_v1_0",
+                "version": "traffic_generic_facts_v1_1",
                 "error": f"OpenAI {r.status_code}: {r.text[:300]}",
             }
 
@@ -2131,7 +2230,6 @@ def _traffic_generic_document_facts_from_images(
             out["matricula"] = plate
 
         for key in (
-            "organismo",
             "document_title",
             "expediente_ref",
             "vehicle_make_model",
@@ -2147,6 +2245,17 @@ def _traffic_generic_document_facts_from_images(
             value = values.get(key)
             if value not in (None, "", "null"):
                 out[key] = str(value).strip()
+
+        organism_candidate = str(values.get("organismo") or "").strip()
+        organism_evidence = str(evidence.get("organismo") or "").strip()
+        if (
+            organism_candidate
+            and _authority_text_has_explicit_issuer(
+                organism_candidate,
+                organism_evidence,
+            )
+        ):
+            out["organismo"] = organism_candidate
 
         allowed_doc_types = {
             "denuncia",
@@ -2218,7 +2327,7 @@ def _traffic_generic_document_facts_from_images(
             "values": out,
             "confidence": conf_out,
             "evidence": ev_out,
-            "version": "traffic_generic_facts_v1_0",
+            "version": "traffic_generic_facts_v1_1",
         }
 
     except Exception as exc:
@@ -2226,7 +2335,7 @@ def _traffic_generic_document_facts_from_images(
             "values": {},
             "confidence": {},
             "evidence": {},
-            "version": "traffic_generic_facts_v1_0",
+            "version": "traffic_generic_facts_v1_1",
             "error": f"{type(exc).__name__}: {exc}",
         }
 
@@ -2312,6 +2421,16 @@ def _apply_traffic_generic_document_facts(
         sources["importe_a_pagar_eur"] = "traffic_generic_targeted_vision"
 
     generic_facts = {
+        "issuer_status": (
+            "resolved"
+            if out.get("organismo")
+            else "unresolved"
+        ),
+        "issuer_candidate_rejected": (
+            str(values.get("organismo") or "").strip() or None
+            if not out.get("organismo")
+            else None
+        ),
         "document_title": values.get("document_title"),
         "document_type": values.get("document_type"),
         "procedural_stage_hint": values.get("procedural_stage_hint"),
@@ -2348,12 +2467,13 @@ def _apply_traffic_generic_document_facts(
 
     out["traffic_generic_facts"] = generic_facts
     out["traffic_generic_facts_version"] = (
-        (meta or {}).get("version") or "traffic_generic_facts_v1_0"
+        (meta or {}).get("version") or "traffic_generic_facts_v1_1"
     )
     out["traffic_generic_facts_confidence"] = confidence
     out["traffic_generic_facts_evidence"] = evidence
 
     required = [
+        "organismo",
         "expediente_ref",
         "matricula",
         "fecha_infraccion",
@@ -2920,7 +3040,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_14",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_15",
             },
         )
 
