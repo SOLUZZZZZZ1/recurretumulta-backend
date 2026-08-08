@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_11"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_12"
 _SECONDARY_FACTS_VERSION = "velocity_secondary_v1_0"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
@@ -1462,12 +1462,12 @@ Reglas:
             "values": out,
             "confidence": conf_out,
             "evidence": ev_out,
-            "version": "semaforo_secondary_v1_2",
+            "version": "semaforo_secondary_v1_3",
         }
     except Exception as exc:
         return {
             "values": {}, "confidence": {}, "evidence": {},
-            "version": "semaforo_secondary_v1_2",
+            "version": "semaforo_secondary_v1_3",
             "error": f"{type(exc).__name__}: {exc}",
         }
 
@@ -1564,22 +1564,43 @@ def _semaforo_precision_from_crops(analyzed_pages: List[Dict[str, Any]]) -> Dict
             "{\n"
             '  "values": {\n'
             '    "fecha_emision_raw": string|null,\n'
+            '    "matricula_literal": string|null,\n'
+            '    "puntos_detraccion": integer|null,\n'
             '    "hecho_denunciado_literal": string|null,\n'
             '    "norma_literal": string|null,\n'
             '    "articulo_literal": string|null\n'
             "  },\n"
-            '  "confidence": {},\n'
-            '  "evidence": {}\n'
+            '  "confidence": {\n'
+            '    "fecha_emision_raw": number,\n'
+            '    "matricula_literal": number,\n'
+            '    "puntos_detraccion": number,\n'
+            '    "hecho_denunciado_literal": number,\n'
+            '    "norma_literal": number,\n'
+            '    "articulo_literal": number\n'
+            "  },\n"
+            '  "evidence": {\n'
+            '    "fecha_emision_raw": string,\n'
+            '    "matricula_literal": string,\n'
+            '    "puntos_detraccion": string,\n'
+            '    "hecho_denunciado_literal": string,\n'
+            '    "norma_literal": string,\n'
+            '    "articulo_literal": string\n'
+            "  }\n"
             "}\n\n"
             "REGLAS:\n"
             "1) fecha_emision_raw: copia exactamente el valor impreso junto a "
             "DATA D'EMISSIÓ / FECHA DE EMISIÓN. Si aparece 20260307, devuelve exactamente 20260307.\n"
-            "2) hecho_denunciado_literal: copia literalmente la frase de conducta denunciada, en catalán, "
+            "2) matricula_literal: copia exactamente la matrícula visible en la línea que empieza por Matrícula. "
+            "Debe tener 4 dígitos y 3 letras; conserva espacios solo si ayudan a leer.\n"
+            "3) puntos_detraccion: copia el número visible junto a Punts/Puntos en el bloque de la infracción.\n"
+            "4) hecho_denunciado_literal: copia literalmente la frase de conducta denunciada, en catalán, "
             "incluyendo expresiones como 'no intermitent' si aparecen. No sustituyas palabras.\n"
-            "3) norma_literal y articulo_literal: copia carácter por carácter. Distingue estrictamente RGC de RFGC. "
+            "5) norma_literal y articulo_literal: copia carácter por carácter. Distingue estrictamente RGC de RFGC. "
             "No corrijas el precepto aunque te parezca extraño.\n"
-            "4) confidence de 0 a 1. evidence: fragmento literal breve.\n"
-            "5) Si no se ve claramente, null. No inventes."
+            "6) DEBES rellenar confidence para CADA valor no nulo con un número de 0 a 1. "
+            "Si no estás seguro, baja la confianza; no omitas la clave.\n"
+            "7) DEBES rellenar evidence para CADA valor no nulo con el fragmento literal breve donde se ve.\n"
+            "8) Si no se ve claramente, null. No inventes."
         )
 
         payload = {
@@ -1643,6 +1664,14 @@ def _semaforo_precision_from_crops(analyzed_pages: List[Dict[str, Any]]) -> Dict
             if normalised:
                 out_values["fecha_emision"] = normalised
 
+        plate = _normalise_plate(values.get("matricula_literal"))
+        if plate:
+            out_values["matricula_literal"] = plate
+
+        points = _normalise_int(values.get("puntos_detraccion"), 0, 15)
+        if points is not None:
+            out_values["puntos_detraccion"] = points
+
         for key in ("hecho_denunciado_literal", "norma_literal", "articulo_literal"):
             value = values.get(key)
             if value not in (None, "", "null"):
@@ -1651,7 +1680,15 @@ def _semaforo_precision_from_crops(analyzed_pages: List[Dict[str, Any]]) -> Dict
         conf_out: Dict[str, float] = {}
         ev_out: Dict[str, str] = {}
 
-        for key in ("fecha_emision_raw", "hecho_denunciado_literal", "norma_literal", "articulo_literal"):
+        precision_keys = (
+            "fecha_emision_raw",
+            "matricula_literal",
+            "puntos_detraccion",
+            "hecho_denunciado_literal",
+            "norma_literal",
+            "articulo_literal",
+        )
+        for key in precision_keys:
             if key in out_values:
                 try:
                     conf_out[key] = max(0.0, min(1.0, float(confidence.get(key) or 0)))
@@ -1695,6 +1732,8 @@ def _merge_semaforo_precision(
 
     mapping = {
         "fecha_emision": "fecha_emision",
+        "matricula_literal": "matricula",
+        "puntos_detraccion": "puntos_detraccion",
         "hecho_denunciado_literal": "hecho_denunciado_literal",
         "norma_literal": "norma",
         "articulo_literal": "articulo",
@@ -1712,7 +1751,26 @@ def _merge_semaforo_precision(
             conf = 0.0
 
         if conf < 0.92:
-            continue
+            # Robustez ante una respuesta que devuelva el valor pero omita confidence.
+            # Solo admitimos fallback en valores con validación formal fuerte.
+            fallback_ok = False
+
+            if p_key == "fecha_emision":
+                raw = str(p_values.get("fecha_emision_raw") or "").strip()
+                fallback_ok = bool(re.fullmatch(r"20\d{6}", raw))
+
+            elif p_key == "matricula_literal":
+                fallback_ok = _normalise_plate(value) is not None
+
+            elif p_key == "puntos_detraccion":
+                fallback_ok = _normalise_int(value, 0, 15) is not None
+
+            # Para hecho/norma/artículo NO usamos fallback sin confianza:
+            # requieren lectura semántica/visual inequívoca.
+            if not fallback_ok:
+                continue
+
+            conf = 0.93
 
         previous = base_values.get(base_key)
         if str(previous or "").strip() != str(value).strip():
@@ -1734,7 +1792,7 @@ def _merge_semaforo_precision(
     result["evidence"] = base_ev
     result["precision"] = precision_meta or {}
     result["precision_corrections"] = corrections
-    result["version"] = "semaforo_secondary_v1_2"
+    result["version"] = "semaforo_secondary_v1_3"
     return result
 
 
@@ -1833,7 +1891,7 @@ def _apply_semaforo_fields(
     if sema_facts:
         out["semaforo_secondary_facts"] = sema_facts
         out["semaforo_secondary_facts_version"] = (
-            (sema_meta or {}).get("version") or "semaforo_secondary_v1_2"
+            (sema_meta or {}).get("version") or "semaforo_secondary_v1_3"
         )
         out["semaforo_secondary_facts_confidence"] = confidence
         out["semaforo_secondary_facts_evidence"] = evidence
@@ -2371,7 +2429,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_11",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_12",
             },
         )
 
