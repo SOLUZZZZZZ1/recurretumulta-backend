@@ -1,236 +1,107 @@
-# billing_auto_modo_dios.py — checkout bloqueado por autorización + Modo Dios automático tras pago
+"""Cobros RTM: tarifa autoritativa, expediente mínimo y activación de revisión.
+
+La revisión inicial se decide exclusivamente desde el expediente persistido.
+El navegador no puede elegir la tarifa y el pago no ejecuta clasificadores,
+especialistas ni Generate.
+"""
+
+from __future__ import annotations
+
 import json
 import os
+
 import stripe
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import text
 
 from database import get_engine
-from ai.expediente_engine import run_expediente_ai
-from email_utils import send_email, build_vehicle_removal_paid_email
+from rtm_core.repository import build_case_review_readiness, load_case_review_snapshot
+from rtm_core.service_catalog import normalize_code
+
 
 router = APIRouter(tags=["billing"])
 
+_REVIEW_STAGES = {"review", "revision", "initial", "inicial", "revision_inicial"}
+_FINAL_STAGES = {"final", "gestion", "management"}
+
 
 def _env(name: str) -> str:
-    v = (os.getenv(name) or "").strip()
-    if not v:
+    value = (os.getenv(name) or "").strip()
+    if not value:
         raise RuntimeError(f"Falta variable de entorno: {name}")
-    return v
+    return value
 
 
 class CheckoutRequest(BaseModel):
     case_id: str
-    product: str
+    product: str | None = None  # Compatibilidad: nunca decide la tarifa de estudio.
     email: EmailStr
     locale: str | None = "es"
     payment_stage: str | None = "review"
 
 
-def _normalize_code(value: str | None) -> str:
-    return (value or "").strip().lower().replace("-", "_").replace(" ", "_")
+def _normalized_stage(value: str | None) -> str:
+    return normalize_code(value) or "review"
 
 
-def _resolve_stripe_product(product: str, payment_stage: str | None = "review") -> dict:
-    product_code = _normalize_code(product)
-    stage = _normalize_code(payment_stage) or "review"
+def _resolve_final_stripe_product(product: str | None, payment_stage: str | None) -> dict:
+    """Compatibilidad para servicios finales ya existentes.
 
-    admin_codes = {
-        "admin", "administration", "administracion", "administracion_publica",
-        "aeat", "hacienda", "social_security", "seguridad_social",
-        "town_hall", "ayuntamiento", "ayuntamientos", "catastro",
-        "general_administration",
-    }
+    La revisión inicial no entra aquí: siempre se resuelve desde el catálogo
+    RTM y los datos guardados del expediente.
+    """
+
+    product_code = normalize_code(product)
+    stage = _normalized_stage(payment_stage)
+
+    if stage not in _FINAL_STAGES:
+        raise HTTPException(status_code=400, detail=f"Fase de pago no reconocida: {payment_stage}")
+
     vehicle_codes = {
-        "vehicle", "vehiculo", "vehiculos", "vehicle_removal",
-        "eliminacion_vehiculo", "eliminacion_vehiculos",
+        "vehicle",
+        "vehiculo",
+        "vehiculos",
+        "vehicle_removal",
+        "eliminacion_vehiculo",
+        "eliminacion_vehiculos",
     }
     asnef_codes = {"asnef", "asnef_equifax", "equifax", "badexcug"}
     fine_codes = {"dgt", "fine", "multa", "multas", "trafico", "traffic"}
 
-    if stage in {"review", "revision", "initial", "inicial", "revision_inicial"}:
-        if product_code in admin_codes:
-            return {
-                "price_id": _env("STRIPE_PRICE_ID_ADMIN"),
-                "billing_code": "ADMIN_REVIEW",
-                "service_code": product_code or "administration",
-                "payment_stage": "review",
-            }
+    if product_code in asnef_codes:
+        raise HTTPException(
+            status_code=409,
+            detail="ASNEF requiere presupuesto después de la revisión inicial",
+        )
+    if product_code in vehicle_codes:
         return {
-            "price_id": _env("STRIPE_PRICE_ID_REVIEW_BASIC"),
-            "billing_code": "REVIEW_BASIC",
-            "service_code": product_code or "review",
-            "payment_stage": "review",
+            "price_id": _env("STRIPE_PRICE_ID_VEHICLE"),
+            "billing_code": "VEHICLE",
+            "service_code": product_code,
+            "payment_stage": "final",
+            "amount_cents": None,
+            "currency": "EUR",
+            "authority_version": "legacy_final_catalog_v1",
+        }
+    if product_code in fine_codes:
+        return {
+            "price_id": _env("STRIPE_PRICE_ID_DGT"),
+            "billing_code": "DGT",
+            "service_code": product_code,
+            "payment_stage": "final",
+            "amount_cents": None,
+            "currency": "EUR",
+            "authority_version": "legacy_final_catalog_v1",
         }
 
-    if stage in {"final", "gestion", "management"}:
-        if product_code in asnef_codes:
-            raise HTTPException(status_code=409, detail="ASNEF requiere presupuesto después de la revisión inicial")
-        if product_code in vehicle_codes:
-            return {
-                "price_id": _env("STRIPE_PRICE_ID_VEHICLE"),
-                "billing_code": "VEHICLE",
-                "service_code": product_code,
-                "payment_stage": "final",
-            }
-        if product_code in fine_codes:
-            return {
-                "price_id": _env("STRIPE_PRICE_ID_DGT"),
-                "billing_code": "DGT",
-                "service_code": product_code,
-                "payment_stage": "final",
-            }
-        raise HTTPException(status_code=409, detail="La gestión final requiere valoración y presupuesto previo")
-
-    raise HTTPException(status_code=400, detail=f"Fase de pago no reconocida: {payment_stage}")
-
-
-def _pick(mapping, *paths):
-    for path in paths:
-        current = mapping
-        ok = True
-        for part in path.split("."):
-            if isinstance(current, dict) and part in current:
-                current = current.get(part)
-            else:
-                ok = False
-                break
-        if ok and current not in (None, "", [], {}):
-            return current
-    return None
-
-
-def _as_string(value):
-    if value in (None, "", [], {}):
-        return ""
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False)
-    return str(value)
-
-
-def _as_confidence(value):
-    if value in (None, "", [], {}):
-        return None
-    if isinstance(value, (int, float)):
-        val = float(value)
-    else:
-        try:
-            val = float(str(value).replace(",", "."))
-        except Exception:
-            return None
-
-    if val > 1:
-        val = val / 100.0
-    if val < 0:
-        val = 0.0
-    if val > 1:
-        val = 1.0
-    return round(val, 4)
-
-
-def _normalize_ai_payload(result):
-    familia = _pick(
-        result,
-        "familia_resuelta",
-        "tipo_infraccion",
-        "classification.family",
-        "classification.familia",
-        "classifier_result.family",
-        "classifier_result.familia",
-        "arguments.family",
-        "arguments.familia",
-        "result.family",
-        "result.familia",
-        "extracted.tipo_infraccion",
-        "extracted.familia_resuelta",
+    raise HTTPException(
+        status_code=409,
+        detail="La gestión final requiere valoración y presupuesto previo",
     )
 
-    confianza = _pick(
-        result,
-        "tipo_infraccion_confidence",
-        "classification.confidence",
-        "classification.confianza",
-        "classifier_result.confidence",
-        "classifier_result.score",
-        "arguments.confidence",
-        "arguments.score",
-        "result.confidence",
-        "result.confianza",
-        "extracted.tipo_infraccion_confidence",
-    )
 
-    hecho = _pick(
-        result,
-        "hecho_para_recurso",
-        "hecho_imputado",
-        "hecho_limpio",
-        "hecho_reconstruido",
-        "hecho_crudo",
-        "arguments.hecho",
-        "arguments.hecho_imputado",
-        "arguments.fact",
-        "arguments.facts",
-        "result.hecho",
-        "result.fact",
-        "extracted.hecho_para_recurso",
-        "extracted.hecho_imputado",
-        "extracted.hecho_limpio",
-        "extracted.hecho_denunciado_literal",
-        "extracted.hecho_denunciado_resumido",
-    )
-
-    admisibilidad = _pick(
-        result,
-        "resultado_estrategico",
-        "admissibility.admissibility",
-        "phase.admissibility",
-        "result.admissibility",
-        "result.admisibilidad",
-        "extracted.resultado_estrategico",
-        "extracted.admissibility.admissibility",
-    )
-
-    accion_raw = _pick(
-        result,
-        "phase.recommended_action",
-        "recommended_action",
-        "phase.recommended_action.action",
-        "recommended_action.action",
-        "result.recommended_action",
-        "result.accion_recomendada",
-        "modelo_defensa",
-        "extracted.modelo_defensa",
-    )
-
-    if isinstance(accion_raw, dict):
-        accion = _pick({"x": accion_raw}, "x.action", "x.accion", "x.name", "x.tipo") or _as_string(accion_raw)
-    else:
-        accion = _as_string(accion_raw)
-
-    familia_str = _as_string(familia)
-    confianza_num = _as_confidence(confianza)
-    hecho_str = _as_string(hecho)
-    admisibilidad_str = _as_string(admisibilidad)
-
-    return {
-        "familia": familia_str,
-        "confianza": confianza_num,
-        "hecho": hecho_str,
-        "admisibilidad": admisibilidad_str,
-        "accion": accion,
-        "classifier_result": {
-            "family": familia_str,
-            "confidence": confianza_num,
-        },
-        "tipo_infraccion": familia_str,
-        "tipo_infraccion_confidence": confianza_num,
-        "hecho_imputado": hecho_str,
-        "raw_result": result,
-    }
-
-
-def _append_event(conn, case_id: str, event_type: str, payload: dict):
+def _append_event(conn, case_id: str, event_type: str, payload: dict) -> None:
     conn.execute(
         text(
             """
@@ -238,118 +109,78 @@ def _append_event(conn, case_id: str, event_type: str, payload: dict):
             VALUES (:id, :type, CAST(:payload AS JSONB), NOW())
             """
         ),
-        {"id": case_id, "type": event_type, "payload": json.dumps(payload, ensure_ascii=False)},
-    )
-
-
-def _require_case_authorized_before_payment(conn, case_id: str):
-    row = conn.execute(
-        text(
-            """
-            SELECT
-                id,
-                COALESCE(authorized, FALSE) AS authorized,
-                authorized_at,
-                COALESCE(payment_status, '') AS payment_status,
-                COALESCE(interested_data, '{}'::jsonb) AS interested_data
-            FROM cases
-            WHERE id = :id
-            """
-        ),
-        {"id": case_id},
-    ).fetchone()
-
-    if not row:
-        raise HTTPException(status_code=404, detail="case_id no existe")
-
-    interested_data = row[4] if isinstance(row[4], dict) else {}
-
-    missing = []
-    if not interested_data.get("full_name"):
-        missing.append("full_name")
-    if not interested_data.get("dni_nie"):
-        missing.append("dni_nie")
-    if not interested_data.get("domicilio_notif"):
-        missing.append("domicilio_notif")
-    if not interested_data.get("email"):
-        missing.append("email")
-
-    if missing:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "Debes completar los datos del interesado antes de pagar",
-                "missing_fields": missing,
-            },
-        )
-
-    if not bool(row[1]):
-        raise HTTPException(status_code=409, detail="Debes autorizar antes de pagar")
-
-    return {
-        "case_id": str(row[0]),
-        "authorized": bool(row[1]),
-        "authorized_at": row[2],
-        "payment_status": row[3],
-        "interested_data": interested_data,
-    }
-
-
-def _run_post_payment_modo_dios(conn, case_id: str):
-    """Activa la revisión tras el pago, pero NO genera un recurso automáticamente.
-
-    RTM Intelligence CORE:
-    Pago -> análisis inicial -> OPS/manual_review -> Reanalyze -> especialista
-    -> Generate explícito por operador.
-
-    Motivo:
-    generar antes de conocer familia + tipo documental + fase procesal puede
-    producir un escrito jurídicamente incorrecto (p. ej. alegaciones frente a
-    un requerimiento de pago ya firme).
-    """
-    result = run_expediente_ai(case_id)
-    if not isinstance(result, dict):
-        result = {"raw_result": result}
-
-    ai_payload = _normalize_ai_payload(result)
-
-    _append_event(conn, case_id, "ai_expediente_result", ai_payload)
-
-    confidence = ai_payload.get("tipo_infraccion_confidence")
-
-    conn.execute(
-        text(
-            "UPDATE cases "
-            "SET status='manual_review', updated_at=NOW() "
-            "WHERE id=:id"
-        ),
-        {"id": case_id},
-    )
-
-    _append_event(
-        conn,
-        case_id,
-        "resource_generation_deferred_intelligence_core",
         {
-            "ok": True,
-            "mode": "post_payment_review",
-            "generation_deferred": True,
-            "confidence": confidence,
-            "message": (
-                "Pago confirmado y revisión activada. "
-                "La generación automática queda diferida hasta que "
-                "RTM Intelligence CORE haya identificado familia, "
-                "tipo de documento y fase procesal, y OPS ordene Generate."
-            ),
+            "id": case_id,
+            "type": event_type,
+            "payload": json.dumps(payload, ensure_ascii=False),
         },
     )
 
+
+def _review_product(readiness) -> dict:
+    quote = readiness.quote
+    return {
+        "price_id": _env(quote.stripe_price_env),
+        "billing_code": quote.billing_code,
+        "service_code": quote.service_code,
+        "payment_stage": "review",
+        "amount_cents": quote.amount_cents,
+        "currency": quote.currency,
+        "authority_version": quote.version,
+    }
+
+
+def _safe_checkout_email(snapshot, requested_email: str) -> str:
+    persisted = str(snapshot.contact_email or "").strip()
+    interested = snapshot.interested_data if isinstance(snapshot.interested_data, dict) else {}
+    interested_email = str(interested.get("email") or "").strip()
+    return persisted or interested_email or requested_email.strip()
+
+
+def _activate_post_payment_review(conn, case_id: str, session_id: str) -> dict:
+    """El pago activa OPS; no crea hechos, familia, estrategia ni borrador."""
+
+    conn.execute(
+        text(
+            """
+            UPDATE cases
+            SET status='manual_review', updated_at=NOW()
+            WHERE id=:id
+            """
+        ),
+        {"id": case_id},
+    )
+
+    payload = {
+        "ok": True,
+        "mode": "post_payment_review",
+        "session": session_id,
+        "analysis_deferred": True,
+        "classification_deferred": True,
+        "strategy_deferred": True,
+        "generation_deferred": True,
+        "next_authority": "rtm_intelligence_core",
+        "message": (
+            "Pago confirmado. El expediente queda en revisión OPS. "
+            "Ningún clasificador, especialista o generador se ejecuta desde billing."
+        ),
+    }
+    _append_event(conn, case_id, "rtm_core_review_queued", payload)
+    return payload
+
+
+@router.get("/billing/review-context/{case_id}")
+def review_checkout_context(case_id: str):
+    """Precio y requisitos del estudio sin exponer datos personales."""
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        snapshot = load_case_review_snapshot(conn, case_id)
+    readiness = build_case_review_readiness(snapshot)
     return {
         "ok": True,
-        "stage": "manual_review",
-        "generation_deferred": True,
-        "confidence": confidence,
-        "ai_payload": ai_payload,
+        "case_id": case_id,
+        "readiness": readiness.model_dump(mode="json"),
     }
 
 
@@ -358,20 +189,43 @@ def _run_post_payment_modo_dios(conn, case_id: str):
 def create_checkout(req: CheckoutRequest):
     stripe.api_key = _env("STRIPE_SECRET_KEY")
     frontend_url = _env("FRONTEND_URL").rstrip("/")
-
-    stripe_product = _resolve_stripe_product(req.product, req.payment_stage)
-    price_id = stripe_product["price_id"]
+    stage = _normalized_stage(req.payment_stage)
 
     engine = get_engine()
     with engine.begin() as conn:
-        auth_meta = _require_case_authorized_before_payment(conn, req.case_id)
+        snapshot = load_case_review_snapshot(conn, req.case_id)
 
-        if auth_meta["payment_status"] == "paid":
-            return {
-                "ok": True,
-                "already_paid": True,
-                "redirect": f"{frontend_url}/#/resumen?case={req.case_id}",
-            }
+        if stage in _REVIEW_STAGES:
+            readiness = build_case_review_readiness(snapshot)
+            if not readiness.ready:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "El expediente no está completo para pagar el estudio",
+                        "readiness": readiness.model_dump(mode="json"),
+                    },
+                )
+            stripe_product = _review_product(readiness)
+
+            if snapshot.payment_status == "paid":
+                return {
+                    "ok": True,
+                    "already_paid": True,
+                    "redirect": f"{frontend_url}/#/resumen?case={req.case_id}",
+                    "billing_code": stripe_product["billing_code"],
+                    "amount_cents": stripe_product["amount_cents"],
+                    "currency": stripe_product["currency"],
+                }
+        elif stage in _FINAL_STAGES:
+            if not snapshot.authorized:
+                raise HTTPException(status_code=409, detail="Debes autorizar antes de pagar")
+            stripe_product = _resolve_final_stripe_product(req.product, stage)
+            readiness = None
+        else:
+            raise HTTPException(status_code=400, detail=f"Fase de pago no reconocida: {req.payment_stage}")
+
+        checkout_email = _safe_checkout_email(snapshot, str(req.email))
+        requested_product = normalize_code(req.product)
 
         conn.execute(
             text(
@@ -384,7 +238,11 @@ def create_checkout(req: CheckoutRequest):
                 WHERE id=:id
                 """
             ),
-            {"id": req.case_id, "product": stripe_product["billing_code"], "email": req.email},
+            {
+                "id": req.case_id,
+                "product": stripe_product["billing_code"],
+                "email": checkout_email,
+            },
         )
 
         _append_event(
@@ -392,32 +250,42 @@ def create_checkout(req: CheckoutRequest):
             req.case_id,
             "checkout_started",
             {
-                "requested_product": req.product,
-                "service_code": stripe_product["service_code"],
+                "requested_product": requested_product,
+                "authoritative_service_code": stripe_product["service_code"],
                 "billing_code": stripe_product["billing_code"],
                 "payment_stage": stripe_product["payment_stage"],
-                "email": req.email,
-                "authorized": True,
-                "authorized_at": str(auth_meta["authorized_at"] or ""),
+                "amount_cents": stripe_product["amount_cents"],
+                "currency": stripe_product["currency"],
+                "authority_version": stripe_product["authority_version"],
+                "requested_email_matches_persisted": checkout_email.lower()
+                == str(req.email).strip().lower(),
+                "authorized": bool(snapshot.authorized),
+                "authorized_at": str(snapshot.authorized_at or ""),
+                "readiness_version": readiness.version if readiness is not None else None,
             },
         )
 
     success_url = f"{frontend_url}/#/pago-ok?case={req.case_id}"
     cancel_url = f"{frontend_url}/#/resumen?case={req.case_id}"
 
+    metadata = {
+        "case_id": req.case_id,
+        "requested_product": normalize_code(req.product),
+        "service_code": stripe_product["service_code"],
+        "billing_code": stripe_product["billing_code"],
+        "payment_stage": stripe_product["payment_stage"],
+        "authority_version": stripe_product["authority_version"],
+        "amount_cents": str(stripe_product["amount_cents"] or ""),
+        "currency": stripe_product["currency"],
+    }
+
     session = stripe.checkout.Session.create(
         mode="payment",
-        customer_email=req.email,
-        line_items=[{"price": price_id, "quantity": 1}],
+        customer_email=checkout_email,
+        line_items=[{"price": stripe_product["price_id"], "quantity": 1}],
         success_url=success_url,
         cancel_url=cancel_url,
-        metadata={
-            "case_id": req.case_id,
-            "requested_product": req.product,
-            "service_code": stripe_product["service_code"],
-            "billing_code": stripe_product["billing_code"],
-            "payment_stage": stripe_product["payment_stage"],
-        },
+        metadata=metadata,
         locale=req.locale or "es",
     )
 
@@ -426,6 +294,10 @@ def create_checkout(req: CheckoutRequest):
         "url": session.url,
         "billing_code": stripe_product["billing_code"],
         "payment_stage": stripe_product["payment_stage"],
+        "service_code": stripe_product["service_code"],
+        "amount_cents": stripe_product["amount_cents"],
+        "currency": stripe_product["currency"],
+        "authority_version": stripe_product["authority_version"],
     }
 
 
@@ -437,14 +309,21 @@ async def stripe_webhook(request: Request):
     try:
         stripe.api_key = _env("STRIPE_SECRET_KEY")
         event = stripe.Webhook.construct_event(
-            payload, sig_header, _env("STRIPE_WEBHOOK_SECRET")
+            payload,
+            sig_header,
+            _env("STRIPE_WEBHOOK_SECRET"),
         )
     except Exception:
         raise HTTPException(status_code=400, detail="Webhook inválido")
 
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        case_id = session["metadata"]["case_id"]
+        metadata = session.get("metadata") or {}
+        case_id = metadata.get("case_id")
+        if not case_id:
+            raise HTTPException(status_code=400, detail="Webhook sin case_id")
+
+        payment_stage = _normalized_stage(metadata.get("payment_stage"))
         engine = get_engine()
         with engine.begin() as conn:
             conn.execute(
@@ -455,31 +334,43 @@ async def stripe_webhook(request: Request):
                         paid_at=NOW(),
                         stripe_session_id=:sid,
                         stripe_payment_intent=:pi,
+                        product_code=COALESCE(:billing_code, product_code),
                         updated_at=NOW()
                     WHERE id=:id
                     """
                 ),
-                {"id": case_id, "sid": session["id"], "pi": session.get("payment_intent")},
-            )
-            _append_event(conn, case_id, "paid_ok", {"session": session["id"]})
-
-            # Activación operativa: solo tras pago confirmado por Stripe.
-            # El análisis inicial puede haber dejado el expediente como pending_client_data.
-            conn.execute(
-                text("UPDATE cases SET status='manual_review', updated_at=NOW() WHERE id=:id"),
-                {"id": case_id},
+                {
+                    "id": case_id,
+                    "sid": session["id"],
+                    "pi": session.get("payment_intent"),
+                    "billing_code": metadata.get("billing_code"),
+                },
             )
             _append_event(
                 conn,
                 case_id,
-                "case_activated_after_payment",
+                "paid_ok",
                 {
                     "session": session["id"],
-                    "message": "Expediente activado para revisión jurídica tras pago confirmado.",
+                    "payment_stage": payment_stage,
+                    "billing_code": metadata.get("billing_code"),
+                    "service_code": metadata.get("service_code"),
+                    "authority_version": metadata.get("authority_version"),
                 },
             )
 
-            _run_post_payment_modo_dios(conn, case_id)
+            if payment_stage in _REVIEW_STAGES:
+                _activate_post_payment_review(conn, case_id, session["id"])
+            else:
+                _append_event(
+                    conn,
+                    case_id,
+                    "final_payment_confirmed",
+                    {
+                        "session": session["id"],
+                        "billing_code": metadata.get("billing_code"),
+                    },
+                )
 
     return {"ok": True}
 

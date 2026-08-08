@@ -14,6 +14,8 @@ from rtm_core.contracts import (
     LEGAL_PREVIEW_VERSION,
     VALIDATED_FACTS_VERSION,
 )
+from rtm_core.readiness import REVIEW_READINESS_VERSION
+from rtm_core.service_catalog import SERVICE_CATALOG_VERSION
 
 
 BASELINE_COMMIT = "73af66c67f5736bfc554006a34cbff415f1ccc35"
@@ -50,7 +52,7 @@ def _runtime_constant(module_name: str, attribute: str) -> tuple[Optional[str], 
         module = importlib.import_module(module_name)
         value = getattr(module, attribute, None)
         return (str(value) if value not in (None, "") else None, None)
-    except Exception as exc:  # Observabilidad nunca debe impedir arrancar RTM.
+    except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
 
 
@@ -91,9 +93,9 @@ def build_version_snapshot() -> dict[str, Any]:
             "validated_facts": VALIDATED_FACTS_VERSION,
             "family_resolution": FAMILY_RESOLUTION_VERSION,
             "legal_preview": LEGAL_PREVIEW_VERSION,
+            "service_catalog": SERVICE_CATALOG_VERSION,
+            "review_readiness": REVIEW_READINESS_VERSION,
         },
         "components": components,
-        "runtime": {
-            "python": platform.python_version(),
-        },
+        "runtime": {"python": platform.python_version()},
     }
