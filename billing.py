@@ -8,7 +8,6 @@ from sqlalchemy import text
 
 from database import get_engine
 from ai.expediente_engine import run_expediente_ai
-from generate import generate_dgt_for_case
 from email_utils import send_email, build_vehicle_removal_paid_email
 
 router = APIRouter(tags=["billing"])
@@ -297,6 +296,17 @@ def _require_case_authorized_before_payment(conn, case_id: str):
 
 
 def _run_post_payment_modo_dios(conn, case_id: str):
+    """Activa la revisión tras el pago, pero NO genera un recurso automáticamente.
+
+    RTM Intelligence CORE:
+    Pago -> análisis inicial -> OPS/manual_review -> Reanalyze -> especialista
+    -> Generate explícito por operador.
+
+    Motivo:
+    generar antes de conocer familia + tipo documental + fase procesal puede
+    producir un escrito jurídicamente incorrecto (p. ej. alegaciones frente a
+    un requerimiento de pago ya firme).
+    """
     result = run_expediente_ai(case_id)
     if not isinstance(result, dict):
         result = {"raw_result": result}
@@ -305,79 +315,41 @@ def _run_post_payment_modo_dios(conn, case_id: str):
 
     _append_event(conn, case_id, "ai_expediente_result", ai_payload)
 
-    try:
-        generation_result = generate_dgt_for_case(conn, case_id)
-    except Exception as gen_err:
-        conn.execute(
-            text("UPDATE cases SET status='manual_review', updated_at=NOW() WHERE id=:id"),
-            {"id": case_id},
-        )
-        _append_event(
-            conn,
-            case_id,
-            "resource_generation_failed",
-            {
-                "ok": False,
-                "mode": "auto_post_payment",
-                "error": str(gen_err),
-            },
-        )
-        return {
-            "ok": False,
-            "stage": "generation",
-            "error": str(gen_err),
-            "ai_payload": ai_payload,
-        }
-
     confidence = ai_payload.get("tipo_infraccion_confidence")
-    low_confidence = confidence is None or confidence < 0.80
-
-    if low_confidence:
-        conn.execute(
-            text("UPDATE cases SET status='manual_review', updated_at=NOW() WHERE id=:id"),
-            {"id": case_id},
-        )
-        _append_event(
-            conn,
-            case_id,
-            "auto_review_required_low_confidence",
-            {
-                "ok": True,
-                "mode": "auto_post_payment",
-                "confidence": confidence,
-                "threshold": 0.80,
-                "message": "Confianza inferior al 80%; revisión obligatoria por operador.",
-            },
-        )
-        return {
-            "ok": True,
-            "stage": "manual_review",
-            "confidence": confidence,
-            "ai_payload": ai_payload,
-            "generation_result": generation_result,
-        }
 
     conn.execute(
-        text("UPDATE cases SET status='manual_review', updated_at=NOW() WHERE id=:id"),
+        text(
+            "UPDATE cases "
+            "SET status='manual_review', updated_at=NOW() "
+            "WHERE id=:id"
+        ),
         {"id": case_id},
     )
+
     _append_event(
         conn,
         case_id,
-        "resource_generated_auto",
+        "resource_generation_deferred_intelligence_core",
         {
             "ok": True,
-            "mode": "auto_post_payment",
+            "mode": "post_payment_review",
+            "generation_deferred": True,
             "confidence": confidence,
-            "threshold": 0.80,
+            "message": (
+                "Pago confirmado y revisión activada. "
+                "La generación automática queda diferida hasta que "
+                "RTM Intelligence CORE haya identificado familia, "
+                "tipo de documento y fase procesal, y OPS ordene Generate."
+            ),
         },
     )
+
     return {
         "ok": True,
-        "stage": "generated",
+        "stage": "manual_review",
+        "generation_deferred": True,
         "confidence": confidence,
         "ai_payload": ai_payload,
-        "generation_result": generation_result,
     }
 
 

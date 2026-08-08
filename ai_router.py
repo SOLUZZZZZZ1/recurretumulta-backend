@@ -6,7 +6,6 @@ from sqlalchemy import text
 
 from database import get_engine
 from ai.expediente_engine import run_expediente_ai
-from generate import generate_dgt_for_case
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -207,6 +206,11 @@ def _normalize_ai_payload(result):
 
 @router.post("/expediente/run")
 def run_ai(req: RunExpedienteAI):
+    """Ejecuta la IA de expediente y guarda el resultado, sin generar recurso.
+
+    La generación pertenece a una fase posterior controlada por
+    RTM Intelligence CORE + OPS.
+    """
     try:
         result = run_expediente_ai(req.case_id)
         if not isinstance(result, dict):
@@ -216,158 +220,74 @@ def run_ai(req: RunExpedienteAI):
         ai_payload = _normalize_ai_payload(result)
 
         with engine.begin() as conn:
-            # 1) MODO SEGURO:
-            # Antes generaba SIEMPRE. Ahora, si OCR/hecho/familia son dudosos,
-            # NO genera recurso automático y lo deja en revisión manual.
-            try:
-                if _needs_manual_review_before_generate(ai_payload, result):
-                    conn.execute(
-                        text(
-                            """
-                            INSERT INTO events(case_id, type, payload, created_at)
-                            VALUES (:id, 'ai_expediente_result', CAST(:payload AS JSONB), NOW())
-                            """
-                        ),
-                        {
-                            "id": req.case_id,
-                            "payload": json.dumps(ai_payload, ensure_ascii=False),
-                        },
-                    )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO events(case_id, type, payload, created_at)
+                    VALUES (:id, 'ai_expediente_result', CAST(:payload AS JSONB), NOW())
+                    """
+                ),
+                {
+                    "id": req.case_id,
+                    "payload": json.dumps(ai_payload, ensure_ascii=False),
+                },
+            )
 
-                    conn.execute(
-                        text(
-                            """
-                            UPDATE cases
-                            SET status='manual_review', updated_at=NOW()
-                            WHERE id=:id
-                            """
-                        ),
-                        {"id": req.case_id},
-                    )
+            conn.execute(
+                text(
+                    """
+                    UPDATE cases
+                    SET status='manual_review', updated_at=NOW()
+                    WHERE id=:id
+                    """
+                ),
+                {"id": req.case_id},
+            )
 
-                    conn.execute(
-                        text(
-                            """
-                            INSERT INTO events(case_id, type, payload, created_at)
-                            VALUES (:id, 'resource_generation_blocked_manual_review', CAST(:payload AS JSONB), NOW())
-                            """
-                        ),
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO events(case_id, type, payload, created_at)
+                    VALUES (
+                        :id,
+                        'resource_generation_deferred_intelligence_core',
+                        CAST(:payload AS JSONB),
+                        NOW()
+                    )
+                    """
+                ),
+                {
+                    "id": req.case_id,
+                    "payload": json.dumps(
                         {
-                            "id": req.case_id,
-                            "payload": json.dumps(
-                                {
-                                    "ok": True,
-                                    "mode": "safe_block",
-                                    "note": "Generación automática bloqueada por OCR/hecho/familia dudosos. Revisión manual obligatoria.",
-                                },
-                                ensure_ascii=False,
+                            "ok": True,
+                            "mode": "ai_run",
+                            "generation_deferred": True,
+                            "message": (
+                                "Análisis IA completado. "
+                                "No se genera recurso automáticamente: "
+                                "Reanalyze/Intelligence CORE debe validar "
+                                "familia, tipo documental y fase antes de Generate."
                             ),
                         },
-                    )
-
-                    result["note"] = "Revisión manual: no se genera recurso automático por OCR/hecho/familia dudosos."
-                    return {
-                        "ok": True,
-                        "case_id": req.case_id,
-                        "ai_payload": ai_payload,
-                        "result": result,
-                    }
-
-                gen_result = generate_dgt_for_case(conn, req.case_id)
-
-                delivery = gen_result.get("delivery") or {}
-                if delivery.get("destination_text"):
-                    ai_payload["delivery"] = delivery
-
-                # 2) Guardar resultado IA YA ENRIQUECIDO CON DESTINO
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO events(case_id, type, payload, created_at)
-                        VALUES (:id, 'ai_expediente_result', CAST(:payload AS JSONB), NOW())
-                        """
+                        ensure_ascii=False,
                     ),
-                    {
-                        "id": req.case_id,
-                        "payload": json.dumps(ai_payload, ensure_ascii=False),
-                    },
-                )
+                },
+            )
 
-                conn.execute(
-                    text(
-                        """
-                        UPDATE cases
-                        SET status='generated', updated_at=NOW()
-                        WHERE id=:id
-                        """
-                    ),
-                    {"id": req.case_id},
-                )
-
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO events(case_id, type, payload, created_at)
-                        VALUES (:id, 'resource_generated_auto', CAST(:payload AS JSONB), NOW())
-                        """
-                    ),
-                    {
-                        "id": req.case_id,
-                        "payload": json.dumps(
-                            {
-                                "ok": True,
-                                "mode": "modo_seguro",
-                                "note": "Recurso generado automáticamente para revisión",
-                                "delivery": delivery,
-                            },
-                            ensure_ascii=False,
-                        ),
-                    },
-                )
-
-                result["note"] = "Modo seguro: recurso generado para revisión (sin presentar)"
-            except Exception as gen_err:
-                # Si falla generate, guardamos al menos el resultado IA base
-                conn.execute(
-                    text(
-                        '''
-                        INSERT INTO events(case_id, type, payload, created_at)
-                        VALUES (:id, 'ai_expediente_result', CAST(:payload AS JSONB), NOW())
-                        '''
-                    ),
-                    {
-                        "id": req.case_id,
-                        "payload": json.dumps(ai_payload, ensure_ascii=False),
-                    },
-                )
-
-                conn.execute(
-                    text(
-                        '''
-                        INSERT INTO events(case_id, type, payload, created_at)
-                        VALUES (:id, 'resource_generation_failed', CAST(:payload AS JSONB), NOW())
-                        '''
-                    ),
-                    {
-                        "id": req.case_id,
-                        "payload": json.dumps(
-                            {
-                                "ok": False,
-                                "mode": "modo_dios",
-                                "error": str(gen_err),
-                            },
-                            ensure_ascii=False,
-                        ),
-                    },
-                )
-                result["warning"] = f"Generación falló: {gen_err}"
+        result["note"] = (
+            "Análisis completado. Generación diferida hasta validación "
+            "por RTM Intelligence CORE y acción explícita de OPS."
+        )
 
         return {
             "ok": True,
             "case_id": req.case_id,
+            "generation_deferred": True,
             "ai_payload": ai_payload,
             "result": result,
         }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error IA: {e}")
+
