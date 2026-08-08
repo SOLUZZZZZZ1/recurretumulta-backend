@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_7"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_8"
 _SECONDARY_FACTS_VERSION = "velocity_secondary_v1_0"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
@@ -1288,6 +1288,271 @@ def _fold_for_match(value: Any) -> str:
     return re.sub(r"\s+", " ", txt).lower().strip()
 
 
+
+def _semaforo_critical_fields_from_images(analyzed_pages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    '''Lectura visual ligera y específica para multas de semáforo.
+
+    Solo transcribe datos documentales. No hace razonamiento jurídico.
+    Una única llamada visual sobre las páginas normalizadas para evitar el coste
+    de targeted vision + zooms + secondary facts propios de VELOCIDAD.
+    '''
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return {"values": {}, "confidence": {}, "evidence": {}, "error": "OPENAI_API_KEY_missing"}
+
+    image_parts: List[Dict[str, Any]] = []
+    for page in analyzed_pages:
+        content = page.get("analysis_content")
+        mime = str(page.get("analysis_mime") or "")
+        if not isinstance(content, (bytes, bytearray)) or not mime.startswith("image/"):
+            continue
+        page_index = int(page.get("page_index") or 0)
+        image_parts.append({"type": "input_text", "text": f"Página {page_index}:"})
+        image_parts.append({
+            "type": "input_image",
+            "image_url": f"data:{mime};base64," + base64.b64encode(bytes(content)).decode("ascii"),
+        })
+
+    if not image_parts:
+        return {"values": {}, "confidence": {}, "evidence": {}, "error": "no_image_pages"}
+
+    system_text = (
+        "Eres un lector documental de alta precisión para multas municipales de tráfico en España. "
+        "Tu única tarea es TRANSCRIBIR datos visibles. No interpretes el Derecho, no corrijas el documento "
+        "y no inventes. Si un dato no se ve con claridad, devuelve null."
+    )
+
+    user_text = r'''
+Lee todas las páginas y devuelve EXCLUSIVAMENTE JSON con esta estructura:
+
+{
+  "values": {
+    "organismo": string|null,
+    "expediente_ref": string|null,
+    "matricula": string|null,
+    "fecha_infraccion": string|null,
+    "hora_infraccion": string|null,
+    "lugar_infraccion": string|null,
+    "sancion_importe_eur": number|null,
+    "puntos_detraccion": integer|null,
+    "capture_method": string|null,
+    "capture_automatic": boolean|null,
+    "norma": string|null,
+    "articulo": string|null,
+    "document_subject_name": string|null,
+    "document_subject_id": string|null,
+    "fecha_emision": string|null,
+    "fecha_limite_pago": string|null,
+    "vehicle_photo_present": boolean|null
+  },
+  "confidence": {},
+  "evidence": {}
+}
+
+Reglas:
+- expediente_ref: el EXPEDIENTE sancionador, no referencia bancaria ni identificación de pago.
+- matrícula: exactamente 4 dígitos y 3 letras.
+- fecha_infraccion y hora_infraccion: fecha/hora del HECHO, no fecha de emisión ni fecha límite de pago.
+- lugar_infraccion: vía/calle y número o punto kilométrico si aparece.
+- sancion_importe_eur: importe de la sanción correspondiente al hecho, no una cifra de código o referencia.
+- puntos_detraccion: puntos asociados a la infracción.
+- capture_method: copia la expresión del documento; ejemplos: "CONTROL PER CÀMERA DE VÍDEO", "agente", "radar".
+- capture_automatic: true solo si el documento indica captación/control automático o por cámara sin observación directa como soporte principal; false si consta observación presencial; null si no se puede saber.
+- norma / articulo: copia literalmente la norma y el artículo/apartado indicados. NO sustituyas por el artículo que creas correcto.
+- document_subject_name / document_subject_id: persona identificada como infractor/interesado en la notificación.
+- vehicle_photo_present: true si la página contiene una fotografía del vehículo asociada a la denuncia.
+- confidence: 0..1 para cada valor no nulo.
+- evidence: fragmento literal breve donde se ve cada dato.
+'''
+
+    payload = {
+        "model": (os.getenv("OPENAI_MODEL") or "gpt-4o").strip(),
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": system_text}]},
+            {"role": "user", "content": [{"type": "input_text", "text": user_text}] + image_parts},
+        ],
+        "text": {"format": {"type": "json_object"}},
+    }
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=90,
+        )
+        if not r.ok:
+            return {"values": {}, "confidence": {}, "evidence": {}, "error": f"OpenAI {r.status_code}: {r.text[:300]}"}
+
+        obj = json.loads(_response_output_text(r.json()) or "{}")
+        values = obj.get("values") if isinstance(obj, dict) else {}
+        confidence = obj.get("confidence") if isinstance(obj, dict) else {}
+        evidence = obj.get("evidence") if isinstance(obj, dict) else {}
+        if not isinstance(values, dict):
+            values = {}
+        if not isinstance(confidence, dict):
+            confidence = {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+
+        out: Dict[str, Any] = {}
+
+        plate = _normalise_plate(values.get("matricula"))
+        if plate:
+            out["matricula"] = plate
+
+        for key in (
+            "organismo", "expediente_ref", "hora_infraccion", "lugar_infraccion",
+            "capture_method", "norma", "articulo", "document_subject_name",
+            "document_subject_id",
+        ):
+            value = values.get(key)
+            if value not in (None, "", "null"):
+                out[key] = str(value).strip()
+
+        for key in ("fecha_infraccion", "fecha_emision", "fecha_limite_pago"):
+            value = _normalise_date(values.get(key))
+            if value:
+                out[key] = value
+
+        amount = _normalise_float(values.get("sancion_importe_eur"))
+        if amount is not None:
+            out["sancion_importe_eur"] = amount
+
+        points = _normalise_int(values.get("puntos_detraccion"), 0, 15)
+        if points is not None:
+            out["puntos_detraccion"] = points
+
+        if isinstance(values.get("capture_automatic"), bool):
+            out["capture_automatic"] = values["capture_automatic"]
+        if isinstance(values.get("vehicle_photo_present"), bool):
+            out["vehicle_photo_present"] = values["vehicle_photo_present"]
+
+        conf_out: Dict[str, float] = {}
+        ev_out: Dict[str, str] = {}
+        for key in out:
+            try:
+                conf_out[key] = max(0.0, min(1.0, float(confidence.get(key) or 0)))
+            except Exception:
+                conf_out[key] = 0.0
+            if evidence.get(key):
+                ev_out[key] = str(evidence.get(key))[:220]
+
+        return {
+            "values": out,
+            "confidence": conf_out,
+            "evidence": ev_out,
+            "version": "semaforo_secondary_v1_0",
+        }
+    except Exception as exc:
+        return {
+            "values": {}, "confidence": {}, "evidence": {},
+            "version": "semaforo_secondary_v1_0",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _apply_semaforo_fields(
+    core: Dict[str, Any],
+    sema_meta: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    out = dict(core or {})
+    values = (sema_meta or {}).get("values") or {}
+    confidence = (sema_meta or {}).get("confidence") or {}
+    evidence = (sema_meta or {}).get("evidence") or {}
+    sources: Dict[str, str] = {}
+    conflicts: List[Dict[str, Any]] = []
+
+    direct_map = {
+        "organismo": "organismo",
+        "expediente_ref": "expediente_ref",
+        "matricula": "matricula",
+        "fecha_infraccion": "fecha_infraccion",
+        "hora_infraccion": "hora_infraccion",
+        "lugar_infraccion": "lugar_infraccion",
+        "sancion_importe_eur": "sancion_importe_eur",
+        "puntos_detraccion": "puntos_detraccion",
+    }
+
+    for src, dst in direct_map.items():
+        value = values.get(src)
+        if value in (None, "", [], {}):
+            continue
+        current = out.get(dst)
+        conf = float(confidence.get(src) or 0)
+        if current not in (None, "", [], {}) and str(current).strip() != str(value).strip():
+            conflicts.append({
+                "field": dst,
+                "current_value": current,
+                "vision_value": value,
+                "vision_confidence": conf,
+                "resolved": conf >= 0.85,
+                "chosen": value if conf >= 0.85 else current,
+                "source": "semaforo_targeted_vision" if conf >= 0.85 else "existing_extraction",
+            })
+        if current in (None, "", [], {}) or conf >= 0.85:
+            out[dst] = value
+            sources[dst] = "semaforo_targeted_vision"
+
+    sema_facts = {
+        "capture_method": values.get("capture_method"),
+        "capture_automatic": values.get("capture_automatic"),
+        "normative_reference": {
+            "norm": values.get("norma"),
+            "article": values.get("articulo"),
+        },
+        "document_subject": {
+            "full_name": values.get("document_subject_name"),
+            "id_number": values.get("document_subject_id"),
+        },
+        "fecha_emision": values.get("fecha_emision"),
+        "fecha_limite_pago": values.get("fecha_limite_pago"),
+        "vehicle_photo_present": values.get("vehicle_photo_present"),
+    }
+    sema_facts = {
+        k: v for k, v in sema_facts.items()
+        if v not in (None, "", [], {}) and not (
+            isinstance(v, dict) and not any(x not in (None, "", [], {}) for x in v.values())
+        )
+    }
+
+    if sema_facts:
+        out["semaforo_secondary_facts"] = sema_facts
+        out["semaforo_secondary_facts_version"] = (sema_meta or {}).get("version") or "semaforo_secondary_v1_0"
+        out["semaforo_secondary_facts_confidence"] = confidence
+        out["semaforo_secondary_facts_evidence"] = evidence
+
+    required = [
+        "expediente_ref", "organismo", "matricula", "fecha_infraccion",
+        "lugar_infraccion", "sancion_importe_eur", "puntos_detraccion",
+    ]
+    missing = [k for k in required if out.get(k) in (None, "", [], {})]
+
+    out["ready_for_generate"] = False
+    out["requires_operator_review"] = True
+
+    reasons = list(out.get("operator_review_reasons") or [])
+    if missing and "semaforo_basic_fields_missing" not in reasons:
+        reasons.append("semaforo_basic_fields_missing")
+    if "semaforo_legal_specialist_pending" not in reasons:
+        reasons.append("semaforo_legal_specialist_pending")
+    out["operator_review_reasons"] = reasons
+
+    return out, {
+        "deterministic": {},
+        "vision": sema_meta or {},
+        "zoom": {"values": {}, "confidence": {}, "evidence": {}, "skipped": True},
+        "secondary": sema_meta or {},
+        "sources": sources,
+        "conflicts": conflicts,
+        "unresolved_fields": [],
+        "missing_required": missing,
+        "ready_for_generate": False,
+        "specialist_dispatch": "semaforo",
+        "deep_analysis": "semaforo",
+    }
+
+
 def _resolved_traffic_family(core: Dict[str, Any], text_blob: str = "") -> str:
     """Dispatcher barato: decide especialista antes de ejecutar visión profunda."""
     raw = (
@@ -1658,29 +1923,24 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
         critical_meta["secondary"] = secondary_meta
         critical_meta["specialist_dispatch"] = dispatched_family
         critical_meta["deep_analysis"] = "velocity"
+    elif dispatched_family == "semaforo":
+        sema_meta = _semaforo_critical_fields_from_images(analyzed_pages)
+        combined_core, critical_meta = _apply_semaforo_fields(combined_core, sema_meta)
     else:
-        # Para semáforo/móvil/etc. conservamos la extracción base y NO ejecutamos
-        # ninguna pasada visual diseñada para velocidad.
         basic_required = ["expediente_ref", "organismo", "matricula", "fecha_infraccion", "lugar_infraccion"]
         missing_required = [
             key for key in basic_required
             if combined_core.get(key) in (None, "", [], {})
         ]
 
-        # Hasta que exista el especialista específico, se permite revisar la
-        # extracción pero no se declara lista para generación automática si
-        # faltan datos básicos.
-        ready_for_generate = not missing_required
+        combined_core["requires_operator_review"] = True
+        reasons = list(combined_core.get("operator_review_reasons") or [])
+        reason = f"{dispatched_family}_specialist_pending"
+        if reason not in reasons:
+            reasons.append(reason)
+        combined_core["operator_review_reasons"] = reasons
+        combined_core["ready_for_generate"] = False
 
-        if missing_required:
-            combined_core["requires_operator_review"] = True
-            reasons = list(combined_core.get("operator_review_reasons") or [])
-            reason = f"{dispatched_family}_specialist_pending_or_basic_fields_missing"
-            if reason not in reasons:
-                reasons.append(reason)
-            combined_core["operator_review_reasons"] = reasons
-
-        combined_core["ready_for_generate"] = ready_for_generate
         critical_meta = {
             "deterministic": {},
             "vision": {"values": {}, "confidence": {}, "evidence": {}, "skipped": True},
@@ -1690,9 +1950,9 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
             "conflicts": [],
             "unresolved_fields": [],
             "missing_required": missing_required,
-            "ready_for_generate": ready_for_generate,
+            "ready_for_generate": False,
             "specialist_dispatch": dispatched_family,
-            "deep_analysis": "skipped_non_velocity",
+            "deep_analysis": "skipped_specialist_pending",
         }
 
     combined_core["document_role"] = "primary_case_document"
@@ -1755,7 +2015,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_7",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_8",
             },
         )
 
@@ -1902,6 +2162,10 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "velocity_secondary_facts_confidence": ((critical_meta.get("secondary") or {}).get("confidence") or {}),
             "velocity_secondary_facts_evidence": ((critical_meta.get("secondary") or {}).get("evidence") or {}),
             "velocity_secondary_facts_error": ((critical_meta.get("secondary") or {}).get("error")),
+            "semaforo_secondary_facts_version": core.get("semaforo_secondary_facts_version"),
+            "semaforo_secondary_facts": core.get("semaforo_secondary_facts") or {},
+            "semaforo_secondary_facts_confidence": core.get("semaforo_secondary_facts_confidence") or {},
+            "semaforo_secondary_facts_evidence": core.get("semaforo_secondary_facts_evidence") or {},
             "critical_conflicts_resolved": conflicts,
             "missing_required_fields": critical_meta.get("missing_required") or [],
             "unresolved_critical_fields": critical_meta.get("unresolved_fields") or [],
@@ -1942,6 +2206,10 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "velocity_secondary_facts_confidence": ((critical_meta.get("secondary") or {}).get("confidence") or {}),
             "velocity_secondary_facts_evidence": ((critical_meta.get("secondary") or {}).get("evidence") or {}),
             "velocity_secondary_facts_error": ((critical_meta.get("secondary") or {}).get("error")),
+            "semaforo_secondary_facts_version": core.get("semaforo_secondary_facts_version"),
+            "semaforo_secondary_facts": core.get("semaforo_secondary_facts") or {},
+            "semaforo_secondary_facts_confidence": core.get("semaforo_secondary_facts_confidence") or {},
+            "semaforo_secondary_facts_evidence": core.get("semaforo_secondary_facts_evidence") or {},
             "critical_conflicts_resolved": conflicts,
             "missing_required_fields": critical_meta.get("missing_required") or [],
             "unresolved_critical_fields": critical_meta.get("unresolved_fields") or [],
