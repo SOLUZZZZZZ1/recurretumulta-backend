@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_6"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_7"
 _SECONDARY_FACTS_VERSION = "velocity_secondary_v1_0"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
@@ -172,56 +172,72 @@ def _data_url_jpeg(content: bytes) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(content).decode("ascii")
 
 
+def _rotate_document_image(img, rotation: int):
+    if rotation == 90:
+        return img.rotate(270, expand=True)
+    if rotation == 180:
+        return img.rotate(180, expand=True)
+    if rotation == -90:
+        return img.rotate(90, expand=True)
+    return img
+
+
+def _orientation_preview(img, max_dim: int = 900):
+    preview = img.copy()
+    try:
+        preview.thumbnail((max_dim, max_dim))
+    except Exception:
+        pass
+    return preview
+
+
 def _choose_upright_document_image(img) -> Tuple[Any, Dict[str, Any]]:
-    """Selecciona la orientación legible de una página documental.
+    """Selecciona orientación sin mantener varias copias grandes en RAM.
 
-    V1.3 corrige también páginas verticales invertidas 180º. No modifica nunca
-    el original de B2: solo la copia JPEG utilizada por los analizadores.
+    V1.7:
+    - crea UNA miniatura de orientación;
+    - rota únicamente esa miniatura para preguntar al selector;
+    - aplica UNA sola rotación final a la imagen completa.
     """
-    original = img
-
     if img.width > img.height:
-        candidates = [
-            ("A", original, 0),
-            ("B", img.rotate(270, expand=True), 90),
-            ("C", img.rotate(180, expand=True), 180),
-            ("D", img.rotate(90, expand=True), -90),
-        ]
-        fallback_index = 1
+        specs = [("A", 0), ("B", 90), ("C", 180), ("D", -90)]
+        fallback_rotation = 90
     else:
-        candidates = [
-            ("A", original, 0),
-            ("B", img.rotate(180, expand=True), 180),
-        ]
-        fallback_index = 0
+        specs = [("A", 0), ("B", 180)]
+        fallback_rotation = 0
 
-    _fallback_label, fallback_img, fallback_rotation = candidates[fallback_index]
     meta: Dict[str, Any] = {
         "rotation_applied": fallback_rotation,
         "orientation_selector": "fallback",
         "orientation_confidence": 0.0,
+        "orientation_preview_max_dim": 900,
     }
 
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key:
-        return fallback_img, meta
+        return _rotate_document_image(img, fallback_rotation), meta
 
+    preview = _orientation_preview(img, 900)
     try:
         model = (os.getenv("OPENAI_MODEL") or "gpt-4o").strip()
-        content_parts: List[Dict[str, Any]] = [
-            {
-                "type": "input_text",
-                "text": (
-                    "Las imágenes siguientes son rotaciones de la MISMA página. "
-                    "Elige la que esté completamente derecha: cabecera arriba, texto horizontal "
-                    "y lectura natural de izquierda a derecha y de arriba abajo. "
-                    "Devuelve solo JSON con upright y confidence."
-                ),
-            }
-        ]
-        for label, candidate, _rotation in candidates:
+        content_parts: List[Dict[str, Any]] = [{
+            "type": "input_text",
+            "text": (
+                "Las imágenes siguientes son rotaciones de la MISMA página. "
+                "Elige la que esté completamente derecha: cabecera arriba, texto horizontal "
+                "y lectura natural de izquierda a derecha y de arriba abajo. "
+                "Devuelve solo JSON con upright y confidence."
+            ),
+        }]
+
+        for label, rotation in specs:
+            candidate_preview = _rotate_document_image(preview, rotation)
             content_parts.append({"type": "input_text", "text": f"Versión {label}:"})
-            content_parts.append({"type": "input_image", "image_url": _data_url_jpeg(_jpeg_bytes(candidate))})
+            content_parts.append({
+                "type": "input_image",
+                "image_url": _data_url_jpeg(_jpeg_bytes(candidate_preview)),
+            })
+            del candidate_preview
 
         payload = {
             "model": model,
@@ -240,12 +256,14 @@ def _choose_upright_document_image(img) -> Tuple[Any, Dict[str, Any]]:
             ],
             "text": {"format": {"type": "json_object"}},
         }
+
         r = requests.post(
             "https://api.openai.com/v1/responses",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json=payload,
             timeout=60,
         )
+
         if r.ok:
             obj = json.loads(_response_output_text(r.json()) or "{}")
             choice = str(obj.get("upright") or "").strip().upper()
@@ -254,18 +272,24 @@ def _choose_upright_document_image(img) -> Tuple[Any, Dict[str, Any]]:
             except Exception:
                 confidence = 0.0
             confidence = max(0.0, min(1.0, confidence))
-            for label, candidate, rotation in candidates:
+
+            for label, rotation in specs:
                 if choice == label:
-                    return candidate, {
+                    return _rotate_document_image(img, rotation), {
                         "rotation_applied": rotation,
-                        "orientation_selector": "openai",
+                        "orientation_selector": "openai_preview",
                         "orientation_confidence": confidence,
+                        "orientation_preview_max_dim": 900,
                     }
     except Exception as exc:
         meta["orientation_selector_error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        try:
+            del preview
+        except Exception:
+            pass
 
-    return fallback_img, meta
-
+    return _rotate_document_image(img, fallback_rotation), meta
 
 def _normalize_image_for_analysis(content: bytes, mime: str) -> Tuple[bytes, str, Dict[str, Any]]:
     """Crea una copia JPEG para análisis, sin modificar el original de B2.
@@ -296,8 +320,22 @@ def _normalize_image_for_analysis(content: bytes, mime: str) -> Tuple[bytes, str
         img = img.convert("RGB")
         img, orientation_meta = _choose_upright_document_image(img)
         meta.update(orientation_meta)
+
+        meta["source_oriented_width"] = int(img.width)
+        meta["source_oriented_height"] = int(img.height)
+
+        # 2.600 px es suficiente para OCR/visión documental y evita conservar
+        # fotografías de móvil de 10-20 MP durante todas las pasadas.
+        max_analysis_dim = 2600
+        if max(img.width, img.height) > max_analysis_dim:
+            img.thumbnail((max_analysis_dim, max_analysis_dim))
+            meta["analysis_resized"] = True
+        else:
+            meta["analysis_resized"] = False
+
         meta["normalized_width"] = int(img.width)
         meta["normalized_height"] = int(img.height)
+        meta["analysis_max_dim"] = max_analysis_dim
         return _jpeg_bytes(img), "image/jpeg", meta
     except Exception as exc:
         meta["normalization_error"] = f"{type(exc).__name__}: {exc}"
@@ -1250,6 +1288,60 @@ def _fold_for_match(value: Any) -> str:
     return re.sub(r"\s+", " ", txt).lower().strip()
 
 
+def _resolved_traffic_family(core: Dict[str, Any], text_blob: str = "") -> str:
+    """Dispatcher barato: decide especialista antes de ejecutar visión profunda."""
+    raw = (
+        (core or {}).get("familia_resuelta")
+        or (core or {}).get("tipo_infraccion")
+        or (core or {}).get("familia")
+        or ""
+    )
+    value = _fold_for_match(raw).replace(" ", "_")
+    aliases = {
+        "speed": "velocidad",
+        "velocitat": "velocidad",
+        "red_light": "semaforo",
+        "semáforo": "semaforo",
+        "semaforo": "semaforo",
+        "movil": "movil",
+        "móvil": "movil",
+        "cinturon": "cinturon",
+        "cinturón": "cinturon",
+        "parking": "estacionamiento",
+    }
+    value = aliases.get(value, value)
+    if value:
+        return value
+
+    blob = _fold_for_match(
+        " ".join([
+            str((core or {}).get("hecho_imputado") or ""),
+            str((core or {}).get("hecho_denunciado_literal") or ""),
+            str(text_blob or ""),
+        ])
+    )
+
+    if any(x in blob for x in (
+        "llum vermella", "luz roja", "fase roja",
+        "semaforo", "semáforo",
+    )):
+        return "semaforo"
+
+    if any(x in blob for x in (
+        "km/h", "cinemometro", "cinemómetro", "radar",
+        "exceso de velocidad", "velocitat",
+    )):
+        return "velocidad"
+
+    if any(x in blob for x in ("telefono movil", "teléfono móvil", "movil", "móvil")):
+        return "movil"
+
+    if any(x in blob for x in ("cinturon", "cinturón")):
+        return "cinturon"
+
+    return "traffic_generic"
+
+
 def _velocity_secondary_facts_from_images(analyzed_pages: List[Dict[str, Any]]) -> Dict[str, Any]:
     # Segunda lectura visual de hechos secundarios. No pisa campos primarios V8.
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
@@ -1544,18 +1636,64 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
         combined_core["vision_raw_text"] = combined_blob[:16000]
 
     combined_core = _enrich_with_triage(combined_core, combined_blob or _flatten_text(combined_core))
-    vision_meta = _critical_fields_from_images(analyzed_pages)
-    zoom_meta = _critical_fields_from_zoomed_crops(analyzed_pages)
-    combined_core, critical_meta = _apply_critical_fields(combined_core, combined_blob, vision_meta, zoom_meta)
+    dispatched_family = _resolved_traffic_family(combined_core, combined_blob)
+    combined_core["specialist_dispatch"] = dispatched_family
 
-    secondary_meta = _velocity_secondary_facts_from_images(analyzed_pages)
-    secondary_facts = secondary_meta.get("facts") if isinstance(secondary_meta, dict) else {}
-    if isinstance(secondary_facts, dict) and secondary_facts:
-        combined_core["velocity_secondary_facts"] = secondary_facts
-        combined_core["velocity_secondary_facts_version"] = secondary_meta.get("version")
-        combined_core["velocity_secondary_facts_confidence"] = secondary_meta.get("confidence") or {}
-        combined_core["velocity_secondary_facts_evidence"] = secondary_meta.get("evidence") or {}
-    critical_meta["secondary"] = secondary_meta
+    if dispatched_family == "velocidad":
+        # Solo VELOCIDAD paga el coste de targeted vision + zooms SCT +
+        # Secondary Facts de velocidad.
+        vision_meta = _critical_fields_from_images(analyzed_pages)
+        zoom_meta = _critical_fields_from_zoomed_crops(analyzed_pages)
+        combined_core, critical_meta = _apply_critical_fields(
+            combined_core, combined_blob, vision_meta, zoom_meta
+        )
+
+        secondary_meta = _velocity_secondary_facts_from_images(analyzed_pages)
+        secondary_facts = secondary_meta.get("facts") if isinstance(secondary_meta, dict) else {}
+        if isinstance(secondary_facts, dict) and secondary_facts:
+            combined_core["velocity_secondary_facts"] = secondary_facts
+            combined_core["velocity_secondary_facts_version"] = secondary_meta.get("version")
+            combined_core["velocity_secondary_facts_confidence"] = secondary_meta.get("confidence") or {}
+            combined_core["velocity_secondary_facts_evidence"] = secondary_meta.get("evidence") or {}
+        critical_meta["secondary"] = secondary_meta
+        critical_meta["specialist_dispatch"] = dispatched_family
+        critical_meta["deep_analysis"] = "velocity"
+    else:
+        # Para semáforo/móvil/etc. conservamos la extracción base y NO ejecutamos
+        # ninguna pasada visual diseñada para velocidad.
+        basic_required = ["expediente_ref", "organismo", "matricula", "fecha_infraccion", "lugar_infraccion"]
+        missing_required = [
+            key for key in basic_required
+            if combined_core.get(key) in (None, "", [], {})
+        ]
+
+        # Hasta que exista el especialista específico, se permite revisar la
+        # extracción pero no se declara lista para generación automática si
+        # faltan datos básicos.
+        ready_for_generate = not missing_required
+
+        if missing_required:
+            combined_core["requires_operator_review"] = True
+            reasons = list(combined_core.get("operator_review_reasons") or [])
+            reason = f"{dispatched_family}_specialist_pending_or_basic_fields_missing"
+            if reason not in reasons:
+                reasons.append(reason)
+            combined_core["operator_review_reasons"] = reasons
+
+        combined_core["ready_for_generate"] = ready_for_generate
+        critical_meta = {
+            "deterministic": {},
+            "vision": {"values": {}, "confidence": {}, "evidence": {}, "skipped": True},
+            "zoom": {"values": {}, "confidence": {}, "evidence": {}, "skipped": True},
+            "secondary": {"facts": {}, "confidence": {}, "evidence": {}, "skipped": True},
+            "sources": {},
+            "conflicts": [],
+            "unresolved_fields": [],
+            "missing_required": missing_required,
+            "ready_for_generate": ready_for_generate,
+            "specialist_dispatch": dispatched_family,
+            "deep_analysis": "skipped_non_velocity",
+        }
 
     combined_core["document_role"] = "primary_case_document"
     combined_core["document_group_type"] = "traffic_fine"
@@ -1617,7 +1755,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_6",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_7",
             },
         )
 
@@ -1735,6 +1873,8 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "engine": _ENGINE_NAME,
             "extractor_version": _EXTRACTOR_VERSION,
             "specialist": "traffic_fine",
+            "specialist_dispatch": critical_meta.get("specialist_dispatch") or core.get("specialist_dispatch"),
+            "deep_analysis": critical_meta.get("deep_analysis"),
             "pages_analyzed": len(analyzed_pages),
             "tipo_infraccion": core.get("tipo_infraccion"),
             "familia_resuelta": core.get("familia_resuelta") or core.get("tipo_infraccion"),
@@ -1774,6 +1914,8 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "ok": True,
             "case_id": case_id,
             "specialist": "traffic_fine",
+            "specialist_dispatch": critical_meta.get("specialist_dispatch") or core.get("specialist_dispatch"),
+            "deep_analysis": critical_meta.get("deep_analysis"),
             "pages_analyzed": len(analyzed_pages),
             "tipo_infraccion": core.get("tipo_infraccion"),
             "familia_resuelta": core.get("familia_resuelta") or core.get("tipo_infraccion"),
