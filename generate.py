@@ -11,7 +11,12 @@ from scoring import classify
 from database import get_engine
 from jurisprudencia_base import obtener_bloques_juridicos
 
-from ai.infractions.semaforo import build_semaforo_strong_template
+from ai.infractions.semaforo import (
+    build_semaforo_strong_template,
+    build_semaforo_legal_intelligence,
+    build_semaforo_intelligence_template,
+    SEMAFORO_LEGAL_INTELLIGENCE_VERSION,
+)
 from ai.infractions.movil import build_movil_strong_template
 from ai.infractions.condiciones_vehiculo import build_condiciones_vehiculo_strong_template
 from ai.infractions.distracciones import build_auriculares_strong_template
@@ -40,7 +45,7 @@ from ai.infractions.dispatch import dispatch_deterministic_template
 
 router = APIRouter(tags=["generate"])
 
-_GENERATOR_VERSION = "traffic_generate_v1_4"
+_GENERATOR_VERSION = "traffic_generate_v1_6"
 
 
 _ADMIN_PREFIXES = [
@@ -1889,6 +1894,28 @@ def _build_unified_suplico(tipo: str = "") -> str:
         "aplicable.\n\n"
     )
 
+    if tipo == "semaforo":
+        intel = extra or {}
+        precept = (intel.get("document_precept_analysis") or {}) if isinstance(intel, dict) else {}
+        precept_request = (
+            "5) Que se aclare y motive expresamente la concreta base normativa y subsunción empleada, "
+            "teniendo en cuenta la referencia transcrita en la notificación y la regulación vigente en la fecha del hecho.\n\n"
+            if precept.get("requires_review")
+            else
+            "5) Que se motive de forma individualizada la subsunción jurídica de los hechos en el precepto aplicado.\n\n"
+        )
+        return (
+            "S U P L I C A:\n\n"
+            "1) Que se tengan por formuladas en tiempo y forma las presentes alegaciones y por propuesta la prueba relacionada.\n\n"
+            "2) Que se incorpore y permita el acceso a la evidencia original de imagen o vídeo y a los datos técnicos necesarios para comprobar fecha, hora, integridad y asignación al vehículo.\n\n"
+            "3) Que se acredite la fase roja no intermitente y el instante exacto en que el vehículo habría rebasado el semáforo o la línea de detención anterior.\n\n"
+            "4) Que se identifique el sistema de captación utilizado y, cuando resulte relevante, su funcionamiento, sincronización y trazabilidad con la denuncia generada.\n\n"
+            + precept_request +
+            "6) Que, si la prueba incorporada no acredita de forma suficiente el hecho imputado o existe una deficiencia de motivación que impida una defensa efectiva, se acuerde el archivo del expediente.\n\n"
+            "7) Subsidiariamente, que cualquier denegación de la prueba propuesta y cualquier decisión desestimatoria respondan de forma expresa, individualizada y motivada a las cuestiones planteadas.\n\n"
+            "OTROSÍ DIGO\n\n"
+            "Que esta parte solicita acceso a la documentación técnica y probatoria que vaya a constituir fundamento esencial de la resolución y se reserva el ejercicio de los recursos y acciones que correspondan."
+        )
     return (
         "S U P L I C A:\n\n"
         "1) Que se tengan por formuladas las presentes alegaciones.\n\n"
@@ -2567,7 +2594,7 @@ def _select_template(core: Dict[str, Any], tipo: str, jurisdiccion: str):
         tipo = "semaforo"
 
     if tipo == "semaforo":
-        return build_semaforo_pro_template(core), "semaforo_pro"
+        return build_semaforo_intelligence_template(core), "semaforo_intelligence"
     elif tipo == "velocidad":
         return build_velocity_strong_template(core), "velocidad"
     elif tipo == "movil":
@@ -3152,6 +3179,25 @@ def _build_fundamentos_derecho_pro(tipo: str = "", extra: dict | None = None) ->
             "con errores máximos permitidos diferenciados según la modalidad y la fase de control.\n\n"
             "SÉPTIMO.– La STS 184/2018, de 17 de abril (ECLI:ES:TS:2018:1387), es un criterio jurisprudencial relevante para distinguir la medición desde ubicación fija o estática de la efectuada con el dispositivo en movimiento."
         )
+    if tipo == "semaforo":
+        intel = extra or {}
+        precept = (intel.get("document_precept_analysis") or {}) if isinstance(intel, dict) else {}
+        rule = _safe_str(precept.get("legal_rule_at_fact_date")).strip()
+        precept_note = ""
+        if precept.get("requires_review") and rule:
+            precept_note = (
+                "\n\nSÉPTIMO.– La notificación contiene una referencia normativa que debe contrastarse con la regulación vigente "
+                f"en la fecha del hecho. La regla material identificada para la luz roja se sitúa en {rule}. "
+                "La eventual discordancia debe ser objeto de motivación y revisión de la subsunción, sin convertirla por sí sola en nulidad automática."
+            )
+        return base + (
+            "\n\nCUARTO.– El artículo 76.k) del texto refundido de la Ley sobre Tráfico califica como infracción grave no respetar la luz roja de un semáforo; "
+            "el artículo 80 fija con carácter general 200 euros para las infracciones graves y el Anexo II asigna 4 puntos a la no detención ante semáforo en rojo.\n\n"
+            "QUINTO.– El artículo 94 regula el pago voluntario con reducción del 50 por ciento, cuando proceda.\n\n"
+            "SEXTO.– Los artículos 77 y 88 de la Ley 39/2015 exigen valorar la prueba y motivar la resolución sancionadora; "
+            "cuando el hecho se conoce mediante medios de captación de imágenes, debe poder verificarse la evidencia que sustenta la imputación."
+            + precept_note
+        )
     return base + (
         "\n\nCUARTO.– La prueba y motivación han de ser suficientes, concretas e individualizadas para desvirtuar la presunción de inocencia."
     )
@@ -3366,18 +3412,79 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     wrapper = row[0] if isinstance(row[0], dict) else json.loads(row[0])
     core = wrapper.get("extracted") or {}
 
-    # Intelligence CORE: si una extracción moderna declara que NO está lista, Generate debe bloquearse.
-    # Las extracciones legacy que no tienen este campo continúan funcionando como hasta ahora.
+    # Intelligence CORE: una extracción moderna normalmente debe venir lista.
+    # Excepción controlada: SEMÁFORO validado mantiene ready_for_generate=false hasta
+    # que exista el especialista jurídico; desde V20 Generate puede tomar el relevo
+    # si la extracción de semáforo está completa y versionada.
     unresolved = core.get("unresolved_critical_fields") or []
-    missing_required = ((core.get("critical_fields_validation") or {}).get("missing_required") or [])
-    if core.get("ready_for_generate") is False or unresolved or missing_required:
+    legacy_missing_required = (
+        (core.get("critical_fields_validation") or {}).get("missing_required") or []
+    )
+
+    specialist_hint = _safe_str(
+        core.get("specialist_dispatch")
+        or core.get("familia_resuelta")
+        or core.get("tipo_infraccion")
+    ).lower().strip()
+
+    # SEMÁFORO: desde V19 la extracción especializada ya valida sus propios
+    # campos. No debemos bloquear Generate por un missing_required heredado
+    # de una extracción base anterior.
+    semaforo_required_fields = [
+        "expediente_ref",
+        "organismo",
+        "matricula",
+        "fecha_infraccion",
+        "lugar_infraccion",
+        "hecho_imputado",
+        "sancion_importe_eur",
+        "puntos_detraccion",
+    ]
+    semaforo_missing_required = [
+        key
+        for key in semaforo_required_fields
+        if core.get(key) in (None, "", [], {})
+    ]
+
+    semaforo_secondary_version = _safe_str(
+        core.get("semaforo_secondary_facts_version")
+    ).strip()
+
+    semaforo_specialist_handoff = bool(
+        specialist_hint == "semaforo"
+        and semaforo_secondary_version.startswith("semaforo_secondary_v1_")
+        and not unresolved
+        and not semaforo_missing_required
+    )
+
+    # Para semáforo validado, manda su validación especializada actual.
+    # Para el resto de familias, conservamos el guard histórico.
+    effective_missing_required = (
+        semaforo_missing_required
+        if specialist_hint == "semaforo"
+        else legacy_missing_required
+    )
+
+    if (
+        (core.get("ready_for_generate") is False and not semaforo_specialist_handoff)
+        or unresolved
+        or effective_missing_required
+    ):
         details = []
         if unresolved:
             details.append("conflictos: " + ", ".join(map(str, unresolved)))
-        if missing_required:
-            details.append("faltan: " + ", ".join(map(str, missing_required)))
+        if effective_missing_required:
+            details.append(
+                "faltan: " + ", ".join(map(str, effective_missing_required))
+            )
         suffix = (" (" + "; ".join(details) + ")") if details else ""
-        raise HTTPException(status_code=409, detail="La extracción requiere validación antes de generar el recurso" + suffix)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "La extracción requiere validación antes de generar el recurso"
+                + suffix
+            ),
+        )
 
     # Datos del formulario: prioridad para identidad/contacto; los hechos documentales validados se conservan.
     case_form_data = _load_interesado_from_case_for_generate(conn, case_id)
@@ -3459,6 +3566,51 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
             except Exception:
                 pass
 
+    semaforo_intelligence = None
+    if tipo == "semaforo":
+        semaforo_intelligence = build_semaforo_legal_intelligence(core)
+        semaforo_intelligence = _apply_speed_identity_check(semaforo_intelligence, interesado or {})
+        core["_semaforo_legal_intelligence"] = semaforo_intelligence
+
+        if not semaforo_intelligence.get("draft_generation_allowed"):
+            raise HTTPException(
+                status_code=409,
+                detail="La inteligencia jurídica de semáforo requiere validar datos antes de generar el borrador."
+            )
+
+        # Trazabilidad OPS del especialista jurídico.
+        try:
+            conn.execute(
+                text("INSERT INTO events(case_id, type, payload, created_at) VALUES (:id, 'semaforo_legal_intelligence_result', CAST(:payload AS JSONB), NOW())"),
+                {"id": case_id, "payload": json.dumps(semaforo_intelligence, ensure_ascii=False)},
+            )
+        except Exception:
+            pass
+
+        identity_check = (
+            semaforo_intelligence.get("identity_check")
+            if isinstance(semaforo_intelligence, dict)
+            else {}
+        )
+        if isinstance(identity_check, dict) and identity_check.get("mismatch") is True:
+            try:
+                conn.execute(
+                    text("INSERT INTO events(case_id, type, payload, created_at) VALUES (:id, 'document_identity_mismatch', CAST(:payload AS JSONB), NOW())"),
+                    {
+                        "id": case_id,
+                        "payload": json.dumps({
+                            "ok": False,
+                            "severity": "high",
+                            "message": "La identidad del documento sancionador no coincide con la identidad del cliente RTM. Revisar antes de cualquier presentación.",
+                            "identity_check": identity_check,
+                            "generator_version": _GENERATOR_VERSION,
+                            "specialist": "semaforo",
+                        }, ensure_ascii=False),
+                    },
+                )
+            except Exception:
+                pass
+
     bicicleta_ctx = _is_bicicleta_context(core)
 
     # V5 bloqueada: no redispatch heurístico si ya hay familia resuelta upstream.
@@ -3473,7 +3625,7 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
     cuerpo = _inject_tipicidad_material_en_alegaciones(cuerpo, core)
     # Intelligence CORE: en VELOCIDAD validada no inyectamos la estrategia legacy,
     # porque podía introducir nulidad/fotograma/margen como afirmaciones genéricas.
-    if not (tipo == "velocidad" and _is_rtm_validated_extraction(core)):
+    if not (tipo in ("velocidad", "semaforo") and _is_rtm_validated_extraction(core)):
         cuerpo = _inject_strategic_legal_reinforcement(cuerpo, core, tipo)
     cuerpo = re.sub(r'\bREFUERZO\s*[—-]\s*', '', cuerpo, flags=re.IGNORECASE)
     cuerpo = re.sub(r'\bESTRATEGIA PRINCIPAL\b', 'INSUFICIENCIA PROBATORIA Y VULNERACIÓN DE GARANTÍAS', cuerpo, flags=re.IGNORECASE)
@@ -3520,7 +3672,11 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
 
     # Cierre PRO obligatorio para todos los recursos:
     # recalificación subsidiaria, sanción mínima y OTROSÍ DIGO.
-    tpl["cuerpo"] = _upgrade_legacy_suplica_to_pro(tpl["cuerpo"], tipo=tipo, extra=speed_intelligence or {})
+    tpl["cuerpo"] = _upgrade_legacy_suplica_to_pro(
+        tpl["cuerpo"],
+        tipo=tipo,
+        extra=(speed_intelligence or semaforo_intelligence or {}),
+    )
 
     docx_bytes = build_docx("", tpl["cuerpo"])
     b2_bucket, b2_key_docx = upload_bytes(
@@ -3564,12 +3720,19 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         "tipo_infraccion": tipo,
         "jurisdiccion": jurisdiccion,
         "generator_version": _GENERATOR_VERSION,
-        "legal_intelligence_version": (speed_intelligence or {}).get("version") if isinstance(speed_intelligence, dict) else None,
-        "secondary_facts_version": (
-            ((speed_intelligence or {}).get("provenance") or {}).get("secondary_facts_version")
-            if isinstance(speed_intelligence, dict) else None
+        "legal_intelligence_version": (
+            ((speed_intelligence or semaforo_intelligence or {}).get("version"))
+            if isinstance((speed_intelligence or semaforo_intelligence), dict) else None
         ),
-        "legal_intelligence": speed_intelligence if tipo == "velocidad" else None,
+        "secondary_facts_version": (
+            (((speed_intelligence or semaforo_intelligence or {}).get("provenance") or {}).get("secondary_facts_version"))
+            if isinstance((speed_intelligence or semaforo_intelligence), dict) else None
+        ),
+        "legal_intelligence": (
+            speed_intelligence if tipo == "velocidad"
+            else semaforo_intelligence if tipo == "semaforo"
+            else None
+        ),
         "delivery": {
             "destination_text": destination_text,
             "source": "generate",
