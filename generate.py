@@ -45,7 +45,7 @@ from ai.infractions.dispatch import dispatch_deterministic_template
 
 router = APIRouter(tags=["generate"])
 
-_GENERATOR_VERSION = "traffic_generate_v1_6"
+_GENERATOR_VERSION = "traffic_generate_v1_7"
 
 
 _ADMIN_PREFIXES = [
@@ -526,16 +526,67 @@ def _velocity_margin_info(measured: Optional[float], radar_hint: str = "") -> Di
 
 
 def _is_rtm_validated_extraction(core: Dict[str, Any]) -> bool:
-    """True cuando el core procede del reanálisis consolidado y sus campos críticos están validados."""
+    """Indica si los DATOS DOCUMENTALES del reanálisis deben prevalecer sobre cases.
+
+    Importante:
+    ready_for_generate expresa si existe autorización para pasar al generador
+    jurídico, NO si los hechos documentales ya están validados.
+
+    En SEMÁFORO V19+, la extracción se deja deliberadamente con
+    ready_for_generate=false hasta que exista especialista jurídico. Aun así,
+    expediente/matrícula/organismo/fecha/lugar/hecho ya son hechos documentales
+    validados y NO deben ser pisados por valores antiguos de la tabla cases.
+    """
     core = core or {}
+
     version = _safe_str(core.get("extractor_version")).strip()
     if not version.startswith("traffic_fine_reanalysis_"):
         return False
+
+    unresolved = core.get("unresolved_critical_fields") or []
+    if unresolved:
+        return False
+
+    specialist = _safe_str(
+        core.get("specialist_dispatch")
+        or core.get("familia_resuelta")
+        or core.get("tipo_infraccion")
+    ).lower().strip()
+
+    if specialist == "semaforo":
+        secondary_version = _safe_str(
+            core.get("semaforo_secondary_facts_version")
+        ).strip()
+
+        required_document_fields = [
+            "expediente_ref",
+            "organismo",
+            "matricula",
+            "fecha_infraccion",
+            "lugar_infraccion",
+            "hecho_imputado",
+        ]
+        missing_current = [
+            key
+            for key in required_document_fields
+            if core.get(key) in (None, "", [], {})
+        ]
+
+        return bool(
+            secondary_version.startswith("semaforo_secondary_v1_")
+            and not missing_current
+        )
+
+    # Comportamiento histórico para velocidad y resto de especialistas ya
+    # habilitados: ready_for_generate sigue actuando como guard.
     if core.get("ready_for_generate") is False:
         return False
-    unresolved = core.get("unresolved_critical_fields") or []
-    missing = ((core.get("critical_fields_validation") or {}).get("missing_required") or [])
-    return not bool(unresolved or missing)
+
+    missing = (
+        (core.get("critical_fields_validation") or {}).get("missing_required")
+        or []
+    )
+    return not bool(missing)
 
 
 def _explicit_tramo_radar_signal(blob: str) -> bool:
