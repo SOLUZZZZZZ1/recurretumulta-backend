@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_13"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_14"
 _SECONDARY_FACTS_VERSION = "velocity_secondary_v1_0"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 
@@ -1969,6 +1969,434 @@ def _apply_semaforo_fields(
 
 
 
+
+def _traffic_generic_document_facts_from_images(
+    analyzed_pages: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Lectura común para tráfico cuando aún no existe especialista jurídico.
+
+    Objetivo:
+    - completar hechos documentales básicos;
+    - identificar TIPO DE DOCUMENTO y FASE PROCEDIMENTAL solo por evidencia literal;
+    - NO decidir recursos, nulidades ni estrategia.
+    - una única llamada visual sobre las páginas normalizadas.
+    """
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return {
+            "values": {},
+            "confidence": {},
+            "evidence": {},
+            "version": "traffic_generic_facts_v1_0",
+            "error": "OPENAI_API_KEY_missing",
+        }
+
+    image_parts: List[Dict[str, Any]] = []
+    for page in analyzed_pages or []:
+        content = page.get("analysis_content")
+        mime = str(page.get("analysis_mime") or "")
+        if not isinstance(content, (bytes, bytearray)) or not mime.startswith("image/"):
+            continue
+
+        image_parts.append({
+            "type": "input_text",
+            "text": f"Página {int(page.get('page_index') or 0)}:",
+        })
+        image_parts.append({
+            "type": "input_image",
+            "image_url": (
+                f"data:{mime};base64,"
+                + base64.b64encode(bytes(content)).decode("ascii")
+            ),
+        })
+
+    if not image_parts:
+        return {
+            "values": {},
+            "confidence": {},
+            "evidence": {},
+            "version": "traffic_generic_facts_v1_0",
+            "error": "no_image_pages",
+        }
+
+    system_text = (
+        "Eres un lector documental de tráfico en España. "
+        "Tu tarea es TRANSCRIBIR hechos visibles y clasificar únicamente "
+        "el tipo documental cuando el propio texto lo permita. "
+        "No propongas recursos, no interpretes consecuencias jurídicas y no inventes."
+    )
+
+    user_text = (
+        "Lee todas las páginas y devuelve SOLO JSON con esta estructura:\n"
+        "{\n"
+        '  "values": {\n'
+        '    "organismo": string|null,\n'
+        '    "document_title": string|null,\n'
+        '    "document_type": "denuncia"|"incoacion"|"propuesta_resolucion"|"resolucion"|"requerimiento_pago"|"providencia_apremio"|"otro"|null,\n'
+        '    "procedural_stage_hint": "initial_notice"|"ordinary_procedure"|"resolution"|"payment_requirement"|"enforcement"|"unknown"|null,\n'
+        '    "administrative_finality_stated": boolean|null,\n'
+        '    "payment_term_days": integer|null,\n'
+        '    "expediente_ref": string|null,\n'
+        '    "matricula": string|null,\n'
+        '    "vehicle_make_model": string|null,\n'
+        '    "fecha_infraccion": string|null,\n'
+        '    "hora_infraccion": string|null,\n'
+        '    "lugar_infraccion": string|null,\n'
+        '    "poblacion": string|null,\n'
+        '    "hecho_denunciado_literal": string|null,\n'
+        '    "norma": string|null,\n'
+        '    "articulo": string|null,\n'
+        '    "sancion_ordinaria_eur": number|null,\n'
+        '    "importe_a_pagar_eur": number|null,\n'
+        '    "puntos_detraccion": integer|null,\n'
+        '    "document_subject_name": string|null,\n'
+        '    "document_subject_id": string|null,\n'
+        '    "fecha_documento": string|null,\n'
+        '    "fecha_limite_pago": string|null\n'
+        "  },\n"
+        '  "confidence": {},\n'
+        '  "evidence": {}\n'
+        "}\n\n"
+        "REGLAS:\n"
+        "- document_title: copia el título principal literalmente.\n"
+        "- document_type/procedural_stage_hint: usa solo señales EXPRESAS del documento.\n"
+        "- Si aparece 'Requeriment de pagament' / 'Requerimiento de pago', document_type=requerimiento_pago y procedural_stage_hint=payment_requirement.\n"
+        "- administrative_finality_stated=true SOLO si el texto afirma que la sanción/acto es firme en vía administrativa o equivalente.\n"
+        "- payment_term_days: extrae el número de días solo si el documento fija expresamente un plazo de pago.\n"
+        "- expediente_ref: número de expediente sancionador, no referencia bancaria ni identificador de cobro.\n"
+        "- matrícula: exactamente 4 dígitos + 3 letras cuando sea matrícula española ordinaria.\n"
+        "- fecha_infraccion/hora/lugar: corresponden al HECHO, no al documento ni al pago.\n"
+        "- lugar_infraccion: conserva vía/carretera + km/número; poblacion va aparte si aparece.\n"
+        "- hecho_denunciado_literal: copia la conducta íntegra, sin resumir ni traducir.\n"
+        "- norma/articulo: transcribe exactamente lo impreso; no corrijas jurídicamente.\n"
+        "- sancion_ordinaria_eur: importe íntegro de la sanción.\n"
+        "- importe_a_pagar_eur: importe que el requerimiento ordena pagar actualmente.\n"
+        "- puntos_detraccion: null si no constan.\n"
+        "- fecha_documento: fecha de emisión/notificación solo si es inequívoca.\n"
+        "- confidence: DEBES incluir 0..1 para cada valor no nulo.\n"
+        "- evidence: DEBES incluir un fragmento literal breve para cada valor no nulo.\n"
+        "- Si algo no se ve con claridad, null."
+    )
+
+    payload = {
+        "model": (os.getenv("OPENAI_MODEL") or "gpt-4o").strip(),
+        "input": [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": system_text}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": user_text}] + image_parts,
+            },
+        ],
+        "text": {"format": {"type": "json_object"}},
+    }
+
+    try:
+        r = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=90,
+        )
+        if not r.ok:
+            return {
+                "values": {},
+                "confidence": {},
+                "evidence": {},
+                "version": "traffic_generic_facts_v1_0",
+                "error": f"OpenAI {r.status_code}: {r.text[:300]}",
+            }
+
+        obj = json.loads(_response_output_text(r.json()) or "{}")
+        values = obj.get("values") if isinstance(obj, dict) else {}
+        confidence = obj.get("confidence") if isinstance(obj, dict) else {}
+        evidence = obj.get("evidence") if isinstance(obj, dict) else {}
+
+        if not isinstance(values, dict):
+            values = {}
+        if not isinstance(confidence, dict):
+            confidence = {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+
+        out: Dict[str, Any] = {}
+
+        plate = _normalise_plate(values.get("matricula"))
+        if plate:
+            out["matricula"] = plate
+
+        for key in (
+            "organismo",
+            "document_title",
+            "expediente_ref",
+            "vehicle_make_model",
+            "hora_infraccion",
+            "lugar_infraccion",
+            "poblacion",
+            "hecho_denunciado_literal",
+            "norma",
+            "articulo",
+            "document_subject_name",
+            "document_subject_id",
+        ):
+            value = values.get(key)
+            if value not in (None, "", "null"):
+                out[key] = str(value).strip()
+
+        allowed_doc_types = {
+            "denuncia",
+            "incoacion",
+            "propuesta_resolucion",
+            "resolucion",
+            "requerimiento_pago",
+            "providencia_apremio",
+            "otro",
+        }
+        doc_type = str(values.get("document_type") or "").strip().lower()
+        if doc_type in allowed_doc_types:
+            out["document_type"] = doc_type
+
+        allowed_stages = {
+            "initial_notice",
+            "ordinary_procedure",
+            "resolution",
+            "payment_requirement",
+            "enforcement",
+            "unknown",
+        }
+        stage = str(values.get("procedural_stage_hint") or "").strip().lower()
+        if stage in allowed_stages:
+            out["procedural_stage_hint"] = stage
+
+        if isinstance(values.get("administrative_finality_stated"), bool):
+            out["administrative_finality_stated"] = values[
+                "administrative_finality_stated"
+            ]
+
+        payment_days = _normalise_int(values.get("payment_term_days"), 1, 365)
+        if payment_days is not None:
+            out["payment_term_days"] = payment_days
+
+        points = _normalise_int(values.get("puntos_detraccion"), 0, 15)
+        if points is not None:
+            out["puntos_detraccion"] = points
+
+        for key in ("sancion_ordinaria_eur", "importe_a_pagar_eur"):
+            amount = _normalise_float(values.get(key))
+            if amount is not None:
+                out[key] = amount
+
+        for key in (
+            "fecha_infraccion",
+            "fecha_documento",
+            "fecha_limite_pago",
+        ):
+            parsed = _normalise_date(values.get(key))
+            if parsed:
+                out[key] = parsed
+
+        conf_out: Dict[str, float] = {}
+        ev_out: Dict[str, str] = {}
+
+        for key in out:
+            try:
+                conf_out[key] = max(
+                    0.0,
+                    min(1.0, float(confidence.get(key) or 0)),
+                )
+            except Exception:
+                conf_out[key] = 0.0
+            if evidence.get(key):
+                ev_out[key] = str(evidence.get(key))[:260]
+
+        return {
+            "values": out,
+            "confidence": conf_out,
+            "evidence": ev_out,
+            "version": "traffic_generic_facts_v1_0",
+        }
+
+    except Exception as exc:
+        return {
+            "values": {},
+            "confidence": {},
+            "evidence": {},
+            "version": "traffic_generic_facts_v1_0",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _apply_traffic_generic_document_facts(
+    core: Dict[str, Any],
+    meta: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    out = dict(core or {})
+    values = (meta or {}).get("values") or {}
+    confidence = (meta or {}).get("confidence") or {}
+    evidence = (meta or {}).get("evidence") or {}
+
+    sources: Dict[str, str] = {}
+    conflicts: List[Dict[str, Any]] = []
+
+    direct_map = {
+        "organismo": "organismo",
+        "expediente_ref": "expediente_ref",
+        "matricula": "matricula",
+        "vehicle_make_model": "vehicle_make_model",
+        "fecha_infraccion": "fecha_infraccion",
+        "hora_infraccion": "hora_infraccion",
+        "lugar_infraccion": "lugar_infraccion",
+        "poblacion": "poblacion",
+        "puntos_detraccion": "puntos_detraccion",
+    }
+
+    for src, dst in direct_map.items():
+        value = values.get(src)
+        if value in (None, "", [], {}):
+            continue
+
+        current = out.get(dst)
+        try:
+            conf = float(confidence.get(src) or 0)
+        except Exception:
+            conf = 0.0
+
+        if (
+            current not in (None, "", [], {})
+            and str(current).strip() != str(value).strip()
+        ):
+            conflicts.append({
+                "field": dst,
+                "current_value": current,
+                "vision_value": value,
+                "vision_confidence": conf,
+                "resolved": conf >= 0.85,
+                "chosen": value if conf >= 0.85 else current,
+                "source": (
+                    "traffic_generic_targeted_vision"
+                    if conf >= 0.85
+                    else "existing_extraction"
+                ),
+            })
+
+        if current in (None, "", [], {}) or conf >= 0.85:
+            out[dst] = value
+            sources[dst] = "traffic_generic_targeted_vision"
+
+    fact = str(values.get("hecho_denunciado_literal") or "").strip()
+    try:
+        fact_conf = float(confidence.get("hecho_denunciado_literal") or 0)
+    except Exception:
+        fact_conf = 0.0
+
+    if fact and fact_conf >= 0.80:
+        out["hecho_imputado"] = fact
+        out["hecho_denunciado_literal"] = fact
+        sources["hecho_imputado"] = "traffic_generic_targeted_vision"
+
+    ordinary = values.get("sancion_ordinaria_eur")
+    payable = values.get("importe_a_pagar_eur")
+
+    if ordinary not in (None, ""):
+        out["sancion_importe_eur"] = ordinary
+        out["sancion_ordinaria_eur"] = ordinary
+        sources["sancion_importe_eur"] = "traffic_generic_targeted_vision"
+
+    if payable not in (None, ""):
+        out["importe_a_pagar_eur"] = payable
+        sources["importe_a_pagar_eur"] = "traffic_generic_targeted_vision"
+
+    generic_facts = {
+        "document_title": values.get("document_title"),
+        "document_type": values.get("document_type"),
+        "procedural_stage_hint": values.get("procedural_stage_hint"),
+        "administrative_finality_stated": values.get(
+            "administrative_finality_stated"
+        ),
+        "payment_term_days": values.get("payment_term_days"),
+        "fecha_documento": values.get("fecha_documento"),
+        "fecha_limite_pago": values.get("fecha_limite_pago"),
+        "normative_reference": {
+            "norm": values.get("norma"),
+            "article": values.get("articulo"),
+        },
+        "document_subject": {
+            "full_name": values.get("document_subject_name"),
+            "id_number": values.get("document_subject_id"),
+        },
+        "vehicle_make_model": values.get("vehicle_make_model"),
+        "poblacion": values.get("poblacion"),
+        "sancion_ordinaria_eur": ordinary,
+        "importe_a_pagar_eur": payable,
+        "hecho_denunciado_literal": fact or None,
+    }
+
+    generic_facts = {
+        key: value
+        for key, value in generic_facts.items()
+        if value not in (None, "", [], {})
+        and not (
+            isinstance(value, dict)
+            and not any(v not in (None, "", [], {}) for v in value.values())
+        )
+    }
+
+    out["traffic_generic_facts"] = generic_facts
+    out["traffic_generic_facts_version"] = (
+        (meta or {}).get("version") or "traffic_generic_facts_v1_0"
+    )
+    out["traffic_generic_facts_confidence"] = confidence
+    out["traffic_generic_facts_evidence"] = evidence
+
+    required = [
+        "expediente_ref",
+        "matricula",
+        "fecha_infraccion",
+        "lugar_infraccion",
+        "hecho_imputado",
+    ]
+    missing = [
+        key for key in required
+        if out.get(key) in (None, "", [], {})
+    ]
+
+    # Aún no existe especialista jurídico para este subtipo/fase.
+    out["ready_for_generate"] = False
+    out["requires_operator_review"] = True
+
+    reasons = list(out.get("operator_review_reasons") or [])
+    if missing and "traffic_generic_basic_fields_missing" not in reasons:
+        reasons.append("traffic_generic_basic_fields_missing")
+    if "traffic_generic_legal_specialist_pending" not in reasons:
+        reasons.append("traffic_generic_legal_specialist_pending")
+
+    stage = str(values.get("procedural_stage_hint") or "").strip()
+    if stage == "payment_requirement":
+        if "payment_requirement_stage_review" not in reasons:
+            reasons.append("payment_requirement_stage_review")
+
+    out["operator_review_reasons"] = reasons
+
+    return out, {
+        "deterministic": {},
+        "vision": meta or {},
+        "zoom": {"values": {}, "confidence": {}, "evidence": {}, "skipped": True},
+        "secondary": meta or {},
+        "sources": sources,
+        "conflicts": conflicts,
+        "unresolved_fields": [],
+        "missing_required": missing,
+        "ready_for_generate": False,
+        "specialist_dispatch": "traffic_generic",
+        "deep_analysis": "traffic_generic_document_facts",
+    }
+
+
 def _resolved_traffic_family(core: Dict[str, Any], text_blob: str = "") -> str:
     """Dispatcher barato: decide especialista antes de ejecutar visión profunda."""
     raw = (
@@ -2374,8 +2802,22 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
         sema_meta = _merge_semaforo_precision(sema_meta, sema_precision_meta)
         combined_core, critical_meta = _apply_semaforo_fields(combined_core, sema_meta)
         critical_meta["semaforo_precision"] = sema_precision_meta
+    elif dispatched_family == "traffic_generic":
+        generic_meta = _traffic_generic_document_facts_from_images(
+            analyzed_pages
+        )
+        combined_core, critical_meta = _apply_traffic_generic_document_facts(
+            combined_core,
+            generic_meta,
+        )
     else:
-        basic_required = ["expediente_ref", "organismo", "matricula", "fecha_infraccion", "lugar_infraccion"]
+        basic_required = [
+            "expediente_ref",
+            "organismo",
+            "matricula",
+            "fecha_infraccion",
+            "lugar_infraccion",
+        ]
         missing_required = [
             key for key in basic_required
             if combined_core.get(key) in (None, "", [], {})
@@ -2391,9 +2833,24 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
 
         critical_meta = {
             "deterministic": {},
-            "vision": {"values": {}, "confidence": {}, "evidence": {}, "skipped": True},
-            "zoom": {"values": {}, "confidence": {}, "evidence": {}, "skipped": True},
-            "secondary": {"facts": {}, "confidence": {}, "evidence": {}, "skipped": True},
+            "vision": {
+                "values": {},
+                "confidence": {},
+                "evidence": {},
+                "skipped": True,
+            },
+            "zoom": {
+                "values": {},
+                "confidence": {},
+                "evidence": {},
+                "skipped": True,
+            },
+            "secondary": {
+                "facts": {},
+                "confidence": {},
+                "evidence": {},
+                "skipped": True,
+            },
             "sources": {},
             "conflicts": [],
             "unresolved_fields": [],
@@ -2463,7 +2920,7 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_13",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_14",
             },
         )
 
@@ -2624,6 +3081,15 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "semaforo_precision_evidence": ((critical_meta.get("semaforo_precision") or {}).get("evidence") or {}),
             "semaforo_precision_error": ((critical_meta.get("semaforo_precision") or {}).get("error")),
             "semaforo_precision_corrections": ((critical_meta.get("secondary") or {}).get("precision_corrections") or []),
+            "traffic_generic_facts_version": core.get("traffic_generic_facts_version"),
+            "traffic_generic_facts": core.get("traffic_generic_facts") or {},
+            "traffic_generic_facts_confidence": core.get("traffic_generic_facts_confidence") or {},
+            "traffic_generic_facts_evidence": core.get("traffic_generic_facts_evidence") or {},
+            "traffic_generic_facts_error": (
+                (critical_meta.get("secondary") or {}).get("error")
+                if critical_meta.get("specialist_dispatch") == "traffic_generic"
+                else None
+            ),
             "critical_conflicts_resolved": conflicts,
             "missing_required_fields": critical_meta.get("missing_required") or [],
             "unresolved_critical_fields": critical_meta.get("unresolved_fields") or [],
@@ -2678,6 +3144,15 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "semaforo_precision_evidence": ((critical_meta.get("semaforo_precision") or {}).get("evidence") or {}),
             "semaforo_precision_error": ((critical_meta.get("semaforo_precision") or {}).get("error")),
             "semaforo_precision_corrections": ((critical_meta.get("secondary") or {}).get("precision_corrections") or []),
+            "traffic_generic_facts_version": core.get("traffic_generic_facts_version"),
+            "traffic_generic_facts": core.get("traffic_generic_facts") or {},
+            "traffic_generic_facts_confidence": core.get("traffic_generic_facts_confidence") or {},
+            "traffic_generic_facts_evidence": core.get("traffic_generic_facts_evidence") or {},
+            "traffic_generic_facts_error": (
+                (critical_meta.get("secondary") or {}).get("error")
+                if critical_meta.get("specialist_dispatch") == "traffic_generic"
+                else None
+            ),
             "critical_conflicts_resolved": conflicts,
             "missing_required_fields": critical_meta.get("missing_required") or [],
             "unresolved_critical_fields": critical_meta.get("unresolved_fields") or [],
