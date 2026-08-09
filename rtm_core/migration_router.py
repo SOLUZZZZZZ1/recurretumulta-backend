@@ -1,7 +1,7 @@
 """Migración idempotente de la capa de autoridad RTM CORE.
 
-No borra ni transforma datos legacy. Crea las tablas nuevas y añade únicamente
-columnas comunes que pueden faltar en instalaciones anteriores.
+No borra ni transforma datos legacy. Crea tablas nuevas, añade columnas
+compatibles y conserva un registro explícito de la versión aplicada.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from rtm_core.security import require_admin_token
 
 router = APIRouter(prefix="/admin/migrate", tags=["admin", "rtm-core"])
 
-RTM_CORE_AUTHORITY_SCHEMA_VERSION = "rtm_core_authority_schema_v1_0"
+RTM_CORE_AUTHORITY_SCHEMA_VERSION = "rtm_core_authority_schema_v1_1"
 
 
 def authority_v1_ddl() -> list[tuple[str, str]]:
@@ -65,9 +65,16 @@ def authority_v1_ddl() -> list[tuple[str, str]]:
                 frozen BOOLEAN NOT NULL DEFAULT FALSE,
                 created_by TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                frozen_by TEXT,
+                frozen_at TIMESTAMPTZ,
                 invalidated_by TEXT,
                 invalidated_at TIMESTAMPTZ,
                 invalidation_reason TEXT,
+                supersedes_id UUID,
+                CONSTRAINT fk_rtm_facts_supersedes
+                    FOREIGN KEY (supersedes_id)
+                    REFERENCES rtm_validated_facts(id),
                 UNIQUE(case_id, sequence)
             );
             """,
@@ -78,11 +85,15 @@ def authority_v1_ddl() -> list[tuple[str, str]]:
             CREATE TABLE IF NOT EXISTS rtm_family_resolutions (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-                validated_facts_id UUID NOT NULL REFERENCES rtm_validated_facts(id),
+                validated_facts_id UUID NOT NULL,
                 sequence INTEGER NOT NULL CHECK (sequence > 0),
                 version TEXT NOT NULL,
                 service TEXT NOT NULL,
-                status TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (
+                    status IN (
+                        'unresolved', 'resolved', 'conflicted', 'operator_review'
+                    )
+                ),
                 family TEXT,
                 specialist TEXT,
                 confidence DOUBLE PRECISION NOT NULL DEFAULT 0
@@ -92,9 +103,19 @@ def authority_v1_ddl() -> list[tuple[str, str]]:
                 locked BOOLEAN NOT NULL DEFAULT FALSE,
                 created_by TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                locked_by TEXT,
+                locked_at TIMESTAMPTZ,
                 invalidated_by TEXT,
                 invalidated_at TIMESTAMPTZ,
                 invalidation_reason TEXT,
+                supersedes_id UUID,
+                CONSTRAINT fk_rtm_family_facts
+                    FOREIGN KEY (validated_facts_id)
+                    REFERENCES rtm_validated_facts(id),
+                CONSTRAINT fk_rtm_family_supersedes
+                    FOREIGN KEY (supersedes_id)
+                    REFERENCES rtm_family_resolutions(id),
                 UNIQUE(case_id, sequence)
             );
             """,
@@ -105,6 +126,8 @@ def authority_v1_ddl() -> list[tuple[str, str]]:
             CREATE TABLE IF NOT EXISTS rtm_legal_previews (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+                validated_facts_id UUID NOT NULL,
+                family_resolution_id UUID NOT NULL,
                 sequence INTEGER NOT NULL CHECK (sequence > 0),
                 status TEXT NOT NULL CHECK (
                     status IN (
@@ -129,8 +152,17 @@ def authority_v1_ddl() -> list[tuple[str, str]]:
                 invalidated_by TEXT,
                 invalidated_at TIMESTAMPTZ,
                 invalidation_reason TEXT,
-                supersedes_id UUID REFERENCES rtm_legal_previews(id),
+                supersedes_id UUID,
                 state_reason TEXT,
+                CONSTRAINT fk_rtm_preview_facts
+                    FOREIGN KEY (validated_facts_id)
+                    REFERENCES rtm_validated_facts(id),
+                CONSTRAINT fk_rtm_preview_family
+                    FOREIGN KEY (family_resolution_id)
+                    REFERENCES rtm_family_resolutions(id),
+                CONSTRAINT fk_rtm_preview_supersedes
+                    FOREIGN KEY (supersedes_id)
+                    REFERENCES rtm_legal_previews(id),
                 UNIQUE(case_id, sequence)
             );
             """,
@@ -160,32 +192,170 @@ def authority_v1_ddl() -> list[tuple[str, str]]:
             """,
         ),
         (
-            "idx_validated_facts_case",
-            "CREATE INDEX IF NOT EXISTS idx_rtm_validated_facts_case ON rtm_validated_facts(case_id, sequence DESC);",
+            "facts_compat_columns",
+            """
+            ALTER TABLE rtm_validated_facts
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                ADD COLUMN IF NOT EXISTS frozen_by TEXT,
+                ADD COLUMN IF NOT EXISTS frozen_at TIMESTAMPTZ,
+                ADD COLUMN IF NOT EXISTS supersedes_id UUID;
+            """,
         ),
         (
-            "uq_active_frozen_facts",
+            "family_compat_columns",
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_rtm_active_frozen_facts
+            ALTER TABLE rtm_family_resolutions
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                ADD COLUMN IF NOT EXISTS locked_by TEXT,
+                ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ,
+                ADD COLUMN IF NOT EXISTS supersedes_id UUID;
+            """,
+        ),
+        (
+            "preview_authority_columns",
+            """
+            ALTER TABLE rtm_legal_previews
+                ADD COLUMN IF NOT EXISTS validated_facts_id UUID,
+                ADD COLUMN IF NOT EXISTS family_resolution_id UUID;
+            """,
+        ),
+        (
+            "facts_supersedes_constraint",
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'fk_rtm_facts_supersedes'
+                ) THEN
+                    ALTER TABLE rtm_validated_facts
+                    ADD CONSTRAINT fk_rtm_facts_supersedes
+                    FOREIGN KEY (supersedes_id)
+                    REFERENCES rtm_validated_facts(id);
+                END IF;
+            END $$;
+            """,
+        ),
+        (
+            "family_facts_constraint",
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'fk_rtm_family_facts'
+                ) THEN
+                    ALTER TABLE rtm_family_resolutions
+                    ADD CONSTRAINT fk_rtm_family_facts
+                    FOREIGN KEY (validated_facts_id)
+                    REFERENCES rtm_validated_facts(id);
+                END IF;
+            END $$;
+            """,
+        ),
+        (
+            "family_supersedes_constraint",
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'fk_rtm_family_supersedes'
+                ) THEN
+                    ALTER TABLE rtm_family_resolutions
+                    ADD CONSTRAINT fk_rtm_family_supersedes
+                    FOREIGN KEY (supersedes_id)
+                    REFERENCES rtm_family_resolutions(id);
+                END IF;
+            END $$;
+            """,
+        ),
+        (
+            "preview_facts_constraint",
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'fk_rtm_preview_facts'
+                ) THEN
+                    ALTER TABLE rtm_legal_previews
+                    ADD CONSTRAINT fk_rtm_preview_facts
+                    FOREIGN KEY (validated_facts_id)
+                    REFERENCES rtm_validated_facts(id);
+                END IF;
+            END $$;
+            """,
+        ),
+        (
+            "preview_family_constraint",
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'fk_rtm_preview_family'
+                ) THEN
+                    ALTER TABLE rtm_legal_previews
+                    ADD CONSTRAINT fk_rtm_preview_family
+                    FOREIGN KEY (family_resolution_id)
+                    REFERENCES rtm_family_resolutions(id);
+                END IF;
+            END $$;
+            """,
+        ),
+        (
+            "preview_supersedes_constraint",
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'fk_rtm_preview_supersedes'
+                ) THEN
+                    ALTER TABLE rtm_legal_previews
+                    ADD CONSTRAINT fk_rtm_preview_supersedes
+                    FOREIGN KEY (supersedes_id)
+                    REFERENCES rtm_legal_previews(id);
+                END IF;
+            END $$;
+            """,
+        ),
+        (
+            "idx_validated_facts_case",
+            "CREATE INDEX IF NOT EXISTS idx_rtm_validated_facts_case "
+            "ON rtm_validated_facts(case_id, sequence DESC);",
+        ),
+        (
+            "uq_active_facts",
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_rtm_active_facts
             ON rtm_validated_facts(case_id)
-            WHERE frozen = TRUE AND invalidated_at IS NULL;
+            WHERE invalidated_at IS NULL;
             """,
         ),
         (
             "idx_family_case",
-            "CREATE INDEX IF NOT EXISTS idx_rtm_family_case ON rtm_family_resolutions(case_id, sequence DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_rtm_family_case "
+            "ON rtm_family_resolutions(case_id, sequence DESC);",
         ),
         (
-            "uq_active_locked_family",
+            "uq_active_family",
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_rtm_active_locked_family
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_rtm_active_family
             ON rtm_family_resolutions(case_id)
-            WHERE locked = TRUE AND invalidated_at IS NULL;
+            WHERE invalidated_at IS NULL;
             """,
         ),
         (
             "idx_preview_case",
-            "CREATE INDEX IF NOT EXISTS idx_rtm_preview_case ON rtm_legal_previews(case_id, sequence DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_rtm_preview_case "
+            "ON rtm_legal_previews(case_id, sequence DESC);",
+        ),
+        (
+            "idx_preview_authority",
+            "CREATE INDEX IF NOT EXISTS idx_rtm_preview_authority "
+            "ON rtm_legal_previews(validated_facts_id, family_resolution_id);",
         ),
         (
             "uq_active_preview",
@@ -197,7 +367,8 @@ def authority_v1_ddl() -> list[tuple[str, str]]:
         ),
         (
             "idx_generated_case",
-            "CREATE INDEX IF NOT EXISTS idx_rtm_generated_case ON rtm_generated_resources(case_id, sequence DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_rtm_generated_case "
+            "ON rtm_generated_resources(case_id, sequence DESC);",
         ),
         (
             "uq_active_generated_preview",
@@ -209,7 +380,8 @@ def authority_v1_ddl() -> list[tuple[str, str]]:
         ),
         (
             "idx_cases_department_status",
-            "CREATE INDEX IF NOT EXISTS idx_cases_department_status ON cases(department, status);",
+            "CREATE INDEX IF NOT EXISTS idx_cases_department_status "
+            "ON cases(department, status);",
         ),
     ]
 
@@ -245,6 +417,11 @@ def migrate_rtm_core_authority_v1(
                             "rtm_family_resolutions",
                             "rtm_legal_previews",
                             "rtm_generated_resources",
+                        ],
+                        "authority_links": [
+                            "family_resolutions.validated_facts_id",
+                            "legal_previews.validated_facts_id",
+                            "legal_previews.family_resolution_id",
                         ],
                         "destructive": False,
                     }

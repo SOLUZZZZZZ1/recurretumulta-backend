@@ -1,4 +1,4 @@
-"""Endpoints internos generales del núcleo RTM."""
+"""Endpoints internos de observabilidad y preparación del núcleo RTM."""
 
 from __future__ import annotations
 

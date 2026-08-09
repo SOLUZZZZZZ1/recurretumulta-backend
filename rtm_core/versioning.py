@@ -34,8 +34,14 @@ DECLARED_COMPONENT_VERSIONS = {
 _RUNTIME_LOOKUPS = {
     "extractor": ("reanalysis", "_EXTRACTOR_VERSION"),
     "generator": ("generate", "_GENERATOR_VERSION"),
-    "velocity_legal": ("ai.infractions.velocidad", "VELOCITY_LEGAL_INTELLIGENCE_VERSION"),
-    "semaforo_legal": ("ai.infractions.semaforo", "SEMAFORO_LEGAL_INTELLIGENCE_VERSION"),
+    "velocity_legal": (
+        "ai.infractions.velocidad",
+        "VELOCITY_LEGAL_INTELLIGENCE_VERSION",
+    ),
+    "semaforo_legal": (
+        "ai.infractions.semaforo",
+        "SEMAFORO_LEGAL_INTELLIGENCE_VERSION",
+    ),
 }
 
 
@@ -47,7 +53,10 @@ def _first_env(*names: str) -> Optional[str]:
     return None
 
 
-def _runtime_constant(module_name: str, attribute: str) -> tuple[Optional[str], Optional[str]]:
+def _runtime_constant(
+    module_name: str,
+    attribute: str,
+) -> tuple[Optional[str], Optional[str]]:
     try:
         module = importlib.import_module(module_name)
         value = getattr(module, attribute, None)
@@ -85,7 +94,11 @@ def build_version_snapshot() -> dict[str, Any]:
                 "COMMIT_SHA",
                 "SOURCE_COMMIT",
             ),
-            "runtime_branch": _first_env("RENDER_GIT_BRANCH", "GIT_BRANCH", "BRANCH_NAME"),
+            "runtime_branch": _first_env(
+                "RENDER_GIT_BRANCH",
+                "GIT_BRANCH",
+                "BRANCH_NAME",
+            ),
             "render_service": _first_env("RENDER_SERVICE_NAME"),
         },
         "contracts": {
@@ -95,6 +108,9 @@ def build_version_snapshot() -> dict[str, Any]:
             "legal_preview": LEGAL_PREVIEW_VERSION,
             "service_catalog": SERVICE_CATALOG_VERSION,
             "review_readiness": REVIEW_READINESS_VERSION,
+            "authority_store": "rtm_authority_store_v1_0",
+            "legal_preview_store": "rtm_legal_preview_store_v1_1",
+            "authority_schema": "rtm_core_authority_schema_v1_1",
         },
         "components": components,
         "runtime": {"python": platform.python_version()},

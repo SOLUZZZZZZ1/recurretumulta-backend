@@ -1,8 +1,8 @@
 """Contratos autoritativos del núcleo RTM.
 
 Este módulo no clasifica, no extrae y no redacta. Define únicamente las
-estructuras que deben intercambiar las capas del sistema para impedir que una
-fase posterior reinterprete o sobrescriba decisiones anteriores.
+estructuras que intercambian las capas del sistema y las invariantes que impiden
+que una fase posterior reinterprete o sobrescriba decisiones anteriores.
 """
 
 from __future__ import annotations
@@ -14,10 +14,10 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-CORE_CONTRACTS_VERSION = "rtm_core_contracts_v1_0"
-FAMILY_RESOLUTION_VERSION = "rtm_family_resolution_v1_0"
-LEGAL_PREVIEW_VERSION = "rtm_legal_preview_v1_0"
-VALIDATED_FACTS_VERSION = "rtm_validated_facts_v1_0"
+CORE_CONTRACTS_VERSION = "rtm_core_contracts_v1_1"
+FAMILY_RESOLUTION_VERSION = "rtm_family_resolution_v1_1"
+LEGAL_PREVIEW_VERSION = "rtm_legal_preview_v1_1"
+VALIDATED_FACTS_VERSION = "rtm_validated_facts_v1_1"
 
 
 def _utcnow() -> datetime:
@@ -109,6 +109,31 @@ class ValidatedFacts(_StrictModel):
     frozen: bool = False
     created_at: datetime = Field(default_factory=_utcnow)
 
+    @model_validator(mode="after")
+    def validate_snapshot(self) -> "ValidatedFacts":
+        declared = [str(value).strip() for value in self.source_document_ids]
+        if any(not value for value in declared):
+            raise ValueError("source_document_ids no puede contener valores vacíos")
+        if len(set(declared)) != len(declared):
+            raise ValueError("source_document_ids no puede contener duplicados")
+
+        declared_set = set(declared)
+        for fact_key, fact in self.facts.items():
+            if not str(fact_key).strip():
+                raise ValueError("Las claves de hechos no pueden estar vacías")
+            for source in fact.sources:
+                if declared_set and source.document_id not in declared_set:
+                    raise ValueError(
+                        f"La fuente de '{fact_key}' no figura en source_document_ids"
+                    )
+
+        if self.frozen:
+            if not self.facts:
+                raise ValueError("Una versión congelada debe contener campos de hechos")
+            if not self.source_document_ids:
+                raise ValueError("Una versión congelada debe conservar documentos de origen")
+        return self
+
 
 class FamilyEvidence(_StrictModel):
     code: str = Field(min_length=1)
@@ -149,6 +174,8 @@ class FamilyResolution(_StrictModel):
                 raise ValueError("Una resolución cerrada debe indicar family")
             if not self.evidence:
                 raise ValueError("Una resolución cerrada debe conservar evidencia")
+            if not self.specialist:
+                raise ValueError("Una resolución cerrada debe indicar especialista")
             if self.resolved_at is None:
                 raise ValueError("Una resolución cerrada debe indicar resolved_at")
         elif self.status is ResolutionStatus.UNRESOLVED and self.family is not None:
@@ -156,15 +183,26 @@ class FamilyResolution(_StrictModel):
 
         if self.status is ResolutionStatus.CONFLICTED and not self.conflicts:
             raise ValueError("Una resolución conflictiva debe describir conflictos")
-        if self.locked and self.status is not ResolutionStatus.RESOLVED:
-            raise ValueError("Solo una familia resuelta puede quedar bloqueada")
+        if self.locked:
+            if self.status is not ResolutionStatus.RESOLVED:
+                raise ValueError("Solo una familia resuelta puede quedar bloqueada")
+            if self.conflicts:
+                raise ValueError("Una familia bloqueada no puede conservar conflictos")
+            if self.confidence <= 0:
+                raise ValueError("Una familia bloqueada debe conservar confianza")
         return self
 
 
 class DocumentUse(_StrictModel):
     document_id: str = Field(min_length=1)
     label: str = Field(min_length=1)
-    status: Literal["read", "partially_read", "validated", "discarded", "pending_review"]
+    status: Literal[
+        "read",
+        "partially_read",
+        "validated",
+        "discarded",
+        "pending_review",
+    ]
     pages_used: list[int] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
