@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: rtm-core-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   backend-core:
     runs-on: ubuntu-latest
@@ -32,7 +36,10 @@ jobs:
           pip install -r requirements.txt
 
       - name: Compile changed backend surface
-        run: python -m compileall -q app.py billing.py rtm_core tests
+        run: python -m compileall -q app.py billing.py ops_automation.py rtm_core tests
+
+      - name: Import complete application graph
+        run: python -c "import app; print(f'RTM routes: {len(app.app.routes)}')"
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -p "test_*.py" -v
