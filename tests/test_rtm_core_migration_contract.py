@@ -10,7 +10,7 @@ class CoreMigrationContractTest(unittest.TestCase):
     def test_migration_is_versioned_and_non_destructive(self):
         self.assertEqual(
             RTM_CORE_AUTHORITY_SCHEMA_VERSION,
-            "rtm_core_authority_schema_v1_1",
+            "rtm_core_authority_schema_v1_2",
         )
         sql = "\n".join(statement.lower() for _, statement in authority_v1_ddl())
         self.assertNotIn("drop table", sql)
@@ -40,6 +40,13 @@ class CoreMigrationContractTest(unittest.TestCase):
         self.assertIn("uq_rtm_active_family", sql)
         self.assertIn("uq_rtm_active_preview", sql)
         self.assertIn("'draft', 'ops_review', 'approved', 'frozen'", sql)
+
+    def test_generated_resource_requires_explicit_approval_metadata(self):
+        sql = "\n".join(statement.lower() for _, statement in authority_v1_ddl())
+        self.assertIn("approved_by", sql)
+        self.assertIn("approved_at", sql)
+        self.assertIn("idx_rtm_generated_submission", sql)
+        self.assertIn("legal_preview_id", sql)
 
 
 if __name__ == "__main__":
