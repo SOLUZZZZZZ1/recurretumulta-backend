@@ -23,6 +23,8 @@ BASELINE_BRANCH = "main"
 
 DECLARED_COMPONENT_VERSIONS = {
     "extractor": "traffic_fine_reanalysis_v1_18",
+    "extraction_route_policy": "rtm_extraction_route_policy_v1_0",
+    "safe_reanalysis_execution": "rtm_safe_reanalysis_execution_v1_0",
     "reanalysis_adapter": "rtm_reanalysis_to_validated_facts_v1_0",
     "family_core": "rtm_family_core_v1_0",
     "specialist_registry": "rtm_specialist_registry_v1_2",
@@ -41,6 +43,14 @@ DECLARED_COMPONENT_VERSIONS = {
 
 _RUNTIME_LOOKUPS = {
     "extractor": ("reanalysis", "_EXTRACTOR_VERSION"),
+    "extraction_route_policy": (
+        "rtm_core.extraction_policy",
+        "EXTRACTION_POLICY_VERSION",
+    ),
+    "safe_reanalysis_execution": (
+        "rtm_core.reanalysis_execution",
+        "REANALYSIS_EXECUTION_VERSION",
+    ),
     "reanalysis_adapter": (
         "rtm_core.reanalysis_adapter",
         "REANALYSIS_ADAPTER_VERSION",
@@ -140,6 +150,8 @@ def build_version_snapshot() -> dict[str, Any]:
             "service_catalog": SERVICE_CATALOG_VERSION,
             "review_readiness": REVIEW_READINESS_VERSION,
             "authority_store": "rtm_authority_store_v1_0",
+            "extraction_route_policy": "rtm_extraction_route_policy_v1_0",
+            "safe_reanalysis_execution": "rtm_safe_reanalysis_execution_v1_0",
             "reanalysis_adapter": "rtm_reanalysis_to_validated_facts_v1_0",
             "family_core": "rtm_family_core_v1_0",
             "specialist_registry": "rtm_specialist_registry_v1_2",
