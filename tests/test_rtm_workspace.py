@@ -52,6 +52,8 @@ def _stage(**updates):
         "latest_family": None,
         "latest_preview": None,
         "latest_resource": None,
+        "service": "traffic",
+        "specialist_available": True,
     }
     payload.update(updates)
     return determine_workspace_stage(**payload)
@@ -59,7 +61,7 @@ def _stage(**updates):
 
 class WorkspaceProgressionTest(unittest.TestCase):
     def test_version_and_route_are_explicit(self):
-        self.assertEqual(WORKSPACE_VERSION, "rtm_ops_workspace_v1_0")
+        self.assertEqual(WORKSPACE_VERSION, "rtm_ops_workspace_v1_1")
         import app
 
         paths = {getattr(route, "path", "") for route in app.app.routes}
@@ -90,7 +92,11 @@ class WorkspaceProgressionTest(unittest.TestCase):
     def test_reanalysis_and_facts_progression(self):
         result = _stage(reanalysis_available=False)
         self.assertEqual(result["stage"], "reanalysis_required")
-        self.assertEqual(result["actions"][0]["endpoint"], f"/ops/cases/{CASE_ID}/reanalyze")
+        self.assertEqual(result["primary_action"], "run_safe_reanalysis")
+        self.assertEqual(
+            result["actions"][0]["endpoint"],
+            f"{BASE}/reanalysis/run",
+        )
 
         result = _stage()
         self.assertEqual(result["stage"], "validated_facts_pending")
@@ -132,6 +138,14 @@ class WorkspaceProgressionTest(unittest.TestCase):
         result = _stage(**authority)
         self.assertEqual(result["stage"], "legal_preview_pending")
         self.assertEqual(result["actions"][0]["endpoint"], f"{BASE}/build-legal-preview")
+
+        result = _stage(
+            **authority,
+            specialist_available=False,
+            service="debt",
+        )
+        self.assertEqual(result["stage"], "initial_direction_review")
+        self.assertEqual(result["primary_action"], "review_first_direction")
 
         result = _stage(**authority, latest_preview=_preview("draft"))
         self.assertEqual(result["stage"], "legal_preview_draft")
