@@ -20,6 +20,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rtm_core_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rtm_core_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/rtm_core_test
+      RTM_CORE_INTEGRATION_DB: "1"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,6 +62,6 @@ jobs:
         run: |
           python -c "import app; print('RTM routes:', len(app.app.routes))"
 
-      - name: Run unit tests
+      - name: Run unit and PostgreSQL integration tests
         run: |
           python -m unittest discover -s tests -p "test_*.py" -v
