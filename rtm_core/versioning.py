@@ -23,6 +23,7 @@ BASELINE_BRANCH = "main"
 
 DECLARED_COMPONENT_VERSIONS = {
     "extractor": "traffic_fine_reanalysis_v1_18",
+    "reanalysis_adapter": "rtm_reanalysis_to_validated_facts_v1_0",
     "family_core": "rtm_family_core_v1_0",
     "legacy_generator": "traffic_generate_v1_7",
     "core_generation_gateway": "rtm_generate_gateway_v1_0",
@@ -36,6 +37,10 @@ DECLARED_COMPONENT_VERSIONS = {
 
 _RUNTIME_LOOKUPS = {
     "extractor": ("reanalysis", "_EXTRACTOR_VERSION"),
+    "reanalysis_adapter": (
+        "rtm_core.reanalysis_adapter",
+        "REANALYSIS_ADAPTER_VERSION",
+    ),
     "family_core": ("rtm_core.family_core", "FAMILY_CORE_VERSION"),
     "legacy_generator": ("generate", "_GENERATOR_VERSION"),
     "core_generation_gateway": (
@@ -118,6 +123,7 @@ def build_version_snapshot() -> dict[str, Any]:
             "service_catalog": SERVICE_CATALOG_VERSION,
             "review_readiness": REVIEW_READINESS_VERSION,
             "authority_store": "rtm_authority_store_v1_0",
+            "reanalysis_adapter": "rtm_reanalysis_to_validated_facts_v1_0",
             "family_core": "rtm_family_core_v1_0",
             "legal_preview_store": "rtm_legal_preview_store_v1_1",
             "authority_schema": "rtm_core_authority_schema_v1_2",
