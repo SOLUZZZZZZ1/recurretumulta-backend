@@ -224,7 +224,7 @@ class VelocityAndSemaforoSpecialistsTest(unittest.TestCase):
         self.assertEqual(preview.specialist, "traffic.semaforo")
         self.assertIn("semaforo_legal_v1_0", preview.created_by_component)
         self.assertGreaterEqual(len(preview.legal_arguments), 3)
-        self.assertIn("FASE ROJA", preview.legal_arguments[0].body.upper())
+        self.assertIn("LUZ ROJA", preview.legal_arguments[0].body.upper())
         self.assertIn("4", " ".join(preview.validated_facts_summary))
         self.assertFalse(
             [item for item in preview.missing_items if item.severity.value == "blocking"]
@@ -251,6 +251,8 @@ class VelocityAndSemaforoSpecialistsTest(unittest.TestCase):
                     document_id,
                     "Exceso de velocidad detectado por cinemómetro.",
                 ),
+                "sancion_importe_eur": _fact(document_id, 300),
+                "puntos_detraccion": _fact(document_id, 2),
                 "fase_procedimental": _fact(document_id, "denuncia e iniciación"),
                 "fecha_limite": _fact(document_id, "2026-08-20"),
             },
