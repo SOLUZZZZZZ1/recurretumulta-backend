@@ -14,9 +14,9 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-CORE_CONTRACTS_VERSION = "rtm_core_contracts_v1_1"
+CORE_CONTRACTS_VERSION = "rtm_core_contracts_v1_2"
 FAMILY_RESOLUTION_VERSION = "rtm_family_resolution_v1_1"
-LEGAL_PREVIEW_VERSION = "rtm_legal_preview_v1_1"
+LEGAL_PREVIEW_VERSION = "rtm_legal_preview_v1_2"
 VALIDATED_FACTS_VERSION = "rtm_validated_facts_v1_1"
 
 
@@ -220,6 +220,35 @@ class Deadline(_StrictModel):
     source_fact_keys: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def validate_deadline(self) -> "Deadline":
+        if self.calculation_status == "confirmed":
+            if self.due_at is None:
+                raise ValueError("Un plazo confirmado debe indicar vencimiento")
+            if not self.source_fact_keys:
+                raise ValueError("Un plazo confirmado debe conservar hechos de origen")
+        return self
+
+
+class LegalArgument(_StrictModel):
+    """Argumento del especialista; Generate solo lo presenta y no lo reinterpreta."""
+
+    code: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    body: str = Field(min_length=1)
+    priority: Literal["primary", "secondary", "subsidiary"] = "primary"
+    source_fact_keys: list[str] = Field(min_length=1)
+    legal_basis: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_argument(self) -> "LegalArgument":
+        keys = [str(value).strip() for value in self.source_fact_keys]
+        if any(not value for value in keys):
+            raise ValueError("source_fact_keys no puede contener claves vacías")
+        if len(keys) != len(set(keys)):
+            raise ValueError("Un argumento no puede repetir hechos de origen")
+        return self
+
 
 class LegalPreview(_StrictModel):
     """Previa Jurídica estructurada y versionada previa a Generate."""
@@ -235,6 +264,7 @@ class LegalPreview(_StrictModel):
     status: PreviewStatus = PreviewStatus.DRAFT
 
     validated_facts_summary: list[str] = Field(default_factory=list)
+    source_fact_keys: list[str] = Field(default_factory=list)
     problem_summary: Optional[str] = None
     client_goal: Optional[str] = None
     primary_strategy: Optional[str] = None
@@ -244,6 +274,12 @@ class LegalPreview(_StrictModel):
     missing_items: list[MissingItem] = Field(default_factory=list)
     deadlines: list[Deadline] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
+
+    destination: Optional[str] = None
+    document_type: Optional[str] = None
+    subject: Optional[str] = None
+    legal_arguments: list[LegalArgument] = Field(default_factory=list)
+    additional_requests: list[str] = Field(default_factory=list)
 
     created_by_component: str = Field(min_length=1)
     created_at: datetime = Field(default_factory=_utcnow)
@@ -255,13 +291,48 @@ class LegalPreview(_StrictModel):
 
     @model_validator(mode="after")
     def validate_preview_state(self) -> "LegalPreview":
+        source_keys = [str(value).strip() for value in self.source_fact_keys]
+        if any(not value for value in source_keys):
+            raise ValueError("source_fact_keys no puede contener claves vacías")
+        if len(source_keys) != len(set(source_keys)):
+            raise ValueError("La previa no puede repetir hechos de origen")
+
+        document_ids = [item.document_id for item in self.documents_used]
+        if len(document_ids) != len(set(document_ids)):
+            raise ValueError("La previa no puede repetir documentos utilizados")
+
+        argument_codes = [argument.code for argument in self.legal_arguments]
+        if len(argument_codes) != len(set(argument_codes)):
+            raise ValueError("Los códigos de argumentos jurídicos deben ser únicos")
+
+        for argument in self.legal_arguments:
+            unknown = set(argument.source_fact_keys) - set(source_keys)
+            if unknown:
+                raise ValueError(
+                    "Los argumentos solo pueden usar hechos declarados en source_fact_keys"
+                )
+
         if self.status in (PreviewStatus.APPROVED, PreviewStatus.FROZEN):
             if not self.validated_facts_summary:
                 raise ValueError("Una previa aprobada debe incluir hechos validados")
+            if not self.source_fact_keys:
+                raise ValueError("Una previa aprobada debe identificar sus hechos de origen")
             if not self.primary_strategy:
                 raise ValueError("Una previa aprobada debe incluir estrategia principal")
             if not self.requested_outcomes:
                 raise ValueError("Una previa aprobada debe incluir una petición")
+            if not self.destination:
+                raise ValueError("Una previa aprobada debe indicar destinatario")
+            if not self.document_type:
+                raise ValueError("Una previa aprobada debe indicar tipo documental")
+            if not self.subject:
+                raise ValueError("Una previa aprobada debe indicar asunto")
+            if not self.legal_arguments:
+                raise ValueError("Una previa aprobada debe incluir argumentos jurídicos")
+            if not any(
+                argument.priority == "primary" for argument in self.legal_arguments
+            ):
+                raise ValueError("La previa debe contener al menos un argumento principal")
             if not self.approved_by or self.approved_at is None:
                 raise ValueError("Una previa aprobada debe conservar aprobación OPS")
 
