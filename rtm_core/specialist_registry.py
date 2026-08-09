@@ -1,8 +1,8 @@
 """Registro de especialistas que transforman autoridad en Previa Jurídica.
 
-Los adaptadores reciben hechos congelados y familia bloqueada. No pueden leer
-OCR crudo, reclasificar ni modificar los hechos. Cada especialista devuelve un
-``LegalPreview`` estructurado y trazable.
+Los adaptadores reciben hechos congelados y familia bloqueada. No leen OCR
+crudo, no consumen clasificaciones legacy y no pueden modificar hechos ni
+familia. Cada especialista devuelve un ``LegalPreview`` estructurado.
 """
 
 from __future__ import annotations
@@ -27,13 +27,77 @@ from rtm_core.contracts import (
 )
 
 
-SPECIALIST_REGISTRY_VERSION = "rtm_specialist_registry_v1_0"
+SPECIALIST_REGISTRY_VERSION = "rtm_specialist_registry_v1_1"
 
 SpecialistBuilder = Callable[
     [ValidatedFactsRecord, FamilyResolutionRecord],
     LegalPreview,
 ]
 
+_COMMON_SPECIALIST_FACT_KEYS = {
+    "expediente_ref",
+    "numero_expediente",
+    "expediente",
+    "organismo",
+    "organo",
+    "emisor",
+    "administracion_emisora",
+    "hecho_denunciado_literal",
+    "hecho_denunciado_resumido",
+    "hecho_imputado",
+    "hecho_validado",
+    "conducta_imputada",
+    "descripcion_infraccion",
+    "descripcion_hecho",
+    "literal_denuncia",
+    "observacion_agente_validada",
+    "sancion_importe_eur",
+    "importe",
+    "puntos_detraccion",
+    "puntos",
+    "fecha_infraccion",
+    "lugar_infraccion",
+    "matricula",
+    "fase_procedimental",
+    "tipo_documento",
+    "documento_tipo",
+    "acto_notificado",
+    "tramite_detectado",
+    "fecha_limite",
+    "fecha_vencimiento",
+    "deadline_main",
+    "plazo_fin",
+    "articulo_infringido_num",
+    "apartado_infringido_num",
+    "norma_hint",
+    "preceptos_detectados",
+}
+
+_UNSAFE_KEY_TOKENS = {
+    "raw",
+    "ocr",
+    "vision",
+    "formulario",
+    "template",
+    "prompt",
+    "classifier",
+    "classification",
+    "scoring",
+    "draft",
+    "recommended",
+    "strategy",
+    "modelo_defensa",
+}
+_UNSAFE_EXACT_KEYS = {
+    "tipo_infraccion",
+    "familia_resuelta",
+    "specialist_dispatch",
+    "classifier_result",
+    "classification",
+    "resultado_estrategico",
+    "recommended_action",
+    "modelo_defensa",
+}
 
 _FACT_LABELS = {
     "expediente_ref": "Número de expediente",
@@ -57,21 +121,42 @@ _FACT_LABELS = {
     "deadline_main": "Fecha de vencimiento",
 }
 
-_PHASE_KEYS = {
+_SUMMARY_KEYS = [
+    "expediente_ref",
+    "numero_expediente",
+    "organismo",
+    "organo",
+    "hecho_denunciado_literal",
+    "hecho_denunciado_resumido",
+    "hecho_imputado",
+    "sancion_importe_eur",
+    "puntos_detraccion",
+    "fecha_infraccion",
+    "lugar_infraccion",
+    "matricula",
+    "fase_procedimental",
+    "tipo_documento",
+]
+_PHASE_KEYS = (
     "fase_procedimental",
     "tipo_documento",
     "documento_tipo",
     "acto_notificado",
     "tramite_detectado",
-}
-_DEADLINE_KEYS = {
+)
+_DEADLINE_KEYS = (
     "fecha_limite",
     "fecha_vencimiento",
     "deadline_main",
     "plazo_fin",
-}
+)
 _ORGANISM_KEYS = ("organismo", "organo", "emisor", "administracion_emisora")
 _CASE_REF_KEYS = ("expediente_ref", "numero_expediente", "expediente")
+_HECHO_KEYS = (
+    "hecho_denunciado_literal",
+    "hecho_denunciado_resumido",
+    "hecho_imputado",
+)
 
 
 def _norm(value: Any) -> str:
@@ -79,6 +164,22 @@ def _norm(value: Any) -> str:
     raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
     raw = raw.lower().replace("\r", " ").replace("\n", " ")
     return re.sub(r"\s+", " ", raw).strip()
+
+
+def _slug(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", _norm(value)).strip("_")
+    return normalized or "item"
+
+
+def _safe_specialist_key(key: str) -> bool:
+    normalized = str(key or "").lower().strip()
+    if not normalized or normalized in _UNSAFE_EXACT_KEYS:
+        return False
+    if any(token in normalized for token in _UNSAFE_KEY_TOKENS):
+        return False
+    if normalized in _COMMON_SPECIALIST_FACT_KEYS:
+        return True
+    return normalized.endswith(("_literal", "_resumido", "_imputado", "_validado"))
 
 
 def _primitive(value: Any) -> Any:
@@ -91,10 +192,17 @@ def _primitive(value: Any) -> Any:
     return None
 
 
-def _fact_value(facts_record: ValidatedFactsRecord, *keys: str) -> tuple[Any, Optional[str]]:
+def _fact_value(
+    facts_record: ValidatedFactsRecord,
+    *keys: str,
+) -> tuple[Any, Optional[str]]:
     for key in keys:
         fact = facts_record.facts.facts.get(key)
-        if fact and fact.status.value == "validated" and fact.value not in (None, "", [], {}):
+        if (
+            fact
+            and fact.status.value == "validated"
+            and fact.value not in (None, "", [], {})
+        ):
             return fact.value, key
     return None, None
 
@@ -105,11 +213,14 @@ def _sanitized_core(
 ) -> dict[str, Any]:
     core: dict[str, Any] = {}
     for key, fact in facts_record.facts.facts.items():
-        if fact.status.value != "validated":
+        if fact.status.value != "validated" or not _safe_specialist_key(key):
             continue
         value = _primitive(fact.value)
         if value not in (None, "", [], {}):
             core[key] = value
+
+    # Estos dos campos no proceden del extractor: se añaden únicamente desde la
+    # resolución de familia ya bloqueada para orientar al especialista correcto.
     core["familia_resuelta"] = family_record.resolution.family
     core["tipo_infraccion"] = family_record.resolution.family
     return core
@@ -124,33 +235,22 @@ def _evidence_keys(family_record: FamilyResolutionRecord) -> list[str]:
     return keys
 
 
-def _summary(
-    facts_record: ValidatedFactsRecord,
-    preferred_keys: list[str],
-) -> tuple[list[str], list[str]]:
+def _summary(facts_record: ValidatedFactsRecord) -> tuple[list[str], list[str]]:
     summaries: list[str] = []
     used_keys: list[str] = []
-    ordered = preferred_keys + [
-        key for key in facts_record.facts.facts if key not in preferred_keys
-    ]
-    for key in ordered:
+    for key in _SUMMARY_KEYS:
         fact = facts_record.facts.facts.get(key)
         if not fact or fact.status.value != "validated":
             continue
         value = _primitive(fact.value)
         if value in (None, "", [], {}):
             continue
-        if isinstance(value, list):
-            display = ", ".join(str(item) for item in value)
-        else:
-            display = str(value)
+        display = ", ".join(str(item) for item in value) if isinstance(value, list) else str(value)
         label = _FACT_LABELS.get(key, key.replace("_", " ").capitalize())
         sentence = f"{label}: {display}."
         if sentence not in summaries:
             summaries.append(sentence)
             used_keys.append(key)
-        if len(summaries) >= 12:
-            break
     return summaries, used_keys
 
 
@@ -177,11 +277,14 @@ def _document_uses(facts_record: ValidatedFactsRecord) -> list[DocumentUse]:
 
 def _critical_missing_items(
     facts_record: ValidatedFactsRecord,
-    *,
-    required_groups: list[tuple[str, tuple[str, ...]]],
 ) -> list[MissingItem]:
+    groups = [
+        ("organismo", _ORGANISM_KEYS),
+        ("expediente", _CASE_REF_KEYS),
+        ("hecho_imputado", _HECHO_KEYS),
+    ]
     items: list[MissingItem] = []
-    for code, keys in required_groups:
+    for code, keys in groups:
         value, _ = _fact_value(facts_record, *keys)
         if value in (None, "", [], {}):
             items.append(
@@ -192,46 +295,41 @@ def _critical_missing_items(
                 )
             )
 
-    existing_codes = {item.code for item in items}
+    existing = {item.code for item in items}
     for value in facts_record.facts.unresolved:
         code = f"unresolved_{_slug(str(value))}"[:120]
-        if code in existing_codes:
-            continue
-        items.append(
-            MissingItem(
-                code=code,
-                description=f"Dato no resuelto: {value}",
-                severity=MissingItemSeverity.HUMAN_REVIEW,
+        if code not in existing:
+            items.append(
+                MissingItem(
+                    code=code,
+                    description=f"Dato no resuelto: {value}",
+                    severity=MissingItemSeverity.HUMAN_REVIEW,
+                )
             )
-        )
-        existing_codes.add(code)
+            existing.add(code)
     for value in facts_record.facts.conflicts:
         code = f"conflict_{_slug(str(value))}"[:120]
-        if code in existing_codes:
-            continue
-        items.append(
-            MissingItem(
-                code=code,
-                description=f"Conflicto documental: {value}",
-                severity=MissingItemSeverity.BLOCKING,
+        if code not in existing:
+            items.append(
+                MissingItem(
+                    code=code,
+                    description=f"Conflicto documental: {value}",
+                    severity=MissingItemSeverity.BLOCKING,
+                )
             )
-        )
-        existing_codes.add(code)
+            existing.add(code)
     return items
 
 
 def _phase_document_type(
     facts_record: ValidatedFactsRecord,
 ) -> tuple[str, list[MissingItem]]:
-    phase_values: list[str] = []
-    phase_keys: list[str] = []
+    values = []
     for key in _PHASE_KEYS:
-        value, found_key = _fact_value(facts_record, key)
+        value, _ = _fact_value(facts_record, key)
         if value not in (None, "", [], {}):
-            phase_values.append(_norm(value))
-            if found_key:
-                phase_keys.append(found_key)
-    blob = " ".join(phase_values)
+            values.append(_norm(value))
+    blob = " ".join(values)
 
     if any(
         token in blob
@@ -313,7 +411,7 @@ def _parse_datetime(value: Any) -> Optional[datetime]:
             pass
     match = re.fullmatch(r"(\d{1,2})[/-](\d{1,2})[/-](\d{4})", raw)
     if match:
-        day, month, year = (int(value) for value in match.groups())
+        day, month, year = (int(piece) for piece in match.groups())
         return datetime(year, month, day, tzinfo=timezone.utc)
     return None
 
@@ -355,25 +453,22 @@ def _deadline(
     )
 
 
-def _slug(value: str) -> str:
-    normalized = _norm(value)
-    normalized = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
-    return normalized or "item"
-
-
-def _parse_allegations(body: str, source_fact_keys: list[str]) -> list[LegalArgument]:
+def _parse_allegations(
+    body: str,
+    source_fact_keys: list[str],
+) -> list[LegalArgument]:
     normalized = str(body or "").replace("\r\n", "\n").replace("\r", "\n")
     pattern = re.compile(
         r"ALEGACIÓN\s+[^—\n]+\s+—\s+([^\n]+)\n\n([\s\S]*?)"
         r"(?=\nALEGACIÓN\s+[^—\n]+\s+—|\nFUNDAMENTOS DE DERECHO|\nS\s+U\s+P\s+L\s+I\s+C\s+A)",
         flags=re.IGNORECASE,
     )
-    arguments: list[LegalArgument] = []
-    legal_basis = [
+    basis = [
         "Artículos 24 y 25 de la Constitución Española.",
         "Ley 39/2015, de 1 de octubre, del Procedimiento Administrativo Común.",
         "Principios de presunción de inocencia, tipicidad y prueba suficiente.",
     ]
+    arguments: list[LegalArgument] = []
     for index, match in enumerate(pattern.finditer(normalized), start=1):
         title = re.sub(r"\s+", " ", match.group(1)).strip(" .")
         argument_body = re.sub(r"\n{3,}", "\n\n", match.group(2)).strip()
@@ -384,7 +479,10 @@ def _parse_allegations(body: str, source_fact_keys: list[str]) -> list[LegalArgu
             "primary"
             if index == 1
             else "subsidiary"
-            if any(token in title_norm for token in ("subsidiaria", "recalificacion", "proporcionalidad"))
+            if any(
+                token in title_norm
+                for token in ("subsidiaria", "recalificacion", "proporcionalidad")
+            )
             else "secondary"
         )
         arguments.append(
@@ -394,7 +492,7 @@ def _parse_allegations(body: str, source_fact_keys: list[str]) -> list[LegalArgu
                 body=argument_body,
                 priority=priority,
                 source_fact_keys=source_fact_keys,
-                legal_basis=legal_basis,
+                legal_basis=basis,
             )
         )
     if not arguments:
@@ -413,61 +511,24 @@ def build_temeraria_preview(
     if resolution.family != "temeraria" or resolution.specialist != "traffic.temeraria":
         raise HTTPException(status_code=409, detail="La familia no corresponde a Temeraria")
 
-    source_keys = _evidence_keys(family_record)
-    if not source_keys:
+    evidence_keys = _evidence_keys(family_record)
+    if not evidence_keys:
         raise HTTPException(status_code=409, detail="La familia no conserva hechos de evidencia")
 
-    core = _sanitized_core(facts_record, family_record)
-    template = build_temeraria_strong_template(core)
-    arguments = _parse_allegations(template.get("cuerpo") or "", source_keys)
-
-    summary, summary_keys = _summary(
-        facts_record,
-        [
-            "expediente_ref",
-            "numero_expediente",
-            "organismo",
-            "organo",
-            "hecho_denunciado_literal",
-            "hecho_denunciado_resumido",
-            "hecho_imputado",
-            "sancion_importe_eur",
-            "puntos_detraccion",
-            "fecha_infraccion",
-            "lugar_infraccion",
-            "matricula",
-            "fase_procedimental",
-            "tipo_documento",
-        ],
+    template = build_temeraria_strong_template(
+        _sanitized_core(facts_record, family_record)
     )
-    all_source_keys = list(dict.fromkeys([*source_keys, *summary_keys]))
+    arguments = _parse_allegations(template.get("cuerpo") or "", evidence_keys)
+    summary, summary_keys = _summary(facts_record)
+    source_keys = list(dict.fromkeys([*evidence_keys, *summary_keys]))
 
     organismo, _ = _fact_value(facts_record, *_ORGANISM_KEYS)
     expediente, _ = _fact_value(facts_record, *_CASE_REF_KEYS)
-    hecho, _ = _fact_value(
-        facts_record,
-        "hecho_denunciado_literal",
-        "hecho_denunciado_resumido",
-        "hecho_imputado",
-    )
-
+    hecho, _ = _fact_value(facts_record, *_HECHO_KEYS)
     document_type, phase_missing = _phase_document_type(facts_record)
     deadlines, deadline_missing = _deadline(facts_record)
-    missing = _critical_missing_items(
-        facts_record,
-        required_groups=[
-            ("organismo", _ORGANISM_KEYS),
-            ("expediente", _CASE_REF_KEYS),
-            (
-                "hecho_imputado",
-                (
-                    "hecho_denunciado_literal",
-                    "hecho_denunciado_resumido",
-                    "hecho_imputado",
-                ),
-            ),
-        ],
-    )
+
+    missing = _critical_missing_items(facts_record)
     existing = {item.code for item in missing}
     for item in [*phase_missing, *deadline_missing]:
         if item.code not in existing:
@@ -494,17 +555,20 @@ def build_temeraria_preview(
         family_resolution_version=resolution.version,
         status=PreviewStatus.DRAFT,
         validated_facts_summary=summary,
-        source_fact_keys=all_source_keys,
+        source_fact_keys=source_keys,
         problem_summary=(
             f"Se atribuye al interesado la conducta siguiente: {hecho}."
             if hecho not in (None, "", [], {})
             else "La conducta imputada está pendiente de validación documental."
         ),
-        client_goal="Obtener el archivo del expediente o, subsidiariamente, una recalificación conforme a la prueba acreditada.",
+        client_goal=(
+            "Obtener el archivo del expediente o, subsidiariamente, una "
+            "recalificación conforme a la prueba acreditada."
+        ),
         primary_strategy=(
-            "Exigir concreción reforzada de la maniobra y prueba objetiva del riesgo "
-            "real, concreto e individualizado que justificaría la calificación de "
-            "conducción temeraria."
+            "Exigir concreción reforzada de la maniobra y prueba objetiva del "
+            "riesgo real, concreto e individualizado que justificaría la "
+            "calificación de conducción temeraria."
         ),
         secondary_strategies=[
             "Diferenciar una eventual infracción formal de una verdadera conducción temeraria.",
