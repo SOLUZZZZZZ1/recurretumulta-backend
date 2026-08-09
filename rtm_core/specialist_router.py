@@ -13,7 +13,7 @@ from rtm_core.authority_repository import (
 )
 from rtm_core.preview_repository import create_preview, latest_preview
 from rtm_core.security import normalized_actor, require_operator_token
-from rtm_core.specialist_registry import (
+from rtm_core.specialist_dispatch import (
     SPECIALIST_REGISTRY_VERSION,
     build_legal_preview,
 )
