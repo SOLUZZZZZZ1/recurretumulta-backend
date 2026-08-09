@@ -8,6 +8,7 @@ from rtm_core.contracts import (
     FactStatus,
     FamilyEvidence,
     FamilyResolution,
+    LegalArgument,
     LegalPreview,
     PreviewStatus,
     ResolutionStatus,
@@ -18,6 +19,37 @@ from rtm_core.versioning import build_version_snapshot
 
 
 NOW = datetime.now(timezone.utc)
+
+
+def _argument() -> LegalArgument:
+    return LegalArgument(
+        code="insuficiencia_probatoria",
+        title="Insuficiencia probatoria específica",
+        body="La Administración debe acreditar de forma suficiente el hecho imputado.",
+        priority="primary",
+        source_fact_keys=["hecho_denunciado_literal"],
+        legal_basis=["Principio de presunción de inocencia"],
+    )
+
+
+def _complete_preview_payload() -> dict:
+    return {
+        "case_id": "case-1",
+        "service": "traffic",
+        "family": "temeraria",
+        "specialist": "traffic.temeraria",
+        "facts_version": "facts-v1",
+        "family_resolution_version": "family-v1",
+        "validated_facts_summary": ["Hecho acreditado"],
+        "source_fact_keys": ["hecho_denunciado_literal"],
+        "primary_strategy": "Insuficiencia probatoria específica",
+        "requested_outcomes": ["Archivo"],
+        "destination": "Al órgano sancionador competente",
+        "document_type": "Alegaciones",
+        "subject": "Alegaciones al expediente sancionador",
+        "legal_arguments": [_argument()],
+        "created_by_component": "traffic.temeraria",
+    }
 
 
 class CoreContractsTest(unittest.TestCase):
@@ -63,40 +95,36 @@ class CoreContractsTest(unittest.TestCase):
         self.assertTrue(resolution.locked)
 
     def test_frozen_preview_requires_ops_approval(self):
+        payload = _complete_preview_payload()
+        payload.update({"status": PreviewStatus.FROZEN, "frozen_at": NOW})
         with self.assertRaises(ValidationError):
-            LegalPreview(
-                case_id="case-1",
-                service="traffic",
-                family="temeraria",
-                specialist="traffic.temeraria",
-                facts_version="facts-v1",
-                family_resolution_version="family-v1",
-                status=PreviewStatus.FROZEN,
-                validated_facts_summary=["Hecho acreditado"],
-                primary_strategy="Insuficiencia probatoria específica",
-                requested_outcomes=["Archivo"],
-                created_by_component="traffic.temeraria",
-                frozen_at=NOW,
-            )
+            LegalPreview(**payload)
 
     def test_frozen_preview_is_valid_with_ops_approval(self):
-        preview = LegalPreview(
-            case_id="case-1",
-            service="traffic",
-            family="temeraria",
-            specialist="traffic.temeraria",
-            facts_version="facts-v1",
-            family_resolution_version="family-v1",
-            status=PreviewStatus.FROZEN,
-            validated_facts_summary=["Hecho acreditado"],
-            primary_strategy="Insuficiencia probatoria específica",
-            requested_outcomes=["Archivo"],
-            created_by_component="traffic.temeraria",
-            approved_by="ops:ramon",
-            approved_at=NOW,
-            frozen_at=NOW,
+        payload = _complete_preview_payload()
+        payload.update(
+            {
+                "status": PreviewStatus.FROZEN,
+                "approved_by": "ops:ramon",
+                "approved_at": NOW,
+                "frozen_at": NOW,
+            }
         )
+        preview = LegalPreview(**payload)
         self.assertEqual(preview.status, PreviewStatus.FROZEN)
+
+    def test_argument_cannot_use_undeclared_fact(self):
+        payload = _complete_preview_payload()
+        payload["legal_arguments"] = [
+            LegalArgument(
+                code="wrong",
+                title="Argumento no trazable",
+                body="Texto",
+                source_fact_keys=["campo_no_declarado"],
+            )
+        ]
+        with self.assertRaises(ValidationError):
+            LegalPreview(**payload)
 
     def test_version_snapshot_never_exposes_operator_token(self):
         previous = os.environ.get("OPERATOR_TOKEN")
