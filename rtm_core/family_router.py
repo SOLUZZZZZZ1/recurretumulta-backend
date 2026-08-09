@@ -12,7 +12,11 @@ from rtm_core.authority_repository import (
     latest_family_resolution,
     latest_validated_facts,
 )
-from rtm_core.family_core import FAMILY_CORE_VERSION, resolve_family
+from rtm_core.family_dispatch import (
+    FAMILY_DISPATCH_VERSION,
+    resolve_family,
+    resolver_version_for,
+)
 from rtm_core.security import normalized_actor, require_operator_token
 
 
@@ -47,6 +51,7 @@ def resolve_case_family(
                 detail="No existe una versión activa y congelada de hechos",
             )
 
+        resolver_version = resolver_version_for(facts_record.facts.service)
         existing = latest_family_resolution(
             conn,
             case_id,
@@ -62,7 +67,8 @@ def resolve_case_family(
             return {
                 "ok": True,
                 "reused": True,
-                "resolver_version": FAMILY_CORE_VERSION,
+                "dispatch_version": FAMILY_DISPATCH_VERSION,
+                "resolver_version": resolver_version,
                 "resolution": existing.model_dump(mode="json"),
             }
 
@@ -71,13 +77,14 @@ def resolve_case_family(
             conn,
             case_id=case_id,
             resolution=resolution,
-            created_by=f"{FAMILY_CORE_VERSION}:{actor}",
+            created_by=f"{FAMILY_DISPATCH_VERSION}:{resolver_version}:{actor}",
             validated_facts_id=facts_record.id,
         )
 
     return {
         "ok": True,
         "reused": False,
-        "resolver_version": FAMILY_CORE_VERSION,
+        "dispatch_version": FAMILY_DISPATCH_VERSION,
+        "resolver_version": resolver_version,
         "resolution": record.model_dump(mode="json"),
     }
