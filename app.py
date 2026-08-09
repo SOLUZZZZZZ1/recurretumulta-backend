@@ -24,6 +24,8 @@ from ops_vehicle_removal_router import router as ops_vehicle_removal_router
 from contact_backend_fastapi import router as contact_router
 from vehicle_removal_router import router as vehicle_removal_router
 from rtm_core.router import router as rtm_core_router
+from rtm_core.preview_router import router as rtm_core_preview_router
+from rtm_core.migration_router import router as rtm_core_migration_router
 
 
 # ✅ AÑADIDO: OPS (operador)
@@ -66,6 +68,8 @@ app.include_router(ops_vehicle_removal_router)
 app.include_router(contact_router)
 app.include_router(vehicle_removal_router)
 app.include_router(rtm_core_router)
+app.include_router(rtm_core_preview_router)
+app.include_router(rtm_core_migration_router)
 
 
 # ✅ NUEVO: router de operador (/ops/*)
@@ -74,6 +78,7 @@ app.include_router(ops_restaurant_router)
 app.include_router(cases_router)
 app.include_router(partner_router)
 app.include_router(ops_override_router)
+
 
 @app.get("/health", response_model=HealthResponse)
 def health():
