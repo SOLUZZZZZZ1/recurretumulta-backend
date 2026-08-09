@@ -25,6 +25,10 @@ from rtm_core.legacy_guard_router import router as rtm_core_legacy_guard_router
 from rtm_core.intake_router import router as rtm_core_intake_router
 from rtm_core.router import router as rtm_core_router
 from rtm_core.workspace_router import router as rtm_core_workspace_router
+from rtm_core.reanalysis_execution import install_safe_extraction_policy
+from rtm_core.reanalysis_execution_router import (
+    router as rtm_core_reanalysis_execution_router,
+)
 from rtm_core.reanalysis_router import router as rtm_core_reanalysis_router
 from rtm_core.authority_router import router as rtm_core_authority_router
 from rtm_core.family_router import router as rtm_core_family_router
@@ -40,6 +44,11 @@ from ops_restaurant_reservations import router as ops_restaurant_router
 from cases import router as cases_router
 from partner import router as partner_router
 
+
+# El selector de lectura profunda se instala al arrancar la aplicación. De este
+# modo cualquier llamada interna a Reanalysis utiliza la política conservadora,
+# aunque el módulo legacy ya hubiera sido importado por otro router.
+install_safe_extraction_policy()
 
 app = FastAPI(title="RecurreTuMulta Backend", version="0.1.0")
 
@@ -76,6 +85,7 @@ app.include_router(contact_router)
 app.include_router(vehicle_removal_router)
 app.include_router(rtm_core_router)
 app.include_router(rtm_core_workspace_router)
+app.include_router(rtm_core_reanalysis_execution_router)
 app.include_router(rtm_core_reanalysis_router)
 app.include_router(rtm_core_authority_router)
 app.include_router(rtm_core_family_router)
