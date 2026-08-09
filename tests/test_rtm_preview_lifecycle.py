@@ -3,7 +3,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from rtm_core.contracts import LegalPreview, PreviewStatus
+from rtm_core.contracts import LegalArgument, LegalPreview, PreviewStatus
 from rtm_core.preview_repository import preview_digest, validated_preview_copy
 from rtm_core.security import normalized_actor
 
@@ -21,8 +21,21 @@ def _draft() -> LegalPreview:
         family_resolution_version="family-v1",
         status=PreviewStatus.DRAFT,
         validated_facts_summary=["Hecho acreditado"],
+        source_fact_keys=["hecho_denunciado_literal"],
         primary_strategy="Insuficiencia probatoria específica",
         requested_outcomes=["Archivo"],
+        destination="Al órgano sancionador competente",
+        document_type="Alegaciones",
+        subject="Alegaciones al expediente sancionador",
+        legal_arguments=[
+            LegalArgument(
+                code="insuficiencia_probatoria",
+                title="Insuficiencia probatoria específica",
+                body="La Administración debe acreditar el hecho imputado.",
+                source_fact_keys=["hecho_denunciado_literal"],
+                legal_basis=["Presunción de inocencia"],
+            )
+        ],
         created_by_component="traffic.temeraria",
     )
 
