@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import uuid
 import unittest
@@ -13,13 +14,7 @@ from rtm_core.authority_repository import (
     freeze_validated_facts,
     lock_family_resolution,
 )
-from rtm_core.contracts import (
-    FactStatus,
-    PreviewStatus,
-    SourceReference,
-    ValidatedFact,
-    ValidatedFacts,
-)
+from rtm_core.contracts import FactStatus, PreviewStatus
 from rtm_core.family_core import resolve_family
 from rtm_core.generation_gateway import (
     approve_resource_for_submission,
@@ -31,6 +26,10 @@ from rtm_core.preview_repository import (
     create_preview,
     freeze_preview,
     submit_for_review,
+)
+from rtm_core.reanalysis_adapter import (
+    build_validated_facts_from_reanalysis,
+    load_latest_reanalysis_snapshot,
 )
 from rtm_core.specialist_registry import build_legal_preview
 
@@ -104,6 +103,20 @@ class PostgresAuthorityIntegrationTest(unittest.TestCase):
             conn.execute(
                 text(
                     """
+                    CREATE TABLE extractions (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+                        extracted_json JSONB NOT NULL,
+                        confidence DOUBLE PRECISION,
+                        model TEXT,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
                     CREATE TABLE events (
                         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                         case_id UUID REFERENCES cases(id) ON DELETE CASCADE,
@@ -145,28 +158,82 @@ class PostgresAuthorityIntegrationTest(unittest.TestCase):
                 if expected not in tables:
                     raise AssertionError(f"Falta tabla migrada: {expected}")
 
-    @staticmethod
-    def _source(document_id: str) -> SourceReference:
-        return SourceReference(
-            document_id=document_id,
-            page_index=0,
-            extraction_method="manuscript_precision+operator",
-            evidence="Conducir de forma temeraria creando un riesgo grave.",
-            confidence=0.98,
-        )
-
-    @classmethod
-    def _fact(cls, document_id: str, value) -> ValidatedFact:
-        return ValidatedFact(
-            value=value,
-            status=FactStatus.VALIDATED,
-            confidence=0.98,
-            sources=[cls._source(document_id)],
-        )
-
     def test_full_authority_chain_reaches_approved_resource(self):
         case_id = str(uuid.uuid4())
         document_id = str(uuid.uuid4())
+        wrapper = {
+            "storage": {"source_document_ids": [document_id]},
+            "pages": [
+                {
+                    "page_index": 1,
+                    "document_id": document_id,
+                    "mime_detected": "image/tiff",
+                }
+            ],
+            "extracted": {
+                "extractor_version": "traffic_fine_reanalysis_v1_18",
+                "source_document_ids": [document_id],
+                # Error legacy deliberado: el adaptador no puede promoverlo.
+                "familia_resuelta": "velocidad",
+                "tipo_infraccion": "velocidad",
+                "raw_text_blob": "CASILLA IMPRESA km/h",
+                "velocidad_medida_kmh": 63,
+                "velocidad_limite_kmh": 11,
+                "hecho_denunciado_literal": (
+                    "Conducir de forma temeraria creando un riesgo grave."
+                ),
+            },
+        }
+        event_payload = {
+            "extractor_version": "traffic_fine_reanalysis_v1_18",
+            "handwritten_precision_version": "traffic_handwritten_precision_v1_0",
+            "handwritten_precision_values": {
+                "hecho_denunciado_literal": (
+                    "Conducir de forma temeraria creando un riesgo grave."
+                )
+            },
+            "handwritten_precision_confidence": {
+                "hecho_denunciado_literal": 0.99,
+            },
+            "handwritten_precision_evidence": {
+                "hecho_denunciado_literal": "CONDUCIR DE FORMA TEMERARIA",
+            },
+            "handwritten_precision_quality": {
+                "legibility": "high",
+                "legibility_score": 0.99,
+            },
+            "traffic_generic_facts_version": "traffic_generic_facts_v1_2",
+            "traffic_generic_facts": {
+                "organismo": "Servei Català de Trànsit",
+                "expediente_ref": "02510067072-0",
+                "document_type": "denuncia",
+                "procedural_stage_hint": "initial_notice",
+                "sancion_ordinaria_eur": 500,
+                "puntos_detraccion": 6,
+                "fecha_limite": "2026-08-20",
+            },
+            "traffic_generic_facts_confidence": {
+                "organismo": 0.99,
+                "expediente_ref": 0.99,
+                "document_type": 0.98,
+                "procedural_stage_hint": 0.98,
+                "sancion_ordinaria_eur": 0.98,
+                "puntos_detraccion": 0.98,
+                "fecha_limite": 0.99,
+            },
+            "traffic_generic_facts_evidence": {
+                "organismo": "SERVEI CATALÀ DE TRÀNSIT",
+                "expediente_ref": "02510067072-0",
+                "document_type": "DENÚNCIA / INICIACIÓ",
+                "procedural_stage_hint": "NOTIFICACIÓ DE DENÚNCIA",
+                "sancion_ordinaria_eur": "500,00 EUR",
+                "puntos_detraccion": "6 PUNTS",
+                "fecha_limite": "20-08-2026",
+            },
+            "unresolved_critical_fields": [],
+            "missing_required_fields": [],
+            "critical_conflicts_resolved": [],
+        }
 
         with self.engine.begin() as conn:
             conn.execute(
@@ -208,34 +275,52 @@ class PostgresAuthorityIntegrationTest(unittest.TestCase):
                 ),
                 {"document_id": document_id, "case_id": case_id},
             )
-
-        facts = ValidatedFacts(
-            case_id=case_id,
-            service="traffic",
-            extractor_version="traffic_fine_reanalysis_v1_18",
-            facts={
-                "organismo": self._fact(document_id, "Servei Català de Trànsit"),
-                "expediente_ref": self._fact(document_id, "02510067072-0"),
-                "hecho_denunciado_literal": self._fact(
-                    document_id,
-                    "Conducir de forma temeraria creando un riesgo grave.",
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO extractions(
+                        case_id, extracted_json, confidence, model, created_at
+                    ) VALUES (
+                        CAST(:case_id AS UUID), CAST(:payload AS JSONB), 0.99,
+                        'rtm_intelligence_core_v1+traffic_fine+v1_18', NOW()
+                    )
+                    """
                 ),
-                "sancion_importe_eur": self._fact(document_id, 500),
-                "puntos_detraccion": self._fact(document_id, 6),
-                "fase_procedimental": self._fact(
-                    document_id,
-                    "notificación de denuncia e iniciación",
+                {"case_id": case_id, "payload": json.dumps(wrapper)},
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO events(case_id, type, payload, created_at)
+                    VALUES (
+                        CAST(:case_id AS UUID), 'case_reanalysis_completed',
+                        CAST(:payload AS JSONB), NOW()
+                    )
+                    """
                 ),
-                "fecha_limite": self._fact(document_id, "2026-08-20"),
-            },
-            source_document_ids=[document_id],
-        )
+                {"case_id": case_id, "payload": json.dumps(event_payload)},
+            )
 
         with self.engine.begin() as conn:
+            stored_wrapper, stored_event = load_latest_reanalysis_snapshot(conn, case_id)
+            adapted = build_validated_facts_from_reanalysis(
+                case_id=case_id,
+                wrapper=stored_wrapper,
+                event_payload=stored_event,
+            )
+            self.assertEqual(
+                adapted.facts.facts["hecho_denunciado_literal"].status,
+                FactStatus.VALIDATED,
+            )
+            self.assertEqual(
+                adapted.facts.facts["velocidad_medida_kmh"].status,
+                FactStatus.UNRESOLVED,
+            )
+
             facts_record = create_validated_facts(
                 conn,
                 case_id=case_id,
-                facts=facts,
+                facts=adapted.facts,
                 created_by="ci:reanalysis-adapter",
             )
             facts_record = freeze_validated_facts(
