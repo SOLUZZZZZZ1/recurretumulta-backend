@@ -24,6 +24,7 @@ from vehicle_removal_router import router as vehicle_removal_router
 from rtm_core.legacy_guard_router import router as rtm_core_legacy_guard_router
 from rtm_core.intake_router import router as rtm_core_intake_router
 from rtm_core.router import router as rtm_core_router
+from rtm_core.workspace_router import router as rtm_core_workspace_router
 from rtm_core.reanalysis_router import router as rtm_core_reanalysis_router
 from rtm_core.authority_router import router as rtm_core_authority_router
 from rtm_core.family_router import router as rtm_core_family_router
@@ -74,6 +75,7 @@ app.include_router(ops_vehicle_removal_router)
 app.include_router(contact_router)
 app.include_router(vehicle_removal_router)
 app.include_router(rtm_core_router)
+app.include_router(rtm_core_workspace_router)
 app.include_router(rtm_core_reanalysis_router)
 app.include_router(rtm_core_authority_router)
 app.include_router(rtm_core_family_router)
