@@ -12,7 +12,15 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-SERVICE_CATALOG_VERSION = "rtm_service_catalog_v1_0"
+SERVICE_CATALOG_VERSION = "rtm_service_catalog_v1_1"
+DepartmentCode = Literal[
+    "traffic",
+    "debt",
+    "administration",
+    "travel",
+    "claims",
+    "other",
+]
 
 
 class ReviewQuote(BaseModel):
@@ -20,7 +28,7 @@ class ReviewQuote(BaseModel):
 
     authority: Literal["rtm_service_catalog"] = "rtm_service_catalog"
     version: str = SERVICE_CATALOG_VERSION
-    department: Literal["traffic", "debt", "administration", "claims", "other"]
+    department: DepartmentCode
     case_type: str = ""
     service_code: str
     payment_stage: Literal["review"] = "review"
@@ -58,9 +66,18 @@ _DEPARTMENT_ALIASES = {
         "aeat", "hacienda", "social_security", "seguridad_social", "town_hall",
         "ayuntamiento", "ayuntamientos", "catastro", "general_administration",
     },
+    "travel": {
+        "travel", "travels", "viaje", "viajes", "airline", "aerolinea",
+        "aerolineas", "flight", "vuelo", "vuelos", "baggage", "equipaje",
+        "hotel", "alojamiento", "package_travel", "viaje_combinado",
+        "travel_claim", "reclamacion_viaje", "other_travel",
+    },
     "claims": {
-        "claim", "claims", "reclamacion", "reclamaciones", "airline", "aerolinea",
-        "consumer", "consumo", "travel", "viaje", "viajes", "other_claim",
+        "claim", "claims", "reclamacion", "reclamaciones", "consumer", "consumo",
+        "telecommunications", "telecomunicaciones", "energy", "energia",
+        "insurance_claim", "seguro", "banking", "banca", "ecommerce",
+        "comercio_electronico", "professional_services", "servicios_profesionales",
+        "other_claim",
     },
     "other": {"other", "otro", "otros", "general", "review", "revision"},
 }
@@ -76,7 +93,7 @@ def canonical_department(
     department: str | None,
     case_type: str | None = None,
     category: str | None = None,
-) -> Literal["traffic", "debt", "administration", "claims", "other"]:
+) -> DepartmentCode:
     """Resuelve el satélite desde datos persistidos, nunca desde el precio pedido."""
 
     for candidate in (department, category, case_type):
@@ -105,6 +122,13 @@ def resolve_review_quote(
             label="Revisión inicial administrativa",
         )
 
+    labels = {
+        "traffic": "Revisión inicial de tráfico",
+        "debt": "Revisión inicial de morosidad o deuda",
+        "travel": "Revisión inicial de viaje",
+        "claims": "Revisión inicial de reclamación",
+        "other": "Revisión inicial del expediente",
+    }
     return ReviewQuote(
         department=canonical,
         case_type=normalized_case_type,
@@ -112,5 +136,5 @@ def resolve_review_quote(
         billing_code="REVIEW_BASIC",
         amount_cents=1000,
         stripe_price_env="STRIPE_PRICE_ID_REVIEW_BASIC",
-        label="Revisión inicial del expediente",
+        label=labels[canonical],
     )
