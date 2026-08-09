@@ -8,11 +8,11 @@ from fastapi import APIRouter, Header
 
 from database import get_engine
 from rtm_core.security import require_operator_token
-from rtm_core.workspace_policy import (
+from rtm_core.workspace_policy_ext import (
     WORKSPACE_POLICY_VERSION,
     determine_workspace_stage,
 )
-from rtm_core.workspace_service import WORKSPACE_VERSION, build_case_workspace
+from rtm_core.workspace_service_v2 import WORKSPACE_VERSION, build_case_workspace
 
 
 router = APIRouter(prefix="/ops/core/cases", tags=["rtm-core-workspace"])
