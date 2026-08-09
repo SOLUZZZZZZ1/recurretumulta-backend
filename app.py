@@ -25,6 +25,7 @@ from rtm_core.legacy_guard_router import router as rtm_core_legacy_guard_router
 from rtm_core.router import router as rtm_core_router
 from rtm_core.authority_router import router as rtm_core_authority_router
 from rtm_core.family_router import router as rtm_core_family_router
+from rtm_core.specialist_router import router as rtm_core_specialist_router
 from rtm_core.preview_router import router as rtm_core_preview_router
 from rtm_core.generation_router import router as rtm_core_generation_router
 from rtm_core.migration_router import router as rtm_core_migration_router
@@ -72,6 +73,7 @@ app.include_router(vehicle_removal_router)
 app.include_router(rtm_core_router)
 app.include_router(rtm_core_authority_router)
 app.include_router(rtm_core_family_router)
+app.include_router(rtm_core_specialist_router)
 app.include_router(rtm_core_preview_router)
 app.include_router(rtm_core_generation_router)
 app.include_router(rtm_core_migration_router)
