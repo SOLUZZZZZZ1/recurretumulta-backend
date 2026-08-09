@@ -18,7 +18,7 @@ from rtm_core.security import require_admin_token
 
 router = APIRouter(prefix="/admin/migrate", tags=["admin", "rtm-core"])
 
-RTM_CORE_AUTHORITY_SCHEMA_VERSION = "rtm_core_authority_schema_v1_1"
+RTM_CORE_AUTHORITY_SCHEMA_VERSION = "rtm_core_authority_schema_v1_2"
 
 
 def authority_v1_ddl() -> list[tuple[str, str]]:
@@ -185,6 +185,9 @@ def authority_v1_ddl() -> list[tuple[str, str]]:
                 pdf_document_id UUID REFERENCES documents(id),
                 generated_by TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                approved_by TEXT,
+                approved_at TIMESTAMPTZ,
                 invalidated_at TIMESTAMPTZ,
                 invalidation_reason TEXT,
                 UNIQUE(case_id, sequence)
@@ -217,6 +220,15 @@ def authority_v1_ddl() -> list[tuple[str, str]]:
             ALTER TABLE rtm_legal_previews
                 ADD COLUMN IF NOT EXISTS validated_facts_id UUID,
                 ADD COLUMN IF NOT EXISTS family_resolution_id UUID;
+            """,
+        ),
+        (
+            "generated_resource_control_columns",
+            """
+            ALTER TABLE rtm_generated_resources
+                ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                ADD COLUMN IF NOT EXISTS approved_by TEXT,
+                ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
             """,
         ),
         (
@@ -371,6 +383,11 @@ def authority_v1_ddl() -> list[tuple[str, str]]:
             "ON rtm_generated_resources(case_id, sequence DESC);",
         ),
         (
+            "idx_generated_submission",
+            "CREATE INDEX IF NOT EXISTS idx_rtm_generated_submission "
+            "ON rtm_generated_resources(case_id, approved_at, status);",
+        ),
+        (
             "uq_active_generated_preview",
             """
             CREATE UNIQUE INDEX IF NOT EXISTS uq_rtm_active_generated_preview
@@ -422,6 +439,11 @@ def migrate_rtm_core_authority_v1(
                             "family_resolutions.validated_facts_id",
                             "legal_previews.validated_facts_id",
                             "legal_previews.family_resolution_id",
+                            "generated_resources.legal_preview_id",
+                        ],
+                        "generation_control": [
+                            "generated_resources.approved_by",
+                            "generated_resources.approved_at",
                         ],
                         "destructive": False,
                     }
