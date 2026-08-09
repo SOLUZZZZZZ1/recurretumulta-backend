@@ -26,6 +26,7 @@ from vehicle_removal_router import router as vehicle_removal_router
 from rtm_core.router import router as rtm_core_router
 from rtm_core.authority_router import router as rtm_core_authority_router
 from rtm_core.preview_router import router as rtm_core_preview_router
+from rtm_core.generation_router import router as rtm_core_generation_router
 from rtm_core.migration_router import router as rtm_core_migration_router
 
 
@@ -71,6 +72,7 @@ app.include_router(vehicle_removal_router)
 app.include_router(rtm_core_router)
 app.include_router(rtm_core_authority_router)
 app.include_router(rtm_core_preview_router)
+app.include_router(rtm_core_generation_router)
 app.include_router(rtm_core_migration_router)
 
 
