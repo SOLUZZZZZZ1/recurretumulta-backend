@@ -22,6 +22,7 @@ from ops_vehicle_removal_router import router as ops_vehicle_removal_router
 from contact_backend_fastapi import router as contact_router
 from vehicle_removal_router import router as vehicle_removal_router
 from rtm_core.legacy_guard_router import router as rtm_core_legacy_guard_router
+from rtm_core.intake_router import router as rtm_core_intake_router
 from rtm_core.router import router as rtm_core_router
 from rtm_core.authority_router import router as rtm_core_authority_router
 from rtm_core.family_router import router as rtm_core_family_router
@@ -51,8 +52,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# El cortafuegos CORE debe registrarse antes de cualquier router legacy.
+# El cortafuegos y las rutas seguras CORE se registran antes de los routers legacy.
 app.include_router(rtm_core_legacy_guard_router)
+app.include_router(rtm_core_intake_router)
 
 # Routers existentes
 app.include_router(admin_migrate_router)
