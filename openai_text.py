@@ -1,11 +1,25 @@
 import json
 import os
 import re
+from functools import lru_cache
 from typing import Any, Dict, Optional
 
 from openai import OpenAI
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+@lru_cache(maxsize=1)
+def _client() -> OpenAI:
+    """Crea el cliente únicamente cuando se ejecuta una extracción real.
+
+    Importar el backend, compilarlo o ejecutar pruebas de contratos no debe
+    requerir secretos. En producción, la ausencia de clave se detecta en el
+    momento exacto de usar el proveedor y no durante el arranque de FastAPI.
+    """
+
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY no configurado")
+    return OpenAI(api_key=api_key)
 
 
 SYSTEM_PROMPT = """
@@ -199,7 +213,7 @@ Documento:
 {text}
 """
 
-    response = client.chat.completions.create(
+    response = _client().chat.completions.create(
         model="gpt-4o-mini",
         temperature=0,
         messages=[
