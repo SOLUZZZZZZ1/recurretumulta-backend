@@ -256,7 +256,7 @@ class DocumentNormalizationTest(unittest.TestCase):
                     obs("estancia_inicio", "20/08/2026", evidence="Check-in 20/08/2026"),
                     obs("estancia_fin", "23/08/2026", evidence="Check-out 23/08/2026"),
                     obs("precio_total_reserva_eur", "720,00 €", evidence="Total 720 EUR"),
-                    obs("numero_huespedes", "2 huéspedes", evidence="Guests 2"),
+                    obs("numero_huespedes", "2 personas", evidence="Guests 2"),
                     obs("reserva_es_viaje_combinado", "No", evidence="Hotel only: no package"),
                 ],
             )
