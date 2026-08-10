@@ -282,16 +282,14 @@ class SyntheticStagingValidationTest(unittest.TestCase):
                 "FACTURA REAL O NO MARCADA",
                 encoding="utf-8",
             )
-            result = run_synthetic_scenario(
-                scenario,
-                provider=_SyntheticFixtureProvider(),
-                root=root,
-            )
-        self.assertFalse(result.passed)
-        self.assertTrue(
-            any("marca" in error.lower() for error in result.errors),
-            result.errors,
-        )
+            with self.assertRaises(HTTPException) as blocked:
+                run_synthetic_scenario(
+                    scenario,
+                    provider=_SyntheticFixtureProvider(),
+                    root=root,
+                )
+        self.assertEqual(blocked.exception.status_code, 409)
+        self.assertIn("marca", str(blocked.exception.detail).lower())
 
     def test_service_filter_never_runs_unselected_scenarios(self):
         report = run_synthetic_staging_suite(
