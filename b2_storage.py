@@ -5,6 +5,8 @@ from typing import Optional, Tuple
 import boto3
 from botocore.config import Config
 
+from rtm_core.runtime_capabilities import require_capability
+
 
 def _env(name: str) -> str:
     v = (os.getenv(name) or "").strip()
@@ -18,6 +20,10 @@ def get_b2_bucket() -> str:
 
 
 def get_s3_client():
+    # En staging/producción B2 es opt-in. La comprobación se hace antes de
+    # leer credenciales o construir un cliente con capacidad de red.
+    require_capability("b2")
+
     endpoint = _env("B2_ENDPOINT")
     key_id = _env("B2_KEY_ID")
     app_key = _env("B2_APPLICATION_KEY")
@@ -85,6 +91,7 @@ def download_bytes(bucket: str, key: str) -> bytes:
     obj = s3.get_object(Bucket=bucket, Key=key)
     body = obj.get("Body")
     return body.read() if body else b""
+
 
 def presign_get_url(bucket: str, key: str, expires_seconds: int = 300, filename: Optional[str] = None) -> str:
     """
