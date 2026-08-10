@@ -61,7 +61,7 @@ def _stage(**updates):
 
 class WorkspaceProgressionTest(unittest.TestCase):
     def test_version_and_route_are_explicit(self):
-        self.assertEqual(WORKSPACE_VERSION, "rtm_ops_workspace_v1_1")
+        self.assertEqual(WORKSPACE_VERSION, "rtm_ops_workspace_v1_2")
         import app
 
         paths = {getattr(route, "path", "") for route in app.app.routes}
