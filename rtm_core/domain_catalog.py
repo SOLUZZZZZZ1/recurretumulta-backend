@@ -201,7 +201,7 @@ _FAMILY_ITEMS = (
     _family("administration", "recurso_administrativo", "Recurso administrativo", "administration.appeal", "Identificar acto, firmeza, recurso disponible, plazo y pretensión."),
 
     # Viajes y transporte de pasajeros.
-    _family("travel", "vuelo_cancelado", "Cancelación de vuelo", "travel.flight_cancelled", "Verificar reserva, cancelación, aviso, alternativa, reembolso y gastos."),
+    _family("travel", "vuelo_cancelado", "Cancelación de vuelo", "travel.flight_cancelled", "Verificar reserva, cancelación, aviso, alternativa, reembolso y gastos.", ready=True),
     _family("travel", "retraso_vuelo", "Retraso de vuelo", "travel.flight_delay", "Verificar horarios, llegada, causa comunicada, asistencia y gastos."),
     _family("travel", "denegacion_embarque", "Denegación de embarque", "travel.denied_boarding", "Verificar presentación, documentación, sobreventa, alternativa y compensación solicitada."),
     _family("travel", "equipaje", "Equipaje", "travel.baggage", "Verificar facturación, parte de irregularidad, entrega, daños, contenido y gastos."),
