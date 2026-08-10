@@ -55,6 +55,9 @@ DECLARED_COMPONENT_VERSIONS = {
     "administration_enforcement_specialist": (
         "rtm_administration_enforcement_specialist_v1_0"
     ),
+    "administration_enforcement_adapter": (
+        "rtm_administration_enforcement_adapter_v1_0"
+    ),
     "traffic_specialist_adapters": "rtm_traffic_specialist_adapters_v1_0",
     "ops_workspace": "rtm_ops_workspace_v1_2",
     "ops_workspace_policy": "rtm_ops_workspace_policy_v1_3",
@@ -161,6 +164,10 @@ _RUNTIME_LOOKUPS = {
     "administration_enforcement_specialist": (
         "rtm_core.administration_enforcement_specialist",
         "ADMINISTRATION_ENFORCEMENT_SPECIALIST_VERSION",
+    ),
+    "administration_enforcement_adapter": (
+        "rtm_core.administration_enforcement_adapter",
+        "ADMINISTRATION_ENFORCEMENT_ADAPTER_VERSION",
     ),
     "traffic_specialist_adapters": (
         "rtm_core.traffic_specialist_adapters",
@@ -288,6 +295,9 @@ def build_version_snapshot() -> dict[str, Any]:
             ),
             "administration_enforcement_specialist": (
                 "rtm_administration_enforcement_specialist_v1_0"
+            ),
+            "administration_enforcement_adapter": (
+                "rtm_administration_enforcement_adapter_v1_0"
             ),
             "traffic_specialist_adapters": "rtm_traffic_specialist_adapters_v1_0",
             "ops_workspace": "rtm_ops_workspace_v1_2",
