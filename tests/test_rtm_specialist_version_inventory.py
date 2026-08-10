@@ -18,7 +18,10 @@ class SpecialistVersionInventoryTest(unittest.TestCase):
             "travel_flight_delay_specialist": (
                 "rtm_travel_flight_delay_specialist_v1_0"
             ),
-            "travel_specialist_registry": "rtm_travel_specialist_registry_v1_1",
+            "travel_denied_boarding_specialist": (
+                "rtm_travel_denied_boarding_specialist_v1_0"
+            ),
+            "travel_specialist_registry": "rtm_travel_specialist_registry_v1_2",
             "claims_telecommunications_specialist": (
                 "rtm_claims_telecommunications_specialist_v1_0"
             ),
