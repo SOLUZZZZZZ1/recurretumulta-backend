@@ -296,7 +296,7 @@ def _normalise(spec: FactFieldSpec, value: Any) -> Any:
         return _clean(value, spec.max_length)
     if spec.value_type == "identifier":
         return _identifier(value, spec.max_length)
-    if spec.value_type == "money":
+    if spec.value_type in {"money", "number"}:
         return _money(value, spec.allow_negative)
     if spec.value_type == "date":
         return _date(value)
