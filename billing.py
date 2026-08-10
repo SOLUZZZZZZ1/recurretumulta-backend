@@ -17,6 +17,7 @@ from sqlalchemy import text
 
 from database import get_engine
 from rtm_core.repository import build_case_review_readiness, load_case_review_snapshot
+from rtm_core.runtime_capabilities import require_http_capability
 from rtm_core.service_catalog import normalize_code
 
 
@@ -187,9 +188,15 @@ def review_checkout_context(case_id: str):
 @router.post("/billing/checkout")
 @router.post("/checkout")
 def create_checkout(req: CheckoutRequest):
+    # Ninguna clave ni llamada Stripe se toca antes de comprobar el interruptor
+    # del entorno. Los pagos finales conservan un segundo permiso independiente.
+    require_http_capability("stripe")
+    stage = _normalized_stage(req.payment_stage)
+    if stage in _FINAL_STAGES:
+        require_http_capability("final_payments")
+
     stripe.api_key = _env("STRIPE_SECRET_KEY")
     frontend_url = _env("FRONTEND_URL").rstrip("/")
-    stage = _normalized_stage(req.payment_stage)
 
     engine = get_engine()
     with engine.begin() as conn:
@@ -304,6 +311,7 @@ def create_checkout(req: CheckoutRequest):
 @router.post("/billing/webhook")
 @router.post("/webhook")
 async def stripe_webhook(request: Request):
+    require_http_capability("stripe")
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
     try:
