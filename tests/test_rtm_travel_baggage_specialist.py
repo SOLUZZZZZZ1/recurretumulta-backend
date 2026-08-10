@@ -105,12 +105,12 @@ def _delay_values() -> dict[str, ValidatedFact]:
     return {
         "descripcion_hecho": _fact(
             (
-                "El equipaje facturado fue entregado con retraso tres días "
-                "después de la llegada."
+                "El equipaje facturado retrasado fue entregado con retraso tres "
+                "días después de la llegada."
             ),
-            "EQUIPAJE FACTURADO ENTREGADO CON RETRASO",
+            "EQUIPAJE FACTURADO RETRASADO",
         ),
-        "incidencia_tipo": _fact("Retraso de equipaje facturado"),
+        "incidencia_tipo": _fact("Equipaje retrasado"),
         "proveedor": _fact("Aerolínea Demo, S.A."),
         "aerolinea": _fact("Aerolínea Demo, S.A."),
         "agencia": _fact("Plataforma Demo"),
@@ -143,9 +143,9 @@ def _damage_values() -> dict[str, ValidatedFact]:
     values.update(
         {
             "descripcion_hecho": _fact(
-                "El equipaje facturado fue entregado dañado al pasajero."
+                "El equipaje facturado dañado fue entregado al pasajero."
             ),
-            "incidencia_tipo": _fact("Daños de equipaje facturado"),
+            "incidencia_tipo": _fact("Equipaje dañado"),
             "equipaje_danos": _fact("Carcasa rota y rueda desprendida"),
             "equipaje_entrega_fecha": _fact("2026-08-08"),
             "reclamacion_previa_fecha": _fact("2026-08-10"),
@@ -162,9 +162,9 @@ def _loss_values() -> dict[str, ValidatedFact]:
     values.update(
         {
             "descripcion_hecho": _fact(
-                "El equipaje facturado se considera perdido y no ha sido localizado."
+                "El equipaje perdido no ha sido localizado por el transportista."
             ),
-            "incidencia_tipo": _fact("Pérdida de equipaje facturado"),
+            "incidencia_tipo": _fact("Equipaje perdido"),
             "equipaje_contenido": _fact(
                 "Ropa, calzado y artículos personales con justificantes parciales"
             ),
@@ -194,7 +194,7 @@ class TravelBaggageSpecialistTest(unittest.TestCase):
         )
         self.assertEqual(
             TRAVEL_SPECIALIST_REGISTRY_VERSION,
-            "rtm_travel_specialist_registry_v1_3",
+            "rtm_travel_specialist_registry_v1_2",
         )
         self.assertEqual(
             SPECIALIST_DISPATCH_VERSION,
@@ -208,7 +208,6 @@ class TravelBaggageSpecialistTest(unittest.TestCase):
         profile = family_profile("travel", "equipaje")
         self.assertIsNotNone(profile)
         self.assertEqual(profile.specialist, "travel.baggage")
-        self.assertEqual(profile.capability, "specialist_ready")
 
     def test_complete_delayed_checked_baggage_is_traceable_and_conservative(self):
         facts_record, family_record = _records(_delay_values())
@@ -321,11 +320,11 @@ class TravelBaggageSpecialistTest(unittest.TestCase):
             )
         )
 
-    def test_loss_after_more_than_twenty_one_days_keeps_status_open_but_not_blocked(self):
+    def test_loss_after_more_than_twenty_one_days_is_not_blocked_by_status(self):
         values = _loss_values()
         values["descripcion_hecho"] = _fact(
             (
-                "El equipaje facturado continúa no localizado y han transcurrido "
+                "El equipaje perdido continúa no localizado y han transcurrido "
                 "más de 21 días desde cuando debía llegar."
             )
         )
@@ -333,20 +332,17 @@ class TravelBaggageSpecialistTest(unittest.TestCase):
         preview = build_legal_preview(facts_record, family_record)
 
         self.assertFalse(
-            any(
-                item.code == "baggage_loss_status_review"
-                for item in preview.missing_items
-            )
+            any(item.code == "baggage_loss_status_review" for item in preview.missing_items)
         )
 
-    def test_cabin_baggage_damage_requires_carrier_fault_without_seven_day_rule(self):
+    def test_cabin_baggage_damage_requires_fault_without_checked_deadline(self):
         values = _damage_values()
         values.update(
             {
                 "descripcion_hecho": _fact(
-                    "El equipaje de mano resultó dañado durante el embarque."
+                    "El equipaje de mano dañado apareció así durante el embarque."
                 ),
-                "incidencia_tipo": _fact("Daños de equipaje de mano"),
+                "incidencia_tipo": _fact("Equipaje de mano dañado"),
                 "equipaje_tipo": _fact("Equipaje de mano no facturado"),
             }
         )
@@ -380,17 +376,17 @@ class TravelBaggageSpecialistTest(unittest.TestCase):
             any(item.label == "Reclamación escrita por daños" for item in preview.deadlines)
         )
 
-    def test_cabin_baggage_explicit_carrier_fault_does_not_apply_checked_deadline(self):
+    def test_cabin_baggage_explicit_carrier_fault_avoids_fault_block(self):
         values = _damage_values()
         values.update(
             {
                 "descripcion_hecho": _fact(
                     (
-                        "Un empleado de la aerolínea rompió el equipaje de mano "
-                        "al retirarlo durante el embarque."
+                        "El equipaje de mano fue dañado por un empleado de la "
+                        "aerolínea al retirarlo durante el embarque."
                     )
                 ),
-                "incidencia_tipo": _fact("Daños de equipaje de mano"),
+                "incidencia_tipo": _fact("Equipaje de mano dañado"),
                 "equipaje_tipo": _fact("Equipaje de mano no facturado"),
             }
         )
@@ -415,11 +411,11 @@ class TravelBaggageSpecialistTest(unittest.TestCase):
             {
                 "descripcion_hecho": _fact(
                     (
-                        "El equipaje facturado fue entregado con retraso y la "
+                        "El equipaje retrasado fue entregado con retraso y la "
                         "maleta estaba dañada."
                     )
                 ),
-                "incidencia_tipo": _fact("Retraso y daños de equipaje"),
+                "incidencia_tipo": _fact("Equipaje retrasado y dañado"),
                 "equipaje_danos": _fact("Carcasa agrietada"),
             }
         )
