@@ -45,7 +45,13 @@ DECLARED_COMPONENT_VERSIONS = {
     "family_core": "rtm_family_core_v1_0",
     "cross_service_family": "rtm_cross_service_family_v1_0",
     "first_direction": "rtm_first_direction_projection_v1_0",
-    "specialist_registry": "rtm_specialist_registry_v1_2",
+    "specialist_registry": "rtm_specialist_registry_v1_3",
+    "cross_service_specialist_support": (
+        "rtm_cross_service_specialist_support_v1_0"
+    ),
+    "debt_unpaid_invoice_specialist": (
+        "rtm_debt_unpaid_invoice_specialist_v1_0"
+    ),
     "traffic_specialist_adapters": "rtm_traffic_specialist_adapters_v1_0",
     "ops_workspace": "rtm_ops_workspace_v1_2",
     "ops_workspace_policy": "rtm_ops_workspace_policy_v1_3",
@@ -140,6 +146,14 @@ _RUNTIME_LOOKUPS = {
     "specialist_registry": (
         "rtm_core.specialist_dispatch",
         "SPECIALIST_REGISTRY_VERSION",
+    ),
+    "cross_service_specialist_support": (
+        "rtm_core.cross_service_specialist_support",
+        "CROSS_SERVICE_SPECIALIST_SUPPORT_VERSION",
+    ),
+    "debt_unpaid_invoice_specialist": (
+        "rtm_core.debt_unpaid_invoice_specialist",
+        "DEBT_UNPAID_INVOICE_SPECIALIST_VERSION",
     ),
     "traffic_specialist_adapters": (
         "rtm_core.traffic_specialist_adapters",
@@ -258,7 +272,13 @@ def build_version_snapshot() -> dict[str, Any]:
             "family_core": "rtm_family_core_v1_0",
             "cross_service_family": "rtm_cross_service_family_v1_0",
             "first_direction": "rtm_first_direction_projection_v1_0",
-            "specialist_registry": "rtm_specialist_registry_v1_2",
+            "specialist_registry": "rtm_specialist_registry_v1_3",
+            "cross_service_specialist_support": (
+                "rtm_cross_service_specialist_support_v1_0"
+            ),
+            "debt_unpaid_invoice_specialist": (
+                "rtm_debt_unpaid_invoice_specialist_v1_0"
+            ),
             "traffic_specialist_adapters": "rtm_traffic_specialist_adapters_v1_0",
             "ops_workspace": "rtm_ops_workspace_v1_2",
             "ops_workspace_policy": "rtm_ops_workspace_policy_v1_3",
