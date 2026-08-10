@@ -74,7 +74,7 @@ class DocumentFactCatalogTest(unittest.TestCase):
     def test_versions_and_satellites_are_explicit(self):
         self.assertEqual(
             DOCUMENT_FACT_CATALOG_VERSION,
-            "rtm_document_fact_catalog_v1_1",
+            "rtm_document_fact_catalog_v1_2",
         )
         self.assertEqual(
             DOCUMENT_EXTRACTION_PACKET_VERSION,
@@ -114,6 +114,18 @@ class DocumentFactCatalogTest(unittest.TestCase):
         self.assertEqual(
             field_spec("travel", "total_booking_price").key,
             "precio_total_reserva_eur",
+        )
+        self.assertEqual(
+            field_spec("travel", "organizer").key,
+            "organizador_viaje",
+        )
+        self.assertEqual(
+            field_spec("travel", "price_increase_percent").key,
+            "incremento_precio_porcentaje",
+        )
+        self.assertEqual(
+            field_spec("travel", "tourist_service_share_percent").key,
+            "porcentaje_servicio_turistico",
         )
         self.assertEqual(
             field_spec("travel", "prior_claim_date").key,
@@ -267,6 +279,50 @@ class DocumentNormalizationTest(unittest.TestCase):
         self.assertEqual(hotel["precio_total_reserva_eur"].value, 720.0)
         self.assertEqual(hotel["numero_huespedes"].value, 2)
         self.assertFalse(hotel["reserva_es_viaje_combinado"].value)
+
+    def test_package_travel_facts_are_typed_and_reach_family_dispatch(self):
+        normalized = normalize_document_packet(
+            packet(
+                "travel",
+                [
+                    obs(
+                        "descripcion_hecho",
+                        "El viaje combinado fue cancelado por el organizador.",
+                        evidence="VIAJE COMBINADO CANCELADO",
+                    ),
+                    obs("organizador_viaje", "Organizador Demo", evidence="Organizador Demo"),
+                    obs("minorista_viaje", "Agencia Demo", evidence="Agencia Demo"),
+                    obs("pais_organizador", "España", evidence="España"),
+                    obs("fecha_inicio_viaje", "20/08/2026", evidence="Inicio 20/08/2026"),
+                    obs("fecha_fin_viaje", "27/08/2026", evidence="Fin 27/08/2026"),
+                    obs(
+                        "servicios_viaje_incluidos",
+                        "Vuelo de ida y vuelta y hotel siete noches",
+                        evidence="Vuelo + hotel",
+                    ),
+                    obs("precio_total_viaje_eur", "2.400,00 €", evidence="Total 2.400 EUR"),
+                    obs("incremento_precio_porcentaje", "8,5 %", evidence="Increase 8.5 percent"),
+                    obs("porcentaje_servicio_turistico", "25,0 %", evidence="Share 25 percent"),
+                    obs("servicio_turistico_esencial", "No", evidence="Not essential"),
+                    obs("repatriacion_necesaria", "Sí", evidence="Repatriation required"),
+                    obs("reserva_es_viaje_combinado", "Sí", evidence="Package travel: yes"),
+                ],
+            )
+        )
+        package = normalized.facts.facts
+        self.assertEqual(package["fecha_inicio_viaje"].value, "2026-08-20")
+        self.assertEqual(package["fecha_fin_viaje"].value, "2026-08-27")
+        self.assertEqual(package["precio_total_viaje_eur"].value, 2400)
+        self.assertEqual(package["incremento_precio_porcentaje"].value, 8.5)
+        self.assertEqual(package["porcentaje_servicio_turistico"].value, 25)
+        self.assertFalse(package["servicio_turistico_esencial"].value)
+        self.assertTrue(package["repatriacion_necesaria"].value)
+        self.assertTrue(package["reserva_es_viaje_combinado"].value)
+
+        resolution = resolve_family(normalized.facts)
+        self.assertEqual(resolution.status, ResolutionStatus.RESOLVED)
+        self.assertEqual(resolution.family, "viaje_combinado")
+        self.assertEqual(resolution.specialist, "travel.package")
 
     def test_family_strategy_draft_and_raw_ocr_are_rejected(self):
         result = normalize_document_packet(
