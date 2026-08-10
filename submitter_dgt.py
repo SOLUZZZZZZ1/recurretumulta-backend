@@ -1,8 +1,12 @@
 import os
 import subprocess
 import tempfile
+from typing import Any, Dict
+
 import requests
-from typing import Dict, Any
+
+from rtm_core.runtime_capabilities import require_capability
+
 
 DGT_ENDPOINT = "https://ws.dgt.es/consultaDEV"  # ⚠️ cambiar por endpoint real
 
@@ -67,34 +71,41 @@ class DGTSubmitter:
             # 🔥 LLAMADA A TU JAVA
             subprocess.run(
                 ["java", "XmlSignerReal", input_path, output_path],
-                check=True
+                check=True,
             )
 
             with open(output_path, "r", encoding="utf-8") as f:
                 return f.read()
 
     def send_to_dgt(self, signed_xml: str) -> Dict[str, Any]:
+        # Incluso una llamada directa a este método queda bloqueada si el
+        # entorno no autoriza presentaciones externas.
+        require_capability("external_submission")
+
         headers = {
-            "Content-Type": "application/xml"
+            "Content-Type": "application/xml",
         }
 
         resp = requests.post(
             DGT_ENDPOINT,
             data=signed_xml.encode("utf-8"),
             headers=headers,
-            timeout=20
+            timeout=20,
         )
 
         return {
             "status_code": resp.status_code,
-            "response": resp.text
+            "response": resp.text,
         }
 
     def submit(self, case_id: str, pdf_bytes: bytes) -> Dict[str, Any]:
+        # El guard se ejecuta antes de firmar, preparar un envío o abrir red.
+        require_capability("external_submission")
+
         # 🔥 aquí podrías meter datos reales del caso
         case_data = {
             "case_id": case_id,
-            "dni_nie": "00000000X"  # ⚠️ sustituir por real
+            "dni_nie": "00000000X",  # ⚠️ sustituir por real
         }
 
         xml = self.build_xml(case_data)
