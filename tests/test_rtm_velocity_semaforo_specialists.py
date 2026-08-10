@@ -94,13 +94,14 @@ def _records(case_id: str, document_id: str, facts: dict[str, ValidatedFact]):
 
 class VelocityAndSemaforoSpecialistsTest(unittest.TestCase):
     def test_registry_keeps_three_traffic_specialists(self):
-        self.assertEqual(SPECIALIST_REGISTRY_VERSION, "rtm_specialist_registry_v1_3")
+        self.assertEqual(SPECIALIST_REGISTRY_VERSION, "rtm_specialist_registry_v1_4")
         registered = registered_specialists()
         self.assertEqual(
             tuple(item for item in registered if item.startswith("traffic.")),
             ("traffic.semaforo", "traffic.temeraria", "traffic.velocidad"),
         )
         self.assertIn("debt.unpaid_invoice", registered)
+        self.assertIn("administration.enforcement", registered)
         self.assertEqual(
             TRAFFIC_SPECIALIST_ADAPTERS_VERSION,
             "rtm_traffic_specialist_adapters_v1_0",
@@ -260,7 +261,11 @@ class VelocityAndSemaforoSpecialistsTest(unittest.TestCase):
             },
         )
         preview = build_legal_preview(facts_record, family_record)
-        blocking = {item.code for item in preview.missing_items if item.severity.value == "blocking"}
+        blocking = {
+            item.code
+            for item in preview.missing_items
+            if item.severity.value == "blocking"
+        }
         self.assertIn("velocity_measured_missing", blocking)
         self.assertIn("velocity_limit_missing", blocking)
 
