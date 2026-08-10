@@ -21,9 +21,10 @@ from rtm_core.travel_flight_cancelled_specialist import (
 from rtm_core.travel_flight_delay_specialist import (
     build_travel_flight_delay_preview,
 )
+from rtm_core.travel_hotel_specialist import build_travel_hotel_preview
 
 
-TRAVEL_SPECIALIST_REGISTRY_VERSION = "rtm_travel_specialist_registry_v1_2"
+TRAVEL_SPECIALIST_REGISTRY_VERSION = "rtm_travel_specialist_registry_v1_3"
 
 TravelBuilder = Callable[
     [ValidatedFactsRecord, FamilyResolutionRecord],
@@ -35,6 +36,7 @@ _TRAVEL_REGISTRY: dict[str, TravelBuilder] = {
     "travel.denied_boarding": build_travel_denied_boarding_preview,
     "travel.flight_cancelled": build_travel_flight_cancelled_preview,
     "travel.flight_delay": build_travel_flight_delay_preview,
+    "travel.hotel": build_travel_hotel_preview,
 }
 
 
