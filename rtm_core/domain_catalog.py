@@ -192,7 +192,7 @@ _FAMILY_ITEMS = (
     # Administración pública.
     _family("administration", "sancion_administrativa", "Sanción administrativa", "administration.sanction", "Identificar hecho, norma, prueba, fase, plazo y órgano."),
     _family("administration", "requerimiento", "Requerimiento administrativo", "administration.requirement", "Precisar qué se exige, plazo, documentos y consecuencias del incumplimiento."),
-    _family("administration", "apremio_recaudacion", "Apremio o recaudación", "administration.enforcement", "Revisar deuda, providencia, notificaciones, recargos y fase recaudatoria."),
+    _family("administration", "apremio_recaudacion", "Apremio o recaudación", "administration.enforcement", "Revisar deuda, providencia, notificaciones, recargos y fase recaudatoria.", ready=True),
     _family("administration", "tributos", "Tributos", "administration.tax", "Identificar impuesto, acto, periodo, liquidación, alegaciones y recurso."),
     _family("administration", "licencia", "Licencia o autorización", "administration.licence", "Revisar solicitud, requisitos, resolución, condicionantes y plazo."),
     _family("administration", "subvencion", "Subvención", "administration.grant", "Revisar convocatoria, solicitud, justificación, reintegro y resolución."),
