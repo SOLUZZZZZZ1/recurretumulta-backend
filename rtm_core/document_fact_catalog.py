@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from rtm_core.service_catalog import canonical_department, normalize_code
 
 
-DOCUMENT_FACT_CATALOG_VERSION = "rtm_document_fact_catalog_v1_0"
+DOCUMENT_FACT_CATALOG_VERSION = "rtm_document_fact_catalog_v1_1"
 
 DepartmentCode = Literal["debt", "administration", "travel", "claims", "other"]
 ValueType = Literal["text", "identifier", "money", "date", "time", "integer", "boolean"]
@@ -165,11 +165,33 @@ _FIELDS: tuple[FactFieldSpec, ...] = (
     _field("compensacion_solicitada_eur", "travel", "money", ("compensation_requested",), 0.97),
     _field("numero_pasajeros", "travel", "integer", ("passenger_count",), 0.95),
 
+    # Hotel o alojamiento independiente.
+    _field("fecha_reserva", "travel", "date", ("booking_date", "reservation_date"), 0.97),
+    _field("estancia_inicio", "travel", "date", ("stay_start", "check_in_date", "arrival_date"), 0.97),
+    _field("estancia_fin", "travel", "date", ("stay_end", "check_out_date", "departure_date"), 0.97),
+    _field("pais_alojamiento", "travel", aliases=("accommodation_country", "hotel_country"), min_confidence=0.96, max_length=160),
+    _field("direccion_alojamiento", "travel", aliases=("accommodation_address", "hotel_address"), min_confidence=0.95, max_length=320),
+    _field("habitacion_reservada", "travel", aliases=("reserved_room", "booked_room"), merge_mode="set", max_length=500),
+    _field("habitacion_asignada", "travel", aliases=("assigned_room", "provided_room"), merge_mode="set", max_length=500),
+    _field("categoria_reservada", "travel", aliases=("reserved_category", "booked_category"), max_length=240),
+    _field("categoria_asignada", "travel", aliases=("assigned_category", "provided_category"), max_length=240),
+    _field("regimen_alimenticio", "travel", aliases=("meal_plan", "board_basis"), merge_mode="set", max_length=300),
+    _field("servicios_incluidos", "travel", aliases=("included_services", "hotel_amenities_included"), merge_mode="set", max_length=900),
+    _field("condiciones_cancelacion", "travel", aliases=("cancellation_terms", "cancellation_policy"), merge_mode="set", max_length=1200),
+    _field("cancelacion_solicitada_fecha", "travel", "date", ("cancellation_request_date", "hotel_cancellation_request_date"), 0.97),
+    _field("cargo_cancelacion_eur", "travel", "money", ("cancellation_charge", "cancellation_fee"), 0.97),
+    _field("reubicacion_ofrecida", "travel", aliases=("relocation_offered", "alternative_accommodation"), merge_mode="set", max_length=900),
+    _field("precio_total_reserva_eur", "travel", "money", ("booking_total", "total_booking_price"), 0.97),
+    _field("numero_huespedes", "travel", "integer", ("guest_count", "number_of_guests"), 0.95),
+    _field("reserva_es_viaje_combinado", "travel", "boolean", ("is_package_travel", "package_travel_booking"), 0.97),
+
+    # Reclamaciones previas, compartidas con viajes.
+    _field("reclamacion_previa_fecha", "travel,claims", "date", ("prior_claim_date", "complaint_date"), 0.96),
+    _field("canal_reclamacion", "travel,claims", aliases=("complaint_channel",), min_confidence=0.93, merge_mode="set", max_length=180),
+
     # Reclamaciones.
     _field("producto_servicio", "claims", aliases=("product_or_service", "service_description", "producto"), merge_mode="set", max_length=500),
     _field("fecha_contrato", "claims", "date", ("contract_date",), 0.96),
-    _field("reclamacion_previa_fecha", "claims", "date", ("prior_claim_date", "complaint_date"), 0.96),
-    _field("canal_reclamacion", "claims", aliases=("complaint_channel",), min_confidence=0.93, merge_mode="set", max_length=180),
     _field("respuesta_proveedor", "claims", aliases=("provider_response",), merge_mode="set", max_length=1400),
     _field("fecha_respuesta", "claims", "date", ("response_date",), 0.96),
     _field("baja_solicitada_fecha", "claims", "date", ("cancellation_request_date", "service_cancellation_date"), 0.97),
