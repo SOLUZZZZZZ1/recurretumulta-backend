@@ -46,13 +46,15 @@ DECLARED_COMPONENT_VERSIONS = {
     "cross_service_family": "rtm_cross_service_family_v1_0",
     "first_direction": "rtm_first_direction_projection_v1_0",
     "specialist_registry": "rtm_specialist_registry_v1_4",
-    "specialist_dispatch": "rtm_specialist_dispatch_v1_2",
+    "specialist_dispatch": "rtm_specialist_dispatch_v1_3",
     "cross_service_specialist_support": (
         "rtm_cross_service_specialist_support_v1_0"
     ),
     "debt_unpaid_invoice_specialist": (
         "rtm_debt_unpaid_invoice_specialist_v1_0"
     ),
+    "debt_credit_file_specialist": "rtm_debt_credit_file_specialist_v1_0",
+    "debt_specialist_registry": "rtm_debt_specialist_registry_v1_0",
     "administration_enforcement_specialist": (
         "rtm_administration_enforcement_specialist_v1_0"
     ),
@@ -174,6 +176,14 @@ _RUNTIME_LOOKUPS = {
     "debt_unpaid_invoice_specialist": (
         "rtm_core.debt_unpaid_invoice_specialist",
         "DEBT_UNPAID_INVOICE_SPECIALIST_VERSION",
+    ),
+    "debt_credit_file_specialist": (
+        "rtm_core.debt_credit_file_specialist",
+        "DEBT_CREDIT_FILE_SPECIALIST_VERSION",
+    ),
+    "debt_specialist_registry": (
+        "rtm_core.debt_specialist_registry",
+        "DEBT_SPECIALIST_REGISTRY_VERSION",
     ),
     "administration_enforcement_specialist": (
         "rtm_core.administration_enforcement_specialist",
@@ -321,13 +331,15 @@ def build_version_snapshot() -> dict[str, Any]:
             "cross_service_family": "rtm_cross_service_family_v1_0",
             "first_direction": "rtm_first_direction_projection_v1_0",
             "specialist_registry": "rtm_specialist_registry_v1_4",
-            "specialist_dispatch": "rtm_specialist_dispatch_v1_2",
+            "specialist_dispatch": "rtm_specialist_dispatch_v1_3",
             "cross_service_specialist_support": (
                 "rtm_cross_service_specialist_support_v1_0"
             ),
             "debt_unpaid_invoice_specialist": (
                 "rtm_debt_unpaid_invoice_specialist_v1_0"
             ),
+            "debt_credit_file_specialist": "rtm_debt_credit_file_specialist_v1_0",
+            "debt_specialist_registry": "rtm_debt_specialist_registry_v1_0",
             "administration_enforcement_specialist": (
                 "rtm_administration_enforcement_specialist_v1_0"
             ),
