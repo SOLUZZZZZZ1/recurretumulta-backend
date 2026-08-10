@@ -10,7 +10,7 @@ class SpecialistVersionInventoryTest(unittest.TestCase):
         snapshot = build_version_snapshot()
         components = snapshot["components"]
         expected = {
-            "specialist_dispatch": "rtm_specialist_dispatch_v1_2",
+            "specialist_dispatch": "rtm_specialist_dispatch_v1_3",
             "air_passenger_regime": "rtm_air_passenger_regime_v1_0",
             "travel_flight_cancelled_specialist": (
                 "rtm_travel_flight_cancelled_specialist_v1_0"
@@ -20,6 +20,10 @@ class SpecialistVersionInventoryTest(unittest.TestCase):
                 "rtm_claims_telecommunications_specialist_v1_0"
             ),
             "claims_specialist_registry": "rtm_claims_specialist_registry_v1_0",
+            "debt_credit_file_specialist": (
+                "rtm_debt_credit_file_specialist_v1_0"
+            ),
+            "debt_specialist_registry": "rtm_debt_specialist_registry_v1_0",
         }
 
         for name, version in expected.items():
