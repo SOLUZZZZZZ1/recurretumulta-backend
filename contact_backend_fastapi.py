@@ -5,6 +5,9 @@ from email.message import EmailMessage
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr, Field
 
+from rtm_core.runtime_capabilities import require_http_capability
+
+
 router = APIRouter()
 
 SMTP_HOST = os.getenv("SMTP_HOST")
@@ -25,6 +28,8 @@ class ContactRequest(BaseModel):
 
 @router.post("/contact")
 def send_contact_email(payload: ContactRequest):
+    require_http_capability("outbound_email")
+
     if not SMTP_HOST or not SMTP_PASSWORD:
         raise HTTPException(
             status_code=500,
