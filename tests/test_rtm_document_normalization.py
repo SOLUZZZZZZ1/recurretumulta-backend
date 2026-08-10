@@ -74,7 +74,7 @@ class DocumentFactCatalogTest(unittest.TestCase):
     def test_versions_and_satellites_are_explicit(self):
         self.assertEqual(
             DOCUMENT_FACT_CATALOG_VERSION,
-            "rtm_document_fact_catalog_v1_0",
+            "rtm_document_fact_catalog_v1_1",
         )
         self.assertEqual(
             DOCUMENT_EXTRACTION_PACKET_VERSION,
@@ -106,6 +106,18 @@ class DocumentFactCatalogTest(unittest.TestCase):
         self.assertEqual(
             field_spec("travel", "flight_number").key,
             "numero_vuelo",
+        )
+        self.assertEqual(
+            field_spec("travel", "check_in_date").key,
+            "estancia_inicio",
+        )
+        self.assertEqual(
+            field_spec("travel", "total_booking_price").key,
+            "precio_total_reserva_eur",
+        )
+        self.assertEqual(
+            field_spec("travel", "prior_claim_date").key,
+            "reclamacion_previa_fecha",
         )
         self.assertEqual(
             field_spec("claims", "billing_period").key,
@@ -234,6 +246,27 @@ class DocumentNormalizationTest(unittest.TestCase):
             )
         ).facts.facts
         self.assertFalse(debt["deuda_pagada"].value)
+
+    def test_hotel_facts_are_typed_and_preserve_package_boundary(self):
+        hotel = normalize_document_packet(
+            packet(
+                "travel",
+                [
+                    obs("fecha_reserva", "01/05/2026", evidence="Booked 01/05/2026"),
+                    obs("estancia_inicio", "20/08/2026", evidence="Check-in 20/08/2026"),
+                    obs("estancia_fin", "23/08/2026", evidence="Check-out 23/08/2026"),
+                    obs("precio_total_reserva_eur", "720,00 €", evidence="Total 720 EUR"),
+                    obs("numero_huespedes", "2 huéspedes", evidence="Guests 2"),
+                    obs("reserva_es_viaje_combinado", "No", evidence="Hotel only: no package"),
+                ],
+            )
+        ).facts.facts
+        self.assertEqual(hotel["fecha_reserva"].value, "2026-05-01")
+        self.assertEqual(hotel["estancia_inicio"].value, "2026-08-20")
+        self.assertEqual(hotel["estancia_fin"].value, "2026-08-23")
+        self.assertEqual(hotel["precio_total_reserva_eur"].value, 720.0)
+        self.assertEqual(hotel["numero_huespedes"].value, 2)
+        self.assertFalse(hotel["reserva_es_viaje_combinado"].value)
 
     def test_family_strategy_draft_and_raw_ocr_are_rejected(self):
         result = normalize_document_packet(
