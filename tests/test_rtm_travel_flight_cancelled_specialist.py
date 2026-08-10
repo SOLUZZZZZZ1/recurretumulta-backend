@@ -150,7 +150,7 @@ class TravelFlightCancelledSpecialistTest(unittest.TestCase):
         )
         self.assertEqual(
             SPECIALIST_DISPATCH_VERSION,
-            "rtm_specialist_dispatch_v1_2",
+            "rtm_specialist_dispatch_v1_3",
         )
         self.assertEqual(
             SPECIALIST_REGISTRY_VERSION,
