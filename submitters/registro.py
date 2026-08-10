@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import os
-import json
 import base64
-import urllib.request
+import json
+import os
 import urllib.error
+import urllib.request
 from typing import Any, Dict
+
+from rtm_core.runtime_capabilities import require_capability
 
 from .base import SubmitterNotReady
 
@@ -23,6 +25,10 @@ class RegistroSubmitter:
     name: str = "registro_general"
 
     def submit(self, *, case_id: str, pdf_bytes: bytes) -> Dict[str, Any]:
+        # Se comprueba antes de leer URL/token, serializar el documento o abrir
+        # una conexión. En staging esta capacidad permanece bloqueada.
+        require_capability("external_submission")
+
         provider_url = (os.getenv("REG_PROVIDER_URL") or "").strip()
         provider_token = (os.getenv("REG_PROVIDER_TOKEN") or "").strip()
 
