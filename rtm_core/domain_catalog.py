@@ -186,7 +186,7 @@ _FAMILY_ITEMS = (
     _family("debt", "monitorio", "Procedimiento monitorio", "debt.payment_order", "Comprobar deuda dineraria, vencida, exigible y documentalmente acreditada."),
     _family("debt", "oposicion_deudor", "Oposición o defensa del deudor", "debt.debtor_defence", "Identificar deuda discutida, pagos, defectos, prescripción alegada y documentos."),
     _family("debt", "insolvencia", "Insolvencia", "debt.insolvency", "Comprobar situación patrimonial, procedimientos y utilidad de la reclamación."),
-    _family("debt", "fichero_solvencia", "Fichero de solvencia o ASNEF", "debt.credit_file", "Verificar inclusión, deuda, requerimiento previo, consulta, rectificación y baja."),
+    _family("debt", "fichero_solvencia", "Fichero de solvencia o ASNEF", "debt.credit_file", "Verificar inclusión, deuda, requerimiento previo, consulta, rectificación y baja.", ready=True),
     _family("debt", "negociacion_deuda", "Negociación o acuerdo de pago", "debt.settlement", "Definir saldo, capacidad de pago, calendario, garantías y cierre documental."),
 
     # Administración pública.
