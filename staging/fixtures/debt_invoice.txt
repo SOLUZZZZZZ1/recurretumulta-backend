@@ -1,0 +1,15 @@
+DOCUMENTO SINTÉTICO RTM — SOLO PRUEBAS DE STAGING
+No contiene datos reales ni debe utilizarse como reclamación.
+
+FACTURA F-2026-018
+Emisor: PROVEEDOR DEMO, S.L.
+Destinatario: CLIENTE SINTÉTICO RTM
+Fecha de factura: 01/06/2026
+Fecha de vencimiento: 01/07/2026
+Concepto: Servicios técnicos prestados durante mayo de 2026.
+Importe total: 1.250,50 EUR
+Importe abonado: 0,00 EUR
+Saldo pendiente: 1.250,50 EUR
+Estado: FACTURA VENCIDA E IMPAGADA.
+
+Consta una comunicación de recordatorio de pago de fecha 10/07/2026. A la fecha de este documento, la factura F-2026-018 continúa impagada.
