@@ -27,7 +27,7 @@ DECLARED_COMPONENT_VERSIONS = {
     "safe_reanalysis_execution": "rtm_safe_reanalysis_execution_v1_0",
     "reanalysis_adapter": "rtm_reanalysis_to_validated_facts_v1_0",
     "document_scope": "rtm_document_scope_v1_0",
-    "document_fact_catalog": "rtm_document_fact_catalog_v1_1",
+    "document_fact_catalog": "rtm_document_fact_catalog_v1_2",
     "document_extraction_packet": "rtm_document_extraction_packet_v1_0",
     "document_normalization": "rtm_document_normalization_v1_0",
     "document_facts_gateway": "rtm_document_facts_gateway_v1_0",
@@ -68,6 +68,7 @@ DECLARED_COMPONENT_VERSIONS = {
     "accommodation_consumer_regime": (
         "rtm_accommodation_consumer_regime_v1_0"
     ),
+    "package_travel_regime": "rtm_package_travel_regime_v1_0",
     "travel_flight_cancelled_specialist": (
         "rtm_travel_flight_cancelled_specialist_v1_0"
     ),
@@ -80,6 +81,8 @@ DECLARED_COMPONENT_VERSIONS = {
     "travel_baggage_specialist": "rtm_travel_baggage_specialist_v1_0",
     "travel_baggage_adapter": "rtm_travel_baggage_adapter_v1_0",
     "travel_hotel_specialist": "rtm_travel_hotel_specialist_v1_0",
+    "travel_package_specialist": "rtm_travel_package_specialist_v1_0",
+    "travel_package_adapter": "rtm_travel_package_adapter_v1_0",
     "travel_specialist_registry": "rtm_travel_specialist_registry_v1_2",
     "claims_telecommunications_specialist": (
         "rtm_claims_telecommunications_specialist_v1_0"
@@ -220,6 +223,10 @@ _RUNTIME_LOOKUPS = {
         "rtm_core.accommodation_consumer_regime",
         "ACCOMMODATION_CONSUMER_REGIME_VERSION",
     ),
+    "package_travel_regime": (
+        "rtm_core.package_travel_regime",
+        "PACKAGE_TRAVEL_REGIME_VERSION",
+    ),
     "travel_flight_cancelled_specialist": (
         "rtm_core.travel_flight_cancelled_specialist",
         "TRAVEL_FLIGHT_CANCELLED_SPECIALIST_VERSION",
@@ -243,6 +250,14 @@ _RUNTIME_LOOKUPS = {
     "travel_hotel_specialist": (
         "rtm_core.travel_hotel_specialist",
         "TRAVEL_HOTEL_SPECIALIST_VERSION",
+    ),
+    "travel_package_specialist": (
+        "rtm_core.travel_package_specialist",
+        "TRAVEL_PACKAGE_SPECIALIST_VERSION",
+    ),
+    "travel_package_adapter": (
+        "rtm_core.travel_package_adapter",
+        "TRAVEL_PACKAGE_ADAPTER_VERSION",
     ),
     "travel_specialist_registry": (
         "rtm_core.travel_specialist_registry",
@@ -279,6 +294,18 @@ _RUNTIME_LOOKUPS = {
         "ai.infractions.semaforo",
         "SEMAFORO_LEGAL_INTELLIGENCE_VERSION",
     ),
+}
+
+_BASE_CONTRACTS = {
+    "core": CORE_CONTRACTS_VERSION,
+    "validated_facts": VALIDATED_FACTS_VERSION,
+    "family_resolution": FAMILY_RESOLUTION_VERSION,
+    "legal_preview": LEGAL_PREVIEW_VERSION,
+    "service_catalog": SERVICE_CATALOG_VERSION,
+    "review_readiness": REVIEW_READINESS_VERSION,
+    "authority_store": "rtm_authority_store_v1_0",
+    "legal_preview_store": "rtm_legal_preview_store_v1_1",
+    "authority_schema": "rtm_core_authority_schema_v1_2",
 }
 
 
@@ -318,6 +345,14 @@ def build_version_snapshot() -> dict[str, Any]:
             "discovery_error": error,
         }
 
+    contracts = {
+        **_BASE_CONTRACTS,
+        **DECLARED_COMPONENT_VERSIONS,
+        "generation_gateway": DECLARED_COMPONENT_VERSIONS[
+            "core_generation_gateway"
+        ],
+    }
+
     return {
         "ok": True,
         "service": "rtm-core",
@@ -338,89 +373,7 @@ def build_version_snapshot() -> dict[str, Any]:
             ),
             "render_service": _first_env("RENDER_SERVICE_NAME"),
         },
-        "contracts": {
-            "core": CORE_CONTRACTS_VERSION,
-            "validated_facts": VALIDATED_FACTS_VERSION,
-            "family_resolution": FAMILY_RESOLUTION_VERSION,
-            "legal_preview": LEGAL_PREVIEW_VERSION,
-            "service_catalog": SERVICE_CATALOG_VERSION,
-            "domain_catalog": "rtm_domain_catalog_v1_0",
-            "review_readiness": REVIEW_READINESS_VERSION,
-            "authority_store": "rtm_authority_store_v1_0",
-            "extraction_route_policy": "rtm_extraction_route_policy_v1_0",
-            "safe_reanalysis_execution": "rtm_safe_reanalysis_execution_v1_0",
-            "reanalysis_adapter": "rtm_reanalysis_to_validated_facts_v1_0",
-            "document_scope": "rtm_document_scope_v1_0",
-            "document_fact_catalog": "rtm_document_fact_catalog_v1_1",
-            "document_extraction_packet": "rtm_document_extraction_packet_v1_0",
-            "document_normalization": "rtm_document_normalization_v1_0",
-            "document_facts_gateway": "rtm_document_facts_gateway_v1_0",
-            "service_document_extractor": "rtm_service_document_extractor_v1_0",
-            "openai_document_provider": (
-                "rtm_openai_responses_document_provider_v1_0"
-            ),
-            "deterministic_document_reader": (
-                "rtm_deterministic_document_reader_v1_0"
-            ),
-            "document_extraction_store": "rtm_document_extraction_store_v1_0",
-            "document_extraction_router": "rtm_document_extraction_router_v1_0",
-            "document_extraction_schema": "rtm_document_extraction_schema_v1_0",
-            "synthetic_staging_validation": (
-                "rtm_synthetic_staging_validation_v1_0"
-            ),
-            "synthetic_staging_fixture_set": "rtm_synthetic_fixture_set_v1_0",
-            "family_dispatch": "rtm_family_dispatch_v1_0",
-            "family_core": "rtm_family_core_v1_0",
-            "cross_service_family": "rtm_cross_service_family_v1_0",
-            "first_direction": "rtm_first_direction_projection_v1_0",
-            "specialist_registry": "rtm_specialist_registry_v1_4",
-            "specialist_dispatch": "rtm_specialist_dispatch_v1_3",
-            "cross_service_specialist_support": (
-                "rtm_cross_service_specialist_support_v1_0"
-            ),
-            "debt_unpaid_invoice_specialist": (
-                "rtm_debt_unpaid_invoice_specialist_v1_0"
-            ),
-            "debt_credit_file_specialist": "rtm_debt_credit_file_specialist_v1_0",
-            "debt_specialist_registry": "rtm_debt_specialist_registry_v1_0",
-            "administration_enforcement_specialist": (
-                "rtm_administration_enforcement_specialist_v1_0"
-            ),
-            "administration_enforcement_adapter": (
-                "rtm_administration_enforcement_adapter_v1_0"
-            ),
-            "air_passenger_regime": "rtm_air_passenger_regime_v1_0",
-            "air_baggage_liability_regime": (
-                "rtm_air_baggage_liability_regime_v1_0"
-            ),
-            "accommodation_consumer_regime": (
-                "rtm_accommodation_consumer_regime_v1_0"
-            ),
-            "travel_flight_cancelled_specialist": (
-                "rtm_travel_flight_cancelled_specialist_v1_0"
-            ),
-            "travel_flight_delay_specialist": (
-                "rtm_travel_flight_delay_specialist_v1_0"
-            ),
-            "travel_denied_boarding_specialist": (
-                "rtm_travel_denied_boarding_specialist_v1_0"
-            ),
-            "travel_baggage_specialist": "rtm_travel_baggage_specialist_v1_0",
-            "travel_baggage_adapter": "rtm_travel_baggage_adapter_v1_0",
-            "travel_hotel_specialist": "rtm_travel_hotel_specialist_v1_0",
-            "travel_specialist_registry": "rtm_travel_specialist_registry_v1_2",
-            "claims_telecommunications_specialist": (
-                "rtm_claims_telecommunications_specialist_v1_0"
-            ),
-            "claims_specialist_registry": "rtm_claims_specialist_registry_v1_0",
-            "traffic_specialist_adapters": "rtm_traffic_specialist_adapters_v1_0",
-            "ops_workspace": "rtm_ops_workspace_v1_2",
-            "ops_workspace_policy": "rtm_ops_workspace_policy_v1_3",
-            "legal_preview_store": "rtm_legal_preview_store_v1_1",
-            "authority_schema": "rtm_core_authority_schema_v1_2",
-            "generation_gateway": "rtm_generate_gateway_v1_0",
-            "submission_automation": "rtm_submission_automation_v1_0",
-        },
+        "contracts": contracts,
         "components": components,
         "runtime": {"python": platform.python_version()},
     }
