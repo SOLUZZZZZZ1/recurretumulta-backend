@@ -36,6 +36,9 @@ class SpecialistVersionInventoryTest(unittest.TestCase):
             "travel_hotel_specialist": "rtm_travel_hotel_specialist_v1_0",
             "travel_package_specialist": "rtm_travel_package_specialist_v1_0",
             "travel_package_adapter": "rtm_travel_package_adapter_v1_0",
+            "travel_agency_extension": "rtm_travel_agency_extension_v1_0",
+            "travel_agency_regime": "rtm_travel_agency_regime_v1_0",
+            "travel_agency_specialist": "rtm_travel_agency_specialist_v1_0",
             "travel_specialist_registry": "rtm_travel_specialist_registry_v1_2",
             "claims_telecommunications_specialist": (
                 "rtm_claims_telecommunications_specialist_v1_0"
