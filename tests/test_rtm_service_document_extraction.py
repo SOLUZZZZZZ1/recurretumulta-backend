@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 import unittest
 
 from fastapi import HTTPException
+from pypdf import PdfWriter
 
 from rtm_core.document_extraction import (
     OPENAI_DOCUMENT_PROVIDER_VERSION,
@@ -70,6 +72,14 @@ def _document(
     )
 
 
+def _valid_pdf_bytes() -> bytes:
+    output = io.BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.write(output)
+    return output.getvalue()
+
+
 class ServiceDocumentExtractionTest(unittest.TestCase):
     def test_versions_are_explicit(self):
         self.assertEqual(
@@ -96,7 +106,7 @@ class ServiceDocumentExtractionTest(unittest.TestCase):
         payload, mode, mime, _ = build_responses_payload(
             service="debt",
             document=_document(),
-            content=b"%PDF-1.4 fake",
+            content=_valid_pdf_bytes(),
             model="gpt-test",
         )
         self.assertFalse(payload["store"])
