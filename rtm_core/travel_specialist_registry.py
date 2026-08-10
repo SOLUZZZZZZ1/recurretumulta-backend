@@ -23,6 +23,7 @@ from rtm_core.travel_flight_delay_specialist import (
     build_travel_flight_delay_preview,
 )
 from rtm_core.travel_hotel_specialist import build_travel_hotel_preview
+from rtm_core.travel_insurance_specialist import build_travel_insurance_preview
 from rtm_core.travel_package_adapter import (
     build_travel_package_adapter_preview,
 )
@@ -42,6 +43,7 @@ _TRAVEL_REGISTRY: dict[str, TravelBuilder] = {
     "travel.flight_cancelled": build_travel_flight_cancelled_preview,
     "travel.flight_delay": build_travel_flight_delay_preview,
     "travel.hotel": build_travel_hotel_preview,
+    "travel.insurance": build_travel_insurance_preview,
     "travel.package": build_travel_package_adapter_preview,
 }
 

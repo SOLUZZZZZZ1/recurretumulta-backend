@@ -81,3 +81,15 @@ __all__ += [
     "TRAVEL_AGENCY_EXTENSION_VERSION",
     "install_travel_agency_extension",
 ]
+
+from rtm_core.travel_insurance_extension import (
+    TRAVEL_INSURANCE_EXTENSION_VERSION,
+    install_travel_insurance_extension,
+)
+
+install_travel_insurance_extension()
+
+__all__ += [
+    "TRAVEL_INSURANCE_EXTENSION_VERSION",
+    "install_travel_insurance_extension",
+]
