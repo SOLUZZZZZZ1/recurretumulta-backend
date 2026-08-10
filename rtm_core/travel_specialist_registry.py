@@ -9,6 +9,7 @@ from rtm_core.authority_repository import (
     ValidatedFactsRecord,
 )
 from rtm_core.contracts import LegalPreview
+from rtm_core.travel_agency_specialist import build_travel_agency_preview
 from rtm_core.travel_baggage_adapter import (
     build_travel_baggage_adapter_preview,
 )
@@ -35,6 +36,7 @@ TravelBuilder = Callable[
 ]
 
 _TRAVEL_REGISTRY: dict[str, TravelBuilder] = {
+    "travel.agency": build_travel_agency_preview,
     "travel.baggage": build_travel_baggage_adapter_preview,
     "travel.denied_boarding": build_travel_denied_boarding_preview,
     "travel.flight_cancelled": build_travel_flight_cancelled_preview,
