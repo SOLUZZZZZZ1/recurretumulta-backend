@@ -167,7 +167,7 @@ class TravelHotelSpecialistTest(unittest.TestCase):
         )
         self.assertEqual(
             TRAVEL_SPECIALIST_REGISTRY_VERSION,
-            "rtm_travel_specialist_registry_v1_3",
+            "rtm_travel_specialist_registry_v1_2",
         )
         self.assertIn("travel.hotel", registered_specialists())
         profile = family_profile("travel", "hotel")
