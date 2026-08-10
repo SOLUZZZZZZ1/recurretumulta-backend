@@ -1,9 +1,9 @@
 """Extensión transversal de la política del espacio de trabajo OPS.
 
-Conserva la progresión validada V1 y añade tres reglas: la ejecución segura de
-Reanalysis en Tráfico, el gateway documental común para el resto de satélites y
-una parada explícita de orientación cuando la familia está resuelta pero el
-especialista aún no dispone de adaptador LegalPreview.
+Conserva la progresión validada V1 y añade cuatro reglas: Reanalysis seguro para
+Tráfico, extractor documental persistido para el resto de satélites, promoción
+expresa a hechos y parada de orientación cuando todavía no existe especialista
+LegalPreview.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from rtm_core.service_catalog import canonical_department
 from rtm_core.workspace_policy import determine_workspace_stage as _determine_v1
 
 
-WORKSPACE_POLICY_VERSION = "rtm_ops_workspace_policy_v1_2"
+WORKSPACE_POLICY_VERSION = "rtm_ops_workspace_policy_v1_3"
 
 
 def _action(
@@ -50,6 +50,8 @@ def determine_workspace_stage(
     latest_resource: Any = None,
     service: str = "traffic",
     specialist_available: bool = True,
+    document_extraction_available: bool = False,
+    document_extraction_id: str = "",
 ) -> dict[str, Any]:
     result = _determine_v1(
         case_id=case_id,
@@ -67,25 +69,75 @@ def determine_workspace_stage(
     result["policy_version"] = WORKSPACE_POLICY_VERSION
     base = f"/ops/core/cases/{case_id}"
     department = canonical_department(service)
+    stage = str(result.get("stage") or "")
 
-    if result.get("stage") == "reanalysis_required":
+    if stage in {"reanalysis_required", "validated_facts_pending"}:
         if department == "traffic":
-            result["primary_action"] = "run_safe_reanalysis"
-            result["actions"] = [
-                _action(
-                    "run_safe_reanalysis",
-                    "Ejecutar Reanalysis seguro sobre los documentos originales",
-                    method="POST",
-                    endpoint=f"{base}/reanalysis/run",
-                    requires_confirmation=True,
-                )
-            ]
+            if stage == "reanalysis_required":
+                result["primary_action"] = "run_safe_reanalysis"
+                result["actions"] = [
+                    _action(
+                        "run_safe_reanalysis",
+                        "Ejecutar Reanalysis seguro sobre los documentos originales",
+                        method="POST",
+                        endpoint=f"{base}/reanalysis/run",
+                        requires_confirmation=True,
+                    )
+                ]
             return result
+
+        extraction_id = str(document_extraction_id or "").strip()
+        if document_extraction_available and extraction_id:
+            return {
+                "policy_version": WORKSPACE_POLICY_VERSION,
+                "stage": "service_facts_preview_pending",
+                "primary_action": "preview_extracted_document_facts",
+                "actions": [
+                    _action(
+                        "inspect_document_extraction",
+                        "Revisar la extracción documental y su trazabilidad",
+                        method="GET",
+                        endpoint=(
+                            f"{base}/document-extractions/{extraction_id}"
+                        ),
+                    ),
+                    _action(
+                        "preview_extracted_document_facts",
+                        "Previsualizar los hechos normalizados sin guardarlos",
+                        method="POST",
+                        endpoint=(
+                            f"{base}/document-extractions/{extraction_id}/"
+                            "facts-preview"
+                        ),
+                    ),
+                    _action(
+                        "create_extracted_document_facts_draft",
+                        "Guardar el borrador versionado de hechos",
+                        method="POST",
+                        endpoint=(
+                            f"{base}/document-extractions/{extraction_id}/"
+                            "facts-draft"
+                        ),
+                        requires_confirmation=True,
+                    ),
+                    _action(
+                        "invalidate_document_extraction",
+                        "Invalidar la extracción y volver a leer los documentos",
+                        method="POST",
+                        endpoint=(
+                            f"{base}/document-extractions/{extraction_id}/"
+                            "invalidate"
+                        ),
+                        requires_reason=True,
+                        requires_confirmation=True,
+                    ),
+                ],
+            }
 
         return {
             "policy_version": WORKSPACE_POLICY_VERSION,
             "stage": "service_fact_extraction_pending",
-            "primary_action": "preview_document_facts",
+            "primary_action": "run_service_document_extraction",
             "actions": [
                 _action(
                     "inspect_document_fact_catalog",
@@ -94,14 +146,21 @@ def determine_workspace_stage(
                     endpoint=f"/ops/core/document-facts/catalog/{department}",
                 ),
                 _action(
+                    "run_service_document_extraction",
+                    "Leer los documentos originales y preparar una extracción estructurada",
+                    method="POST",
+                    endpoint=f"{base}/document-extractions/run",
+                    requires_confirmation=True,
+                ),
+                _action(
                     "preview_document_facts",
-                    "Normalizar las observaciones documentales sin guardar hechos",
+                    "Normalizar un paquete documental aportado por OPS sin guardarlo",
                     method="POST",
                     endpoint=f"{base}/document-facts/preview",
                 ),
                 _action(
                     "create_document_facts_draft",
-                    "Guardar un borrador versionado de hechos sin congelarlo",
+                    "Guardar un paquete documental revisado por OPS",
                     method="POST",
                     endpoint=f"{base}/document-facts/draft",
                     requires_confirmation=True,
@@ -109,7 +168,7 @@ def determine_workspace_stage(
             ],
         }
 
-    if result.get("stage") == "legal_preview_pending" and not specialist_available:
+    if stage == "legal_preview_pending" and not specialist_available:
         return {
             "policy_version": WORKSPACE_POLICY_VERSION,
             "stage": "initial_direction_review",
