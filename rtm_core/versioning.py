@@ -46,6 +46,7 @@ DECLARED_COMPONENT_VERSIONS = {
     "cross_service_family": "rtm_cross_service_family_v1_0",
     "first_direction": "rtm_first_direction_projection_v1_0",
     "specialist_registry": "rtm_specialist_registry_v1_4",
+    "specialist_dispatch": "rtm_specialist_dispatch_v1_1",
     "cross_service_specialist_support": (
         "rtm_cross_service_specialist_support_v1_0"
     ),
@@ -58,6 +59,11 @@ DECLARED_COMPONENT_VERSIONS = {
     "administration_enforcement_adapter": (
         "rtm_administration_enforcement_adapter_v1_0"
     ),
+    "air_passenger_regime": "rtm_air_passenger_regime_v1_0",
+    "travel_flight_cancelled_specialist": (
+        "rtm_travel_flight_cancelled_specialist_v1_0"
+    ),
+    "travel_specialist_registry": "rtm_travel_specialist_registry_v1_0",
     "traffic_specialist_adapters": "rtm_traffic_specialist_adapters_v1_0",
     "ops_workspace": "rtm_ops_workspace_v1_2",
     "ops_workspace_policy": "rtm_ops_workspace_policy_v1_3",
@@ -153,6 +159,10 @@ _RUNTIME_LOOKUPS = {
         "rtm_core.specialist_dispatch",
         "SPECIALIST_REGISTRY_VERSION",
     ),
+    "specialist_dispatch": (
+        "rtm_core.specialist_dispatch",
+        "SPECIALIST_DISPATCH_VERSION",
+    ),
     "cross_service_specialist_support": (
         "rtm_core.cross_service_specialist_support",
         "CROSS_SERVICE_SPECIALIST_SUPPORT_VERSION",
@@ -168,6 +178,18 @@ _RUNTIME_LOOKUPS = {
     "administration_enforcement_adapter": (
         "rtm_core.administration_enforcement_adapter",
         "ADMINISTRATION_ENFORCEMENT_ADAPTER_VERSION",
+    ),
+    "air_passenger_regime": (
+        "rtm_core.air_passenger_regime",
+        "AIR_PASSENGER_REGIME_VERSION",
+    ),
+    "travel_flight_cancelled_specialist": (
+        "rtm_core.travel_flight_cancelled_specialist",
+        "TRAVEL_FLIGHT_CANCELLED_SPECIALIST_VERSION",
+    ),
+    "travel_specialist_registry": (
+        "rtm_core.travel_specialist_registry",
+        "TRAVEL_SPECIALIST_REGISTRY_VERSION",
     ),
     "traffic_specialist_adapters": (
         "rtm_core.traffic_specialist_adapters",
@@ -287,6 +309,7 @@ def build_version_snapshot() -> dict[str, Any]:
             "cross_service_family": "rtm_cross_service_family_v1_0",
             "first_direction": "rtm_first_direction_projection_v1_0",
             "specialist_registry": "rtm_specialist_registry_v1_4",
+            "specialist_dispatch": "rtm_specialist_dispatch_v1_1",
             "cross_service_specialist_support": (
                 "rtm_cross_service_specialist_support_v1_0"
             ),
@@ -299,6 +322,11 @@ def build_version_snapshot() -> dict[str, Any]:
             "administration_enforcement_adapter": (
                 "rtm_administration_enforcement_adapter_v1_0"
             ),
+            "air_passenger_regime": "rtm_air_passenger_regime_v1_0",
+            "travel_flight_cancelled_specialist": (
+                "rtm_travel_flight_cancelled_specialist_v1_0"
+            ),
+            "travel_specialist_registry": "rtm_travel_specialist_registry_v1_0",
             "traffic_specialist_adapters": "rtm_traffic_specialist_adapters_v1_0",
             "ops_workspace": "rtm_ops_workspace_v1_2",
             "ops_workspace_policy": "rtm_ops_workspace_policy_v1_3",
