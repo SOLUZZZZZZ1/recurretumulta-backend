@@ -15,10 +15,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from rtm_core.service_catalog import canonical_department, normalize_code
 
 
-DOCUMENT_FACT_CATALOG_VERSION = "rtm_document_fact_catalog_v1_1"
+DOCUMENT_FACT_CATALOG_VERSION = "rtm_document_fact_catalog_v1_2"
 
 DepartmentCode = Literal["debt", "administration", "travel", "claims", "other"]
-ValueType = Literal["text", "identifier", "money", "date", "time", "integer", "boolean"]
+ValueType = Literal[
+    "text",
+    "identifier",
+    "money",
+    "number",
+    "date",
+    "time",
+    "integer",
+    "boolean",
+]
 MergeMode = Literal["single", "set"]
 
 
@@ -184,6 +193,26 @@ _FIELDS: tuple[FactFieldSpec, ...] = (
     _field("precio_total_reserva_eur", "travel", "money", ("booking_total", "total_booking_price"), 0.97),
     _field("numero_huespedes", "travel", "integer", ("guest_count", "number_of_guests"), 0.95),
     _field("reserva_es_viaje_combinado", "travel", "boolean", ("is_package_travel", "package_travel_booking"), 0.97),
+
+    # Viaje combinado.
+    _field("organizador_viaje", "travel", aliases=("organizer", "package_organizer", "tour_operator"), min_confidence=0.96, max_length=260),
+    _field("minorista_viaje", "travel", aliases=("retailer", "package_retailer", "travel_retailer"), min_confidence=0.95, max_length=260),
+    _field("pais_organizador", "travel", aliases=("organizer_country", "country_of_establishment"), min_confidence=0.96, max_length=160),
+    _field("fecha_inicio_viaje", "travel", "date", ("package_start", "trip_start_date"), 0.97),
+    _field("fecha_fin_viaje", "travel", "date", ("package_end", "trip_end_date"), 0.97),
+    _field("servicios_viaje_incluidos", "travel", aliases=("package_services", "included_travel_services"), merge_mode="set", max_length=1400),
+    _field("precio_total_viaje_eur", "travel", "money", ("package_total_price", "total_package_price"), 0.97),
+    _field("cambio_sustancial_propuesto", "travel", aliases=("significant_change", "proposed_package_change"), merge_mode="set", max_length=1200),
+    _field("fecha_aviso_cambio", "travel", "date", ("change_notice_date", "package_change_notice_date"), 0.97),
+    _field("terminacion_viajero_fecha", "travel", "date", ("traveller_termination_date", "package_termination_date"), 0.97),
+    _field("incremento_precio_porcentaje", "travel", "number", ("price_increase_percent", "package_price_increase_percent"), 0.97),
+    _field("circunstancias_extraordinarias", "travel", aliases=("extraordinary_circumstances", "unavoidable_extraordinary_circumstances"), merge_mode="set", max_length=1200),
+    _field("asistencia_ofrecida", "travel", aliases=("assistance_offered", "traveller_assistance"), merge_mode="set", max_length=900),
+    _field("garantia_insolvencia", "travel", aliases=("insolvency_guarantee", "package_insolvency_protection"), merge_mode="set", max_length=900),
+    _field("repatriacion_necesaria", "travel", "boolean", ("repatriation_required", "needs_repatriation"), 0.97),
+    _field("porcentaje_servicio_turistico", "travel", "number", ("tourist_service_share_percent", "other_tourist_service_share"), 0.97),
+    _field("servicio_turistico_esencial", "travel", "boolean", ("tourist_service_essential", "essential_tourist_service"), 0.97),
+    _field("servicio_viaje_vinculado", "travel", "boolean", ("linked_travel_arrangement", "is_linked_travel_arrangement"), 0.97),
 
     # Reclamaciones previas, compartidas con viajes.
     _field("reclamacion_previa_fecha", "travel,claims", "date", ("prior_claim_date", "complaint_date"), 0.96),
