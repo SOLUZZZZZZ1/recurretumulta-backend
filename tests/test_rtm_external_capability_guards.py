@@ -23,9 +23,9 @@ class ExternalCapabilityGuardsTest(unittest.TestCase):
         environment = {
             "RTM_ENV": "staging",
             "RTM_ENABLE_B2": "0",
-            "B2_ENDPOINT": "https://production-storage.invalid",
-            "B2_KEY_ID": "private-key-id",
-            "B2_APPLICATION_KEY": "private-application-key",
+            "B2_ENDPOINT": "https://storage.example.test",
+            "B2_KEY_ID": "synthetic-placeholder-id",
+            "B2_APPLICATION_KEY": "synthetic-placeholder-key",
         }
         with patch.dict(os.environ, environment, clear=False):
             with patch("b2_storage.boto3.client") as client:
@@ -37,15 +37,15 @@ class ExternalCapabilityGuardsTest(unittest.TestCase):
         environment = {
             "RTM_ENV": "staging",
             "RTM_ENABLE_OUTBOUND_EMAIL": "0",
-            "SMTP_HOST": "smtp.production.invalid",
-            "SMTP_USER": "private-user",
-            "SMTP_PASSWORD": "private-password",
+            "SMTP_HOST": "smtp.example.test",
+            "SMTP_USER": "synthetic-placeholder-user",
+            "SMTP_PASSWORD": "synthetic-placeholder-password",
         }
         with patch.dict(os.environ, environment, clear=False):
             with patch("email_utils.smtplib.SMTP") as smtp:
                 with self.assertRaises(CapabilityDisabledError):
                     email_utils.send_email(
-                        to_email="nobody@example.invalid",
+                        to_email="nobody@example.com",
                         subject="No debe salir",
                         body="Mensaje sintético.",
                     )
@@ -70,8 +70,8 @@ class ExternalCapabilityGuardsTest(unittest.TestCase):
         environment = {
             "RTM_ENV": "staging",
             "RTM_ENABLE_EXTERNAL_SUBMISSION": "0",
-            "REG_PROVIDER_URL": "https://production-registry.invalid",
-            "REG_PROVIDER_TOKEN": "private-token",
+            "REG_PROVIDER_URL": "https://registry.example.test",
+            "REG_PROVIDER_TOKEN": "synthetic-placeholder-token",
         }
         with patch.dict(os.environ, environment, clear=False):
             with patch("submitters.registro.urllib.request.urlopen") as urlopen:
@@ -85,13 +85,13 @@ class ExternalCapabilityGuardsTest(unittest.TestCase):
     def test_checkout_guard_runs_before_database_and_stripe(self):
         request = billing.CheckoutRequest(
             case_id="synthetic-case",
-            email="synthetic@example.invalid",
+            email="synthetic@example.com",
             payment_stage="review",
         )
         environment = {
             "RTM_ENV": "staging",
             "RTM_ENABLE_STRIPE": "0",
-            "STRIPE_SECRET_KEY": "sk_live_private_value",
+            "STRIPE_SECRET_KEY": "synthetic-placeholder-stripe-key",
         }
         with patch.dict(os.environ, environment, clear=False):
             with patch("billing.get_engine") as get_engine:
@@ -106,7 +106,7 @@ class ExternalCapabilityGuardsTest(unittest.TestCase):
         environment = {
             "RTM_ENV": "staging",
             "RTM_ENABLE_DOCUMENT_PROVIDER": "0",
-            "OPENAI_API_KEY": "private-provider-key",
+            "OPENAI_API_KEY": "synthetic-placeholder-provider-key",
         }
         with patch.dict(os.environ, environment, clear=False):
             with patch(
