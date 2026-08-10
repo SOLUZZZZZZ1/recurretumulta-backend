@@ -23,7 +23,7 @@ from rtm_core.travel_flight_delay_specialist import (
 )
 
 
-TRAVEL_SPECIALIST_REGISTRY_VERSION = "rtm_travel_specialist_registry_v1_3"
+TRAVEL_SPECIALIST_REGISTRY_VERSION = "rtm_travel_specialist_registry_v1_2"
 
 TravelBuilder = Callable[
     [ValidatedFactsRecord, FamilyResolutionRecord],
