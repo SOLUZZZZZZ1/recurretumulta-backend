@@ -105,12 +105,12 @@ def _complete_values() -> dict[str, ValidatedFact]:
     return {
         "descripcion_hecho": _fact(
             (
-                "La aerolínea canceló el vuelo programado y comunicó la "
-                "cancelación seis días antes de la salida."
+                "La aerolínea comunicó que el vuelo programado fue cancelado "
+                "seis días antes de la salida."
             ),
             "VUELO CANCELADO",
         ),
-        "incidencia_tipo": _fact("Cancelación de vuelo"),
+        "incidencia_tipo": _fact("Cancelación del vuelo"),
         "proveedor": _fact("Aerolínea Demo, S.A."),
         "aerolinea": _fact("Aerolínea Demo, S.A."),
         "agencia": _fact("Plataforma Demo"),
