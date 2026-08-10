@@ -17,8 +17,9 @@ from rtm_core.claims_specialist_registry import (
     registered_claims_specialists,
 )
 from rtm_core.contracts import LegalPreview
-from rtm_core.debt_unpaid_invoice_specialist import (
-    build_debt_unpaid_invoice_preview,
+from rtm_core.debt_specialist_registry import (
+    debt_specialist_builder,
+    registered_debt_specialists,
 )
 from rtm_core.specialist_registry import build_temeraria_preview
 from rtm_core.traffic_specialist_adapters import (
@@ -32,11 +33,10 @@ from rtm_core.travel_specialist_registry import (
 
 
 SPECIALIST_REGISTRY_VERSION = "rtm_specialist_registry_v1_4"
-SPECIALIST_DISPATCH_VERSION = "rtm_specialist_dispatch_v1_2"
+SPECIALIST_DISPATCH_VERSION = "rtm_specialist_dispatch_v1_3"
 
 _REGISTRY = {
     "administration.enforcement": build_administration_enforcement_preview,
-    "debt.unpaid_invoice": build_debt_unpaid_invoice_preview,
     "traffic.temeraria": build_temeraria_preview,
     "traffic.velocidad": build_velocity_preview,
     "traffic.semaforo": build_semaforo_preview,
@@ -49,6 +49,7 @@ def registered_specialists() -> tuple[str, ...]:
             (
                 *_REGISTRY,
                 *registered_claims_specialists(),
+                *registered_debt_specialists(),
                 *registered_travel_specialists(),
             )
         )
@@ -63,6 +64,7 @@ def build_legal_preview(
     builder = (
         _REGISTRY.get(specialist)
         or claims_specialist_builder(specialist)
+        or debt_specialist_builder(specialist)
         or travel_specialist_builder(specialist)
     )
     if not builder:
