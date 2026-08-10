@@ -174,6 +174,8 @@ class PackageTravelRegimeDecision(BaseModel):
     scope: ScopeCode = "unknown"
     package_qualified: Optional[bool] = None
     service_type_count: int = 0
+    tourist_service_share_percent: Optional[float] = None
+    tourist_service_essential: Optional[bool] = None
     ruleset: Optional[str] = None
     legal_basis: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
@@ -250,6 +252,31 @@ def _service_categories(value: Any) -> set[str]:
     }
 
 
+def _optional_float(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    match = re.search(r"[-+]?\d+(?:[.,]\d+)?", str(value))
+    if not match:
+        return None
+    try:
+        return float(match.group(0).replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _optional_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    folded = _fold(value)
+    if folded in {"si", "true", "1", "esencial", "caracteristica esencial"}:
+        return True
+    if folded in {"no", "false", "0", "no esencial"}:
+        return False
+    return None
+
+
 def resolve_package_travel_regime(
     *,
     contract_date: Any,
@@ -258,6 +285,8 @@ def resolve_package_travel_regime(
     organizer_country: Any,
     package_status: Any,
     service_types: Any,
+    tourist_service_share_percent: Any = None,
+    tourist_service_essential: Any = None,
 ) -> PackageTravelRegimeDecision:
     contract = _parse_date(contract_date)
     start = _parse_date(package_start)
@@ -265,6 +294,8 @@ def resolve_package_travel_regime(
     scope = _scope(organizer_country)
     categories = _service_categories(service_types)
     service_type_count = len(categories)
+    tourist_share = _optional_float(tourist_service_share_percent)
+    tourist_essential = _optional_bool(tourist_service_essential)
     revision = _revision_status(contract)
 
     common = {
@@ -273,6 +304,8 @@ def resolve_package_travel_regime(
         "package_end": end,
         "scope": scope,
         "service_type_count": service_type_count,
+        "tourist_service_share_percent": tourist_share,
+        "tourist_service_essential": tourist_essential,
         "revised_directive_status": revision,
     }
 
@@ -360,6 +393,45 @@ def resolve_package_travel_regime(
                 "régimen de viaje combinado."
             ),
         )
+
+    core_categories = categories - {"other_tourist_service"}
+    tourist_only_boundary = (
+        "other_tourist_service" in categories
+        and len(core_categories) == 1
+        and service_type_count == 2
+    )
+    if tourist_only_boundary:
+        qualifies_by_share = tourist_share is not None and tourist_share >= 25.0
+        qualifies_by_essentiality = tourist_essential is True
+        excluded_by_evidence = (
+            tourist_share is not None
+            and tourist_share < 25.0
+            and tourist_essential is False
+        )
+        if excluded_by_evidence:
+            return PackageTravelRegimeDecision(
+                status="operator_review",
+                **common,
+                package_qualified=False,
+                blocking_reason=(
+                    "La combinación contiene un único servicio principal y otro "
+                    "servicio turístico que no alcanza el veinticinco por ciento ni "
+                    "constituye una característica esencial. No debe tratarse como "
+                    "viaje combinado sin otra base documental."
+                ),
+            )
+        if not qualifies_by_share and not qualifies_by_essentiality:
+            return PackageTravelRegimeDecision(
+                status="operator_review",
+                **common,
+                package_qualified=None,
+                blocking_reason=(
+                    "La combinación contiene un único servicio principal y otro "
+                    "servicio turístico. Debe comprobarse si este representa al menos "
+                    "el veinticinco por ciento del valor o es una característica "
+                    "esencial anunciada del viaje."
+                ),
+            )
 
     warnings = (
         (
