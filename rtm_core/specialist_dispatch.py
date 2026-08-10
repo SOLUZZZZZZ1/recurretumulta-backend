@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
+from rtm_core.administration_enforcement_specialist import (
+    build_administration_enforcement_preview,
+)
 from rtm_core.authority_repository import FamilyResolutionRecord, ValidatedFactsRecord
 from rtm_core.contracts import LegalPreview
 from rtm_core.debt_unpaid_invoice_specialist import (
@@ -20,9 +23,10 @@ from rtm_core.traffic_specialist_adapters import (
 )
 
 
-SPECIALIST_REGISTRY_VERSION = "rtm_specialist_registry_v1_3"
+SPECIALIST_REGISTRY_VERSION = "rtm_specialist_registry_v1_4"
 
 _REGISTRY = {
+    "administration.enforcement": build_administration_enforcement_preview,
     "debt.unpaid_invoice": build_debt_unpaid_invoice_preview,
     "traffic.temeraria": build_temeraria_preview,
     "traffic.velocidad": build_velocity_preview,
