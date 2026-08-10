@@ -69,3 +69,15 @@ __all__ += [
     "normalize_code",
     "resolve_review_quote",
 ]
+
+from rtm_core.travel_agency_extension import (
+    TRAVEL_AGENCY_EXTENSION_VERSION,
+    install_travel_agency_extension,
+)
+
+install_travel_agency_extension()
+
+__all__ += [
+    "TRAVEL_AGENCY_EXTENSION_VERSION",
+    "install_travel_agency_extension",
+]
