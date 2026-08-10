@@ -46,7 +46,7 @@ DECLARED_COMPONENT_VERSIONS = {
     "cross_service_family": "rtm_cross_service_family_v1_0",
     "first_direction": "rtm_first_direction_projection_v1_0",
     "specialist_registry": "rtm_specialist_registry_v1_4",
-    "specialist_dispatch": "rtm_specialist_dispatch_v1_1",
+    "specialist_dispatch": "rtm_specialist_dispatch_v1_2",
     "cross_service_specialist_support": (
         "rtm_cross_service_specialist_support_v1_0"
     ),
@@ -64,6 +64,10 @@ DECLARED_COMPONENT_VERSIONS = {
         "rtm_travel_flight_cancelled_specialist_v1_0"
     ),
     "travel_specialist_registry": "rtm_travel_specialist_registry_v1_0",
+    "claims_telecommunications_specialist": (
+        "rtm_claims_telecommunications_specialist_v1_0"
+    ),
+    "claims_specialist_registry": "rtm_claims_specialist_registry_v1_0",
     "traffic_specialist_adapters": "rtm_traffic_specialist_adapters_v1_0",
     "ops_workspace": "rtm_ops_workspace_v1_2",
     "ops_workspace_policy": "rtm_ops_workspace_policy_v1_3",
@@ -191,6 +195,14 @@ _RUNTIME_LOOKUPS = {
         "rtm_core.travel_specialist_registry",
         "TRAVEL_SPECIALIST_REGISTRY_VERSION",
     ),
+    "claims_telecommunications_specialist": (
+        "rtm_core.claims_telecommunications_specialist",
+        "CLAIMS_TELECOMMUNICATIONS_SPECIALIST_VERSION",
+    ),
+    "claims_specialist_registry": (
+        "rtm_core.claims_specialist_registry",
+        "CLAIMS_SPECIALIST_REGISTRY_VERSION",
+    ),
     "traffic_specialist_adapters": (
         "rtm_core.traffic_specialist_adapters",
         "TRAFFIC_SPECIALIST_ADAPTERS_VERSION",
@@ -309,7 +321,7 @@ def build_version_snapshot() -> dict[str, Any]:
             "cross_service_family": "rtm_cross_service_family_v1_0",
             "first_direction": "rtm_first_direction_projection_v1_0",
             "specialist_registry": "rtm_specialist_registry_v1_4",
-            "specialist_dispatch": "rtm_specialist_dispatch_v1_1",
+            "specialist_dispatch": "rtm_specialist_dispatch_v1_2",
             "cross_service_specialist_support": (
                 "rtm_cross_service_specialist_support_v1_0"
             ),
@@ -327,6 +339,10 @@ def build_version_snapshot() -> dict[str, Any]:
                 "rtm_travel_flight_cancelled_specialist_v1_0"
             ),
             "travel_specialist_registry": "rtm_travel_specialist_registry_v1_0",
+            "claims_telecommunications_specialist": (
+                "rtm_claims_telecommunications_specialist_v1_0"
+            ),
+            "claims_specialist_registry": "rtm_claims_specialist_registry_v1_0",
             "traffic_specialist_adapters": "rtm_traffic_specialist_adapters_v1_0",
             "ops_workspace": "rtm_ops_workspace_v1_2",
             "ops_workspace_policy": "rtm_ops_workspace_policy_v1_3",
