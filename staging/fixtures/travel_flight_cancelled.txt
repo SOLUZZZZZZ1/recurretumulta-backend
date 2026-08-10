@@ -1,0 +1,17 @@
+DOCUMENTO SINTÉTICO RTM — SOLO PRUEBAS DE STAGING
+No contiene reservas ni pasajeros reales.
+
+CONFIRMACIÓN DE INCIDENCIA DE VIAJE
+Aerolínea: AEROLÍNEA DEMO
+Número de vuelo: RTM123
+Localizador de reserva: TEST6A
+Fecha del vuelo: 12/08/2026
+Origen: Barcelona
+Destino: París
+Hora de salida programada: 09:30
+Hora de llegada programada: 11:25
+Número de pasajeros: 1
+
+La aerolínea comunica que el vuelo RTM123 ha sido CANCELADO. El aviso de cancelación fue enviado el 11/08/2026. Se ofreció como alternativa un vuelo al día siguiente. El pasajero solicita el reembolso del billete y la revisión de los gastos documentados.
+
+Documento creado exclusivamente para validar la extracción documental de RTM.
