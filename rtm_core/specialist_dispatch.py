@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
-from rtm_core.administration_enforcement_specialist import (
+from rtm_core.administration_enforcement_adapter import (
     build_administration_enforcement_preview,
 )
 from rtm_core.authority_repository import FamilyResolutionRecord, ValidatedFactsRecord
