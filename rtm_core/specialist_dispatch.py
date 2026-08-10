@@ -12,6 +12,10 @@ from rtm_core.administration_enforcement_adapter import (
     build_administration_enforcement_preview,
 )
 from rtm_core.authority_repository import FamilyResolutionRecord, ValidatedFactsRecord
+from rtm_core.claims_specialist_registry import (
+    claims_specialist_builder,
+    registered_claims_specialists,
+)
 from rtm_core.contracts import LegalPreview
 from rtm_core.debt_unpaid_invoice_specialist import (
     build_debt_unpaid_invoice_preview,
@@ -28,7 +32,7 @@ from rtm_core.travel_specialist_registry import (
 
 
 SPECIALIST_REGISTRY_VERSION = "rtm_specialist_registry_v1_4"
-SPECIALIST_DISPATCH_VERSION = "rtm_specialist_dispatch_v1_1"
+SPECIALIST_DISPATCH_VERSION = "rtm_specialist_dispatch_v1_2"
 
 _REGISTRY = {
     "administration.enforcement": build_administration_enforcement_preview,
@@ -40,7 +44,15 @@ _REGISTRY = {
 
 
 def registered_specialists() -> tuple[str, ...]:
-    return tuple(sorted((*_REGISTRY, *registered_travel_specialists())))
+    return tuple(
+        sorted(
+            (
+                *_REGISTRY,
+                *registered_claims_specialists(),
+                *registered_travel_specialists(),
+            )
+        )
+    )
 
 
 def build_legal_preview(
@@ -48,7 +60,11 @@ def build_legal_preview(
     family_record: FamilyResolutionRecord,
 ) -> LegalPreview:
     specialist = str(family_record.resolution.specialist or "").strip()
-    builder = _REGISTRY.get(specialist) or travel_specialist_builder(specialist)
+    builder = (
+        _REGISTRY.get(specialist)
+        or claims_specialist_builder(specialist)
+        or travel_specialist_builder(specialist)
+    )
     if not builder:
         raise HTTPException(
             status_code=409,
