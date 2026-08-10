@@ -129,8 +129,9 @@ class DebtUnpaidInvoiceSpecialistTest(unittest.TestCase):
             DEBT_UNPAID_INVOICE_SPECIALIST_VERSION,
             "rtm_debt_unpaid_invoice_specialist_v1_0",
         )
-        self.assertEqual(SPECIALIST_REGISTRY_VERSION, "rtm_specialist_registry_v1_3")
+        self.assertEqual(SPECIALIST_REGISTRY_VERSION, "rtm_specialist_registry_v1_4")
         self.assertIn("debt.unpaid_invoice", registered_specialists())
+        self.assertIn("administration.enforcement", registered_specialists())
         profile = family_profile("debt", "factura_impagada")
         self.assertIsNotNone(profile)
         self.assertEqual(profile.specialist, "debt.unpaid_invoice")
@@ -164,10 +165,17 @@ class DebtUnpaidInvoiceSpecialistTest(unittest.TestCase):
             )
         )
         self.assertTrue(
-            any("solo si" in basis.lower() for arg in preview.legal_arguments for basis in arg.legal_basis)
+            any(
+                "solo si" in basis.lower()
+                for arg in preview.legal_arguments
+                for basis in arg.legal_basis
+            )
         )
         self.assertTrue(
-            any("no convierte automáticamente" in arg.body.lower() for arg in preview.legal_arguments)
+            any(
+                "no convierte automáticamente" in arg.body.lower()
+                for arg in preview.legal_arguments
+            )
         )
 
         declared = set(preview.source_fact_keys)
@@ -176,7 +184,9 @@ class DebtUnpaidInvoiceSpecialistTest(unittest.TestCase):
             self.assertTrue(set(argument.source_fact_keys).issubset(declared))
             self.assertNotIn("raw_ocr_text", argument.source_fact_keys)
         self.assertNotIn("raw_ocr_text", preview.source_fact_keys)
-        self.assertFalse(preview.generation_allowed if hasattr(preview, "generation_allowed") else False)
+        self.assertFalse(
+            preview.generation_allowed if hasattr(preview, "generation_allowed") else False
+        )
 
     def test_missing_amount_remains_blocking_and_is_not_invented(self):
         values = _complete_values()
