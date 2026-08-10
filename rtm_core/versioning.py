@@ -37,6 +37,8 @@ DECLARED_COMPONENT_VERSIONS = {
     "document_extraction_store": "rtm_document_extraction_store_v1_0",
     "document_extraction_router": "rtm_document_extraction_router_v1_0",
     "document_extraction_schema": "rtm_document_extraction_schema_v1_0",
+    "synthetic_staging_validation": "rtm_synthetic_staging_validation_v1_0",
+    "synthetic_staging_fixture_set": "rtm_synthetic_fixture_set_v1_0",
     "service_catalog": "rtm_service_catalog_v1_1",
     "domain_catalog": "rtm_domain_catalog_v1_0",
     "family_dispatch": "rtm_family_dispatch_v1_0",
@@ -114,6 +116,14 @@ _RUNTIME_LOOKUPS = {
     "document_extraction_schema": (
         "rtm_core.document_extraction_migration",
         "DOCUMENT_EXTRACTION_SCHEMA_VERSION",
+    ),
+    "synthetic_staging_validation": (
+        "rtm_core.staging_validation",
+        "STAGING_VALIDATION_VERSION",
+    ),
+    "synthetic_staging_fixture_set": (
+        "rtm_core.staging_validation",
+        "STAGING_FIXTURE_SET_VERSION",
     ),
     "service_catalog": ("rtm_core.service_catalog", "SERVICE_CATALOG_VERSION"),
     "domain_catalog": ("rtm_core.domain_catalog", "DOMAIN_CATALOG_VERSION"),
@@ -240,6 +250,10 @@ def build_version_snapshot() -> dict[str, Any]:
             "document_extraction_store": "rtm_document_extraction_store_v1_0",
             "document_extraction_router": "rtm_document_extraction_router_v1_0",
             "document_extraction_schema": "rtm_document_extraction_schema_v1_0",
+            "synthetic_staging_validation": (
+                "rtm_synthetic_staging_validation_v1_0"
+            ),
+            "synthetic_staging_fixture_set": "rtm_synthetic_fixture_set_v1_0",
             "family_dispatch": "rtm_family_dispatch_v1_0",
             "family_core": "rtm_family_core_v1_0",
             "cross_service_family": "rtm_cross_service_family_v1_0",
