@@ -1,0 +1,18 @@
+DOCUMENTO SINTÉTICO RTM — SOLO PRUEBAS DE STAGING
+No contiene datos reales ni produce efectos administrativos.
+
+AYUNTAMIENTO DE PRUEBA
+SERVICIO DE RECAUDACIÓN EJECUTIVA
+
+PROVIDENCIA DE APREMIO
+Expediente: AP-2026-0042
+Fecha del documento: 05/08/2026
+Fecha de notificación: 08/08/2026
+
+Se inicia la vía ejecutiva respecto de una deuda administrativa pendiente.
+Principal: 700,00 EUR
+Recargo de apremio: 140,00 EUR
+Importe total exigido: 840,00 EUR
+Plazo indicado en el documento: 15 días desde la notificación.
+
+La presente providencia de apremio identifica el expediente AP-2026-0042 y el recargo aplicado. Documento creado exclusivamente para validar la extracción documental de RTM.
