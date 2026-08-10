@@ -142,7 +142,7 @@ class TravelFlightDelaySpecialistTest(unittest.TestCase):
         )
         self.assertEqual(
             TRAVEL_SPECIALIST_REGISTRY_VERSION,
-            "rtm_travel_specialist_registry_v1_1",
+            "rtm_travel_specialist_registry_v1_2",
         )
         self.assertEqual(
             SPECIALIST_DISPATCH_VERSION,
