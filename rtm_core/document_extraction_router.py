@@ -32,6 +32,7 @@ from rtm_core.document_normalization import (
     DOCUMENT_NORMALIZATION_VERSION,
     normalize_document_packet,
 )
+from rtm_core.runtime_capabilities import require_http_capability
 from rtm_core.security import normalized_actor, require_operator_token
 
 
@@ -123,6 +124,9 @@ def run_document_extraction(
     ),
 ):
     actor = _operator(x_operator_token, x_operator_actor)
+    # La ruta OPS no descarga B2 ni llama al proveedor hasta que el entorno ha
+    # habilitado de forma expresa la capacidad documental.
+    require_http_capability("document_provider")
     engine = get_engine()
 
     # La transacción de preparación se cierra antes de descargar documentos o
