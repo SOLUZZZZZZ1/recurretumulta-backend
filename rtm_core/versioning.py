@@ -27,7 +27,7 @@ DECLARED_COMPONENT_VERSIONS = {
     "safe_reanalysis_execution": "rtm_safe_reanalysis_execution_v1_0",
     "reanalysis_adapter": "rtm_reanalysis_to_validated_facts_v1_0",
     "document_scope": "rtm_document_scope_v1_0",
-    "document_fact_catalog": "rtm_document_fact_catalog_v1_0",
+    "document_fact_catalog": "rtm_document_fact_catalog_v1_1",
     "document_extraction_packet": "rtm_document_extraction_packet_v1_0",
     "document_normalization": "rtm_document_normalization_v1_0",
     "document_facts_gateway": "rtm_document_facts_gateway_v1_0",
@@ -62,6 +62,12 @@ DECLARED_COMPONENT_VERSIONS = {
         "rtm_administration_enforcement_adapter_v1_0"
     ),
     "air_passenger_regime": "rtm_air_passenger_regime_v1_0",
+    "air_baggage_liability_regime": (
+        "rtm_air_baggage_liability_regime_v1_0"
+    ),
+    "accommodation_consumer_regime": (
+        "rtm_accommodation_consumer_regime_v1_0"
+    ),
     "travel_flight_cancelled_specialist": (
         "rtm_travel_flight_cancelled_specialist_v1_0"
     ),
@@ -71,6 +77,9 @@ DECLARED_COMPONENT_VERSIONS = {
     "travel_denied_boarding_specialist": (
         "rtm_travel_denied_boarding_specialist_v1_0"
     ),
+    "travel_baggage_specialist": "rtm_travel_baggage_specialist_v1_0",
+    "travel_baggage_adapter": "rtm_travel_baggage_adapter_v1_0",
+    "travel_hotel_specialist": "rtm_travel_hotel_specialist_v1_0",
     "travel_specialist_registry": "rtm_travel_specialist_registry_v1_2",
     "claims_telecommunications_specialist": (
         "rtm_claims_telecommunications_specialist_v1_0"
@@ -203,6 +212,14 @@ _RUNTIME_LOOKUPS = {
         "rtm_core.air_passenger_regime",
         "AIR_PASSENGER_REGIME_VERSION",
     ),
+    "air_baggage_liability_regime": (
+        "rtm_core.air_baggage_liability_regime",
+        "AIR_BAGGAGE_LIABILITY_REGIME_VERSION",
+    ),
+    "accommodation_consumer_regime": (
+        "rtm_core.accommodation_consumer_regime",
+        "ACCOMMODATION_CONSUMER_REGIME_VERSION",
+    ),
     "travel_flight_cancelled_specialist": (
         "rtm_core.travel_flight_cancelled_specialist",
         "TRAVEL_FLIGHT_CANCELLED_SPECIALIST_VERSION",
@@ -214,6 +231,18 @@ _RUNTIME_LOOKUPS = {
     "travel_denied_boarding_specialist": (
         "rtm_core.travel_denied_boarding_specialist",
         "TRAVEL_DENIED_BOARDING_SPECIALIST_VERSION",
+    ),
+    "travel_baggage_specialist": (
+        "rtm_core.travel_baggage_specialist",
+        "TRAVEL_BAGGAGE_SPECIALIST_VERSION",
+    ),
+    "travel_baggage_adapter": (
+        "rtm_core.travel_baggage_adapter",
+        "TRAVEL_BAGGAGE_ADAPTER_VERSION",
+    ),
+    "travel_hotel_specialist": (
+        "rtm_core.travel_hotel_specialist",
+        "TRAVEL_HOTEL_SPECIALIST_VERSION",
     ),
     "travel_specialist_registry": (
         "rtm_core.travel_specialist_registry",
@@ -322,7 +351,7 @@ def build_version_snapshot() -> dict[str, Any]:
             "safe_reanalysis_execution": "rtm_safe_reanalysis_execution_v1_0",
             "reanalysis_adapter": "rtm_reanalysis_to_validated_facts_v1_0",
             "document_scope": "rtm_document_scope_v1_0",
-            "document_fact_catalog": "rtm_document_fact_catalog_v1_0",
+            "document_fact_catalog": "rtm_document_fact_catalog_v1_1",
             "document_extraction_packet": "rtm_document_extraction_packet_v1_0",
             "document_normalization": "rtm_document_normalization_v1_0",
             "document_facts_gateway": "rtm_document_facts_gateway_v1_0",
@@ -361,6 +390,12 @@ def build_version_snapshot() -> dict[str, Any]:
                 "rtm_administration_enforcement_adapter_v1_0"
             ),
             "air_passenger_regime": "rtm_air_passenger_regime_v1_0",
+            "air_baggage_liability_regime": (
+                "rtm_air_baggage_liability_regime_v1_0"
+            ),
+            "accommodation_consumer_regime": (
+                "rtm_accommodation_consumer_regime_v1_0"
+            ),
             "travel_flight_cancelled_specialist": (
                 "rtm_travel_flight_cancelled_specialist_v1_0"
             ),
@@ -370,6 +405,9 @@ def build_version_snapshot() -> dict[str, Any]:
             "travel_denied_boarding_specialist": (
                 "rtm_travel_denied_boarding_specialist_v1_0"
             ),
+            "travel_baggage_specialist": "rtm_travel_baggage_specialist_v1_0",
+            "travel_baggage_adapter": "rtm_travel_baggage_adapter_v1_0",
+            "travel_hotel_specialist": "rtm_travel_hotel_specialist_v1_0",
             "travel_specialist_registry": "rtm_travel_specialist_registry_v1_2",
             "claims_telecommunications_specialist": (
                 "rtm_claims_telecommunications_specialist_v1_0"
