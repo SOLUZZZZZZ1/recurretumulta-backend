@@ -68,7 +68,10 @@ DECLARED_COMPONENT_VERSIONS = {
     "travel_flight_delay_specialist": (
         "rtm_travel_flight_delay_specialist_v1_0"
     ),
-    "travel_specialist_registry": "rtm_travel_specialist_registry_v1_1",
+    "travel_denied_boarding_specialist": (
+        "rtm_travel_denied_boarding_specialist_v1_0"
+    ),
+    "travel_specialist_registry": "rtm_travel_specialist_registry_v1_2",
     "claims_telecommunications_specialist": (
         "rtm_claims_telecommunications_specialist_v1_0"
     ),
@@ -207,6 +210,10 @@ _RUNTIME_LOOKUPS = {
     "travel_flight_delay_specialist": (
         "rtm_core.travel_flight_delay_specialist",
         "TRAVEL_FLIGHT_DELAY_SPECIALIST_VERSION",
+    ),
+    "travel_denied_boarding_specialist": (
+        "rtm_core.travel_denied_boarding_specialist",
+        "TRAVEL_DENIED_BOARDING_SPECIALIST_VERSION",
     ),
     "travel_specialist_registry": (
         "rtm_core.travel_specialist_registry",
@@ -360,7 +367,10 @@ def build_version_snapshot() -> dict[str, Any]:
             "travel_flight_delay_specialist": (
                 "rtm_travel_flight_delay_specialist_v1_0"
             ),
-            "travel_specialist_registry": "rtm_travel_specialist_registry_v1_1",
+            "travel_denied_boarding_specialist": (
+                "rtm_travel_denied_boarding_specialist_v1_0"
+            ),
+            "travel_specialist_registry": "rtm_travel_specialist_registry_v1_2",
             "claims_telecommunications_specialist": (
                 "rtm_claims_telecommunications_specialist_v1_0"
             ),
