@@ -212,7 +212,7 @@ _FAMILY_ITEMS = (
 
     # Reclamaciones generales.
     _family("claims", "consumo", "Consumo general", "claims.consumer", "Verificar compra o servicio, defecto, reclamación previa y solución solicitada."),
-    _family("claims", "telecomunicaciones", "Telecomunicaciones", "claims.telecommunications", "Revisar contrato, facturación, baja, portabilidad, avería y reclamaciones."),
+    _family("claims", "telecomunicaciones", "Telecomunicaciones", "claims.telecommunications", "Revisar contrato, facturación, baja, portabilidad, avería y reclamaciones.", ready=True),
     _family("claims", "energia", "Energía y suministros", "claims.energy", "Revisar contrato, lecturas, facturas, incidencias y respuesta del comercializador o distribuidor."),
     _family("claims", "seguros", "Seguros", "claims.insurance", "Revisar póliza, siniestro, peritación, oferta, rechazo y comunicaciones."),
     _family("claims", "banca", "Banca y medios de pago", "claims.banking", "Revisar contrato, operación, autenticación, reclamación y respuesta de la entidad."),
