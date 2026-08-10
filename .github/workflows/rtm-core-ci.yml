@@ -56,7 +56,7 @@ jobs:
 
       - name: Compile changed backend surface
         run: |
-          python -m compileall -q app.py billing.py ops_automation.py rtm_core tests
+          python -m compileall -q app.py billing.py ops_automation.py rtm_core scripts tests
 
       - name: Import complete application graph
         run: |
