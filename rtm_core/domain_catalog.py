@@ -206,7 +206,7 @@ _FAMILY_ITEMS = (
     _family("travel", "denegacion_embarque", "Denegación de embarque", "travel.denied_boarding", "Verificar presentación, documentación, sobreventa, alternativa y compensación solicitada.", ready=True),
     _family("travel", "equipaje", "Equipaje", "travel.baggage", "Verificar facturación, parte de irregularidad, entrega, daños, contenido y gastos."),
     _family("travel", "hotel", "Hotel o alojamiento", "travel.hotel", "Verificar reserva, condiciones, incumplimiento, reclamación y solución ofrecida.", ready=True),
-    _family("travel", "viaje_combinado", "Viaje combinado", "travel.package", "Identificar organizador, minorista, servicios incluidos, cambio o incumplimiento."),
+    _family("travel", "viaje_combinado", "Viaje combinado", "travel.package", "Identificar organizador, minorista, servicios incluidos, cambio o incumplimiento.", ready=True),
     _family("travel", "agencia_plataforma", "Agencia o plataforma", "travel.agency", "Distinguir intermediario y proveedor, reserva, cobro y responsabilidad reclamada."),
     _family("travel", "seguro_viaje", "Seguro de viaje", "travel.insurance", "Revisar póliza, siniestro, comunicación, exclusiones y respuesta de la aseguradora."),
 
