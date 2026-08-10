@@ -1,0 +1,15 @@
+DOCUMENTO SINTÉTICO RTM — SOLO PRUEBAS DE STAGING
+No contiene contratos ni clientes reales.
+
+RESUMEN DOCUMENTAL DE RECLAMACIÓN
+Proveedor: OPERADOR TELECOM DEMO
+Servicio: Fibra e internet
+Referencia de servicio: TEL-TEST-2026
+Contrato: CT-2026-009
+Fecha de contratación: 10/01/2026
+Fecha de solicitud de baja: 15/06/2026
+Fecha de baja efectiva comunicada: 30/06/2026
+
+Pese a la baja efectiva, el operador de telecomunicaciones emitió la factura F-TEL-0726 por el periodo de julio de 2026 y efectuó un cobro de 79,90 EUR. El cliente formuló reclamación previa el 05/08/2026 mediante correo electrónico. La respuesta del proveedor mantiene el cargo sin aportar una prestación posterior a la baja.
+
+Se solicita revisar la devolución del importe cobrado después de la baja. Documento creado exclusivamente para validar la extracción documental de RTM.
