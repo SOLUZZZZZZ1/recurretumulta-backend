@@ -12,9 +12,12 @@ from rtm_core.contracts import LegalPreview
 from rtm_core.travel_flight_cancelled_specialist import (
     build_travel_flight_cancelled_preview,
 )
+from rtm_core.travel_flight_delay_specialist import (
+    build_travel_flight_delay_preview,
+)
 
 
-TRAVEL_SPECIALIST_REGISTRY_VERSION = "rtm_travel_specialist_registry_v1_0"
+TRAVEL_SPECIALIST_REGISTRY_VERSION = "rtm_travel_specialist_registry_v1_1"
 
 TravelBuilder = Callable[
     [ValidatedFactsRecord, FamilyResolutionRecord],
@@ -23,6 +26,7 @@ TravelBuilder = Callable[
 
 _TRAVEL_REGISTRY: dict[str, TravelBuilder] = {
     "travel.flight_cancelled": build_travel_flight_cancelled_preview,
+    "travel.flight_delay": build_travel_flight_delay_preview,
 }
 
 
