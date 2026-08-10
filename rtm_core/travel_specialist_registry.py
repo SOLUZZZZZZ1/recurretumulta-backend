@@ -22,7 +22,9 @@ from rtm_core.travel_flight_delay_specialist import (
     build_travel_flight_delay_preview,
 )
 from rtm_core.travel_hotel_specialist import build_travel_hotel_preview
-from rtm_core.travel_package_specialist import build_travel_package_preview
+from rtm_core.travel_package_adapter import (
+    build_travel_package_adapter_preview,
+)
 
 
 TRAVEL_SPECIALIST_REGISTRY_VERSION = "rtm_travel_specialist_registry_v1_2"
@@ -38,7 +40,7 @@ _TRAVEL_REGISTRY: dict[str, TravelBuilder] = {
     "travel.flight_cancelled": build_travel_flight_cancelled_preview,
     "travel.flight_delay": build_travel_flight_delay_preview,
     "travel.hotel": build_travel_hotel_preview,
-    "travel.package": build_travel_package_preview,
+    "travel.package": build_travel_package_adapter_preview,
 }
 
 
