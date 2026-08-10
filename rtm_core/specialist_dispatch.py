@@ -21,9 +21,14 @@ from rtm_core.traffic_specialist_adapters import (
     build_semaforo_preview,
     build_velocity_preview,
 )
+from rtm_core.travel_specialist_registry import (
+    registered_travel_specialists,
+    travel_specialist_builder,
+)
 
 
 SPECIALIST_REGISTRY_VERSION = "rtm_specialist_registry_v1_4"
+SPECIALIST_DISPATCH_VERSION = "rtm_specialist_dispatch_v1_1"
 
 _REGISTRY = {
     "administration.enforcement": build_administration_enforcement_preview,
@@ -35,7 +40,7 @@ _REGISTRY = {
 
 
 def registered_specialists() -> tuple[str, ...]:
-    return tuple(sorted(_REGISTRY))
+    return tuple(sorted((*_REGISTRY, *registered_travel_specialists())))
 
 
 def build_legal_preview(
@@ -43,7 +48,7 @@ def build_legal_preview(
     family_record: FamilyResolutionRecord,
 ) -> LegalPreview:
     specialist = str(family_record.resolution.specialist or "").strip()
-    builder = _REGISTRY.get(specialist)
+    builder = _REGISTRY.get(specialist) or travel_specialist_builder(specialist)
     if not builder:
         raise HTTPException(
             status_code=409,
