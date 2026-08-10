@@ -26,6 +26,9 @@ from rtm_core.intake_router import router as rtm_core_intake_router
 from rtm_core.router import router as rtm_core_router
 from rtm_core.workspace_router import router as rtm_core_workspace_router
 from rtm_core.document_facts_router import router as rtm_core_document_facts_router
+from rtm_core.document_extraction_router import (
+    router as rtm_core_document_extraction_router,
+)
 from rtm_core.reanalysis_execution import install_safe_extraction_policy
 from rtm_core.reanalysis_execution_router import (
     router as rtm_core_reanalysis_execution_router,
@@ -37,6 +40,9 @@ from rtm_core.specialist_router import router as rtm_core_specialist_router
 from rtm_core.preview_router import router as rtm_core_preview_router
 from rtm_core.generation_router import router as rtm_core_generation_router
 from rtm_core.migration_router import router as rtm_core_migration_router
+from rtm_core.document_extraction_migration import (
+    router as rtm_core_document_extraction_migration_router,
+)
 
 
 # ✅ AÑADIDO: OPS (operador)
@@ -87,6 +93,7 @@ app.include_router(vehicle_removal_router)
 app.include_router(rtm_core_router)
 app.include_router(rtm_core_workspace_router)
 app.include_router(rtm_core_document_facts_router)
+app.include_router(rtm_core_document_extraction_router)
 app.include_router(rtm_core_reanalysis_execution_router)
 app.include_router(rtm_core_reanalysis_router)
 app.include_router(rtm_core_authority_router)
@@ -95,6 +102,7 @@ app.include_router(rtm_core_specialist_router)
 app.include_router(rtm_core_preview_router)
 app.include_router(rtm_core_generation_router)
 app.include_router(rtm_core_migration_router)
+app.include_router(rtm_core_document_extraction_migration_router)
 
 
 # ✅ NUEVO: router de operador (/ops/*)
