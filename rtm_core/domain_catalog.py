@@ -179,7 +179,7 @@ _FAMILY_ITEMS = (
     _family("traffic", "adr", "Mercancías peligrosas", "traffic.adr", "Precisar mercancía, obligación ADR, sujeto responsable y prueba."),
 
     # Morosidad y deudas.
-    _family("debt", "factura_impagada", "Factura impagada", "debt.unpaid_invoice", "Verificar prestación, factura, vencimiento, aceptación y saldo pendiente."),
+    _family("debt", "factura_impagada", "Factura impagada", "debt.unpaid_invoice", "Verificar prestación, factura, vencimiento, aceptación y saldo pendiente.", ready=True),
     _family("debt", "alquiler_impagado", "Alquiler impagado", "debt.unpaid_rent", "Verificar contrato, mensualidades, suministros, pagos y comunicaciones."),
     _family("debt", "prestamo_deuda", "Préstamo o deuda reconocida", "debt.loan_or_acknowledgement", "Verificar entrega, devolución pactada, vencimiento y reconocimiento."),
     _family("debt", "requerimiento_pago", "Requerimiento de pago", "debt.payment_demand", "Preparar cuantía, concepto, vencimiento, documentos y canal fehaciente."),
