@@ -1,8 +1,9 @@
 """Extensión transversal de la política del espacio de trabajo OPS.
 
-Conserva la progresión validada V1 y añade dos reglas: la ejecución segura de
-Reanalysis en Tráfico y una parada explícita de orientación cuando la familia
-está resuelta pero el especialista aún no dispone de adaptador LegalPreview.
+Conserva la progresión validada V1 y añade tres reglas: la ejecución segura de
+Reanalysis en Tráfico, el gateway documental común para el resto de satélites y
+una parada explícita de orientación cuando la familia está resuelta pero el
+especialista aún no dispone de adaptador LegalPreview.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from rtm_core.service_catalog import canonical_department
 from rtm_core.workspace_policy import determine_workspace_stage as _determine_v1
 
 
-WORKSPACE_POLICY_VERSION = "rtm_ops_workspace_policy_v1_1"
+WORKSPACE_POLICY_VERSION = "rtm_ops_workspace_policy_v1_2"
 
 
 def _action(
@@ -84,19 +85,25 @@ def determine_workspace_stage(
         return {
             "policy_version": WORKSPACE_POLICY_VERSION,
             "stage": "service_fact_extraction_pending",
-            "primary_action": "review_service_documents",
+            "primary_action": "preview_document_facts",
             "actions": [
                 _action(
-                    "review_service_documents",
-                    "Revisar los documentos y preparar los hechos del satélite",
+                    "inspect_document_fact_catalog",
+                    "Consultar los campos documentales registrados para este satélite",
                     method="GET",
-                    endpoint=f"{base}/workspace",
+                    endpoint=f"/ops/core/document-facts/catalog/{department}",
                 ),
                 _action(
-                    "create_service_facts_draft",
-                    "Crear un borrador estructurado de hechos, sin congelarlo automáticamente",
+                    "preview_document_facts",
+                    "Normalizar las observaciones documentales sin guardar hechos",
                     method="POST",
-                    endpoint=f"{base}/validated-facts",
+                    endpoint=f"{base}/document-facts/preview",
+                ),
+                _action(
+                    "create_document_facts_draft",
+                    "Guardar un borrador versionado de hechos sin congelarlo",
+                    method="POST",
+                    endpoint=f"{base}/document-facts/draft",
                     requires_confirmation=True,
                 ),
             ],
