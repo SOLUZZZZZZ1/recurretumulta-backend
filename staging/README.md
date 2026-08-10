@@ -13,6 +13,24 @@ documento sintético
 
 No contiene datos personales, expedientes, reservas, contratos, facturas ni actos administrativos reales. Los documentos no producen efectos jurídicos y no deben utilizarse como modelos de reclamación.
 
+## Aislamiento del entorno
+
+La creación de un servicio de staging separado se rige por:
+
+```text
+staging/ENVIRONMENT_MATRIX.md
+rtm_core/environment_contract.py
+scripts/rtm_environment_preflight.py
+```
+
+Antes de desplegar una instancia de staging debe ejecutarse:
+
+```bash
+python scripts/rtm_environment_preflight.py
+```
+
+El resultado debe contener `safe: true`. El informe no imprime secretos, URLs de conexión ni credenciales. Staging no puede utilizar la base, el bucket, Stripe, el frontend, el token OPS, el correo ni los canales de presentación de producción.
+
 ## Escenarios incluidos
 
 | Servicio | Documento | Familia esperada |
