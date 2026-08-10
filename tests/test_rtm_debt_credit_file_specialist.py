@@ -269,7 +269,7 @@ class DebtCreditFileSpecialistTest(unittest.TestCase):
         values["deuda_pagada"] = _fact(False)
         values["deuda_discutida"] = _fact(True)
         values["solucion_solicitada"] = _fact(
-            "Acceso y limitación mientras se revisa la deuda discutida."
+            "Acceso y limitación mientras se verifica la exactitud de los datos comunicados."
         )
         facts_record, family_record = _records(values)
         preview = build_legal_preview(facts_record, family_record)
