@@ -1,0 +1,71 @@
+name: RTM Synthetic Staging Live
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Escribe SYNTHETIC_ONLY para confirmar que solo se usarán fixtures ficticios"
+        required: true
+        type: string
+      services:
+        description: "Servicios separados por comas; vacío ejecuta todos"
+        required: false
+        default: ""
+        type: string
+      model:
+        description: "Modelo documental del entorno de staging"
+        required: false
+        default: "gpt-4o"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rtm-synthetic-staging-live
+  cancel-in-progress: false
+
+jobs:
+  synthetic-live:
+    if: ${{ inputs.confirmation == 'SYNTHETIC_ONLY' }}
+    environment: rtm-staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      RTM_ENV: staging
+      RTM_STAGING_CONFIRM: SYNTHETIC_ONLY
+      RTM_ALLOW_SYNTHETIC_LIVE_EXTRACTION: "1"
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_DOCUMENT_MODEL: ${{ inputs.model }}
+
+    steps:
+      - name: Checkout exact ref
+        uses: actions/checkout@v4
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify staging secret
+        shell: bash
+        run: |
+          test -n "$OPENAI_API_KEY" || {
+            echo "Falta OPENAI_API_KEY en el entorno protegido rtm-staging" >&2
+            exit 2
+          }
+
+      - name: Compile synthetic staging surface
+        run: |
+          python -m compileall -q rtm_core/staging_validation.py scripts/rtm_staging_smoke.py
+
+      - name: Run synthetic live validation
+        run: |
+          python scripts/rtm_staging_smoke.py --services "${{ inputs.services }}"
