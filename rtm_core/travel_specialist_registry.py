@@ -9,6 +9,9 @@ from rtm_core.authority_repository import (
     ValidatedFactsRecord,
 )
 from rtm_core.contracts import LegalPreview
+from rtm_core.travel_denied_boarding_specialist import (
+    build_travel_denied_boarding_preview,
+)
 from rtm_core.travel_flight_cancelled_specialist import (
     build_travel_flight_cancelled_preview,
 )
@@ -17,7 +20,7 @@ from rtm_core.travel_flight_delay_specialist import (
 )
 
 
-TRAVEL_SPECIALIST_REGISTRY_VERSION = "rtm_travel_specialist_registry_v1_1"
+TRAVEL_SPECIALIST_REGISTRY_VERSION = "rtm_travel_specialist_registry_v1_2"
 
 TravelBuilder = Callable[
     [ValidatedFactsRecord, FamilyResolutionRecord],
@@ -25,6 +28,7 @@ TravelBuilder = Callable[
 ]
 
 _TRAVEL_REGISTRY: dict[str, TravelBuilder] = {
+    "travel.denied_boarding": build_travel_denied_boarding_preview,
     "travel.flight_cancelled": build_travel_flight_cancelled_preview,
     "travel.flight_delay": build_travel_flight_delay_preview,
 }
