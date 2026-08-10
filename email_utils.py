@@ -7,6 +7,8 @@ import smtplib
 from email.message import EmailMessage
 from typing import Optional
 
+from rtm_core.runtime_capabilities import require_capability
+
 
 def _env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
@@ -27,6 +29,10 @@ def send_email(
     body: str,
     reply_to: Optional[str] = None,
 ) -> bool:
+    # El interruptor se comprueba antes de leer SMTP o abrir una conexión. En
+    # staging el correo saliente permanece necesariamente desactivado.
+    require_capability("outbound_email")
+
     smtp_host = _env("SMTP_HOST")
     smtp_user = _env("SMTP_USER")
     smtp_password = _env("SMTP_PASSWORD")
