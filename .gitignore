@@ -1,8 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Entornos y secretos locales
+.env
+.env.*
+!.env.example
+!*.env.example
+.venv/
+venv/
+
+# IDE y sistema
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Artefactos temporales y copias locales
 backend-git/
 backend-sync/
 backup*/
-backend-git/
-backend-sync/
-backup*/
-echo __pycache__/>> .gitignore
-echo *.pyc>> .gitignore
+*.log
+*.tmp
+~$*
