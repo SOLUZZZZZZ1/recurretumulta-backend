@@ -237,7 +237,7 @@ class ClaimsEcommerceSpecialistTest(unittest.TestCase):
     def test_digital_withdrawal_loss_requires_documented_elements(self):
         values = _complete_values()
         values["descripcion_hecho"] = _fact(
-            "Desistimiento de contenido digital comprado online tras inicio inmediato."
+            "Compra online de contenido digital con desistimiento tras inicio inmediato."
         )
         values["incidencia_ecommerce_tipo"] = _fact("Desistimiento")
         values["pedido_tipo_contrato"] = _fact("Contenido digital")

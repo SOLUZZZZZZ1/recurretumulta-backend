@@ -1383,7 +1383,8 @@ def build_claims_ecommerce_preview(
         (
             "La petición debe separar precio, envío, cargos, devolución, reembolso "
             "y cantidades ya recuperadas. No cabe sumar un chargeback íntegro y un "
-            "reembolso contractual por el mismo perjuicio."
+            "reembolso contractual por el mismo perjuicio, pues supondría una doble "
+            "recuperación."
         ),
         (
             fact_key,
