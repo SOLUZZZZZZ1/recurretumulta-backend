@@ -129,3 +129,15 @@ __all__ += [
     "CLAIMS_ECOMMERCE_EXTENSION_VERSION",
     "install_claims_ecommerce_extension",
 ]
+
+from rtm_core.claims_insurance_extension import (
+    CLAIMS_INSURANCE_EXTENSION_VERSION,
+    install_claims_insurance_extension,
+)
+
+install_claims_insurance_extension()
+
+__all__ += [
+    "CLAIMS_INSURANCE_EXTENSION_VERSION",
+    "install_claims_insurance_extension",
+]

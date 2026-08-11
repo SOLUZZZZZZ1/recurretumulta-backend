@@ -54,6 +54,9 @@ class SpecialistVersionInventoryTest(unittest.TestCase):
             "claims_energy_extension": "rtm_claims_energy_extension_v1_0",
             "claims_energy_regime": "rtm_claims_energy_regime_v1_0",
             "claims_energy_specialist": "rtm_claims_energy_specialist_v1_0",
+            "claims_insurance_extension": "rtm_claims_insurance_extension_v1_0",
+            "claims_insurance_regime": "rtm_claims_insurance_regime_v1_0",
+            "claims_insurance_specialist": "rtm_claims_insurance_specialist_v1_0",
             "claims_telecommunications_specialist": (
                 "rtm_claims_telecommunications_specialist_v1_0"
             ),
