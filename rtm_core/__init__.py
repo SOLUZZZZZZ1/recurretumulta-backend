@@ -153,3 +153,15 @@ __all__ += [
     "CLAIMS_PROFESSIONAL_SERVICES_EXTENSION_VERSION",
     "install_claims_professional_services_extension",
 ]
+
+from rtm_core.claims_consumer_extension import (
+    CLAIMS_CONSUMER_EXTENSION_VERSION,
+    install_claims_consumer_extension,
+)
+
+install_claims_consumer_extension()
+
+__all__ += [
+    "CLAIMS_CONSUMER_EXTENSION_VERSION",
+    "install_claims_consumer_extension",
+]
