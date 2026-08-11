@@ -105,3 +105,15 @@ __all__ += [
     "CLAIMS_ENERGY_EXTENSION_VERSION",
     "install_claims_energy_extension",
 ]
+
+from rtm_core.claims_banking_extension import (
+    CLAIMS_BANKING_EXTENSION_VERSION,
+    install_claims_banking_extension,
+)
+
+install_claims_banking_extension()
+
+__all__ += [
+    "CLAIMS_BANKING_EXTENSION_VERSION",
+    "install_claims_banking_extension",
+]

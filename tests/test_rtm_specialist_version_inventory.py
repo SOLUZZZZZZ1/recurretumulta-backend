@@ -45,6 +45,9 @@ class SpecialistVersionInventoryTest(unittest.TestCase):
                 "rtm_travel_insurance_specialist_v1_0"
             ),
             "travel_specialist_registry": "rtm_travel_specialist_registry_v1_2",
+            "claims_banking_extension": "rtm_claims_banking_extension_v1_0",
+            "claims_banking_regime": "rtm_claims_banking_regime_v1_0",
+            "claims_banking_specialist": "rtm_claims_banking_specialist_v1_0",
             "claims_energy_extension": "rtm_claims_energy_extension_v1_0",
             "claims_energy_regime": "rtm_claims_energy_regime_v1_0",
             "claims_energy_specialist": "rtm_claims_energy_specialist_v1_0",
