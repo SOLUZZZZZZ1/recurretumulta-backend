@@ -9,6 +9,7 @@ from rtm_core.authority_repository import (
     ValidatedFactsRecord,
 )
 from rtm_core.claims_banking_specialist import build_claims_banking_preview
+from rtm_core.claims_ecommerce_specialist import build_claims_ecommerce_preview
 from rtm_core.claims_energy_specialist import build_claims_energy_preview
 from rtm_core.claims_telecommunications_specialist import (
     build_claims_telecommunications_preview,
@@ -25,6 +26,7 @@ ClaimsBuilder = Callable[
 
 _CLAIMS_REGISTRY: dict[str, ClaimsBuilder] = {
     "claims.banking": build_claims_banking_preview,
+    "claims.ecommerce": build_claims_ecommerce_preview,
     "claims.energy": build_claims_energy_preview,
     "claims.telecommunications": build_claims_telecommunications_preview,
 }
