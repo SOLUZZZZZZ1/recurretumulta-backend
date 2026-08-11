@@ -12,6 +12,9 @@ from rtm_core.claims_banking_specialist import build_claims_banking_preview
 from rtm_core.claims_ecommerce_specialist import build_claims_ecommerce_preview
 from rtm_core.claims_energy_specialist import build_claims_energy_preview
 from rtm_core.claims_insurance_specialist import build_claims_insurance_preview
+from rtm_core.claims_professional_services_specialist import (
+    build_claims_professional_services_preview,
+)
 from rtm_core.claims_telecommunications_specialist import (
     build_claims_telecommunications_preview,
 )
@@ -30,6 +33,7 @@ _CLAIMS_REGISTRY: dict[str, ClaimsBuilder] = {
     "claims.ecommerce": build_claims_ecommerce_preview,
     "claims.energy": build_claims_energy_preview,
     "claims.insurance": build_claims_insurance_preview,
+    "claims.professional_services": build_claims_professional_services_preview,
     "claims.telecommunications": build_claims_telecommunications_preview,
 }
 

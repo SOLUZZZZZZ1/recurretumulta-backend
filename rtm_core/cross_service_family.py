@@ -188,7 +188,7 @@ _RULES: dict[str, tuple[_Rule, ...]] = {
         _Rule("seguros", "explicit_insurance_claim", "Los hechos validados identifican una reclamación de seguro.", (r"\bpoliza\b.{0,50}\b(?:siniestro|cobertura|indemnizacion|rechazo)\b", r"\baseguradora\b", r"\bperitacion\b"), 0.96, 95),
         _Rule("banca", "explicit_banking", "Los hechos validados identifican un problema bancario o de medio de pago.", (r"\b(?:banco|entidad\s+bancaria|tarjeta|transferencia|cargo\s+no\s+reconocido)\b", r"\boperacion\s+no\s+autorizada\b", r"\bprestamo\s+hipotecario\b"), 0.95, 92),
         _Rule("comercio_electronico", "explicit_ecommerce", "Los hechos validados identifican una compra o contratación electrónica.", (r"\b(?:pedido|compra)\s+online\b", r"\bcomercio\s+electronico\b", r"\bmarketplace\b", r"\bproducto\b.{0,45}\bno\s+entregad\w*\b"), 0.95, 90),
-        _Rule("servicios_profesionales", "explicit_professional_service", "Los hechos validados identifican un servicio profesional discutido.", (r"\bservicios?\s+profesionales?\b", r"\bhoja\s+de\s+encargo\b", r"\bhonorarios\b.{0,50}\b(?:incumpl|disput|factura)\w*\b"), 0.93, 85),
+        _Rule("servicios_profesionales", "explicit_professional_service", "Los hechos validados identifican un servicio profesional discutido.", (r"\bservicios?\s+profesional(?:es)?\b", r"\bhoja\s+de\s+encargo\b", r"\bhonorarios\b.{0,50}\b(?:incumpl|disput|factura)\w*\b"), 0.93, 85),
         _Rule("consumo", "explicit_consumer_claim", "Los hechos validados identifican una reclamación general de consumo.", (r"\breclamacion\s+de\s+consumo\b", r"\bgarantia\s+del\s+producto\b", r"\bproducto\s+defectuoso\b", r"\bservicio\s+no\s+prestado\b"), 0.90, 60),
     ),
 }
