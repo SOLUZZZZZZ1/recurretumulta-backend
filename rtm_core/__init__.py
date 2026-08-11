@@ -93,3 +93,15 @@ __all__ += [
     "TRAVEL_INSURANCE_EXTENSION_VERSION",
     "install_travel_insurance_extension",
 ]
+
+from rtm_core.claims_energy_extension import (
+    CLAIMS_ENERGY_EXTENSION_VERSION,
+    install_claims_energy_extension,
+)
+
+install_claims_energy_extension()
+
+__all__ += [
+    "CLAIMS_ENERGY_EXTENSION_VERSION",
+    "install_claims_energy_extension",
+]

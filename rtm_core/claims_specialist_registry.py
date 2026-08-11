@@ -8,6 +8,7 @@ from rtm_core.authority_repository import (
     FamilyResolutionRecord,
     ValidatedFactsRecord,
 )
+from rtm_core.claims_energy_specialist import build_claims_energy_preview
 from rtm_core.claims_telecommunications_specialist import (
     build_claims_telecommunications_preview,
 )
@@ -22,6 +23,7 @@ ClaimsBuilder = Callable[
 ]
 
 _CLAIMS_REGISTRY: dict[str, ClaimsBuilder] = {
+    "claims.energy": build_claims_energy_preview,
     "claims.telecommunications": build_claims_telecommunications_preview,
 }
 
