@@ -13,6 +13,7 @@ from rtm_core.debt_credit_file_specialist import build_debt_credit_file_preview
 from rtm_core.debt_unpaid_invoice_specialist import (
     build_debt_unpaid_invoice_preview,
 )
+from rtm_core.debt_unpaid_rent_specialist import build_debt_unpaid_rent_preview
 
 
 DEBT_SPECIALIST_REGISTRY_VERSION = "rtm_debt_specialist_registry_v1_0"
@@ -25,6 +26,7 @@ DebtBuilder = Callable[
 _DEBT_REGISTRY: dict[str, DebtBuilder] = {
     "debt.credit_file": build_debt_credit_file_preview,
     "debt.unpaid_invoice": build_debt_unpaid_invoice_preview,
+    "debt.unpaid_rent": build_debt_unpaid_rent_preview,
 }
 
 

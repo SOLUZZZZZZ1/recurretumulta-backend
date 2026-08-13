@@ -165,3 +165,15 @@ __all__ += [
     "CLAIMS_CONSUMER_EXTENSION_VERSION",
     "install_claims_consumer_extension",
 ]
+
+from rtm_core.debt_unpaid_rent_extension import (
+    DEBT_UNPAID_RENT_EXTENSION_VERSION,
+    install_debt_unpaid_rent_extension,
+)
+
+install_debt_unpaid_rent_extension()
+
+__all__ += [
+    "DEBT_UNPAID_RENT_EXTENSION_VERSION",
+    "install_debt_unpaid_rent_extension",
+]
