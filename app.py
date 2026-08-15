@@ -1,6 +1,7 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from schemas import HealthResponse
 from database import get_engine, ping_db
@@ -29,6 +30,7 @@ from rtm_core.document_facts_router import router as rtm_core_document_facts_rou
 from rtm_core.document_extraction_router import (
     router as rtm_core_document_extraction_router,
 )
+from rtm_core.document_input_policy import document_input_policy_block
 from rtm_core.reanalysis_execution import install_safe_extraction_policy
 from rtm_core.reanalysis_execution_router import (
     router as rtm_core_reanalysis_execution_router,
@@ -58,6 +60,23 @@ from partner import router as partner_router
 install_safe_extraction_policy()
 
 app = FastAPI(title="RecurreTuMulta Backend", version="0.1.0")
+
+
+@app.middleware("http")
+async def enforce_document_input_policy(request: Request, call_next):
+    """Bloquea en runtime entradas documentales incompatibles con el entorno."""
+
+    block = document_input_policy_block(
+        method=request.method,
+        path=request.url.path,
+    )
+    if block is not None:
+        return JSONResponse(
+            status_code=block.status_code,
+            content={"detail": block.detail},
+        )
+    return await call_next(request)
+
 
 allowed = os.getenv("ALLOWED_ORIGINS", "").strip()
 origins = [o.strip() for o in allowed.split(",") if o.strip()] if allowed else ["*"]
