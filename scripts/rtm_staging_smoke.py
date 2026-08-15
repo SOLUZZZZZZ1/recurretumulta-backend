@@ -28,10 +28,10 @@ if str(_REPOSITORY_ROOT) not in sys.path:
 
 from fastapi import HTTPException
 
-from rtm_core.staging_validation import (
-    LIVE_CONFIRMATION,
-    run_synthetic_staging_suite,
-    staging_scenarios,
+from rtm_core.staging_validation import LIVE_CONFIRMATION
+from rtm_core.staging_validation_semantics import (
+    run_semantic_synthetic_staging_suite,
+    semantic_staging_scenarios,
 )
 
 
@@ -75,14 +75,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                     "fixture": item.fixture_filename,
                     "expected_family": item.expected_family,
                 }
-                for item in staging_scenarios(selected)
+                for item in semantic_staging_scenarios(selected)
             ],
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
     try:
-        report = run_synthetic_staging_suite(
+        report = run_semantic_synthetic_staging_suite(
             selected_services=selected,
             require_live_guard=True,
         )
