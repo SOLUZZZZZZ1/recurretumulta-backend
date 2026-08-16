@@ -63,7 +63,7 @@ def _facts(service: str, values: dict[str, object]) -> ValidatedFacts:
 class CrossServiceFamilyAndDirectionTest(unittest.TestCase):
     def test_versions_are_explicit(self):
         self.assertEqual(DOMAIN_CATALOG_VERSION, "rtm_domain_catalog_v1_0")
-        self.assertEqual(FAMILY_DISPATCH_VERSION, "rtm_family_dispatch_v1_0")
+        self.assertEqual(FAMILY_DISPATCH_VERSION, "rtm_family_dispatch_v1_1")
         self.assertEqual(
             FIRST_DIRECTION_VERSION,
             "rtm_first_direction_projection_v1_0",
