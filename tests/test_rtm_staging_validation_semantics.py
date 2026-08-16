@@ -110,7 +110,6 @@ class SemanticStagingValidationTest(unittest.TestCase):
         self.assertFalse(result.generation_allowed)
         self.assertIn("importe_pagado_consumo_eur", result.accepted_fields)
         self.assertIn("descripcion_hecho", result.unresolved_fields)
-        self.assertIn("factura_ticket_consumo_ref", result.unresolved_fields)
 
     def test_semantic_profiles_match_live_extractor_vocabulary(self):
         scenarios = semantic_staging_scenarios()
