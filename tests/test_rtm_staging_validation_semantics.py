@@ -108,16 +108,38 @@ class SemanticStagingValidationTest(unittest.TestCase):
         self.assertFalse(result.generation_allowed)
         self.assertIn("descripcion_hecho", result.unresolved_fields)
 
-    def test_only_claims_contract_is_replaced(self):
+    def test_semantic_profiles_match_live_extractor_vocabulary(self):
         scenarios = semantic_staging_scenarios()
         claims = next(item for item in scenarios if item.service == "claims")
         debt = next(item for item in scenarios if item.service == "debt")
+        administration = next(
+            item for item in scenarios if item.service == "administration"
+        )
 
         self.assertFalse(claims.required_fields)
-        self.assertIn(("proveedor", "empresa_consumo"), claims.required_any_groups)
+        self.assertIn(
+            ("proveedor", "empresa_consumo"),
+            claims.required_any_groups,
+        )
+
+        self.assertEqual(debt.required_fields, ("factura_numero",))
+        self.assertIn(
+            ("descripcion_hecho", "concepto_deuda"),
+            debt.required_any_groups,
+        )
+        self.assertIn(
+            ("importe_deuda_eur", "saldo_pendiente_eur"),
+            debt.required_any_groups,
+        )
+        self.assertIn(("fecha_vencimiento",), debt.required_any_groups)
+
         self.assertEqual(
-            debt.required_fields,
-            ("descripcion_hecho", "factura_numero"),
+            administration.required_fields,
+            ("descripcion_hecho", "expediente_ref"),
+        )
+        self.assertEqual(
+            administration.required_any_groups,
+            (("importe_exigido_eur", "principal_eur"),),
         )
 
 
