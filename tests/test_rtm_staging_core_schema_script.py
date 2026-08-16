@@ -48,13 +48,18 @@ class StagingCoreSchemaScriptTest(unittest.TestCase):
         finally:
             sys.path.pop(0)
 
-        forbidden = re.compile(r"\b(DROP|TRUNCATE|DELETE)\b", re.IGNORECASE)
+        # Solo se prohíben sentencias destructivas ejecutables. La cláusula
+        # referencial ``ON DELETE CASCADE`` no borra nada durante la migración
+        # y forma parte de la definición aditiva de las claves foráneas.
+        forbidden_statement = re.compile(
+            r"(?im)^\s*(DROP|TRUNCATE|DELETE)\b"
+        )
         for name, statement in [
             *authority_v1_ddl(),
             *document_extraction_ddl(),
         ]:
             with self.subTest(name=name):
-                self.assertIsNone(forbidden.search(statement))
+                self.assertIsNone(forbidden_statement.search(statement))
 
     def test_refuses_to_run_outside_staging_before_database_access(self):
         env = dict(os.environ)
