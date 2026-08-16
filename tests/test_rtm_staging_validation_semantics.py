@@ -59,14 +59,9 @@ class _ClaimsExtensionVocabularyProvider:
                 "Fecha de baja efectiva: 30/06/2026",
             ),
             self._observation(
-                "cobro_posterior_baja_consumo_eur",
+                "importe_pagado_consumo_eur",
                 "79,90 EUR",
-                "Cobro posterior a la baja: 79,90 EUR",
-            ),
-            self._observation(
-                "factura_ticket_consumo_ref",
-                "F-TEL-0726",
-                "Factura F-TEL-0726",
+                "Importe pagado tras la baja: 79,90 EUR",
             ),
             self._observation(
                 "solucion_solicitada_consumo",
@@ -77,7 +72,10 @@ class _ClaimsExtensionVocabularyProvider:
         return (
             ProviderDocumentResult(
                 observations=observations,
-                unresolved_fields=["descripcion_hecho"],
+                unresolved_fields=[
+                    "descripcion_hecho",
+                    "factura_ticket_consumo_ref",
+                ],
                 quality_flags=[],
                 document_notes=[],
             ),
@@ -93,6 +91,10 @@ class SemanticStagingValidationTest(unittest.TestCase):
             selected_services=["claims"],
         )
 
+        self.assertEqual(
+            SEMANTIC_STAGING_VALIDATION_VERSION,
+            "rtm_synthetic_staging_validation_v1_3",
+        )
         self.assertEqual(report.version, SEMANTIC_STAGING_VALIDATION_VERSION)
         self.assertTrue(report.passed, report.model_dump(mode="json"))
         self.assertEqual(len(report.scenarios), 1)
@@ -106,7 +108,9 @@ class SemanticStagingValidationTest(unittest.TestCase):
         self.assertEqual(result.direction_source, "core_projection")
         self.assertEqual(result.direction_maturity, "orientation_only")
         self.assertFalse(result.generation_allowed)
+        self.assertIn("importe_pagado_consumo_eur", result.accepted_fields)
         self.assertIn("descripcion_hecho", result.unresolved_fields)
+        self.assertIn("factura_ticket_consumo_ref", result.unresolved_fields)
 
     def test_semantic_profiles_match_live_extractor_vocabulary(self):
         scenarios = semantic_staging_scenarios()
@@ -120,6 +124,12 @@ class SemanticStagingValidationTest(unittest.TestCase):
         self.assertIn(
             ("proveedor", "empresa_consumo"),
             claims.required_any_groups,
+        )
+        self.assertTrue(
+            any(
+                "importe_pagado_consumo_eur" in group
+                for group in claims.required_any_groups
+            )
         )
 
         self.assertEqual(debt.required_fields, ("factura_numero",))
