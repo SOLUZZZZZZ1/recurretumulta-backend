@@ -33,9 +33,9 @@ from rtm_core.staging_validation import (
 
 
 SEMANTIC_STAGING_VALIDATION_VERSION = (
-    "rtm_synthetic_staging_validation_v1_2"
+    "rtm_synthetic_staging_validation_v1_3"
 )
-SEMANTIC_PROFILE_VERSION = "rtm_staging_semantic_profile_v1_1"
+SEMANTIC_PROFILE_VERSION = "rtm_staging_semantic_profile_v1_2"
 
 
 _DEBT_REQUIRED_GROUPS: tuple[tuple[str, ...], ...] = (
@@ -67,6 +67,7 @@ _CLAIMS_TELECOMMUNICATIONS_REQUIRED_GROUPS: tuple[
     (
         "importe_reclamado_eur",
         "importe_pagado_eur",
+        "importe_pagado_consumo_eur",
         "factura_numero",
         "cobro_posterior_baja_consumo_eur",
         "factura_ticket_consumo_ref",
@@ -133,7 +134,7 @@ def run_semantic_synthetic_staging_suite(
     require_live_guard: bool = False,
     root: Optional[Path] = None,
 ) -> SyntheticStagingReport:
-    """Ejecuta el smoke semántico v1.2 con reintentos acotados para 429."""
+    """Ejecuta el smoke semántico v1.3 con reintentos acotados para 429."""
 
     selected_provider = (
         provider or RetryingOpenAIResponsesDocumentProvider()
