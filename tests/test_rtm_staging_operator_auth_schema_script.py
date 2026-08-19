@@ -128,6 +128,15 @@ class StagingOperatorAuthSchemaScriptTest(unittest.TestCase):
         self.assertIn("token_sha256", source)
         self.assertNotIn("raw_token TEXT", source)
 
+    def test_nullable_session_uuid_parameters_are_explicitly_typed(self):
+        source = (
+            REPOSITORY_ROOT / "rtm_core" / "operator_auth_repository.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("CAST(:device_id AS UUID)", source)
+        self.assertIn("CAST(:login_access_event_id AS UUID)", source)
+        self.assertNotIn("CASE WHEN :device_id IS NULL", source)
+        self.assertNotIn("CASE WHEN :login_access_event_id IS NULL", source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,7 +15,7 @@ from sqlalchemy import text
 from rtm_core.operator_auth_crypto import hash_session_token
 
 
-OPERATOR_AUTH_REPOSITORY_VERSION = "rtm_operator_auth_repository_v1_0"
+OPERATOR_AUTH_REPOSITORY_VERSION = "rtm_operator_auth_repository_v1_1"
 DEFAULT_LOCK_THRESHOLD = 5
 DEFAULT_LOCK_MINUTES = 15
 DEFAULT_SESSION_HOURS = 8
@@ -149,10 +149,8 @@ def create_operator_session(
                 CAST(:operator_id AS UUID), :token_sha256, 'active', :now, :now,
                 :expires_at, :absolute_expires_at, :auth_epoch,
                 :ip_address, :user_agent, CAST(:metadata AS JSONB),
-                CASE WHEN :device_id IS NULL THEN NULL
-                     ELSE CAST(:device_id AS UUID) END,
-                CASE WHEN :login_access_event_id IS NULL THEN NULL
-                     ELSE CAST(:login_access_event_id AS UUID) END,
+                CAST(:device_id AS UUID),
+                CAST(:login_access_event_id AS UUID),
                 :ip_source, :ip_trusted, :country_code, :region, :city,
                 :timezone_name, CAST(:risk_flags AS JSONB), :now, :now
             )
