@@ -48,6 +48,9 @@ from rtm_core.document_extraction_migration import (
 from rtm_core.operator_auth_router import (
     router as rtm_operator_auth_router,
 )
+from rtm_core.operator_admin_router import (
+    router as rtm_operator_admin_router,
+)
 
 
 # ✅ AÑADIDO: OPS (operador)
@@ -126,6 +129,7 @@ app.include_router(rtm_core_generation_router)
 app.include_router(rtm_core_migration_router)
 app.include_router(rtm_core_document_extraction_migration_router)
 app.include_router(rtm_operator_auth_router)
+app.include_router(rtm_operator_admin_router)
 
 
 # ✅ NUEVO: router de operador (/ops/*)
