@@ -1,0 +1,87 @@
+{
+  "architecture_version": "rtm_connect_architecture_v1_0",
+  "c0_version": "rtm_connect_c0_v1_0",
+  "authority_rule": "CORE authorizes; CONNECT executes; evidence confirms; only then CORE may change legal state",
+  "runtime_published": false,
+  "database_schema_created": false,
+  "external_effects_enabled": false,
+  "components": [
+    "capability_catalog",
+    "action_ledger",
+    "authorization_registry",
+    "attempt_ledger",
+    "connector_registry",
+    "idempotency_guard",
+    "webhook_inbox",
+    "evidence_store",
+    "reconciliation_engine",
+    "manual_handoff",
+    "dead_letter_queue",
+    "attention_bridge",
+    "operator_assignment_bridge",
+    "secret_resolver",
+    "observability"
+  ],
+  "connector_modes": [
+    "api",
+    "webhook",
+    "polling",
+    "batch",
+    "assisted",
+    "manual"
+  ],
+  "states": [
+    "draft",
+    "authorized",
+    "queued",
+    "executing",
+    "external_accepted",
+    "evidence_pending",
+    "confirmed",
+    "retryable_failed",
+    "unknown",
+    "reconciling",
+    "manual_review",
+    "permanent_failed",
+    "cancelled"
+  ],
+  "evidence_levels": [
+    "E0_none",
+    "E1_request_recorded",
+    "E2_external_reference",
+    "E3_receipt_captured",
+    "E4_receipt_verified"
+  ],
+  "risk_classes": [
+    "R0_observation",
+    "R1_low_reversible",
+    "R2_business_effect",
+    "R3_legal_or_financial",
+    "R4_critical_regulated"
+  ],
+  "invariants": [
+    "connect_never_decides_legal_strategy",
+    "authorization_is_frozen_before_execution",
+    "payload_hash_must_match_authorization",
+    "idempotency_precedes_any_external_call",
+    "unknown_is_never_blindly_retried",
+    "confirmation_requires_evidence_by_risk",
+    "r4_requires_dual_control",
+    "secrets_are_referenced_not_embedded",
+    "all_attempts_and_transitions_are_audited",
+    "staging_executes_no_real_external_effect",
+    "manual_and_assisted_connectors_share_the_same_contract",
+    "core_changes_legal_state_only_after_confirmed_result"
+  ],
+  "first_implementation_order": [
+    "C0_architecture_freeze",
+    "C1_kernel_and_schema",
+    "C2_synthetic_echo",
+    "C3_manual_handoff",
+    "C4_webhooks_unknown_reconciliation",
+    "C5_supervisor_panel",
+    "C6_first_provider_sandbox",
+    "C7_assisted_legal_connector",
+    "C8_controlled_production"
+  ]
+}
