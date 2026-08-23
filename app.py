@@ -54,6 +54,10 @@ from rtm_core.operator_admin_router import (
 from rtm_core.operator_lifecycle_router import (
     router as rtm_operator_lifecycle_router,
 )
+from rtm_connect.supervisor_router import (
+    connect_supervisor_gate_middleware,
+    router as connect_supervisor_router,
+)
 
 
 # ✅ AÑADIDO: OPS (operador)
@@ -98,6 +102,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# El gate C5 se registra despues de CORS para quedar como capa exterior y
+# ocultar tambien OPTIONS/metodos invalidos cuando el panel esta cerrado.
+app.middleware("http")(connect_supervisor_gate_middleware)
+
 # El cortafuegos y las rutas seguras CORE se registran antes de los routers legacy.
 app.include_router(rtm_core_legacy_guard_router)
 app.include_router(rtm_core_intake_router)
@@ -134,6 +142,7 @@ app.include_router(rtm_core_document_extraction_migration_router)
 app.include_router(rtm_operator_auth_router)
 app.include_router(rtm_operator_admin_router)
 app.include_router(rtm_operator_lifecycle_router)
+app.include_router(connect_supervisor_router)
 
 
 # ✅ NUEVO: router de operador (/ops/*)
