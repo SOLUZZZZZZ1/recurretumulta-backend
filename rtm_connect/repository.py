@@ -302,7 +302,9 @@ def register_synthetic_connector(
         text(
             """
             SELECT id, code, version, mode, status, synthetic_only,
-                   capabilities, risk_ceiling, supports_reconciliation
+                   environment, capabilities, risk_ceiling,
+                   supports_idempotency, supports_reconciliation,
+                   credential_ref, configuration
             FROM rtm_connect_connectors
             WHERE code=:code AND version=:version
             """
@@ -310,12 +312,17 @@ def register_synthetic_connector(
         {"code": normalized_code, "version": normalized_version},
     ).mappings().one()
     if (
-        not bool(existing["synthetic_only"])
+        str(existing["status"]) != "active"
+        or str(existing["environment"]) != "staging"
+        or not bool(existing["synthetic_only"])
         or str(existing["mode"]) != mode.value
         or set(existing["capabilities"] or []) != set(clean_capabilities)
         or str(existing["risk_ceiling"]) != risk_ceiling.value
+        or not bool(existing["supports_idempotency"])
         or bool(existing["supports_reconciliation"])
         != bool(supports_reconciliation)
+        or existing["credential_ref"] is not None
+        or dict(existing["configuration"] or {}) != config
     ):
         raise ConnectorNotEligible(
             "La versión existente del conector no coincide con el contrato"
@@ -883,19 +890,33 @@ def _load_authorization(conn, action_id: str) -> AuthorizationGrant:
     )
 
 
-def _load_latest_evidence(conn, action_id: str) -> tuple[str, str | None, EvidenceRecord]:
+def _load_evidence(
+    conn,
+    action_id: str,
+    *,
+    evidence_id: str | None = None,
+) -> tuple[str, str | None, EvidenceRecord]:
+    selector = (
+        "AND id=CAST(:evidence_id AS UUID)"
+        if evidence_id is not None else ""
+    )
     row = conn.execute(
         text(
-            """
+            f"""
             SELECT * FROM rtm_connect_evidence
             WHERE action_id=CAST(:action_id AS UUID)
+              {selector}
             ORDER BY sequence_number DESC
             LIMIT 1
             """
         ),
-        {"action_id": action_id},
+        {"action_id": action_id, "evidence_id": evidence_id},
     ).mappings().first()
     if not row:
+        if evidence_id is not None:
+            raise EvidenceGateError(
+                "La evidencia indicada no pertenece a la acción"
+            )
         raise EvidenceGateError("La acción no tiene evidencia")
     evidence = EvidenceRecord(
         level=EvidenceLevel(str(row["evidence_level"])),
@@ -914,10 +935,15 @@ def confirm_action(
     *,
     action_id: str,
     operator_id: str | None = None,
+    evidence_id: str | None = None,
 ) -> bool:
     action = _load_action_contract(conn, action_id)
     grant = _load_authorization(conn, action_id)
-    evidence_id, attempt_id, evidence = _load_latest_evidence(conn, action_id)
+    selected_evidence_id, attempt_id, evidence = _load_evidence(
+        conn,
+        action_id,
+        evidence_id=evidence_id,
+    )
     gate = confirmation_gate(action, grant, evidence)
     if not gate.allowed:
         raise EvidenceGateError(gate.reason)
@@ -929,7 +955,10 @@ def confirm_action(
         operator_id=operator_id,
         attempt_id=attempt_id,
         reason_code="evidence_confirmed",
-        metadata={"evidence_id": evidence_id, "minimum": gate.minimum_required.value},
+        metadata={
+            "evidence_id": selected_evidence_id,
+            "minimum": gate.minimum_required.value,
+        },
     )
     if attempt_id:
         conn.execute(
@@ -937,6 +966,7 @@ def confirm_action(
                 """
                 UPDATE rtm_connect_attempts
                 SET status='succeeded', finished_at=COALESCE(finished_at, NOW()),
+                    retryable=FALSE, reconciliation_required=FALSE,
                     updated_at=NOW()
                 WHERE id=CAST(:attempt_id AS UUID)
                 """
@@ -946,14 +976,248 @@ def confirm_action(
     return changed
 
 
-def begin_reconciliation(conn, *, action_id: str) -> bool:
+def begin_reconciliation(
+    conn,
+    *,
+    action_id: str,
+    attempt_id: str | None = None,
+    request_id: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> bool:
+    if attempt_id is not None:
+        attempt = conn.execute(
+            text(
+                """
+                SELECT x.action_id, x.status AS attempt_status,
+                       x.reconciliation_required, x.request_sha256,
+                       x.external_reference,
+                       c.supports_reconciliation,
+                       a.status AS action_status,
+                       a.payload_sha256 AS action_request_sha256,
+                       a.external_reference AS action_external_reference
+                FROM rtm_connect_attempts x
+                JOIN rtm_connect_connectors c ON c.id=x.connector_id
+                JOIN rtm_connect_actions a ON a.id=x.action_id
+                WHERE x.id=CAST(:attempt_id AS UUID)
+                FOR UPDATE OF x, a
+                """
+            ),
+            {"attempt_id": attempt_id},
+        ).mappings().first()
+        if not attempt:
+            raise LookupError("Intento RTM CONNECT no encontrado")
+        if str(attempt["action_id"]) != str(action_id):
+            raise ConnectKernelError(
+                "El intento no pertenece a la acción reconciliada"
+            )
+        if not bool(attempt["reconciliation_required"]):
+            raise ConnectKernelError(
+                "El intento no requiere reconciliación"
+            )
+        if not bool(attempt["supports_reconciliation"]):
+            raise ConnectorNotEligible(
+                "El conector de origen no admite reconciliación"
+            )
+        if str(attempt["attempt_status"]) != "unknown":
+            raise ConnectKernelError(
+                "Solo un intento unknown puede reconciliarse"
+            )
+        if str(attempt["action_status"]) != ActionStatus.UNKNOWN.value:
+            raise ConnectKernelError(
+                "Solo una acción unknown puede iniciar reconciliación"
+            )
+        if (
+            str(attempt["request_sha256"])
+            != str(attempt["action_request_sha256"])
+            or str(attempt["external_reference"])
+            != str(attempt["action_external_reference"])
+        ):
+            raise ConnectKernelError(
+                "El intento unknown no coincide con el alcance de la acción"
+            )
     return _transition_action(
         conn,
         action_id=action_id,
         target=ActionStatus.RECONCILING,
         actor_type="reconciliation",
+        attempt_id=attempt_id,
         reason_code="reconciliation_started",
+        request_id=request_id,
+        metadata=metadata,
     )
+
+
+def record_reconciliation_outcome(
+    conn,
+    *,
+    action_id: str,
+    attempt_id: str,
+    target_status: ActionStatus,
+    evidence_id: str | None = None,
+    operator_id: str | None = None,
+    reason_code: str = "reconciliation_resolved",
+    request_id: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> bool:
+    """Cierra una observación sin crear ni reutilizar un intento externo.
+
+    ``confirmed`` conserva la compuerta de evidencia de CORE y exige la
+    evidencia exacta indicada. El resto de resultados solo clasifica lo ya
+    observado; UNKNOWN mantiene obligatoria la reconciliación.
+    """
+
+    admitted = {
+        ActionStatus.CONFIRMED,
+        ActionStatus.RETRYABLE_FAILED,
+        ActionStatus.UNKNOWN,
+        ActionStatus.MANUAL_REVIEW,
+        ActionStatus.PERMANENT_FAILED,
+    }
+    if target_status not in admitted:
+        raise ValueError("Resultado de reconciliación no admitido")
+    attempt = conn.execute(
+        text(
+            """
+            SELECT x.id, x.action_id, x.status AS attempt_status,
+                   x.reconciliation_required, x.request_sha256,
+                   x.external_reference,
+                   c.supports_reconciliation,
+                   a.status AS action_status,
+                   a.payload_sha256 AS action_request_sha256,
+                   a.external_reference AS action_external_reference
+            FROM rtm_connect_attempts x
+            JOIN rtm_connect_connectors c ON c.id=x.connector_id
+            JOIN rtm_connect_actions a ON a.id=x.action_id
+            WHERE x.id=CAST(:attempt_id AS UUID)
+            FOR UPDATE OF x, a
+            """
+        ),
+        {"attempt_id": attempt_id},
+    ).mappings().first()
+    if not attempt:
+        raise LookupError("Intento RTM CONNECT no encontrado")
+    if str(attempt["action_id"]) != str(action_id):
+        raise ConnectKernelError(
+            "El intento no pertenece a la acción reconciliada"
+        )
+    if str(attempt["action_status"]) != ActionStatus.RECONCILING.value:
+        raise ConnectKernelError(
+            "La acción debe estar reconciling antes de clasificarla"
+        )
+    if str(attempt["attempt_status"]) != "unknown":
+        raise ConnectKernelError(
+            "La reconciliación solo clasifica un intento unknown"
+        )
+    if not bool(attempt["reconciliation_required"]):
+        raise ConnectKernelError(
+            "El intento no conserva reconciliación pendiente"
+        )
+    if not bool(attempt["supports_reconciliation"]):
+        raise ConnectorNotEligible(
+            "El conector de origen no admite reconciliación"
+        )
+    if (
+        str(attempt["request_sha256"])
+        != str(attempt["action_request_sha256"])
+        or str(attempt["external_reference"])
+        != str(attempt["action_external_reference"])
+    ):
+        raise ConnectKernelError(
+            "El intento reconciliado no coincide con la acción"
+        )
+
+    clean_metadata = dict(metadata or {})
+    if evidence_id is not None:
+        evidence_row = conn.execute(
+            text(
+                """
+                SELECT attempt_id, evidence_level, request_sha256,
+                       external_reference
+                FROM rtm_connect_evidence
+                WHERE id=CAST(:evidence_id AS UUID)
+                  AND action_id=CAST(:action_id AS UUID)
+                """
+            ),
+            {"evidence_id": evidence_id, "action_id": action_id},
+        ).mappings().first()
+        if (
+            not evidence_row
+            or str(evidence_row["attempt_id"]) != str(attempt_id)
+        ):
+            raise EvidenceGateError(
+                "La evidencia de reconciliación no pertenece al intento"
+            )
+        if (
+            str(evidence_row["evidence_level"])
+            != EvidenceLevel.E4_RECEIPT_VERIFIED.value
+            or str(evidence_row["request_sha256"])
+            != str(attempt["request_sha256"])
+            or str(evidence_row["external_reference"])
+            != str(attempt["external_reference"])
+        ):
+            raise EvidenceGateError(
+                "La evidencia E4 no coincide con el alcance reconciliado"
+            )
+
+    if target_status is ActionStatus.CONFIRMED:
+        if evidence_id is None:
+            raise EvidenceGateError(
+                "confirmed exige la evidencia exacta de reconciliación"
+            )
+        changed = confirm_action(
+            conn,
+            action_id=action_id,
+            operator_id=operator_id,
+            evidence_id=evidence_id,
+        )
+    else:
+        if evidence_id is not None:
+            raise EvidenceGateError(
+                "Solo confirmed admite evidencia resolutoria en C4"
+            )
+        changed = _transition_action(
+            conn,
+            action_id=action_id,
+            target=target_status,
+            actor_type="reconciliation",
+            operator_id=operator_id,
+            attempt_id=attempt_id,
+            reason_code=str(reason_code or "reconciliation_resolved"),
+            request_id=request_id,
+            metadata=clean_metadata,
+        )
+
+    attempt_status = {
+        ActionStatus.CONFIRMED: "succeeded",
+        ActionStatus.RETRYABLE_FAILED: "failed",
+        ActionStatus.UNKNOWN: "unknown",
+        ActionStatus.MANUAL_REVIEW: "failed",
+        ActionStatus.PERMANENT_FAILED: "failed",
+    }[target_status]
+    conn.execute(
+        text(
+            """
+            UPDATE rtm_connect_attempts
+            SET status=:status,
+                retryable=:retryable,
+                reconciliation_required=:reconciliation_required,
+                result_metadata=(
+                    COALESCE(result_metadata, '{}'::jsonb)
+                    || CAST(:metadata AS JSONB)
+                ),
+                updated_at=NOW()
+            WHERE id=CAST(:attempt_id AS UUID)
+            """
+        ),
+        {
+            "attempt_id": attempt_id,
+            "status": attempt_status,
+            "retryable": target_status is ActionStatus.RETRYABLE_FAILED,
+            "reconciliation_required": target_status is ActionStatus.UNKNOWN,
+            "metadata": _json(clean_metadata),
+        },
+    )
+    return changed
 
 
 def action_snapshot(conn, *, action_id: str) -> dict[str, Any]:
@@ -998,6 +1262,7 @@ __all__ = [
     "create_action",
     "queue_action",
     "record_attempt_outcome",
+    "record_reconciliation_outcome",
     "record_evidence",
     "register_synthetic_connector",
     "start_attempt",

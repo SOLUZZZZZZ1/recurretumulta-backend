@@ -1,4 +1,4 @@
-"""Conectores internos disponibles en RTM CONNECT C2."""
+"""Conectores internos sintéticos disponibles en RTM CONNECT."""
 
 from rtm_connect.connectors.base import (
     ConnectorAdapter,
@@ -12,6 +12,16 @@ from rtm_connect.connectors.synthetic_echo import (
     SyntheticEchoContractError,
     SyntheticEchoScenario,
 )
+from rtm_connect.connectors.synthetic_webhook import (
+    SYNTHETIC_WEBHOOK_CAPABILITY,
+    SYNTHETIC_WEBHOOK_CODE,
+    SYNTHETIC_WEBHOOK_CONNECTOR_VERSION,
+    SyntheticWebhookConnector,
+    SyntheticWebhookContractError,
+    SyntheticWebhookDelivery,
+    SyntheticWebhookIntegrityError,
+    SyntheticWebhookOutcome,
+)
 
 
 __all__ = [
@@ -23,4 +33,12 @@ __all__ = [
     "SyntheticEchoConnector",
     "SyntheticEchoContractError",
     "SyntheticEchoScenario",
+    "SYNTHETIC_WEBHOOK_CAPABILITY",
+    "SYNTHETIC_WEBHOOK_CODE",
+    "SYNTHETIC_WEBHOOK_CONNECTOR_VERSION",
+    "SyntheticWebhookConnector",
+    "SyntheticWebhookContractError",
+    "SyntheticWebhookDelivery",
+    "SyntheticWebhookIntegrityError",
+    "SyntheticWebhookOutcome",
 ]
