@@ -700,9 +700,7 @@ def main(argv: list[str] | None = None) -> int:
                         ) VALUES (
                             CAST(:id AS UUID), :email, :display_name,
                             :password_hash, 'active', CAST(:role_id AS UUID),
-                            FALSE, FALSE,
-                            '{"synthetic":true,"environment":"staging",
-                              "purpose":"connect_c5_smoke"}'::jsonb,
+                            FALSE, FALSE, CAST(:profile AS JSONB),
                             0, 'argon2id', 1, 1, NOW(), NOW(), NOW()
                         )
                         """
@@ -713,6 +711,14 @@ def main(argv: list[str] | None = None) -> int:
                         "display_name": display_name,
                         "password_hash": hash_operator_password(password),
                         "role_id": role_id,
+                        "profile": json.dumps(
+                            {
+                                "synthetic": True,
+                                "environment": "staging",
+                                "purpose": "connect_c5_smoke",
+                            },
+                            separators=(",", ":"),
+                        ),
                     },
                 )
             report["checks"]["synthetic_operators_inserted"] = True

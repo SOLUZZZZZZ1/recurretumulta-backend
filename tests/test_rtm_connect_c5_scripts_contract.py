@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
@@ -12,6 +13,21 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = ROOT / "scripts" / "rtm_staging_connect_c5_schema.py"
 PREFLIGHT = ROOT / "scripts" / "rtm_connect_c5_preflight.py"
 SMOKE = ROOT / "scripts" / "rtm_connect_c5_smoke.py"
+REPOSITORY = ROOT / "rtm_connect" / "supervisor_repository.py"
+
+
+def _sql_text_literals(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    statements: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        if not isinstance(node.func, ast.Name) or node.func.id != "text":
+            continue
+        value = node.args[0]
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            statements.append(value.value)
+    return statements
 
 
 class ConnectC5ScriptsContractTest(unittest.TestCase):
@@ -76,6 +92,28 @@ class ConnectC5ScriptsContractTest(unittest.TestCase):
         self.assertIn("assert_connect_supervisor_database_identity", source)
         self.assertIn('"socket.create_connection"', source)
         self.assertIn('"socket.socket.connect"', source)
+
+    def test_sqlalchemy_json_booleans_are_bound_not_embedded(self):
+        preflight = PREFLIGHT.read_text(encoding="utf-8")
+        smoke = SMOKE.read_text(encoding="utf-8")
+        for source in (preflight, smoke):
+            self.assertNotIn('":true', source)
+        self.assertIn("CAST(:synthetic_profile AS JSONB)", preflight)
+        self.assertIn("CAST(:profile AS JSONB)", smoke)
+
+    def test_real_sqlalchemy_parser_has_no_true_phantom_bind(self):
+        try:
+            from sqlalchemy import text as sqlalchemy_text
+        except ModuleNotFoundError:
+            self.skipTest("SQLAlchemy no esta instalado en este runner")
+
+        checked = 0
+        for path in (PREFLIGHT, SMOKE, REPOSITORY):
+            for statement in _sql_text_literals(path):
+                bind_names = set(sqlalchemy_text(statement)._bindparams)
+                self.assertNotIn("true", bind_names, f"{path.name}: {statement}")
+                checked += 1
+        self.assertGreaterEqual(checked, 10)
 
     def test_all_scripts_reuse_full_staging_barriers(self):
         for path in (SCHEMA, PREFLIGHT, SMOKE):

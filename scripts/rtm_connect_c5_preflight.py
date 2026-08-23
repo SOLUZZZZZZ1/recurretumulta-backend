@@ -314,17 +314,32 @@ def main(argv: list[str] | None = None) -> int:
                           AND o.must_change_password=FALSE
                           AND o.mfa_required=FALSE
                           AND o.password_hash IS NOT NULL
-                          AND o.profile @> (
-                              '{"synthetic":true,"environment":"staging"}'::jsonb
+                          AND o.profile @> CAST(
+                              :synthetic_profile AS JSONB
                           )
                           AND (
                               o.locked_until IS NULL
                               OR o.locked_until <= NOW()
                           )
                           AND r.active=TRUE
-                          AND r.permissions @> '["ops.supervise"]'::jsonb
+                          AND r.permissions @> CAST(
+                              :supervisor_permissions AS JSONB
+                          )
                         """
-                    )
+                    ),
+                    {
+                        "synthetic_profile": json.dumps(
+                            {
+                                "synthetic": True,
+                                "environment": "staging",
+                            },
+                            separators=(",", ":"),
+                        ),
+                        "supervisor_permissions": json.dumps(
+                            ["ops.supervise"],
+                            separators=(",", ":"),
+                        ),
+                    },
                 ).scalar_one()
             )
             report["active_supervisors"] = active_supervisors
@@ -338,12 +353,19 @@ def main(argv: list[str] | None = None) -> int:
                         SELECT COUNT(*)
                         FROM rtm_operators
                         WHERE NOT (
-                            profile @> (
-                                '{"synthetic":true,"environment":"staging"}'::jsonb
-                            )
+                            profile @> CAST(:synthetic_profile AS JSONB)
                         )
                         """
-                    )
+                    ),
+                    {
+                        "synthetic_profile": json.dumps(
+                            {
+                                "synthetic": True,
+                                "environment": "staging",
+                            },
+                            separators=(",", ":"),
+                        )
+                    },
                 ).scalar_one()
             )
             report["non_synthetic_operators"] = non_synthetic_operators

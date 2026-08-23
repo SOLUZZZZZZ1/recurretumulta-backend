@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import sys
 import types
@@ -144,6 +145,26 @@ class ConnectC5SupervisorRepositoryContractTest(unittest.TestCase):
         self.assertTrue(conn.calls)
         for statement, _ in conn.calls:
             self.assertRegex(statement.lstrip().upper(), r"^(SELECT|WITH)\b")
+
+    def test_operator_json_predicates_are_bound_for_sqlalchemy(self):
+        conn = _RecordingConnection()
+        self.repository.current_operator_can_supervise(
+            conn,
+            "00000000-0000-0000-0000-000000000001",
+        )
+        statement, parameters = conn.calls[-1]
+        sql = _normalized(statement)
+        self.assertIn("cast(:synthetic_profile as jsonb)", sql)
+        self.assertIn("cast( :supervisor_permissions as jsonb )", sql)
+        self.assertNotIn(":true", statement)
+        self.assertEqual(
+            json.loads(str(parameters["synthetic_profile"])),
+            {"synthetic": True, "environment": "staging"},
+        )
+        self.assertEqual(
+            json.loads(str(parameters["supervisor_permissions"])),
+            ["ops.supervise"],
+        )
 
     def test_every_operational_query_enforces_connector_scope(self):
         conn = _RecordingConnection()
