@@ -1,0 +1,330 @@
+{
+  "authority": "rtm_connect_post_c8_g0_evidence",
+  "version": "rtm_connect_post_c8_g0_evidence_v1_0",
+  "phase": "post_c8_g0",
+  "not_phase": "C9",
+  "source": {
+    "commit_sha40": "a0ecdebd4575d54f7e89c69b9871a29039370d22",
+    "archive_sha256": "5832b0acd854e0dc5d864521a5a9350e44802facb74eea6d28cc15f44dbbd14f",
+    "archive_comment": "a0ecdebd4575d54f7e89c69b9871a29039370d22",
+    "archive_entries": 524,
+    "archive_files": 505,
+    "critical_snapshot_sha256": "cc819ed72839500946910b643b30a181018a9665bc1fb3c37b67228697a116a5",
+    "crc_valid": true,
+    "safe_member_names": true
+  },
+  "assessment": {
+    "contract_version": "rtm.connect.post_c8.g0.assessment.v1",
+    "source_commit_sha40": "a0ecdebd4575d54f7e89c69b9871a29039370d22",
+    "base_archive_sha256": "5832b0acd854e0dc5d864521a5a9350e44802facb74eea6d28cc15f44dbbd14f",
+    "baseline_snapshot_sha256": "cc819ed72839500946910b643b30a181018a9665bc1fb3c37b67228697a116a5",
+    "evaluated_at": "2026-08-24T17:15:00Z",
+    "findings": [
+      {
+        "domain": "security",
+        "status": "blocked",
+        "blocker_codes": [
+          "security.production_egress_default_deny_not_verified",
+          "security.production_secret_isolation_not_verified",
+          "security.runtime_db_role_separation_missing",
+          "security.postgresql_canonical_hash_recalculation_missing",
+          "security.legacy_submission_bypass_not_closed",
+          "security.runtime_capability_legacy_fail_open_not_closed",
+          "security.embedded_legal_signature_asset_custody_and_classification_not_resolved",
+          "security.supply_chain_signature_and_sbom_missing",
+          "security.global_external_effect_inventory_and_guards_incomplete",
+          "security.independent_security_approval_missing"
+        ]
+      },
+      {
+        "domain": "operations",
+        "status": "blocked",
+        "blocker_codes": [
+          "operations.production_kill_switch_claim_drain_not_exercised",
+          "operations.observability_alerting_on_call_missing",
+          "operations.restore_reconciliation_runbook_not_exercised",
+          "operations.deployment_entrypoints_and_cron_not_frozen",
+          "operations.legacy_shared_token_boundary_not_closed",
+          "operations.runtime_environment_startup_guard_not_enforced",
+          "operations.external_effect_failures_can_be_silenced",
+          "operations.service_owner_and_operations_approvals_missing",
+          "operations.approval_expiry_and_revocation_controls_missing"
+        ]
+      },
+      {
+        "domain": "privacy",
+        "status": "blocked",
+        "blocker_codes": [
+          "privacy.production_data_inventory_minimization_missing",
+          "privacy.legal_basis_processor_terms_missing",
+          "privacy.retention_redaction_dsar_controls_missing",
+          "privacy.embedded_signature_custody_authorization_missing",
+          "privacy.real_data_and_fixture_classification_missing",
+          "privacy.privacy_and_legal_compliance_approvals_missing"
+        ]
+      },
+      {
+        "domain": "provider",
+        "status": "blocked",
+        "blocker_codes": [
+          "provider.specific_pack_missing",
+          "provider.tenant_protocol_request_receipt_schemas_missing",
+          "provider.remote_idempotency_read_only_lookup_missing",
+          "provider.authentic_e4_verifier_missing",
+          "provider.legacy_submitters_not_quarantined_or_migrated",
+          "provider.endpoint_credential_origin_allowlist_missing",
+          "provider.provider_owner_approval_missing"
+        ]
+      },
+      {
+        "domain": "canary",
+        "status": "blocked",
+        "blocker_codes": [
+          "canary.real_provider_scope_tenant_selection_missing",
+          "canary.abort_thresholds_observation_window_missing",
+          "canary.manual_no_auto_expand_control_not_verified",
+          "canary.live_percentage_must_remain_zero_in_g0",
+          "canary.core_requester_independent_activator_separation_missing",
+          "canary.evidence_freshness_and_expiry_policy_missing"
+        ]
+      },
+      {
+        "domain": "rollback",
+        "status": "blocked",
+        "blocker_codes": [
+          "rollback.stop_claims_revoke_egress_secrets_not_exercised",
+          "rollback.ambiguous_to_unknown_reconciliation_not_exercised",
+          "rollback.compensation_as_new_authorized_action_not_defined",
+          "rollback.remote_effect_restore_drill_missing"
+        ]
+      }
+    ],
+    "activation_blockers": [
+      "g0.never_authorizes_production",
+      "g0.new_provider_pack_and_adr_required",
+      "g0.independent_human_decision_required",
+      "g0.approval_matrix_incomplete",
+      "g0.authority_chain_and_revocation_missing",
+      "g0.overlay_commit_and_archive_identity_not_frozen"
+    ],
+    "gate_status": "blocked",
+    "live_verdict": "no_go",
+    "next_step": "provider_specific_pack_and_new_adr_required",
+    "review_only": true,
+    "offline_only": true,
+    "read_only": true,
+    "production_authorized": false,
+    "authorization_created": false,
+    "routes_allowed": false,
+    "workers_allowed": false,
+    "provider_contact_allowed": false,
+    "network_allowed": false,
+    "secret_access_allowed": false,
+    "database_access_allowed": false,
+    "database_ddl_allowed": false,
+    "database_dml_allowed": false,
+    "real_data_allowed": false,
+    "external_effects_allowed": false,
+    "live_activation_allowed": false,
+    "production_effects_available": false,
+    "production_safe": false,
+    "approval_matrix_satisfied": false,
+    "authority_chain_satisfied": false,
+    "evidence_freshness_satisfied": false,
+    "revocation_status_verified": false,
+    "live_canary_percent": 0,
+    "c8_dry_run_is_authentic_e4": false,
+    "required_approval_roles": [
+      "security_owner",
+      "operations_owner",
+      "privacy_owner",
+      "legal_compliance_owner",
+      "provider_owner",
+      "service_owner"
+    ],
+    "required_authority_chain": [
+      "core_authorizer",
+      "requester",
+      "independent_release_activator",
+      "independent_evidence_verifier"
+    ],
+    "required_evidence_controls": [
+      "commit_and_artifact_binding",
+      "approval_timestamp",
+      "expires_at",
+      "revocation_status",
+      "evidence_freshness"
+    ],
+    "assessment_sha256": "f3e50831c3f3aa4d06382a32636a3a635524b3000f2611beeb6d7ad0f835c2a0"
+  },
+  "observed_closure_evidence": {
+    "attestation_class": "observed_unattested",
+    "source": "user_supplied_operator_transcript_not_embedded_or_hash_bound",
+    "observed_at": "2026-08-24T17:02:00+02:00",
+    "unit_tests_claimed_total": 1040,
+    "unit_tests_claimed_skipped": 8,
+    "c8_schema_claim": "reported_ready_unattested",
+    "c8_preflight_claim": "reported_safe_unattested",
+    "c8_smoke_claim": "reported_19_checks_zero_residue_unattested",
+    "render_deploy_claim": "reported_live_at_a0ecdebd4575d54f7e89c69b9871a29039370d22_unattested",
+    "render_deploy_id_claim": "dep-da65pcbbc2fs73bdblsg",
+    "health_claim": "reported_ok_unattested",
+    "health_url_claim": "https://recurretumulta-backend-1.onrender.com/health",
+    "limitation": "These operator-reported observations close inert C8 only; no signed log, report digest, deployment attestation or provider E4 is embedded."
+  },
+  "legacy_effect_inventory": [
+    {
+      "surface": "ops_automation_tick",
+      "paths": [
+        "app.py",
+        "ops_automation_router.py",
+        "ops_automation.py",
+        "dgt_client.py",
+        "cron_tick.sh"
+      ],
+      "risk": "Published external-submission path outside CONNECT authority; DGT_ENABLED treats any non-empty value, including 0, as configured.",
+      "status": "blocked"
+    },
+    {
+      "surface": "dormant_submitters",
+      "paths": [
+        "submitter_dgt.py",
+        "submitters/registro.py"
+      ],
+      "risk": "Network POST implementations exist outside the versioned CONNECT provider pack.",
+      "status": "blocked"
+    },
+    {
+      "surface": "vehicle_removal_stripe",
+      "paths": [
+        "vehicle_removal_router.py"
+      ],
+      "risk": "Mounted route can create a Stripe checkout session without an explicit runtime capability guard at the call site.",
+      "status": "blocked"
+    },
+    {
+      "surface": "operator_submit_download",
+      "paths": [
+        "ops_operator_submit_router.py"
+      ],
+      "risk": "Dormant operator route accepts force and downloads an arbitrary document URL without bounded timeout or size before selecting a submitter.",
+      "status": "blocked"
+    },
+    {
+      "surface": "top_level_dgt_test",
+      "paths": [
+        "dgt_test.py"
+      ],
+      "risk": "Executing the module performs a real top-level HTTP POST.",
+      "status": "blocked"
+    },
+    {
+      "surface": "autonomous_cron_guidance",
+      "paths": [
+        "README.md"
+      ],
+      "risk": "Repository guidance still describes unattended submission and cron operation outside the G0 authority model.",
+      "status": "blocked"
+    },
+    {
+      "surface": "smtp",
+      "paths": [
+        "cases.py",
+        "partner.py"
+      ],
+      "risk": "Email effects are not exhaustively guarded by the runtime capability contract and some failures are suppressed.",
+      "status": "blocked"
+    },
+    {
+      "surface": "legacy_runtime_compatibility",
+      "paths": [
+        "rtm_core/runtime_capabilities.py"
+      ],
+      "risk": "Capabilities may remain enabled in legacy mode when RTM_ENV is absent.",
+      "status": "blocked"
+    }
+  ],
+  "embedded_asset_inventory": [
+    {
+      "path": "templates/firma.png",
+      "sha256": "87bbe5a651ebbf708ebaf16813f840bd6a7227e0c1926b56f019d5a0b0aef37d",
+      "dimensions": "997x1180 RGBA",
+      "used_by": [
+        "partner.py",
+        "authorization_pdf.py"
+      ],
+      "classification": "potential_legal_signature_asset",
+      "required_action": "Resolve classification and custody; remove it from the code artifact or replace it with an unequivocally synthetic fixture.",
+      "status": "blocked"
+    }
+  ],
+  "scope_limitations": [
+    "hash_format_and_presence_do_not_prove_artifact_provenance_or_signature",
+    "c8_static_no_network_claim_is_not_global_network_instrumentation",
+    "fastapi_route_graph_does_not_cover_all_entrypoints_cron_or_render_config",
+    "repository_contains_networked_workflow_and_legacy_effect_surfaces",
+    "c8_dry_run_is_not_authentic_e4_provider_evidence",
+    "c0_manifest_flags_are_historical_not_effective_runtime_state",
+    "legacy_effect_inventory_is_a_frozen_minimum_not_exhaustive_discovery",
+    "delivery_zip_sha256_is_external_and_must_be_verified_before_extraction"
+  ],
+  "critical_c8_text_sha256": {
+    "app.py": "fd089d1cce4f65ebe6fb84b380dd13eba8a98ba4a16049515f4f513c27eeb7ea",
+    "docs/rtm_connect/RTM_CONNECT_C0_MANIFEST.json": "6c897149924008f277436942849139c9c0f41d1ce87474260487c7f9a64b9460",
+    "docs/rtm_connect/RTM_CONNECT_C8_CONTROLLED_PRODUCTION.md": "d8babc5656518484bfbf52276e30ebfdab52acedabe57489a1126b009cf5149f",
+    "docs/rtm_connect/adrs/0015-c8-controlled-production-admission.md": "a6e7bfa697c4f6a07b2493b8edb44684123fd3c5ca96f2e3ffeee04058fe3821",
+    "rtm_connect/manifest.py": "685c21d73620b670ac3108a84d3c73461fc34142cce717168122fd51e5cbad55",
+    "rtm_connect/state_machine.py": "addadfc273f55e486f306f926be5ef48dfff24b4701e4fa40a56c016467572ae",
+    "rtm_connect/production_contracts.py": "5b26fe972f53e2f5b60dcf73e485fb22dc78d7844d6f15a07c0d8da6b3df0e22",
+    "rtm_connect/production_policy.py": "e6d009422f3959a1186cf72e23bb9594e882c09c0b396ac1a46673a3939eb1af",
+    "rtm_connect/production_control.py": "c941a856343bf2771ca354f2527b9737eb5631f8a70e82314d53eb84c5b00a1b",
+    "rtm_connect/production_schema.py": "d3d1759c416f21bdc75a95098d00540cfc683a6bd6cc8198f17103074de8d121",
+    "scripts/rtm_connect_c8_preflight.py": "ed16c5c65a70ade8079118ad601490ddf060774971ef07c1cb7ba11e1b3390d9",
+    "scripts/rtm_connect_c8_smoke.py": "a3c40bce76c80f5085fa5f7c7d2ea3f4b8c9e3a6dc470c2122989255f86f7195",
+    "scripts/rtm_staging_connect_c8_schema.py": "c063372329789b8ddedb745e96328bb0f31913438b7219298d4906b52e269f24",
+    "tests/test_rtm_connect_c8_docs_contract.py": "aa86040c4c498aba844f9cc932aa8eb4f516cf3ea63fc0fbac556be0deee66af",
+    "tests/test_rtm_connect_c8_production_contracts.py": "1ae0a9b609d71a720093b26feea3843b740fcb1e4db04166f76da99b00cbadd9",
+    "tests/test_rtm_connect_c8_production_control.py": "241058932245543ab25bdecb7692914d444fe5bedbc162fb43570c268f4d775a",
+    "tests/test_rtm_connect_c8_production_policy.py": "b9b3b4c948fad992b26e6b9a30bcf895dccc138aca6d88f46b1dde64726ecef3",
+    "tests/test_rtm_connect_c8_production_schema_contract.py": "b126a92e315580f977d221d9107e18427bc572d683ac6236c1d10bc6fd97e743",
+    "tests/test_rtm_connect_c8_scripts_contract.py": "461a05d5ebd4523ec624b4aec7f368038438adb503e4eaf803ec537a879f2e26"
+  },
+  "legacy_effect_text_sha256": {
+    "rtm_connect/__init__.py": "fdb209b99b8d731466d467dea5b9711a792ddcb4a284343204ea2126568144ac",
+    "ops_automation.py": "7aa0dc59e7d942c0b3c53efbae570dcecb1ae554a5333e7368236b590b59c083",
+    "ops_automation_router.py": "e43ecbd6b71244fc378aa43c67253ffd3619874bc749719a65d53bd10fafa387",
+    "dgt_client.py": "c911dc71978eaa4a077d54aea0b83fb2eaf9a7acd6a4df55fcdad36d360e6d3a",
+    "submitter_dgt.py": "f41dd781d6390c8d4989cf00622ce2402995fc3f2e52a455d5eb86b069f331a3",
+    "submitters/registro.py": "aca2b5baa63a85765d421639d646d59488627e2b06a0838130fae9041ddf0697",
+    "rtm_core/runtime_capabilities.py": "efab84b8887a327e148159c2423fef92a0b867db963ed64fa186640ae84d2eb1",
+    "cron_tick.sh": "972fca0277879258a87abfaa9d321bf5710721106f532a6de2eb550334381792",
+    ".github/workflows/rtm-staging-synthetic-live.yml": "0f88688129d75ff46ce3477c164a50a4cbac3a1194444ff5ed934c4994f048f3",
+    "partner.py": "9765475b4fd76eabfd1bcb8f81220ed5a47e208d0ef5535089d3b1469d0c03f5",
+    "authorization_pdf.py": "4a40927ff42839b33864be519751c12fdd285417b3f8a72e1e9891f1951bd2b1",
+    "cases.py": "66f7ba71ed73fda74a2b0bed042e521aa68502940593fa250f78ffb39f8b30cf",
+    "vehicle_removal_router.py": "6cfa46759440c585a54c08e0300d7f0401f168d2029d32623c3e4c4e22ef138a",
+    "ops_operator_submit_router.py": "26ef85b6b97b084c6f8d1c0bc5c08034ad7c4b4ca65f2e80742e4c3e374ffae2",
+    "dgt_test.py": "4a49df7a1ff32eabe4f22f3688893e41ebca84665efa3d78b0478dd7d1c95ba5",
+    "README.md": "c8c7858d9f4815a76828e46dfc599bb1b64ca44a71cde1cb327ea3a6700b0d64"
+  },
+  "binary_sha256": {
+    "templates/firma.png": "87bbe5a651ebbf708ebaf16813f840bd6a7227e0c1926b56f019d5a0b0aef37d"
+  },
+  "overlay_identity": {
+    "base_commit_sha40": "a0ecdebd4575d54f7e89c69b9871a29039370d22",
+    "delivery_zip_sha256": null,
+    "git_commit_sha40": null,
+    "integrity_status": "external_delivery_hash_and_future_git_commit_required",
+    "paths": [
+      "rtm_connect_post_c8_g0.py",
+      "scripts/rtm_connect_post_c8_g0_preflight.py",
+      "scripts/rtm_connect_post_c8_g0_smoke.py",
+      "docs/rtm_connect/RTM_CONNECT_POST_C8_GATE_G0.md",
+      "docs/rtm_connect/RTM_CONNECT_POST_C8_G0_EVIDENCE.json",
+      "docs/rtm_connect/adrs/0016-post-c8-g0-offline-decision-gate.md",
+      "tests/test_rtm_connect_post_c8_g0_contract.py",
+      "tests/test_rtm_connect_post_c8_g0_docs_contract.py",
+      "tests/test_rtm_connect_post_c8_g0_scripts_contract.py"
+    ]
+  }
+}
