@@ -406,7 +406,7 @@ def connect_c8_production_ddl() -> list[tuple[str, str]]:
                         'live_activation_allowed',
                         'human_activation_required', 'contract_version'
                     ]
-                    AND metadata->'candidate' - ARRAY[
+                    AND (metadata->'candidate') - ARRAY[
                         'candidate_id', 'requested_by_operator_id',
                         'source_commit_sha40', 'build_artifact_sha256',
                         'connector_manifest_sha256',
@@ -479,7 +479,7 @@ def connect_c8_production_ddl() -> list[tuple[str, str]]:
                         'live_production_admitted',
                         'production_effects_available'
                     ]
-                    AND metadata->'assessment' - ARRAY[
+                    AND (metadata->'assessment') - ARRAY[
                         'candidate_sha256', 'evaluated_at', 'blocker_codes',
                         'verdict', 'simulation_admitted',
                         'live_production_admitted',
@@ -1461,7 +1461,7 @@ def connect_c8_production_ddl() -> list[tuple[str, str]]:
                                 'live_activation_allowed',
                                 'human_activation_required'
                             ]
-                            OR NEW.payload->'approval' - ARRAY[
+                            OR (NEW.payload->'approval') - ARRAY[
                                 'approval_id', 'candidate_id',
                                 'candidate_sha256',
                                 'requested_by_operator_id',
@@ -1920,7 +1920,7 @@ def connect_c8_production_ddl() -> list[tuple[str, str]]:
                         'secret_resolution_performed',
                         'blind_retry_allowed', 'contract_version'
                     ]
-                    OR NEW.metadata->'intent' - ARRAY[
+                    OR (NEW.metadata->'intent') - ARRAY[
                         'intent_id', 'candidate_id', 'action_id',
                         'authorization_id', 'candidate_sha256',
                         'request_sha256', 'idempotency_key', 'status',

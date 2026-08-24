@@ -154,6 +154,23 @@ class ConnectC8ProductionSchemaContractTest(unittest.TestCase):
         ):
             self.assertIn(required, source)
 
+    def test_nested_jsonb_key_subtraction_is_parenthesized(self):
+        source = _rendered_ddl()
+        for required in (
+            "(metadata->'candidate') - ARRAY[",
+            "(metadata->'assessment') - ARRAY[",
+            "(NEW.payload->'approval') - ARRAY[",
+            "(NEW.metadata->'intent') - ARRAY[",
+        ):
+            self.assertIn(required, source)
+        for ambiguous in (
+            "metadata->'candidate' - ARRAY[",
+            "metadata->'assessment' - ARRAY[",
+            "NEW.payload->'approval' - ARRAY[",
+            "NEW.metadata->'intent' - ARRAY[",
+        ):
+            self.assertNotIn(ambiguous, source)
+
     def test_release_state_machine_and_emergency_halt_are_guarded(self):
         source = _rendered_ddl()
         for status in PRODUCTION_RELEASE_STATUSES:
