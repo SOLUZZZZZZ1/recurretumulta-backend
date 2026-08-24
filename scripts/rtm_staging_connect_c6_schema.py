@@ -194,6 +194,28 @@ def _canonical_sql_fragment(value: str | None) -> str | None:
     )
 
 
+def _canonical_catalog_index_key(value: str, option: int) -> str:
+    """Combina pg_get_indexdef(columna) con pg_index.indoption.
+
+    PostgreSQL omite ASC/DESC y NULLS FIRST/LAST en la variante por columna
+    de pg_get_indexdef. Los bits congelados son DESC=1 y NULLS_FIRST=2.
+    """
+
+    normalized = _canonical_sql_fragment(value) or ""
+    flags = int(option)
+    if flags < 0 or flags & ~3:
+        raise RuntimeError("pg_index.indoption C1 no reconocido")
+    descending = bool(flags & 1)
+    nulls_first = bool(flags & 2)
+    if descending:
+        normalized += " desc"
+        if not nulls_first:
+            normalized += " nulls last"
+    elif nulls_first:
+        normalized += " nulls first"
+    return normalized
+
+
 def _expected_c1_function_hashes() -> dict[str, str]:
     from rtm_connect.schema import connect_c1_ddl
 
@@ -511,6 +533,11 @@ def _c1_object_integrity(conn) -> dict[str, Any]:
                            FROM generate_series(1, x.indnkeyatts) key_number
                            ORDER BY key_number
                        ) AS key_definitions,
+                       ARRAY(
+                           SELECT x.indoption[key_number - 1]::integer
+                           FROM generate_series(1, x.indnkeyatts) key_number
+                           ORDER BY key_number
+                       ) AS key_options,
                        pg_get_expr(x.indpred, x.indrelid, TRUE) AS predicate
                 FROM pg_index x
                 JOIN pg_class i ON i.oid=x.indexrelid
@@ -531,13 +558,20 @@ def _c1_object_integrity(conn) -> dict[str, Any]:
         expected_predicate,
     ) in expected_indexes.items():
         row = index_rows.get(name)
-        actual_keys = (
-            tuple(
-                _canonical_sql_fragment(value) or ""
-                for value in row["key_definitions"]
-            )
-            if row is not None else None
+        key_definitions = (
+            tuple(row["key_definitions"] or ())
+            if row is not None else ()
         )
+        key_options = (
+            tuple(row["key_options"] or ())
+            if row is not None else ()
+        )
+        actual_keys = None
+        if row is not None and len(key_definitions) == len(key_options):
+            actual_keys = tuple(
+                _canonical_catalog_index_key(value, option)
+                for value, option in zip(key_definitions, key_options)
+            )
         actual_predicate = (
             _canonical_sql_fragment(row["predicate"])
             if row is not None else None
@@ -558,6 +592,7 @@ def _c1_object_integrity(conn) -> dict[str, Any]:
             "expected_unique": unique,
             "expected_keys": expected_keys,
             "actual_keys": actual_keys,
+            "actual_key_options": key_options if row is not None else None,
             "expected_predicate": expected_predicate,
             "actual_predicate": actual_predicate,
             "valid": valid,

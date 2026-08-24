@@ -35,6 +35,8 @@ class ConnectC6ScriptsContractTest(unittest.TestCase):
             "_c1_object_integrity",
             "expected_body_sha256",
             "indisunique", "indisvalid", "indisready", "convalidated",
+            "indoption[key_number - 1]", "key_options",
+            "_canonical_catalog_index_key",
             "c3_schema_snapshot",
             "c4_schema_snapshot",
         ):

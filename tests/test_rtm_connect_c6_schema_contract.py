@@ -14,6 +14,7 @@ from scripts.rtm_staging_connect_c6_schema import (
     _expected_c1_function_hashes,
     _expected_c1_indexes,
     _expected_c1_constraints,
+    _canonical_catalog_index_key,
     _canonical_sql_fragment,
     _normalize_function_body,
 )
@@ -90,6 +91,26 @@ class ConnectC6SchemaContractTest(unittest.TestCase):
             _normalize_function_body("BEGIN  PERFORM $$A  B$$; END"),
             "begin perform $$A  B$$; end",
         )
+
+    def test_catalog_index_options_restore_order_and_null_semantics(self):
+        self.assertEqual(
+            _canonical_catalog_index_key("created_at", 0),
+            "created_at",
+        )
+        self.assertEqual(
+            _canonical_catalog_index_key("created_at", 3),
+            "created_at desc",
+        )
+        self.assertEqual(
+            _canonical_catalog_index_key("created_at", 1),
+            "created_at desc nulls last",
+        )
+        self.assertEqual(
+            _canonical_catalog_index_key("created_at", 2),
+            "created_at nulls first",
+        )
+        with self.assertRaises(RuntimeError):
+            _canonical_catalog_index_key("created_at", 4)
 
 
 if __name__ == "__main__":
