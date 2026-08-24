@@ -1556,6 +1556,10 @@ def prepare_dispatch_dry_run(
         raise ProductionDispatchReplayConflict(
             "Replay de outbox C8 con identidad o cuerpo distinto"
         )
+    if _timestamp(request.created_at) != current:
+        raise ProductionDispatchReplayConflict(
+            "La creación de una intención nueva C8 debe coincidir con now"
+        )
     _assert_dispatch_payload_size(action, candidate)
     _assert_dispatch_quota(conn, release, candidate, now=current)
     metadata = {

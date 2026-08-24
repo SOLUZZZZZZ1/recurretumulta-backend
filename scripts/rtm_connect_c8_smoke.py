@@ -641,6 +641,19 @@ def main(argv: list[str] | None = None) -> int:
                     """
                 ), {"dispatch_id": normal_id}).scalar_one()) == 1
             )
+            semantic_replay = prepare_dispatch_dry_run(
+                connection,
+                normal_action,
+                normal_grant,
+                replace(normal_request, intent_id=blocked_id),
+                normal_candidate.candidate_id,
+                now=base_time,
+                policy_values=os.environ,
+            )
+            report["checks"]["semantic_replay_reuses_dispatch"] = (
+                semantic_replay == normal_prepared
+                and semantic_replay.intent_id == normal_id
+            )
             changed_replay_blocked = False
             try:
                 prepare_dispatch_dry_run(
@@ -649,7 +662,9 @@ def main(argv: list[str] | None = None) -> int:
                     normal_grant,
                     replace(
                         normal_request,
-                        intent_id=blocked_id,
+                        created_at=_stamp(
+                            base_time + timedelta(seconds=1)
+                        ),
                     ),
                     normal_candidate.candidate_id,
                     now=base_time,
@@ -697,8 +712,30 @@ def main(argv: list[str] | None = None) -> int:
                 candidate=unknown_candidate,
                 action=unknown_action,
                 grant=unknown_grant,
-                created_at=base_time + timedelta(seconds=2),
+                created_at=base_time,
             )
+            new_intent_timestamp_mismatch_blocked = False
+            try:
+                prepare_dispatch_dry_run(
+                    connection,
+                    unknown_action,
+                    unknown_grant,
+                    replace(
+                        unknown_request,
+                        intent_id=blocked_id,
+                        created_at=_stamp(
+                            base_time + timedelta(seconds=1)
+                        ),
+                    ),
+                    unknown_candidate.candidate_id,
+                    now=base_time,
+                    policy_values=os.environ,
+                )
+            except ProductionDispatchReplayConflict:
+                new_intent_timestamp_mismatch_blocked = True
+            report["checks"][
+                "new_intent_timestamp_mismatch_blocked"
+            ] = new_intent_timestamp_mismatch_blocked
             prepare_dispatch_dry_run(
                 connection,
                 unknown_action,
@@ -769,7 +806,7 @@ def main(argv: list[str] | None = None) -> int:
                 candidate=pending_candidate,
                 action=pending_action,
                 grant=pending_grant,
-                created_at=base_time + timedelta(seconds=3),
+                created_at=base_time,
             )
             prepare_dispatch_dry_run(
                 connection,
@@ -815,7 +852,7 @@ def main(argv: list[str] | None = None) -> int:
                         candidate=pending_candidate,
                         action=pending_action,
                         grant=pending_grant,
-                        created_at=base_time + timedelta(seconds=4),
+                        created_at=base_time,
                     ),
                     pending_candidate.candidate_id,
                     now=base_time,

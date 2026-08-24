@@ -469,6 +469,13 @@ class ConnectC8ProductionControlContractTest(unittest.TestCase):
             self.assertIn(required, source)
         self.assertNotIn("attempt_id", source)
 
+    def test_new_dispatch_timestamp_is_checked_before_insert(self):
+        source = inspect.getsource(self.control.prepare_dispatch_dry_run)
+        check = "_timestamp(request.created_at) != current"
+        self.assertIn(check, source)
+        self.assertGreater(source.index(check), source.index("if existing:"))
+        self.assertLess(source.index(check), source.index("INSERT INTO"))
+
     def test_prepare_enforces_daily_and_total_quota_before_insert(self):
         source = inspect.getsource(self.control.prepare_dispatch_dry_run)
         self.assertIn("_assert_dispatch_quota", source)
