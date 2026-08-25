@@ -1,0 +1,267 @@
+{
+  "authority": "rtm_connect_post_c8_g1_evidence",
+  "version": "rtm_connect_post_c8_g1_evidence_v1_0",
+  "phase": "post_c8_g1",
+  "not_phase": "C9",
+  "source": {
+    "commit_sha40": "eedd521ecf1703c9b5e20196651da04557900e74",
+    "archive_sha256": "8d69d66573d92b675be26d391c1d03a74ff62a514bdf369dfce817db396ba3f3",
+    "archive_comment": "eedd521ecf1703c9b5e20196651da04557900e74",
+    "archive_entries": 533,
+    "archive_files": 514,
+    "critical_snapshot_sha256": "04bbab064c06e58da288e43a2918f57e37ff3eca0f00ece5b81cfdd5f0bc903d",
+    "crc_valid": true,
+    "safe_member_names": true
+  },
+  "assessment": {
+    "contract_version": "rtm.connect.post_c8.g1.provider_admission.v1",
+    "source_commit_sha40": "eedd521ecf1703c9b5e20196651da04557900e74",
+    "base_archive_sha256": "8d69d66573d92b675be26d391c1d03a74ff62a514bdf369dfce817db396ba3f3",
+    "baseline_snapshot_sha256": "04bbab064c06e58da288e43a2918f57e37ff3eca0f00ece5b81cfdd5f0bc903d",
+    "evaluated_at": "2026-08-25T05:35:21Z",
+    "candidates": [
+      {
+        "code": "legacy.dgt_client_placeholder",
+        "source_paths": [
+          "dgt_client.py",
+          "ops_automation.py",
+          "ops_automation_router.py"
+        ],
+        "blocker_codes": [
+          "dgt_client.provider_identity_and_protocol_missing",
+          "dgt_client.non_empty_dgt_enabled_is_fail_open",
+          "dgt_client.implementation_is_placeholder",
+          "dgt_client.connect_authority_chain_missing",
+          "dgt_client.idempotency_lookup_reconciliation_and_e4_missing"
+        ],
+        "status": "rejected",
+        "provider_specific": false,
+        "production_eligible": false
+      },
+      {
+        "code": "legacy.dgt_dev_xml_submitter",
+        "source_paths": [
+          "submitter_dgt.py"
+        ],
+        "blocker_codes": [
+          "dgt_xml.development_endpoint_is_not_verified_production_origin",
+          "dgt_xml.hardcoded_requester_and_placeholder_subject_data",
+          "dgt_xml.signer_supply_chain_and_secret_custody_missing",
+          "dgt_xml.connect_authority_idempotency_and_fencing_missing",
+          "dgt_xml.receipt_verification_reconciliation_and_rollback_missing"
+        ],
+        "status": "rejected",
+        "provider_specific": false,
+        "production_eligible": false
+      },
+      {
+        "code": "legacy.registro_general_generic",
+        "source_paths": [
+          "submitters/registro.py",
+          "submitters/base.py"
+        ],
+        "blocker_codes": [
+          "registro_general.provider_entity_tenant_and_origin_missing",
+          "registro_general.arbitrary_url_and_optional_bearer_token_not_admissible",
+          "registro_general.request_size_schema_and_idempotency_missing",
+          "registro_general.receipt_is_unverified_base64_not_authentic_e4",
+          "registro_general.lookup_reconciliation_fencing_and_rollback_missing"
+        ],
+        "status": "rejected",
+        "provider_specific": false,
+        "production_eligible": false
+      }
+    ],
+    "required_dossier_sections": [
+      "provider_legal_identity_and_accountable_owner",
+      "tenant_and_authorized_service_scope",
+      "https_origin_protocol_and_version",
+      "request_schema_and_canonical_hashing",
+      "receipt_schema_and_authentic_e4_verifier",
+      "remote_idempotency_fencing_and_read_only_lookup",
+      "unknown_reconciliation_and_error_taxonomy",
+      "workload_identity_secret_custody_and_egress_allowlist",
+      "data_inventory_legal_basis_retention_redaction_and_dsar",
+      "slo_alerting_on_call_kill_switch_and_claim_drain",
+      "canary_cohort_abort_thresholds_and_no_auto_expand",
+      "remote_rollback_restore_replay_and_authorized_compensation",
+      "hash_bound_approvals_expiry_revocation_and_separation_of_duties",
+      "signed_sbom_provenance_sast_sca_and_secret_scan"
+    ],
+    "gate_status": "blocked",
+    "live_verdict": "no_go",
+    "next_step": "verified_provider_dossier_and_provider_specific_g2_required",
+    "review_only": true,
+    "offline_only": true,
+    "read_only": true,
+    "base_delivery_identity_verified": true,
+    "g0_decision_preserved": true,
+    "g0_overlay_identity_frozen": true,
+    "legacy_candidates_reviewed": true,
+    "provider_dossier_required": true,
+    "provider_selected": false,
+    "provider_identity_verified": false,
+    "provider_pack_present": false,
+    "provider_pack_admissible": false,
+    "production_authorized": false,
+    "authorization_created": false,
+    "routes_allowed": false,
+    "workers_allowed": false,
+    "provider_contact_allowed": false,
+    "network_allowed": false,
+    "secret_access_allowed": false,
+    "database_access_allowed": false,
+    "database_ddl_allowed": false,
+    "database_dml_allowed": false,
+    "real_data_allowed": false,
+    "external_effects_allowed": false,
+    "live_activation_allowed": false,
+    "production_effects_available": false,
+    "production_safe": false,
+    "approval_matrix_satisfied": false,
+    "authority_chain_satisfied": false,
+    "evidence_freshness_satisfied": false,
+    "revocation_status_verified": false,
+    "authentic_e4_verifier_available": false,
+    "remote_idempotency_verified": false,
+    "read_only_lookup_verified": false,
+    "unknown_reconciliation_verified": false,
+    "remote_rollback_verified": false,
+    "legacy_candidates_are_provider_pack": false,
+    "g0_no_go_overridden": false,
+    "live_canary_percent": 0,
+    "assessment_sha256": "16e3a23fed9e9771fae4a3ce75079a8e7e3d0764aa6ee9fd03268acf3158d253"
+  },
+  "g0_identity_closure": {
+    "g0_commit_sha40": "eedd521ecf1703c9b5e20196651da04557900e74",
+    "delivery_zip_sha256": "8d69d66573d92b675be26d391c1d03a74ff62a514bdf369dfce817db396ba3f3",
+    "archive_comment_sha40": "eedd521ecf1703c9b5e20196651da04557900e74",
+    "g0_evidence_manifest_sha256": "42cfde74dc70291679fb141d13d3a1bcaa234dbd638395282b0b5a105f7fada0",
+    "delivery_sha256_verified": true,
+    "archive_comment_matches_claimed_commit": true,
+    "g0_decision_remains_blocked_no_go": true,
+    "git_commit_object_and_authorship_attested": false,
+    "supply_chain_signature_and_sbom_verified": false,
+    "status": "delivery_identity_frozen_provenance_unattested"
+  },
+  "legacy_candidate_inventory": [
+    {
+      "code": "legacy.dgt_client_placeholder",
+      "source_paths": [
+        "dgt_client.py",
+        "ops_automation.py",
+        "ops_automation_router.py"
+      ],
+      "blocker_codes": [
+        "dgt_client.provider_identity_and_protocol_missing",
+        "dgt_client.non_empty_dgt_enabled_is_fail_open",
+        "dgt_client.implementation_is_placeholder",
+        "dgt_client.connect_authority_chain_missing",
+        "dgt_client.idempotency_lookup_reconciliation_and_e4_missing"
+      ],
+      "status": "rejected",
+      "provider_specific": false,
+      "production_eligible": false
+    },
+    {
+      "code": "legacy.dgt_dev_xml_submitter",
+      "source_paths": [
+        "submitter_dgt.py"
+      ],
+      "blocker_codes": [
+        "dgt_xml.development_endpoint_is_not_verified_production_origin",
+        "dgt_xml.hardcoded_requester_and_placeholder_subject_data",
+        "dgt_xml.signer_supply_chain_and_secret_custody_missing",
+        "dgt_xml.connect_authority_idempotency_and_fencing_missing",
+        "dgt_xml.receipt_verification_reconciliation_and_rollback_missing"
+      ],
+      "status": "rejected",
+      "provider_specific": false,
+      "production_eligible": false
+    },
+    {
+      "code": "legacy.registro_general_generic",
+      "source_paths": [
+        "submitters/registro.py",
+        "submitters/base.py"
+      ],
+      "blocker_codes": [
+        "registro_general.provider_entity_tenant_and_origin_missing",
+        "registro_general.arbitrary_url_and_optional_bearer_token_not_admissible",
+        "registro_general.request_size_schema_and_idempotency_missing",
+        "registro_general.receipt_is_unverified_base64_not_authentic_e4",
+        "registro_general.lookup_reconciliation_fencing_and_rollback_missing"
+      ],
+      "status": "rejected",
+      "provider_specific": false,
+      "production_eligible": false
+    }
+  ],
+  "required_provider_dossier_sections": [
+    "provider_legal_identity_and_accountable_owner",
+    "tenant_and_authorized_service_scope",
+    "https_origin_protocol_and_version",
+    "request_schema_and_canonical_hashing",
+    "receipt_schema_and_authentic_e4_verifier",
+    "remote_idempotency_fencing_and_read_only_lookup",
+    "unknown_reconciliation_and_error_taxonomy",
+    "workload_identity_secret_custody_and_egress_allowlist",
+    "data_inventory_legal_basis_retention_redaction_and_dsar",
+    "slo_alerting_on_call_kill_switch_and_claim_drain",
+    "canary_cohort_abort_thresholds_and_no_auto_expand",
+    "remote_rollback_restore_replay_and_authorized_compensation",
+    "hash_bound_approvals_expiry_revocation_and_separation_of_duties",
+    "signed_sbom_provenance_sast_sca_and_secret_scan"
+  ],
+  "critical_base_text_sha256": {
+    "app.py": "fd089d1cce4f65ebe6fb84b380dd13eba8a98ba4a16049515f4f513c27eeb7ea",
+    "dgt_client.py": "c911dc71978eaa4a077d54aea0b83fb2eaf9a7acd6a4df55fcdad36d360e6d3a",
+    "docs/rtm_connect/RTM_CONNECT_C0_MANIFEST.json": "6c897149924008f277436942849139c9c0f41d1ce87474260487c7f9a64b9460",
+    "docs/rtm_connect/RTM_CONNECT_C8_CONTROLLED_PRODUCTION.md": "d8babc5656518484bfbf52276e30ebfdab52acedabe57489a1126b009cf5149f",
+    "docs/rtm_connect/RTM_CONNECT_POST_C8_G0_EVIDENCE.json": "42cfde74dc70291679fb141d13d3a1bcaa234dbd638395282b0b5a105f7fada0",
+    "docs/rtm_connect/RTM_CONNECT_POST_C8_GATE_G0.md": "f4713c3e3a38f9efc4e223f1f88669c7f44ee00b0dd1ca193f439c69113fa6b0",
+    "docs/rtm_connect/adrs/0015-c8-controlled-production-admission.md": "a6e7bfa697c4f6a07b2493b8edb44684123fd3c5ca96f2e3ffeee04058fe3821",
+    "docs/rtm_connect/adrs/0016-post-c8-g0-offline-decision-gate.md": "3a5ab809d94f1014c95d0724735cdec49bb0fe39330bfd574fd101e2bd3fcb11",
+    "rtm_connect/__init__.py": "fdb209b99b8d731466d467dea5b9711a792ddcb4a284343204ea2126568144ac",
+    "rtm_connect/production_contracts.py": "5b26fe972f53e2f5b60dcf73e485fb22dc78d7844d6f15a07c0d8da6b3df0e22",
+    "rtm_connect/production_control.py": "c941a856343bf2771ca354f2527b9737eb5631f8a70e82314d53eb84c5b00a1b",
+    "rtm_connect/production_policy.py": "e6d009422f3959a1186cf72e23bb9594e882c09c0b396ac1a46673a3939eb1af",
+    "rtm_connect/production_schema.py": "d3d1759c416f21bdc75a95098d00540cfc683a6bd6cc8198f17103074de8d121",
+    "rtm_connect_post_c8_g0.py": "fc50f45e21854f9e6977e554b455c3f9fff78093a0a316468c4f69b03a147fd5",
+    "scripts/rtm_connect_post_c8_g0_preflight.py": "0b713f72896f582d14a4d3f9f5eebbec93ecdddb878baf5d895eddbfc3e10ffc",
+    "scripts/rtm_connect_post_c8_g0_smoke.py": "4bcc79b6996c163d38bac51036fdf48fa78b0289794b190e9e3c047be2a740e5",
+    "submitter_dgt.py": "f41dd781d6390c8d4989cf00622ce2402995fc3f2e52a455d5eb86b069f331a3",
+    "submitters/base.py": "3f20d69fc6b0679ea4462996f1c5a01d4a98060b25962e01d613d2e9a7ec5859",
+    "submitters/registro.py": "aca2b5baa63a85765d421639d646d59488627e2b06a0838130fae9041ddf0697",
+    "tests/test_rtm_connect_post_c8_g0_contract.py": "74da1794aadd9c77e770551b3a6341b2fed877256d030e7e96a751442320d3b9",
+    "tests/test_rtm_connect_post_c8_g0_docs_contract.py": "2a8b8189a8bf8cfc4f54f7297dfc48e929dc4e231a054cdc95e5dfd8c5c10935",
+    "tests/test_rtm_connect_post_c8_g0_scripts_contract.py": "22cb92b872c37555f5b867fb1eb77725166e909b30ab3715f4af5491883347eb"
+  },
+  "scope_limitations": [
+    "archive_hash_and_comment_do_not_prove_git_commit_object_or_authorship",
+    "delivery_integrity_does_not_prove_supply_chain_signature_or_provenance",
+    "legacy_candidate_inventory_is_exact_for_g1_but_not_global_discovery",
+    "static_review_does_not_contact_or_identify_an_actual_provider",
+    "no_provider_dossier_is_present_or_admissible_in_g1",
+    "no_receipt_in_g1_is_authentic_e4_provider_evidence",
+    "g0_blocked_no_go_decision_remains_authoritative",
+    "g1_overlay_commit_and_delivery_hash_require_external_freezing"
+  ],
+  "overlay_identity": {
+    "base_commit_sha40": "eedd521ecf1703c9b5e20196651da04557900e74",
+    "delivery_zip_sha256": null,
+    "git_commit_sha40": null,
+    "integrity_status": "external_delivery_hash_and_future_git_commit_required",
+    "paths": [
+      "rtm_connect_post_c8_g1.py",
+      "scripts/rtm_connect_post_c8_g1_preflight.py",
+      "scripts/rtm_connect_post_c8_g1_smoke.py",
+      "docs/rtm_connect/RTM_CONNECT_POST_C8_GATE_G1.md",
+      "docs/rtm_connect/RTM_CONNECT_POST_C8_G1_EVIDENCE.json",
+      "docs/rtm_connect/adrs/0017-post-c8-g1-provider-admission.md",
+      "tests/test_rtm_connect_post_c8_g1_contract.py",
+      "tests/test_rtm_connect_post_c8_g1_docs_contract.py",
+      "tests/test_rtm_connect_post_c8_g1_scripts_contract.py"
+    ]
+  }
+}
