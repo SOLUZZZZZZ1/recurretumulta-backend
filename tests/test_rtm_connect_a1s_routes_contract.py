@@ -146,6 +146,31 @@ class ConnectA1SRoutesContractTest(unittest.TestCase):
         self.assertIn("repository.HumanFilingScopeError", service)
         self.assertIn('"read_only": True', service)
 
+    def test_repository_jsonb_predicates_use_explicit_bind_parameters(self):
+        repository = REPOSITORY.read_text(encoding="utf-8")
+        self.assertNotIn(":true", repository)
+        self.assertNotIn("@> '{", repository)
+        self.assertEqual(
+            repository.count("@> CAST(:test_mode_metadata AS JSONB)"),
+            4,
+        )
+        self.assertEqual(
+            repository.count(
+                '"test_mode_metadata": _json({"test_mode": True})'
+            ),
+            4,
+        )
+        self.assertEqual(
+            repository.count("@> CAST(:synthetic_metadata AS JSONB)"),
+            1,
+        )
+        self.assertEqual(
+            repository.count(
+                '"synthetic_metadata": _json({"synthetic_only": True})'
+            ),
+            1,
+        )
+
     def test_session_can_discover_only_its_own_active_a1s_tenants(self):
         repository = REPOSITORY.read_text(encoding="utf-8")
         router = ROUTER.read_text(encoding="utf-8")

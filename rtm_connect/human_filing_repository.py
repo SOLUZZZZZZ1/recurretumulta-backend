@@ -478,7 +478,7 @@ def assert_frozen_case_document_hashes(
               AND b.tenant_id=CAST(:tenant_id AS UUID)
               AND b.status='active' AND b.synthetic_only=TRUE
               AND b.revoked_at IS NULL
-              AND b.metadata @> '{"test_mode":true}'::jsonb
+              AND b.metadata @> CAST(:test_mode_metadata AS JSONB)
               AND COALESCE(c.test_mode,FALSE)=TRUE
               AND d.sha256 IS NOT NULL
             """
@@ -486,6 +486,7 @@ def assert_frozen_case_document_hashes(
             "binding_id": case_binding_id,
             "tenant_id": tenant_id,
             "document_hashes": _json(list(normalized)),
+            "test_mode_metadata": _json({"test_mode": True}),
         }).scalars().all()
     }
     if found != set(normalized):
@@ -636,7 +637,7 @@ def list_preparation_candidates(
         WHERE b.tenant_id=CAST(:tenant_id AS UUID)
           AND b.status='active' AND b.synthetic_only=TRUE
           AND b.revoked_at IS NULL
-          AND b.metadata @> '{"test_mode":true}'::jsonb
+          AND b.metadata @> CAST(:test_mode_metadata AS JSONB)
           AND COALESCE(c.test_mode,FALSE)=TRUE
           AND r.status='active' AND r.synthetic_only=TRUE
           AND r.revoked_at IS NULL
@@ -661,6 +662,7 @@ def list_preparation_candidates(
         "tenant_id": tenant_id,
         "operator_id": requested_by_operator_id,
         "scan_limit": bounded,
+        "test_mode_metadata": _json({"test_mode": True}),
     }).mappings().all()
 
     candidates: list[PreparationCandidate] = []
@@ -1062,9 +1064,13 @@ def task_row(
           ON b.id=t.case_binding_id AND b.tenant_id=t.tenant_id
         WHERE t.id=CAST(:task_id AS UUID)
           AND t.tenant_id=CAST(:tenant_id AS UUID)
-          AND t.metadata @> '{"synthetic_only":true}'::jsonb
+          AND t.metadata @> CAST(:synthetic_metadata AS JSONB)
         """ + lock
-    ), {"task_id": task_id, "tenant_id": tenant_id}))
+    ), {
+        "task_id": task_id,
+        "tenant_id": tenant_id,
+        "synthetic_metadata": _json({"synthetic_only": True}),
+    }))
     if not row:
         raise HumanFilingNotFound("human_filing_task_not_found")
     return row
@@ -1624,7 +1630,7 @@ def load_fixture_document(
           AND t.tenant_id=CAST(:tenant_id AS UUID)
           AND b.status='active' AND b.synthetic_only=TRUE
           AND b.revoked_at IS NULL
-          AND b.metadata @> '{"test_mode":true}'::jsonb
+          AND b.metadata @> CAST(:test_mode_metadata AS JSONB)
           AND d.id=CAST(:document_id AS UUID)
           AND d.sha256=:sha256
           AND d.kind='rtm_connect_a1s_synthetic_receipt_fixture'
@@ -1645,6 +1651,7 @@ def load_fixture_document(
         "tenant_id": tenant_id,
         "document_id": document_id,
         "sha256": expected_sha256,
+        "test_mode_metadata": _json({"test_mode": True}),
     }))
     if not row:
         raise HumanFilingScopeError("synthetic_fixture_document_mismatch")
@@ -1680,7 +1687,7 @@ def list_receipt_fixture_options(
           AND t.tenant_id=CAST(:tenant_id AS UUID)
           AND b.status='active' AND b.synthetic_only=TRUE
           AND b.revoked_at IS NULL
-          AND b.metadata @> '{"test_mode":true}'::jsonb
+          AND b.metadata @> CAST(:test_mode_metadata AS JSONB)
           AND d.kind='rtm_connect_a1s_synthetic_receipt_fixture'
           AND d.sha256 ~ '^[0-9a-f]{64}$'
           AND d.mime='application/json'
@@ -1701,6 +1708,7 @@ def list_receipt_fixture_options(
         "task_id": task_id,
         "tenant_id": tenant_id,
         "fetch_limit": bounded + 1,
+        "test_mode_metadata": _json({"test_mode": True}),
     }).mappings().all()
     return ([
         {
