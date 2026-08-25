@@ -58,6 +58,10 @@ from rtm_connect.supervisor_router import (
     connect_supervisor_gate_middleware,
     router as connect_supervisor_router,
 )
+from rtm_connect.human_filing_router import (
+    human_filing_gate_middleware,
+    router as connect_human_filing_router,
+)
 
 
 # ✅ AÑADIDO: OPS (operador)
@@ -106,6 +110,11 @@ app.add_middleware(
 # ocultar tambien OPTIONS/metodos invalidos cuando el panel esta cerrado.
 app.middleware("http")(connect_supervisor_gate_middleware)
 
+# A1-S publica el contrato de operacion humana exclusivamente tras su gate
+# staging/sintetico. El middleware oculta tambien OPTIONS y metodos invalidos
+# cuando la fase no esta habilitada.
+app.middleware("http")(human_filing_gate_middleware)
+
 # El cortafuegos y las rutas seguras CORE se registran antes de los routers legacy.
 app.include_router(rtm_core_legacy_guard_router)
 app.include_router(rtm_core_intake_router)
@@ -143,6 +152,7 @@ app.include_router(rtm_operator_auth_router)
 app.include_router(rtm_operator_admin_router)
 app.include_router(rtm_operator_lifecycle_router)
 app.include_router(connect_supervisor_router)
+app.include_router(connect_human_filing_router)
 
 
 # ✅ NUEVO: router de operador (/ops/*)

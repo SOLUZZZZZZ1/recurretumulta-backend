@@ -197,12 +197,22 @@ class ConnectC7ScriptsContractTest(unittest.TestCase):
             ),
         )
 
-    def test_app_runtime_freeze_uses_c5_baseline(self):
+    def test_app_runtime_freeze_records_c5_and_only_a1s_supersedes_it(self):
         self.assertEqual(
             FROZEN_C5_APP_SHA256,
             "fd089d1cce4f65ebe6fb84b380dd13eba8a98ba4a16049515f4f513c27eeb7ea",
         )
-        self.assertTrue(_runtime_unwired())
+        self.assertFalse(_runtime_unwired())
+        source = (ROOT / "app.py").read_text(encoding="utf-8").lower()
+        self.assertIn("human_filing_router", source)
+        self.assertIn("human_filing_gate_middleware", source)
+        for forbidden in (
+            "/ops/connect/assisted",
+            "administration.submit.legal.assisted",
+            "assisted_legal",
+            "connect_c7",
+        ):
+            self.assertNotIn(forbidden, source)
 
     def test_smoke_covers_normal_unknown_and_rolls_back(self):
         source = SMOKE.read_text(encoding="utf-8")

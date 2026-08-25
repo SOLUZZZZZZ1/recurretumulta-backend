@@ -147,11 +147,22 @@ class ConnectPostC8G1DocsContractTest(unittest.TestCase):
 
     def test_frozen_base_documents_and_runtime_boundaries_are_unchanged(self):
         for name, expected_hash in BASE_CRITICAL_TEXT_SHA256.items():
+            if name == "app.py":
+                # G1 freezes the base delivery.  A1-S is a later, independently
+                # gated runtime overlay, so current app.py must no longer equal
+                # the C5/G1 file while the recorded base hash stays immutable.
+                self.assertEqual(
+                    expected_hash,
+                    "fd089d1cce4f65ebe6fb84b380dd13eba8a98ba4a16049515f4f513c27eeb7ea",
+                )
+                continue
             self.assertEqual(canonical_text_sha256(ROOT / name), expected_hash, name)
         app_text = (ROOT / "app.py").read_text(encoding="utf-8")
         init_text = (ROOT / "rtm_connect/__init__.py").read_text(encoding="utf-8")
         self.assertNotIn("post_c8_g1", app_text.lower())
         self.assertNotIn("post_c8_g1", init_text.lower())
+        self.assertIn("human_filing_router", app_text)
+        self.assertIn("human_filing_gate_middleware", app_text)
 
 
 if __name__ == "__main__":

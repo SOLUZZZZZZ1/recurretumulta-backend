@@ -144,12 +144,23 @@ class ConnectC8ScriptsContractTest(unittest.TestCase):
             ("route:/mounted/production:production",),
         )
 
-    def test_app_runtime_freeze_uses_c5_baseline(self):
+    def test_app_runtime_freeze_records_c5_and_only_a1s_supersedes_it(self):
         self.assertEqual(
             FROZEN_C5_APP_SHA256,
             "fd089d1cce4f65ebe6fb84b380dd13eba8a98ba4a16049515f4f513c27eeb7ea",
         )
-        self.assertTrue(_runtime_unwired())
+        self.assertFalse(_runtime_unwired())
+        source = (ROOT / "app.py").read_text(encoding="utf-8").lower()
+        self.assertIn("human_filing_router", source)
+        self.assertIn("human_filing_gate_middleware", source)
+        for forbidden in (
+            "rtm_connect.production_control",
+            "rtm_connect.production_policy",
+            "rtm_connect_c8",
+            "connect/production",
+            "production.dispatch.dry_run",
+        ):
+            self.assertNotIn(forbidden, source)
 
     def test_smoke_is_transactional_inert_and_covers_both_outcomes(self):
         source = SMOKE.read_text(encoding="utf-8")
