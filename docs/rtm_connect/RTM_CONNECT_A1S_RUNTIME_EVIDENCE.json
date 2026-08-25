@@ -1,24 +1,124 @@
 {
   "authority": "rtm_connect_a1s_runtime_evidence",
-  "version": "rtm_connect_a1s_runtime_evidence_v1_0",
+  "version": "rtm_connect_a1s_runtime_evidence_v1_1",
   "phase": "a1s_runtime_validation",
   "as_of_date": "2026-08-25",
-  "status": "pending_external_execution",
-  "gate_status": "blocked",
+  "execution_status": "completed_synthetic_staging",
+  "status": "completed_synthetic_staging",
+  "gate_status": "passed_synthetic_staging",
+  "production_gate_status": "blocked",
   "live_verdict": "no_go",
   "source": {
+    "design_base_commit_sha40": "a94dcd314c67880e40aa333dc679ef98b80a1956",
+    "design_base_archive_name": "RTM_CONNECT_A1S_RUNTIME_BASE_a94dcd3.zip",
+    "design_base_archive_sha256": "4bed25e3fd30989a617ad3640a63e4a20d98f5347167cf097f91e9d183220c21",
+    "design_base_archive_comment_sha40": "a94dcd314c67880e40aa333dc679ef98b80a1956",
     "base_commit_sha40": "a94dcd314c67880e40aa333dc679ef98b80a1956",
     "base_archive_name": "RTM_CONNECT_A1S_RUNTIME_BASE_a94dcd3.zip",
     "base_archive_sha256": "4bed25e3fd30989a617ad3640a63e4a20d98f5347167cf097f91e9d183220c21",
     "base_archive_comment_sha40": "a94dcd314c67880e40aa333dc679ef98b80a1956",
     "base_delivery_identity_frozen": true,
-    "runtime_overlay_commit_sha40": null,
-    "runtime_overlay_archive_name": null,
-    "runtime_overlay_archive_sha256": null,
-    "runtime_delivery_identity_frozen": false,
+    "final_subject_commit_sha40": "9e0a26777f19efeb2c54b093e771570493a3de0e",
+    "final_subject_archive_name": "RTM_CONNECT_A1S_RUNTIME_EVIDENCE_BASE_9e0a267.zip",
+    "final_subject_archive_sha256": "038e28a14262d8029d95a86d71f06780f239d0aa144fb25207d9a4afc534684e",
+    "final_subject_archive_comment_sha40": "9e0a26777f19efeb2c54b093e771570493a3de0e",
+    "final_commit_sha40": "9e0a26777f19efeb2c54b093e771570493a3de0e",
+    "final_base_archive_name": "RTM_CONNECT_A1S_RUNTIME_EVIDENCE_BASE_9e0a267.zip",
+    "final_base_archive_sha256": "038e28a14262d8029d95a86d71f06780f239d0aa144fb25207d9a4afc534684e",
+    "final_base_archive_comment_sha40": "9e0a26777f19efeb2c54b093e771570493a3de0e",
+    "final_subject_delivery_identity_externally_reported": true,
+    "final_subject_delivery_preflight_required_before_commit": true,
+    "final_subject_delivery_preflight_result_embedded": false,
+    "runtime_overlay_commit_sha40": "aaf040b1c8d35ee61aa3720a4dc4b8cf1822b827",
+    "runtime_overlay_archive_name": "RTM_CONNECT_A1S_RUNTIME_OVERLAY_a94dcd3.zip",
+    "runtime_overlay_archive_sha256": "0f44d10543c777fd1ef36b20357934cafd4605c8a296d469af3b1af6b56c0e24",
+    "runtime_delivery_identity_frozen": true,
     "git_commit_signature_verified": false,
-    "supply_chain_provenance_verified": false
+    "supply_chain_provenance_verified": false,
+    "archive_signature_verified": false
   },
+  "commit_chain": [
+    {
+      "commit_sha40": "b0bc7ddfad9278e601dce8dd69083472662874b5",
+      "subject": "post_c8_g1_provider_admission_gate"
+    },
+    {
+      "commit_sha40": "37a4479022519d34d1a220cb1ac6380ea7b9f238",
+      "subject": "a1s_synthetic_human_filing_workflow"
+    },
+    {
+      "commit_sha40": "a94dcd314c67880e40aa333dc679ef98b80a1956",
+      "subject": "a1s_postgresql_schema_execution_hotfix"
+    },
+    {
+      "commit_sha40": "aaf040b1c8d35ee61aa3720a4dc4b8cf1822b827",
+      "subject": "a1s_synthetic_runtime_validation"
+    },
+    {
+      "commit_sha40": "d546b1368eeacf34bb50dea5820ab1ed27f93053",
+      "subject": "a1s_jsonb_runtime_queries_hotfix"
+    },
+    {
+      "commit_sha40": "407ced9acbeffdd6c727264e8c9ac26e3cd110fa",
+      "subject": "a1s_transactional_runtime_clock_hotfix"
+    },
+    {
+      "commit_sha40": "9e0a26777f19efeb2c54b093e771570493a3de0e",
+      "subject": "a1s_release_event_canonicalization_hotfix"
+    }
+  ],
+  "delivery_chain": [
+    {
+      "archive_name": "RTM_CONNECT_G2_BASE_b0bc7dd.zip",
+      "sha256": "4b32167288e41be2c8b556bde49149390181f8f918c3a4a864020b269493825e",
+      "subject_commit_sha40": "b0bc7ddfad9278e601dce8dd69083472662874b5"
+    },
+    {
+      "archive_name": "RTM_CONNECT_A1S_HUMAN_FILING_OVERLAY_b0bc7dd.zip",
+      "sha256": "8ade7dbef0559e4e6bd739946ea97799a9dfeb1e1f3cf4ba3b77b937340466ac",
+      "subject_base_commit_sha40": "b0bc7ddfad9278e601dce8dd69083472662874b5"
+    },
+    {
+      "archive_name": "RTM_CONNECT_A1S_SCHEMA_HOTFIX_37a4479.zip",
+      "sha256": "f9014d3faff19a73328a088798b5988aaef5ff7231e32eee8ef1268959b2bfb4",
+      "subject_base_commit_sha40": "37a4479022519d34d1a220cb1ac6380ea7b9f238"
+    },
+    {
+      "archive_name": "RTM_CONNECT_A1S_RUNTIME_BASE_a94dcd3.zip",
+      "sha256": "4bed25e3fd30989a617ad3640a63e4a20d98f5347167cf097f91e9d183220c21",
+      "subject_commit_sha40": "a94dcd314c67880e40aa333dc679ef98b80a1956"
+    },
+    {
+      "archive_name": "RTM_CONNECT_A1S_RUNTIME_OVERLAY_a94dcd3.zip",
+      "sha256": "0f44d10543c777fd1ef36b20357934cafd4605c8a296d469af3b1af6b56c0e24",
+      "subject_base_commit_sha40": "a94dcd314c67880e40aa333dc679ef98b80a1956"
+    },
+    {
+      "archive_name": "RTM_CONNECT_A1S_RUNTIME_PREFLIGHT_HOTFIX_a94dcd3.zip",
+      "sha256": "c3b26ed8c85393f7c45d0957805a00a4394d295b3705bb8259e6e0a90f0ceb2f",
+      "subject_base_commit_sha40": "a94dcd314c67880e40aa333dc679ef98b80a1956"
+    },
+    {
+      "archive_name": "RTM_CONNECT_A1S_RUNTIME_SQL_HOTFIX_aaf040b.zip",
+      "sha256": "e1c497a3e65aa8462f8f50050f11275ab30337b6d7203d6d76c16c4c3cbd3ebb",
+      "subject_base_commit_sha40": "aaf040b1c8d35ee61aa3720a4dc4b8cf1822b827"
+    },
+    {
+      "archive_name": "RTM_CONNECT_A1S_RUNTIME_CLOCK_HOTFIX_d546b13.zip",
+      "sha256": "4756378882a385e409ec3b8c8617c252039e2131e10ca7afdda97d535afb13fb",
+      "subject_base_commit_sha40": "d546b1368eeacf34bb50dea5820ab1ed27f93053"
+    },
+    {
+      "archive_name": "RTM_CONNECT_A1S_RUNTIME_EVENT_HOTFIX_407ced9.zip",
+      "sha256": "6bad4f4e5f7fcd5a39b30c14e934aa67a001c97a2d43fe68a6a969020170ddea",
+      "subject_base_commit_sha40": "407ced9acbeffdd6c727264e8c9ac26e3cd110fa"
+    },
+    {
+      "archive_name": "RTM_CONNECT_A1S_RUNTIME_EVIDENCE_BASE_9e0a267.zip",
+      "sha256": "038e28a14262d8029d95a86d71f06780f239d0aa144fb25207d9a4afc534684e",
+      "subject_commit_sha40": "9e0a26777f19efeb2c54b093e771570493a3de0e"
+    }
+  ],
   "planned_paths": {
     "runtime_module": "rtm_connect/human_filing_runtime.py",
     "offline_preflight": "scripts/rtm_connect_a1s_runtime_preflight.py",
@@ -33,46 +133,204 @@
     "smoke_contract_test": "tests/test_rtm_connect_a1s_runtime_smoke_contract.py",
     "docs_contract_test": "tests/test_rtm_connect_a1s_runtime_docs_contract.py"
   },
+  "closure_paths": {
+    "gate_document": "docs/rtm_connect/RTM_CONNECT_A1S_RUNTIME.md",
+    "evidence_manifest": "docs/rtm_connect/RTM_CONNECT_A1S_RUNTIME_EVIDENCE.json",
+    "decision_record": "docs/rtm_connect/adrs/0019-a1s-runtime-validation.md",
+    "docs_contract_test": "tests/test_rtm_connect_a1s_runtime_docs_contract.py",
+    "final_delivery_preflight": "scripts/rtm_connect_a1s_runtime_evidence_preflight.py",
+    "final_delivery_preflight_contract_test": "tests/test_rtm_connect_a1s_runtime_evidence_preflight_contract.py"
+  },
   "runtime_fixture": {
     "fixture_key": "runtime-a94dcd3-v1",
     "persistent": true,
+    "synthetic_only": true,
     "creation_only": true,
     "a1s_rows_insert_only": true,
     "preexisting_rows_mutated": false,
     "new_core_action_transitions_to_authorized": true,
     "three_existing_synthetic_operators_required": true,
     "smoke_derives_operator_ids_from_exact_memberships": true,
-    "smoke_accepts_operator_ids_on_cli": false
+    "smoke_accepts_operator_ids_on_cli": false,
+    "requester_operator_id": "0a558d35-01b0-4c74-8640-c690ec21d52c",
+    "releaser_operator_id": "cd2d8df3-9e67-4c86-8f4e-1df55fb67b44",
+    "verifier_operator_id": "9cae8979-f25f-4350-b3e7-1c8c7bd9c62b"
   },
   "execution": {
-    "render_deployment_id": null,
-    "render_deployment_live_verified": false,
-    "render_shell_execution_observed": false,
-    "health_check_executed": false,
-    "health_response": null,
-    "offline_preflight_executed": false,
-    "postgresql_runtime_audit_executed": false,
-    "runtime_fixture_provisioning_executed": false,
-    "runtime_fixture_post_audit_executed": false,
-    "transactional_e2e_executed": false,
-    "three_individual_bearer_sessions_exercised": false,
+    "evidence_kind": "operator_console_observed_unattested",
+    "raw_console_report_sha256": null,
+    "console_report_signature_verified": false,
+    "render_service_id": "srv-d9v1t2qjnfac73a14kug",
+    "render_deployment_id": "dep-da6qp1p5efls73d4q0kg",
+    "render_deployment_commit_sha40": "9e0a26777f19efeb2c54b093e771570493a3de0e",
+    "render_deployment_live_observed": true,
+    "render_shell_execution_observed": true,
+    "health_check_observed": true,
+    "health_response": {
+      "ok": true
+    },
+    "legacy_preflight": {
+      "authority": "rtm_connect_a1s_runtime_preflight",
+      "version": "rtm_connect_a1s_runtime_preflight_v1_1",
+      "subject_commit_sha40": "a94dcd314c67880e40aa333dc679ef98b80a1956",
+      "subject_archive_sha256": "4bed25e3fd30989a617ad3640a63e4a20d98f5347167cf097f91e9d183220c21",
+      "ok": true,
+      "applies_to_final_subject": false,
+      "reason": "three_runtime_hotfix_commits_follow_the_a94dcd3_subject"
+    },
+    "final_delivery_preflight": {
+      "authority": "rtm_connect_a1s_runtime_evidence_preflight",
+      "script": "scripts/rtm_connect_a1s_runtime_evidence_preflight.py",
+      "required_before_gate_closure": true,
+      "required_before_commit": true,
+      "result_embedded": false,
+      "failure_prevents_commit": true,
+      "subject_commit_sha40": "9e0a26777f19efeb2c54b093e771570493a3de0e",
+      "subject_archive_sha256": "038e28a14262d8029d95a86d71f06780f239d0aa144fb25207d9a4afc534684e"
+    },
+    "postgresql_runtime_audit_executed": true,
+    "postgresql_schema_ready_observed": true,
+    "runtime_fixture_provisioning_executed": true,
+    "runtime_fixture_post_audit_executed": true,
+    "transactional_e2e_executed": true,
+    "three_individual_bearer_sessions_exercised": true,
     "login_endpoint_exercised": false,
-    "happy_path_completed": false,
-    "unknown_reconciliation_exercised": false,
-    "database_constraints_executed": false,
-    "database_transaction_rolled_back": false,
-    "rollback_verified": false,
-    "zero_delta_from_baseline_verified": false,
-    "persistent_fixture_unchanged_verified": false,
-    "ephemeral_sessions_residue_zero_verified": false,
-    "ephemeral_unknown_fixture_residue_zero_verified": false,
-    "environment_restored": false,
-    "network_guard_exercised": false,
-    "network_attempts": null,
-    "tests_executed": false,
-    "tests_ok": null,
-    "evaluated_at": null
+    "happy_path_completed": true,
+    "unknown_reconciliation_exercised": true,
+    "database_transaction_rolled_back": true,
+    "rollback_verified": true,
+    "baseline_count_snapshots_equal_after_rollback": true,
+    "zero_delta_from_baseline_verified": true,
+    "persistent_fixture_baseline_restored": true,
+    "content_level_zero_delta_verified": false,
+    "persistent_fixture_content_unchanged_verified": false,
+    "ephemeral_sessions_residue_zero_verified": true,
+    "ephemeral_sessions_remaining": 0,
+    "unknown_fixture_after_equals_recorded_baseline": true,
+    "unknown_fixture_baseline_was_zero_verified": false,
+    "ephemeral_unknown_fixture_absolute_zero_verified": false,
+    "environment_restored": true,
+    "persistent_routes_published": false,
+    "network_guard_exercised": true,
+    "network_attempts": 0,
+    "external_socket_attempts": 0,
+    "legal_submission_executed": false,
+    "raw_session_tokens_persisted": false,
+    "raw_session_tokens_reported": false,
+    "final_smoke": {
+      "raw_report_sha256": null,
+      "signature_verified": false
+    },
+    "evaluated_at": "2026-08-25"
   },
+  "final_smoke": {
+    "authority": "rtm_connect_a1s_runtime_smoke",
+    "version": "rtm_connect_a1s_runtime_smoke_v1_0",
+    "subject_commit_sha40": "9e0a26777f19efeb2c54b093e771570493a3de0e",
+    "ok": true,
+    "safe": true,
+    "blockers": [],
+    "http_in_process_asgi": true,
+    "database_configuration_loaded": true,
+    "database_connection_used": true,
+    "database_touched": true,
+    "database_rolled_back": true,
+    "fixture_baseline_restored": true,
+    "synthetic_only": true,
+    "legal_submission_executed": false,
+    "production_authorized": false,
+    "production_safe": false,
+    "live_verdict": "no_go",
+    "raw_session_tokens_persisted": false,
+    "raw_session_tokens_reported": false,
+    "routes_published": false,
+    "workers_started": false,
+    "checks": {
+      "completed_visible_through_read_api": true,
+      "e4_exactly_bound_to_preapproved_verifier": true,
+      "feature_closes_again_without_restart": true,
+      "feature_default_off_returns_404": true,
+      "fresh_connection_observes_baseline_restored_and_ephemeral_zero_residue": true,
+      "full_http_state_machine_completed": true,
+      "full_http_unknown_reconciliation_branch": true,
+      "individual_bearer_session_required": true,
+      "package_and_receipt_hashes_disjoint": true,
+      "persistent_fixture_read_only_audited": true,
+      "postgresql_final_state_completed": true,
+      "postgresql_schema_ready": true,
+      "prepare_idempotency_replayed": true,
+      "sessions_store_only_sha256": true,
+      "single_hash_only_receipt_fixture": true,
+      "single_preparation_candidate": true,
+      "temporary_runtime_flags_restored": true,
+      "tenant_bootstrap_scoped": true,
+      "three_distinct_tenant_participants": true,
+      "transaction_clock_coherent": true,
+      "transaction_contains_complete_fixture_graph": true,
+      "two_preoperation_principals_distinct": true,
+      "unknown_branch_closes_manual_review": true,
+      "unknown_branch_never_blind_retries": true,
+      "unknown_fixture_transactionally_provisioned": true,
+      "unknown_manual_review_visible_through_read_api": true,
+      "unknown_preoperation_principals_distinct": true,
+      "zero_external_socket_attempts": true
+    },
+    "cleanup": {
+      "database_rolled_back": true,
+      "ephemeral_sessions_remaining": 0,
+      "fixture_snapshots_equal_to_baselines": true
+    },
+    "ephemeral_task_ids": {
+      "completed": "5b6ff858-f3dc-4c4e-8d73-973dc640cd60",
+      "unknown_manual_review": "6581b755-dba5-419d-8b26-5788039ddde4"
+    }
+  },
+  "tests": {
+    "subject_commit_sha40": "9e0a26777f19efeb2c54b093e771570493a3de0e",
+    "executed": true,
+    "ok": true,
+    "suites": [
+      {
+        "pattern": "test_rtm_connect_a1s_*.py",
+        "ran": 114,
+        "status": "ok"
+      },
+      {
+        "pattern": "test_rtm_connect_*.py",
+        "ran": 643,
+        "status": "ok"
+      },
+      {
+        "pattern": "test_*.py",
+        "ran": 1227,
+        "skipped": 8,
+        "status": "ok"
+      }
+    ]
+  },
+  "deployments": [
+    {
+      "commit_sha40": "aaf040b1c8d35ee61aa3720a4dc4b8cf1822b827",
+      "deployment_id": "dep-da6p0i0ae00c738kqc7g",
+      "live_observed": true
+    },
+    {
+      "commit_sha40": "d546b1368eeacf34bb50dea5820ab1ed27f93053",
+      "deployment_id": "dep-da6pka15efls73d390sg",
+      "live_observed": true
+    },
+    {
+      "commit_sha40": "407ced9acbeffdd6c727264e8c9ac26e3cd110fa",
+      "deployment_id": "dep-da6q23h5efls73d3pvj0",
+      "live_observed": true
+    },
+    {
+      "commit_sha40": "9e0a26777f19efeb2c54b093e771570493a3de0e",
+      "deployment_id": "dep-da6qp1p5efls73d4q0kg",
+      "live_observed": true,
+      "health_ok_observed": true
+    }
+  ],
   "scope": {
     "staging_only": true,
     "synthetic_only": true,
@@ -94,63 +352,51 @@
     "external_effects_executed": false,
     "production_authorized": false,
     "production_safe": false,
-    "live_activation_allowed": false
+    "live_activation_allowed": false,
+    "routes_published": false
   },
-  "required_environment": {
-    "RTM_ENV": "staging",
-    "RTM_INSTANCE_ID": "must identify staging and exclude production/prod/live",
-    "RTM_DATA_NAMESPACE": "must identify staging and exclude production/prod/live",
-    "DATABASE_URL": "postgresql staging database with explicit role",
-    "RTM_EXPECTED_BRANCH": "explicit non-main/non-master staging branch",
-    "RENDER_GIT_BRANCH_OR_GIT_BRANCH": "must exactly match RTM_EXPECTED_BRANCH",
-    "RTM_ENVIRONMENT_CONFIRMATION": "RTM_STAGING_ISOLATED",
-    "RTM_SIDE_EFFECT_POLICY": "isolated",
-    "RTM_DOCUMENT_INPUT_POLICY": "synthetic_only",
-    "RTM_ALLOW_REAL_CUSTOMER_DATA": "0",
-    "RTM_ENABLE_B2": "0",
-    "RTM_ENABLE_DOCUMENT_PROVIDER": "0",
-    "RTM_ENABLE_EXTERNAL_SUBMISSION": "0",
-    "RTM_ENABLE_OUTBOUND_EMAIL": "0",
-    "RTM_ENABLE_STRIPE": "0",
-    "RTM_ENABLE_FINAL_PAYMENTS": "0",
-    "RTM_CONNECT_A1S_NETWORK_ALLOWED": "0",
-    "RTM_CONNECT_A1S_B2_ALLOWED": "0",
-    "RTM_CONNECT_A1S_PROVIDER_ALLOWED": "0",
-    "RTM_CONNECT_A1S_REAL_DATA_ALLOWED": "0",
-    "RTM_CONNECT_A1S_EXTERNAL_EFFECTS_ALLOWED": "0",
-    "RTM_ENABLE_CONNECT_SUPERVISOR_V1": "0",
-    "RTM_ENABLE_CONNECT_C6_SANDBOX": "0",
-    "RTM_ENABLE_CONNECT_C7_ASSISTED": "0",
-    "RTM_ENABLE_CONNECT_C8_CONTROLLED_PRODUCTION": "0",
-    "RTM_ENABLE_CONNECT_C8_LIVE": "0",
-    "RTM_ENABLE_CONNECT_A1S_HUMAN_FILING": "0 at process start; smoke-only temporary in-process toggle",
-    "RTM_ENABLE_OPERATOR_AUTH_V1": "0 at process start; smoke-only temporary in-process toggle",
-    "RTM_OPERATOR_ACCESS_HMAC_KEY": "configured with at least 32 characters; value never reported"
-  },
-  "required_confirmations": {
-    "fixture_apply": "STAGING_CONNECT_A1S_RUNTIME_FIXTURES_ONLY"
-  },
-  "blockers": [
-    "runtime_overlay_identity_not_frozen",
-    "render_deployment_not_observed",
-    "postgresql_runtime_audit_not_executed",
-    "runtime_fixture_provisioning_not_executed",
-    "transactional_e2e_not_executed",
-    "rollback_and_zero_delta_from_baseline_not_verified",
-    "runtime_test_report_not_frozen"
+  "runtime_validation_blockers": [],
+  "closure_blockers": [],
+  "production_blockers": [
+    "synthetic_only_execution",
+    "real_customer_data_not_authorized",
+    "verified_provider_or_administration_channel_missing",
+    "authentic_e4_verifier_missing",
+    "production_identity_and_authorization_not_admitted",
+    "production_observability_kill_switch_and_approvals_not_admitted"
+  ],
+  "limitations": [
+    "operator_console_reports_are_unattested_and_not_hash_frozen",
+    "content_level_zero_delta_was_not_verified",
+    "unknown_fixture_zero_baseline_was_not_verified",
+    "git_archive_is_not_a_supply_chain_signature",
+    "http_smoke_used_in_process_asgi",
+    "final_smoke_is_operator_console_observed_unattested_and_has_no_frozen_raw_report_hash_or_verified_signature",
+    "legacy_a94dcd3_preflight_does_not_apply_to_the_final_9e0a267_subject",
+    "final_delivery_preflight_result_is_not_embedded_and_must_be_observed_before_commit",
+    "archive_hash_and_git_comment_do_not_prove_commit_authorship_or_supply_chain_provenance",
+    "baseline_equality_is_a_count_and_identity_snapshot_check_not_a_content_level_hash_proof",
+    "persistent_fixture_content_level_zero_delta_was_not_verified",
+    "the_unknown_fixture_after_snapshot_equaled_its_recorded_baseline_but_the_baseline_was_not_proven_to_be_absolute_zero",
+    "http_validation_used_an_in_process_asgi_application_and_does_not_prove_a_public_frontend_or_persistent_route",
+    "the_e4_was_synthetic_and_is_not_an_authentic_provider_or_administration_receipt",
+    "health_ok_does_not_by_itself_prove_workflow_or_production_readiness",
+    "all_execution_used_synthetic_staging_data_and_proves_no_real_filing"
   ],
   "claims_not_made": [
-    "runtime_ready",
     "frontend_ready",
-    "render_live",
-    "postgresql_ready",
-    "workflow_completed",
-    "rollback_proven",
-    "zero_delta_from_baseline_proven",
+    "public_routes_available",
+    "login_endpoint_validated",
     "real_filing_available",
     "authentic_provider_e4_available",
+    "administration_or_provider_connectivity_available",
+    "content_level_zero_delta_proven",
+    "unknown_fixture_absolute_zero_proven",
+    "console_report_signed_or_hash_frozen",
+    "git_commit_authorship_verified",
+    "supply_chain_provenance_verified",
     "production_safe",
     "production_authorized"
   ],
-  "next_step": "freeze_exact_runtime_overlay_then_execute_render_postgresql_audit_provisioning_and_transactional_e2e"
+  "next_step": "commit_only_after_exact_final_delivery_preflight_passes_then_deploy_and_freeze_restore_reference_without_enabling_production"
 }
