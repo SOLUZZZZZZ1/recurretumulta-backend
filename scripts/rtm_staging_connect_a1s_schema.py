@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-A1S_SCHEMA_SCRIPT_VERSION = "rtm_staging_connect_a1s_schema_v1_0"
+A1S_SCHEMA_SCRIPT_VERSION = "rtm_staging_connect_a1s_schema_v1_0_1"
 APPLY_CONFIRMATION = "STAGING_CONNECT_A1S_SCHEMA_ONLY"
 
 BASE_REQUIRED_COLUMNS: dict[str, set[str]] = {
@@ -215,9 +215,15 @@ def apply_schema(conn: Any) -> list[str]:
         connect_a1s_human_filing_ddl,
     )
 
+    # The DDL is trusted static PostgreSQL, not a parameterized application
+    # query.  Execute it through the raw driver so JSON literals and PL/pgSQL
+    # colons/percent signs are never reinterpreted as SQLAlchemy bind markers.
     applied: list[str] = []
     for name, statement in connect_a1s_human_filing_ddl():
-        conn.execute(text(statement))
+        conn.exec_driver_sql(
+            statement,
+            execution_options={"no_parameters": True},
+        )
         applied.append(str(name))
     metadata = {
         "source": A1S_SCHEMA_SCRIPT_VERSION,

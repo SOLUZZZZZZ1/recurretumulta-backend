@@ -178,7 +178,7 @@ def _a1s_table_ddl() -> list[tuple[str, str]]:
                 synthetic_only BOOLEAN NOT NULL DEFAULT TRUE,
                 metadata JSONB NOT NULL DEFAULT
                     '{"synthetic_marker":"RTM_A1S_SYNTHETIC_ONLY",\
-                      "synthetic_only":true}'::jsonb,
+                      "synthetic_only": true}'::jsonb,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 CONSTRAINT ck_rtm_connect_a1s_tenant_code CHECK (
@@ -192,7 +192,7 @@ def _a1s_table_ddl() -> list[tuple[str, str]]:
                     AND jsonb_typeof(metadata) = 'object'
                     AND metadata @> '{"synthetic_marker":\
                         "RTM_A1S_SYNTHETIC_ONLY",\
-                        "synthetic_only":true}'::jsonb
+                        "synthetic_only": true}'::jsonb
                 ),
                 CONSTRAINT ck_rtm_connect_a1s_tenant_display_name CHECK (
                     length(display_name) BETWEEN 3 AND 96
@@ -224,7 +224,7 @@ def _a1s_table_ddl() -> list[tuple[str, str]]:
                 version INTEGER NOT NULL DEFAULT 1,
                 metadata JSONB NOT NULL DEFAULT
                     '{"synthetic_marker":"RTM_A1S_SYNTHETIC_ONLY",\
-                      "synthetic_only":true}'::jsonb,
+                      "synthetic_only": true}'::jsonb,
                 CONSTRAINT ck_rtm_connect_a1s_membership_role CHECK (
                     role IN (
                         'requester', 'executor', 'releaser', 'verifier',
@@ -245,7 +245,7 @@ def _a1s_table_ddl() -> list[tuple[str, str]]:
                     AND jsonb_typeof(metadata) = 'object'
                     AND metadata @> '{"synthetic_marker":\
                         "RTM_A1S_SYNTHETIC_ONLY",\
-                        "synthetic_only":true}'::jsonb
+                        "synthetic_only": true}'::jsonb
                 ),
                 CONSTRAINT ck_rtm_connect_a1s_membership_version CHECK (
                     version > 0
@@ -288,7 +288,7 @@ def _a1s_table_ddl() -> list[tuple[str, str]]:
                 version INTEGER NOT NULL DEFAULT 1,
                 metadata JSONB NOT NULL DEFAULT
                     '{"synthetic_marker":"RTM_A1S_SYNTHETIC_ONLY",\
-                      "synthetic_only":true}'::jsonb,
+                      "synthetic_only": true}'::jsonb,
                 CONSTRAINT ck_rtm_connect_a1s_binding_code CHECK (
                     binding_code ~ '^rtm-a1s-binding-[0-9a-f]{24}$'
                 ),
@@ -307,7 +307,7 @@ def _a1s_table_ddl() -> list[tuple[str, str]]:
                     AND jsonb_typeof(metadata) = 'object'
                     AND metadata @> '{"synthetic_marker":\
                         "RTM_A1S_SYNTHETIC_ONLY",\
-                        "synthetic_only":true, "test_mode":true}'::jsonb
+                        "synthetic_only": true, "test_mode": true}'::jsonb
                 ),
                 CONSTRAINT ck_rtm_connect_a1s_binding_version CHECK (
                     version > 0
@@ -376,7 +376,7 @@ def _a1s_table_ddl() -> list[tuple[str, str]]:
                     jsonb_typeof(canonical_evidence) = 'object'
                     AND canonical_evidence @> '{"synthetic_marker":\
                         "RTM_A1S_SYNTHETIC_ONLY",\
-                        "synthetic_only":true}'::jsonb
+                        "synthetic_only": true}'::jsonb
                 ),
                 CONSTRAINT ck_rtm_connect_a1s_representation_status CHECK (
                     status IN ('active', 'revoked', 'expired')
@@ -471,7 +471,7 @@ def _a1s_workflow_table_ddl() -> list[tuple[str, str]]:
                 status_version INTEGER GENERATED ALWAYS AS (version) STORED,
                 metadata JSONB NOT NULL DEFAULT
                     '{"synthetic_marker":"RTM_A1S_SYNTHETIC_ONLY",\
-                      "synthetic_only":true}'::jsonb,
+                      "synthetic_only": true}'::jsonb,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 CONSTRAINT fk_rtm_connect_a1s_task_requester FOREIGN KEY (
@@ -522,14 +522,14 @@ def _a1s_workflow_table_ddl() -> list[tuple[str, str]]:
                 CONSTRAINT ck_rtm_connect_a1s_task_package_scope CHECK (
                     jsonb_typeof(package_manifest) = 'object'
                     AND package_manifest @> '{"synthetic_marker":\
-                        "RTM_A1S_SYNTHETIC_ONLY", "synthetic_only":true,\
-                        "network_used":false, "b2_used":false,\
-                        "provider_contacted":false,\
-                        "legal_submission_executed":false}'::jsonb
+                        "RTM_A1S_SYNTHETIC_ONLY", "synthetic_only": true,\
+                        "network_used": false, "b2_used": false,\
+                        "provider_contacted": false,\
+                        "legal_submission_executed": false}'::jsonb
                     AND jsonb_typeof(metadata) = 'object'
                     AND metadata @> '{"synthetic_marker":\
                         "RTM_A1S_SYNTHETIC_ONLY",\
-                        "synthetic_only":true}'::jsonb
+                        "synthetic_only": true}'::jsonb
                 ),
                 CONSTRAINT ck_rtm_connect_a1s_task_assignment CHECK (
                     (status = 'prepared'
@@ -723,7 +723,7 @@ def _a1s_evidence_table_ddl() -> list[tuple[str, str]]:
                     jsonb_typeof(canonical_payload) = 'object'
                     AND canonical_payload @> '{"synthetic_marker":\
                         "RTM_A1S_SYNTHETIC_ONLY",\
-                        "synthetic_only":true}'::jsonb
+                        "synthetic_only": true}'::jsonb
                 ),
                 CONSTRAINT ck_rtm_connect_a1s_artifact_storage CHECK (
                     synthetic_only = TRUE
@@ -861,7 +861,7 @@ def _a1s_evidence_table_ddl() -> list[tuple[str, str]]:
                     AND jsonb_typeof(payload) = 'object'
                     AND payload @> '{"synthetic_marker":\
                         "RTM_A1S_SYNTHETIC_ONLY",\
-                        "synthetic_only":true}'::jsonb
+                        "synthetic_only": true}'::jsonb
                 ),
                 CONSTRAINT ck_rtm_connect_a1s_event_states CHECK (
                     (from_status IS NULL OR from_status IN (
@@ -918,7 +918,7 @@ def _a1s_evidence_table_ddl() -> list[tuple[str, str]]:
                 expires_at TIMESTAMPTZ NOT NULL,
                 metadata JSONB NOT NULL DEFAULT
                     '{"synthetic_marker":"RTM_A1S_SYNTHETIC_ONLY",\
-                      "synthetic_only":true}'::jsonb,
+                      "synthetic_only": true}'::jsonb,
                 CONSTRAINT fk_rtm_connect_a1s_idempotency_actor FOREIGN KEY (
                     claimed_by_membership_id, tenant_id,
                     claimed_by_principal_id, claimed_by_operator_id
@@ -952,7 +952,7 @@ def _a1s_evidence_table_ddl() -> list[tuple[str, str]]:
                     jsonb_typeof(metadata) = 'object'
                     AND metadata @> '{"synthetic_marker":\
                         "RTM_A1S_SYNTHETIC_ONLY",\
-                        "synthetic_only":true}'::jsonb
+                        "synthetic_only": true}'::jsonb
                 )
             );
         """),
@@ -1266,9 +1266,9 @@ def _a1s_task_guard_ddl() -> list[tuple[str, str]]:
                       AND a.payload @> '{"contract_version":\
                           "rtm.connect.a1s.human_filing.v1",\
                           "synthetic_marker":"RTM_A1S_SYNTHETIC_ONLY",\
-                          "synthetic_only":true,"network_used":false,\
-                          "b2_used":false,"provider_contacted":false,\
-                          "external_effects_allowed":false}'::jsonb
+                          "synthetic_only": true,"network_used": false,\
+                          "b2_used": false,"provider_contacted": false,\
+                          "external_effects_allowed": false}'::jsonb
                       AND a.payload->>'case_binding_id' = b.id::text
                       AND a.payload->>'representation_evidence_id' = r.id::text
                       AND a.payload->>'case_snapshot_sha256' =
@@ -1301,9 +1301,9 @@ def _a1s_task_guard_ddl() -> list[tuple[str, str]]:
                           '["administration.submit.human.synthetic"]'::jsonb
                       AND c.configuration @> '{"synthetic_marker":\
                           "RTM_A1S_SYNTHETIC_ONLY",\
-                          "synthetic_only":true,"network_used":false,\
-                          "b2_used":false,"provider_contacted":false,\
-                          "external_effects":false}'::jsonb
+                          "synthetic_only": true,"network_used": false,\
+                          "b2_used": false,"provider_contacted": false,\
+                          "external_effects": false}'::jsonb
                       AND z.authority_code = 'rtm.core.authorization'
                       AND z.authority_version = 'rtm_core_authority_v1'
                       AND z.decision = 'approved_frozen' AND z.frozen = TRUE

@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import ast
 import json
+import re
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts import rtm_connect_a1s_preflight as preflight
 from scripts import rtm_connect_a1s_smoke as smoke
@@ -108,6 +112,86 @@ class ConnectA1SScriptsContractTest(unittest.TestCase):
         upper = source.upper()
         for forbidden in ("DROP TABLE", "TRUNCATE", "DELETE FROM"):
             self.assertNotIn(forbidden, upper)
+
+    def test_schema_ddl_has_no_accidental_sqlalchemy_bind_parameters(self):
+        from rtm_connect.human_filing_schema import (
+            connect_a1s_human_filing_ddl,
+        )
+
+        sqlalchemy_text_bind = re.compile(
+            r"(?<![:\\\w]):(\w+)(?!:)"
+        )
+        statements = connect_a1s_human_filing_ddl()
+        self.assertEqual(len(statements), 56)
+        for name, statement in statements:
+            self.assertEqual(
+                sqlalchemy_text_bind.findall(statement),
+                [],
+                f"{name}: accidental SQLAlchemy text() bind parameter",
+            )
+
+    def test_schema_uses_raw_driver_for_all_static_ddl(self):
+        from rtm_connect.human_filing_schema import (
+            connect_a1s_human_filing_ddl,
+        )
+
+        statements = connect_a1s_human_filing_ddl()
+
+        class Result:
+            @staticmethod
+            def scalar_one():
+                return {"source": schema_script.A1S_SCHEMA_SCRIPT_VERSION}
+
+        class Connection:
+            def __init__(self):
+                self.driver_sql: list[tuple[str, object, object]] = []
+                self.execute_calls: list[tuple[object, object]] = []
+
+            def exec_driver_sql(
+                self,
+                statement,
+                parameters=None,
+                execution_options=None,
+            ):
+                self.driver_sql.append(
+                    (statement, parameters, execution_options)
+                )
+
+            def execute(self, statement, params=None):
+                self.execute_calls.append((statement, params))
+                return Result()
+
+        fake_sqlalchemy = types.ModuleType("sqlalchemy")
+        fake_sqlalchemy.text = lambda statement: statement
+        connection = Connection()
+        with patch.dict(sys.modules, {"sqlalchemy": fake_sqlalchemy}):
+            applied = schema_script.apply_schema(connection)
+
+        self.assertEqual(applied, [name for name, _ in statements])
+        self.assertEqual(
+            [statement for statement, _, _ in connection.driver_sql],
+            [statement for _, statement in statements],
+        )
+        self.assertEqual(len(connection.driver_sql), 56)
+        for _, parameters, execution_options in connection.driver_sql:
+            self.assertIsNone(parameters)
+            self.assertEqual(
+                execution_options,
+                {"no_parameters": True},
+            )
+        self.assertEqual(len(connection.execute_calls), 2)
+
+        source = SCHEMA.read_text(encoding="utf-8")
+        self.assertEqual(
+            schema_script.A1S_SCHEMA_SCRIPT_VERSION,
+            "rtm_staging_connect_a1s_schema_v1_0_1",
+        )
+        self.assertIn("conn.exec_driver_sql(", source)
+        self.assertIn('execution_options={"no_parameters": True}', source)
+        self.assertNotIn(
+            "conn.execute(text(statement))",
+            source,
+        )
 
     def test_smoke_uses_preflight_and_never_enables_live(self):
         source = SMOKE.read_text(encoding="utf-8")
