@@ -1374,8 +1374,10 @@ def release_human_filing(
                 "released_at": _stamp(),
                 "release_attestation_sha256": digest,
             }, event_payload={
-                "release_approval_id": approvals["release"]["id"],
-                "verification_preapproval_id": (
+                "release_approval_id": str(
+                    approvals["release"]["id"]
+                ),
+                "verification_preapproval_id": str(
                     approvals["verification_preapproval"]["id"]
                 ),
             },

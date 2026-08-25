@@ -295,6 +295,23 @@ class ConnectA1SRoutesContractTest(unittest.TestCase):
         ):
             self.assertIn(required, verify)
 
+    def test_release_event_ids_are_canonical_uuid_text(self):
+        service = SERVICE.read_text(encoding="utf-8")
+        release_start = service.index("def release_human_filing(")
+        release_end = service.index("\ndef begin_execution(", release_start)
+        release = service[release_start:release_end]
+        for required in (
+            '"release_approval_id": str(',
+            'approvals["release"]["id"]',
+            '"verification_preapproval_id": str(',
+            'approvals["verification_preapproval"]["id"]',
+        ):
+            self.assertIn(required, release)
+        self.assertNotIn(
+            '"release_approval_id": approvals["release"]["id"]',
+            release,
+        )
+
     def test_receipt_is_separate_output_bound_to_frozen_task_identity(self):
         service = SERVICE.read_text(encoding="utf-8")
         receipt_start = service.index("def submit_receipt_fixture(")
