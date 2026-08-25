@@ -404,10 +404,11 @@ def _execute_http_flow(
     tokens: Mapping[str, str],
     checks: dict[str, Any],
     scenario: str,
+    service_now: datetime,
 ) -> tuple[str, dict[str, Any]]:
     from fastapi.testclient import TestClient
     from app import app as asgi_app
-    from rtm_connect import human_filing_router
+    from rtm_connect import human_filing_router, human_filing_service
     from rtm_connect.human_filing_policy import HUMAN_FILING_FEATURE_FLAG
     from rtm_connect.human_filing_service import (
         HUMAN_RECEIPT_VERIFICATION_GATE,
@@ -430,7 +431,14 @@ def _execute_http_flow(
         }
 
     status_sequence: list[str] = []
-    with patch.object(human_filing_router, "get_engine", return_value=bound_engine):
+    with (
+        patch.object(
+            human_filing_router, "get_engine", return_value=bound_engine
+        ),
+        patch.object(
+            human_filing_service, "_now", return_value=service_now
+        ),
+    ):
         with patch.dict(
             os.environ,
             {
@@ -627,7 +635,9 @@ def _execute_http_flow(
                     operation="execution-start",
                     expected_status="in_progress",
                 )
-                witnessed_at = datetime.now(timezone.utc).isoformat()
+                witnessed_at = service_now.isoformat().replace(
+                    "+00:00", "Z"
+                )
                 if scenario == "completed":
                     external_reference = (
                         "a1s-synthetic-"
@@ -842,7 +852,6 @@ def _execute_runtime(args: argparse.Namespace, report: dict[str, Any]) -> None:
     unknown_fixture_key = "unknown-" + hashlib.sha256(
         fixture_key.encode("utf-8")
     ).hexdigest()[:24]
-    fixed_now = datetime.now(timezone.utc).replace(microsecond=0)
     plan = build_runtime_fixture_plan(fixture_key=fixture_key)
     unknown_plan = build_runtime_fixture_plan(
         fixture_key=unknown_fixture_key,
@@ -876,6 +885,11 @@ def _execute_runtime(args: argparse.Namespace, report: dict[str, Any]) -> None:
     try:
         report["database_connection_used"] = True
         report["database_touched"] = True
+        service_now = connection.execute(
+            text("SELECT transaction_timestamp()")
+        ).scalar_one()
+        if not isinstance(service_now, datetime) or service_now.tzinfo is None:
+            raise A1SRuntimeSmokeError("postgresql_transaction_clock_invalid")
         assert_a1s_database_identity(
             connection,
             expected_database_name=boundary.database_name,
@@ -950,7 +964,7 @@ def _execute_runtime(args: argparse.Namespace, report: dict[str, Any]) -> None:
                     operator_id=operator_id,
                     raw_token=tokens[operator_id],
                     auth_epoch=auth_epochs[operator_id],
-                    now=fixed_now,
+                    now=service_now,
                     user_agent="rtm-connect-a1s-runtime-smoke/asgi",
                     metadata_json=json.dumps(
                         {
@@ -1016,6 +1030,7 @@ def _execute_runtime(args: argparse.Namespace, report: dict[str, Any]) -> None:
                     tokens=tokens,
                     checks=report["checks"],
                     scenario="completed",
+                    service_now=service_now,
                 )
                 unknown_task_id, unknown_terminal = _execute_http_flow(
                     connection=connection,
@@ -1024,6 +1039,7 @@ def _execute_runtime(args: argparse.Namespace, report: dict[str, Any]) -> None:
                     tokens=tokens,
                     checks=report["checks"],
                     scenario="unknown_manual_review",
+                    service_now=service_now,
                 )
             finally:
                 report["checks"]["zero_external_socket_attempts"] = (
@@ -1049,7 +1065,8 @@ def _execute_runtime(args: argparse.Namespace, report: dict[str, Any]) -> None:
         report["http_in_process_asgi"] = True
         task_row = connection.execute(
             text(
-                "SELECT status, version FROM rtm_connect_a1s_human_tasks "
+                "SELECT status, version, ready_at, released_at "
+                "FROM rtm_connect_a1s_human_tasks "
                 "WHERE id=CAST(:task_id AS UUID)"
             ),
             {"task_id": task_id},
@@ -1115,7 +1132,10 @@ def _execute_runtime(args: argparse.Namespace, report: dict[str, Any]) -> None:
         ).mappings().one()
         approval_row = connection.execute(
             text(
-                "SELECT COUNT(*) AS total, COUNT(DISTINCT principal_id) AS principals "
+                "SELECT COUNT(*) AS total, "
+                "COUNT(DISTINCT principal_id) AS principals, "
+                "MIN(approved_at) AS first_approved_at, "
+                "MAX(approved_at) AS last_approved_at "
                 "FROM rtm_connect_a1s_approvals "
                 "WHERE task_id=CAST(:task_id AS UUID)"
             ),
@@ -1137,6 +1157,12 @@ def _execute_runtime(args: argparse.Namespace, report: dict[str, Any]) -> None:
         report["checks"]["two_preoperation_principals_distinct"] = (
             int(approval_row["total"]) == 2
             and int(approval_row["principals"]) == 2
+        )
+        report["checks"]["transaction_clock_coherent"] = (
+            task_row["ready_at"] == service_now
+            and approval_row["first_approved_at"] == service_now
+            and approval_row["last_approved_at"] == service_now
+            and task_row["released_at"] == service_now
         )
         unknown_approval_row = connection.execute(
             text(

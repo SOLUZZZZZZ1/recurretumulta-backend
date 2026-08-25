@@ -128,6 +128,41 @@ class ConnectA1SRuntimeSmokeContractTest(unittest.TestCase):
         ):
             self.assertIn(required, source)
 
+    def test_outer_transaction_uses_postgresql_transaction_clock(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertLess(
+            source.index("transaction = connection.begin()"),
+            source.index(
+                'text("SELECT transaction_timestamp()")'
+            ),
+        )
+        self.assertIn(
+            'patch.object(\n'
+            '            human_filing_service, "_now", return_value=service_now\n'
+            '        )',
+            source,
+        )
+        self.assertEqual(source.count("service_now=service_now"), 2)
+        self.assertIn("now=service_now", source)
+        self.assertIn(
+            "witnessed_at = service_now.isoformat().replace(",
+            source,
+        )
+        self.assertNotIn(
+            "witnessed_at = datetime.now(timezone.utc)",
+            source,
+        )
+        self.assertIn("postgresql_transaction_clock_invalid", source)
+        self.assertIn('"transaction_clock_coherent"', source)
+        for required in (
+            '"SELECT status, version, ready_at, released_at "',
+            '"MIN(approved_at) AS first_approved_at, "',
+            '"MAX(approved_at) AS last_approved_at "',
+            'task_row["ready_at"] == service_now',
+            'task_row["released_at"] == service_now',
+        ):
+            self.assertIn(required, source)
+
     def test_provisioning_sessions_and_database_identity_are_real(self):
         source = SCRIPT.read_text(encoding="utf-8")
         for required in (
