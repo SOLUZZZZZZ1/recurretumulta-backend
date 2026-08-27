@@ -1,6 +1,7 @@
 # ops.py — Panel Operador (PIN + cola + docs + logs + presentado + justificante + descarga segura)
 import json
 import os
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
 
@@ -12,6 +13,80 @@ from database import get_engine
 from b2_storage import upload_bytes
 
 router = APIRouter(prefix="/ops", tags=["ops"])
+
+PUBLIC_SERVICE_FAMILY_CODES = {
+    "trafico",
+    "viajes",
+    "morosidad",
+    "administracion",
+    "bancos",
+    "energia",
+    "telecomunicaciones",
+    "seguros",
+    "vivienda",
+}
+PUBLIC_SERVICE_FAMILY_MARKERS = {
+    "trafico": "trafico",
+    "viajes": "viajes",
+    "deudas y asnef": "morosidad",
+    "administracion": "administracion",
+    "bancos": "bancos",
+    "energia": "energia",
+    "telecomunicaciones": "telecomunicaciones",
+    "seguros": "seguros",
+    "vivienda": "vivienda",
+}
+TRAVEL_CASE_TYPES = {
+    "airline",
+    "flight_cancelled",
+    "flight_delayed",
+    "baggage",
+    "overbooking",
+    "cruise",
+    "travel_agency",
+}
+
+
+def _fold_public_text(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value or ""))
+    return "".join(char for char in normalized if not unicodedata.combining(char)).casefold()
+
+
+def _public_service_family(
+    *,
+    department: str,
+    case_type: str,
+    interested: Dict[str, Any],
+    customer_comment: Any,
+) -> str:
+    """Resuelve el área pública sin confundirla con la familia jurídica CORE."""
+
+    explicit = str(
+        interested.get("public_service_family")
+        or interested.get("public_family")
+        or ""
+    ).strip().lower()
+    if explicit in PUBLIC_SERVICE_FAMILY_CODES:
+        return explicit
+
+    folded_comment = _fold_public_text(
+        customer_comment or interested.get("customer_comment")
+    )
+    for marker, family_code in PUBLIC_SERVICE_FAMILY_MARKERS.items():
+        if f"area publica seleccionada: {marker}" in folded_comment:
+            return family_code
+
+    normalized_department = str(department or "").strip().lower()
+    normalized_case_type = str(case_type or "").strip().lower()
+    if normalized_department == "traffic":
+        return "trafico"
+    if normalized_department == "debt":
+        return "morosidad"
+    if normalized_department == "administration":
+        return "administracion"
+    if normalized_department == "claims" and normalized_case_type in TRAVEL_CASE_TYPES:
+        return "viajes"
+    return "other"
 
 
 def _env(name: str) -> str:
@@ -121,6 +196,12 @@ def queue(
             "contact_name": r[7] or interested.get("full_name") or interested.get("name"),
             "department": department,
             "case_type": case_type or "other",
+            "public_service_family": _public_service_family(
+                department=department,
+                case_type=case_type,
+                interested=interested,
+                customer_comment=r[14],
+            ),
             "category": r[10],
             "organismo": r[11] or interested.get("organismo"),
             "expediente_ref": r[12] or interested.get("expediente_ref"),
@@ -971,6 +1052,12 @@ def list_all_followups(
                 "contact_name": r[14] or interested.get("full_name") or interested.get("name"),
                 "department": department,
                 "case_type": case_type or "other",
+                "public_service_family": _public_service_family(
+                    department=department,
+                    case_type=case_type,
+                    interested=interested,
+                    customer_comment=r[21],
+                ),
                 "category": r[17],
                 "organismo": r[18] or interested.get("organismo"),
                 "expediente_ref": r[19] or interested.get("expediente_ref"),

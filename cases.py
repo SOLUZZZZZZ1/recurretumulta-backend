@@ -21,6 +21,17 @@ from analyze import analyze_existing_case_document
 router = APIRouter(prefix="/cases", tags=["cases"])
 
 MAX_APPEND_FILES = 5
+PUBLIC_SERVICE_FAMILY_CODES = {
+    "trafico",
+    "viajes",
+    "morosidad",
+    "administracion",
+    "bancos",
+    "energia",
+    "telecomunicaciones",
+    "seguros",
+    "vivienda",
+}
 
 # =========================
 # EMAILS AUTOMÁTICOS (SILENCIOSO)
@@ -231,6 +242,7 @@ async def create_rtm_intake_draft(
     department: str = Form(...),
     case_type: str = Form(...),
     source_module: str = Form("rtm_web"),
+    public_service_family: str = Form(""),
     full_name: str = Form(...),
     dni_nie: str = Form(...),
     domicilio_notif: str = Form(...),
@@ -252,8 +264,11 @@ async def create_rtm_intake_draft(
 ):
     department = (department or "").strip().lower()
     case_type = (case_type or "").strip().lower()
+    public_service_family = (public_service_family or "").strip().lower()
     if department not in {"traffic", "debt", "administration", "claims", "other"}:
         raise HTTPException(status_code=400, detail="Departamento RTM no válido")
+    if public_service_family and public_service_family not in PUBLIC_SERVICE_FAMILY_CODES:
+        raise HTTPException(status_code=400, detail="Familia pública RTM no válida")
     if not representation_confirmed or not privacy_accepted:
         raise HTTPException(status_code=400, detail="Faltan consentimientos obligatorios")
 
@@ -277,6 +292,8 @@ async def create_rtm_intake_draft(
         "case_type": case_type,
         "source_module": (source_module or "rtm_web").strip().lower(),
     }
+    if public_service_family:
+        interested["public_service_family"] = public_service_family
 
     engine = get_engine()
     with engine.begin() as conn:
@@ -301,7 +318,14 @@ async def create_rtm_intake_draft(
         conn.execute(text("""
             INSERT INTO events(case_id, type, payload, created_at)
             VALUES (CAST(:id AS UUID), 'rtm_intake_created', CAST(:payload AS JSONB), NOW())
-        """), {"id": case_id, "payload": json.dumps({"department": department, "case_type": case_type})})
+        """), {
+            "id": case_id,
+            "payload": json.dumps({
+                "department": department,
+                "case_type": case_type,
+                "public_service_family": public_service_family or None,
+            }),
+        })
 
     docs = [
         await _rtm_store_file(case_id, dni_front, "identity_front", "identity"),

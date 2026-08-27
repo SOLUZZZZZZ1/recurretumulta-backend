@@ -74,7 +74,7 @@ class GlobalFollowupsTest(unittest.TestCase):
             "DGT",
             "EXP-SINT-1",
             {"matricula": "0000-TEST"},
-            None,
+            "Área pública seleccionada: Bancos\n\nCaso sintético.",
         )
 
     def test_global_followups_include_case_context_and_urgency(self):
@@ -95,6 +95,7 @@ class GlobalFollowupsTest(unittest.TestCase):
         self.assertEqual(item["contact_name"], "Cliente sintético")
         self.assertEqual(item["expediente_ref"], "EXP-SINT-1")
         self.assertEqual(item["matricula"], "0000-TEST")
+        self.assertEqual(item["public_service_family"], "bancos")
         self.assertTrue(item["overdue"])
         self.assertLess(item["days_left"], 0)
         self.assertIn("JOIN cases", engine.connection.statement)
