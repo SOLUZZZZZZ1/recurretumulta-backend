@@ -868,6 +868,125 @@ def list_case_followups(
     return {"ok": True, "case_id": case_id, "followups": items}
 
 
+@router.get("/followups")
+def list_all_followups(
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+    status: str = Query("all"),
+    limit: int = Query(500, ge=1, le=500),
+) -> Dict[str, Any]:
+    """Bandeja global de seguimientos para OPS, protegida por token de operador."""
+    _require_operator(x_operator_token)
+
+    normalized_status = (status or "all").strip().lower()
+    if normalized_status not in {"all", "pending", "resolved"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Estado de seguimiento no válido. Usa all, pending o resolved.",
+        )
+
+    where_status = ""
+    params: Dict[str, Any] = {"limit": limit}
+    if normalized_status != "all":
+        where_status = "AND f.status = :followup_status"
+        params["followup_status"] = normalized_status
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                f"""
+                SELECT f.id, f.case_id, f.kind, f.status, f.title, f.description,
+                       f.due_at, f.resolved_at, f.resolution_note,
+                       f.created_at, f.updated_at,
+                       c.status AS case_status, c.payment_status,
+                       c.contact_email, c.contact_name,
+                       c.department, c.case_type, c.category,
+                       c.organismo, c.expediente_ref,
+                       COALESCE(c.interested_data, '{{}}'::jsonb) AS interested_data,
+                       c.customer_comment
+                FROM ops_followups f
+                JOIN cases c ON c.id = f.case_id
+                WHERE COALESCE(c.status, '') <> 'archived_test'
+                  {where_status}
+                ORDER BY
+                  CASE WHEN f.status = 'pending' THEN 0 ELSE 1 END,
+                  f.due_at ASC NULLS LAST,
+                  f.updated_at DESC
+                LIMIT :limit
+                """
+            ),
+            params,
+        ).fetchall()
+
+    now = datetime.now(timezone.utc)
+    items = []
+    for r in rows:
+        interested = r[20] if isinstance(r[20], dict) else {}
+        department = (r[15] or interested.get("department") or "").strip().lower()
+        case_type = (r[16] or interested.get("case_type") or "").strip().lower()
+        category = (r[17] or "").strip().lower()
+
+        if not department:
+            if category == "vehicle_removal" or str(r[11] or "").startswith("vehicle_removal"):
+                department = "traffic"
+                case_type = case_type or "vehicle_removal"
+            elif category in ("traffic", "debt", "administration", "claims", "other"):
+                department = category
+            else:
+                department = "other"
+
+        if department == "traffic" and not case_type:
+            case_type = "vehicle_removal" if category == "vehicle_removal" else "fine"
+
+        due_at = r[6]
+        overdue = False
+        days_left = None
+        if due_at:
+            try:
+                normalized_due = due_at if due_at.tzinfo else due_at.replace(tzinfo=timezone.utc)
+                delta = normalized_due - now
+                days_left = int(delta.total_seconds() // 86400)
+                overdue = delta.total_seconds() < 0 and (r[3] or "") == "pending"
+            except Exception:
+                pass
+
+        items.append(
+            {
+                "id": str(r[0]),
+                "case_id": str(r[1]),
+                "kind": r[2],
+                "status": r[3],
+                "title": r[4],
+                "description": r[5],
+                "due_at": due_at,
+                "resolved_at": r[7],
+                "resolution_note": r[8],
+                "created_at": r[9],
+                "updated_at": r[10],
+                "overdue": overdue,
+                "days_left": days_left,
+                "case_status": r[11],
+                "payment_status": r[12],
+                "contact_email": r[13] or interested.get("email"),
+                "contact_name": r[14] or interested.get("full_name") or interested.get("name"),
+                "department": department,
+                "case_type": case_type or "other",
+                "category": r[17],
+                "organismo": r[18] or interested.get("organismo"),
+                "expediente_ref": r[19] or interested.get("expediente_ref"),
+                "matricula": interested.get("matricula") or interested.get("plate"),
+                "customer_comment": r[21] or interested.get("customer_comment"),
+            }
+        )
+
+    return {
+        "ok": True,
+        "status": normalized_status,
+        "count": len(items),
+        "items": items,
+    }
+
+
 @router.get("/followups/due")
 def list_due_followups(
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
