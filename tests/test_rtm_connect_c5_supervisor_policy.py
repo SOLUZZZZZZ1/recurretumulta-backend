@@ -91,6 +91,8 @@ def _safe_env() -> dict[str, str]:
         "FRONTEND_URL": "https://staging.recurretumulta.eu",
         "ALLOWED_ORIGINS": "https://staging.recurretumulta.eu",
         "OPERATOR_TOKEN": "op_" + ("x" * 48),
+        "RTM_PUBLIC_CASE_ACCESS_SECRET": "case_" + ("c" * 48),
+        "RTM_AUTHORITY_SIGNING_SECRET": "authority_" + ("a" * 48),
         "RTM_EXPECTED_BRANCH": "rtm-core-consolidation-2026-08-08",
         "RENDER_GIT_BRANCH": "rtm-core-consolidation-2026-08-08",
         "RENDER_SERVICE_NAME": "rtm-staging-backend",
@@ -167,6 +169,8 @@ class ConnectC5SupervisorPolicyTest(unittest.TestCase):
     def test_missing_safety_flags_are_not_treated_as_disabled(self):
         for name in (
             "RTM_ALLOW_REAL_CUSTOMER_DATA",
+            "RTM_PUBLIC_CASE_ACCESS_SECRET",
+            "RTM_AUTHORITY_SIGNING_SECRET",
             "RTM_ENABLE_EXTERNAL_SUBMISSION",
             "RTM_ENABLE_OUTBOUND_EMAIL",
             "RTM_ENABLE_STRIPE",

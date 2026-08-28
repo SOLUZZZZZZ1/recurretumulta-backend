@@ -63,6 +63,8 @@ def safe_env() -> dict[str, str]:
         "FRONTEND_URL": "https://staging.recurretumulta.eu",
         "ALLOWED_ORIGINS": "https://staging.recurretumulta.eu",
         "OPERATOR_TOKEN": "op_" + ("x" * 48),
+        "RTM_PUBLIC_CASE_ACCESS_SECRET": "case_" + ("c" * 48),
+        "RTM_AUTHORITY_SIGNING_SECRET": "authority_" + ("a" * 48),
         "RTM_EXPECTED_BRANCH": "rtm-c8-staging-2026-08-24",
         "RENDER_GIT_BRANCH": "rtm-c8-staging-2026-08-24",
         "RENDER_SERVICE_NAME": "rtm-staging-backend",

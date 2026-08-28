@@ -1,4 +1,5 @@
 # ops_automation_router.py
+import hmac
 import os
 from typing import Optional
 from fastapi import APIRouter, Header, HTTPException, Query
@@ -12,8 +13,8 @@ def _require_operator(x_operator_token: Optional[str]):
     expected = (os.getenv("OPERATOR_TOKEN") or "").strip()
     token = (x_operator_token or "").strip()
     if not expected:
-        raise HTTPException(status_code=500, detail="OPERATOR_TOKEN no configurado")
-    if token != expected:
+        raise HTTPException(status_code=503, detail="OPERATOR_TOKEN no configurado")
+    if not token or not hmac.compare_digest(token, expected):
         raise HTTPException(status_code=401, detail="Unauthorized operator")
 
 

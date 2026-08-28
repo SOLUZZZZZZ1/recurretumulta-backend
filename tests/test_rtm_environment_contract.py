@@ -31,6 +31,8 @@ def _base_staging() -> dict[str, str]:
         "FRONTEND_URL": "https://staging.recurretumulta.eu",
         "ALLOWED_ORIGINS": "https://staging.recurretumulta.eu",
         "OPERATOR_TOKEN": "op_" + ("x" * 48),
+        "RTM_PUBLIC_CASE_ACCESS_SECRET": "case_" + ("c" * 48),
+        "RTM_AUTHORITY_SIGNING_SECRET": "authority_" + ("a" * 48),
         "RTM_EXPECTED_BRANCH": BRANCH,
         "RENDER_GIT_BRANCH": BRANCH,
         "RENDER_SERVICE_NAME": "rtm-staging-backend",
@@ -56,6 +58,8 @@ def _base_production() -> dict[str, str]:
         "FRONTEND_URL": "https://recurretumulta.eu",
         "ALLOWED_ORIGINS": "https://recurretumulta.eu",
         "OPERATOR_TOKEN": "op_" + ("p" * 48),
+        "RTM_PUBLIC_CASE_ACCESS_SECRET": "case_" + ("d" * 48),
+        "RTM_AUTHORITY_SIGNING_SECRET": "authority_" + ("s" * 48),
         "RTM_EXPECTED_BRANCH": "main",
         "RENDER_GIT_BRANCH": "main",
         "RENDER_SERVICE_NAME": "rtm-production-backend",
@@ -72,7 +76,7 @@ class EnvironmentContractTest(unittest.TestCase):
     def test_version_and_minimal_staging_profile_are_explicit(self):
         self.assertEqual(
             ENVIRONMENT_CONTRACT_VERSION,
-            "rtm_environment_contract_v1_0",
+            "rtm_environment_contract_v1_1",
         )
         report = build_environment_preflight(_base_staging())
         self.assertTrue(report.safe, report.model_dump(mode="json"))
@@ -84,6 +88,26 @@ class EnvironmentContractTest(unittest.TestCase):
         report = build_environment_preflight(_base_production())
         self.assertTrue(report.safe, report.model_dump(mode="json"))
         self.assertEqual(report.environment, "production")
+
+    def test_case_access_and_authority_secrets_are_mandatory_and_independent(self):
+        for name, blocker in (
+            ("RTM_PUBLIC_CASE_ACCESS_SECRET", "public_case_access_secret_ready"),
+            ("RTM_AUTHORITY_SIGNING_SECRET", "authority_signing_secret_ready"),
+        ):
+            with self.subTest(variable=name):
+                environment = _base_staging()
+                environment.pop(name)
+                report = build_environment_preflight(environment)
+                self.assertFalse(report.safe)
+                self.assertIn(blocker, report.blockers)
+
+        environment = _base_staging()
+        environment["RTM_AUTHORITY_SIGNING_SECRET"] = environment[
+            "RTM_PUBLIC_CASE_ACCESS_SECRET"
+        ]
+        report = build_environment_preflight(environment)
+        self.assertFalse(report.safe)
+        self.assertIn("authority_secrets_independent", report.blockers)
 
     def test_staging_rejects_wildcard_production_frontend_and_unmarked_database(self):
         scenarios = [
@@ -207,6 +231,8 @@ class EnvironmentContractTest(unittest.TestCase):
         environment = _base_staging()
         secret_values = {
             "OPERATOR_TOKEN": "operator-super-private-" + ("x" * 32),
+            "RTM_PUBLIC_CASE_ACCESS_SECRET": "public-super-private-" + ("c" * 32),
+            "RTM_AUTHORITY_SIGNING_SECRET": "authority-super-private-" + ("a" * 32),
             "STRIPE_SECRET_KEY": "sk_test_" + ("s" * 32),
             "STRIPE_WEBHOOK_SECRET": "whsec_" + ("w" * 32),
         }

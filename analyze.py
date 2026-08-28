@@ -9,6 +9,7 @@ from sqlalchemy import text
 
 from database import get_engine
 from b2_storage import upload_original
+from public_case_access import issue_case_access_token
 from openai_vision import extract_from_image_bytes, extract_fet_denunciat_focus
 from text_extractors import (
     extract_text_from_pdf_bytes,
@@ -3760,6 +3761,7 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             case_id = conn.execute(
                 text("INSERT INTO cases(status, created_at, updated_at) VALUES ('pending_client_data', NOW(), NOW()) RETURNING id")
             ).scalar()
+            case_access_token = issue_case_access_token(str(case_id))
 
             b2_bucket, b2_key = upload_original(str(case_id), content, file.filename, mime)
 
@@ -4036,6 +4038,8 @@ async def analyze(file: UploadFile = File(...)) -> Dict[str, Any]:
             "ok": True,
             "message": "Análisis completo generado.",
             "case_id": str(case_id),
+            "case_access_token": case_access_token,
+            "case_access_token_header": "X-RTM-Case-Token",
             "extracted": wrapper,
         }
 

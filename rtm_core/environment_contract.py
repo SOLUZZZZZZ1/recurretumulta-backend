@@ -20,7 +20,7 @@ from urllib.parse import unquote, urlparse
 from pydantic import BaseModel, ConfigDict, Field
 
 
-ENVIRONMENT_CONTRACT_VERSION = "rtm_environment_contract_v1_0"
+ENVIRONMENT_CONTRACT_VERSION = "rtm_environment_contract_v1_1"
 
 EnvironmentName = Literal["development", "test", "staging", "production"]
 CheckStatus = Literal["pass", "warning", "blocking"]
@@ -569,6 +569,43 @@ def _check_operator_token(
         code="operator_token_ready",
         minimum_length=32,
     )
+
+
+def _check_case_authority_secrets(
+    collector: _CheckCollector,
+    environ: Mapping[str, str],
+) -> None:
+    """Require the independent secrets used by public and signed authority chains."""
+
+    public_access_secret = _require_secret(
+        collector,
+        environ,
+        "RTM_PUBLIC_CASE_ACCESS_SECRET",
+        code="public_case_access_secret_ready",
+        minimum_length=32,
+    )
+    authority_secret = _require_secret(
+        collector,
+        environ,
+        "RTM_AUTHORITY_SIGNING_SECRET",
+        code="authority_signing_secret_ready",
+        minimum_length=32,
+    )
+    if public_access_secret and authority_secret:
+        if public_access_secret == authority_secret:
+            collector.blocking(
+                "authority_secrets_independent",
+                "Los secretos de acceso público y firma de autoridad deben ser distintos.",
+                "RTM_PUBLIC_CASE_ACCESS_SECRET",
+                "RTM_AUTHORITY_SIGNING_SECRET",
+            )
+        else:
+            collector.pass_(
+                "authority_secrets_independent",
+                "Los secretos de acceso público y firma de autoridad son independientes.",
+                "RTM_PUBLIC_CASE_ACCESS_SECRET",
+                "RTM_AUTHORITY_SIGNING_SECRET",
+            )
 
 
 def _check_deployment_identity(
@@ -1168,6 +1205,7 @@ def build_environment_preflight(
         _check_database(collector, source, environment, markers)
         _check_frontend_and_cors(collector, source, environment, markers)
         _check_operator_token(collector, source)
+        _check_case_authority_secrets(collector, source)
         _check_deployment_identity(collector, source, environment, markers)
         _check_b2(
             collector,

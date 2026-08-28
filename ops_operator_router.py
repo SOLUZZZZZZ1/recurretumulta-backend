@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import hmac
 import json
 import os
 from typing import Optional, Any, Dict
@@ -8,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from database import get_engine
+from case_authority import verify_signed_case_authority
 from generate import GenerateRequest, generate_dgt
 from b2_storage import upload_bytes
 from docx_builder import build_docx
@@ -30,8 +32,10 @@ def _env(name: str) -> str:
 
 def require_operator_token(x_operator_token: Optional[str] = Header(default=None)):
     token = (x_operator_token or "").strip()
-    expected = _env("OPERATOR_TOKEN")
-    if not token or token != expected:
+    expected = (os.getenv("OPERATOR_TOKEN") or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="OPERATOR_TOKEN no configurado")
+    if not token or not hmac.compare_digest(token, expected):
         raise HTTPException(status_code=401, detail="Unauthorized operator")
     return token
 
@@ -535,11 +539,11 @@ def send_complete_case_file(
         ).fetchone()
         docs_count = int(docs_row[0] or 0) if docs_row else 0
 
-        _set_status(conn, case_id, "sent")
+        _set_status(conn, case_id, "ready_for_delivery")
         _append_event(
             conn,
             case_id,
-            "ops_complete_file_sent",
+            "ops_complete_file_delivery_prepared",
             {
                 "resource_id": resource.get("id"),
                 "resource_version": resource.get("version"),
@@ -558,7 +562,7 @@ def send_complete_case_file(
         "status": status,
         "resource_version": resource.get("version"),
         "documents_count": docs_count,
-        "message": "Expediente completo marcado como enviado.",
+        "message": "Expediente completo preparado; falta evidencia externa de entrega.",
     }
 
 
@@ -691,13 +695,44 @@ def approve_case(
     require_operator_token(x_operator_token)
     engine = get_engine()
     with engine.begin() as conn:
-        _case_or_404(conn, case_id)
+        case = _case_or_404(conn, case_id)
+        gate = conn.execute(
+            text(
+                "SELECT payment_status, authorized, COALESCE(test_mode,FALSE) "
+                "FROM cases WHERE id=:id FOR UPDATE"
+            ),
+            {"id": case_id},
+        ).fetchone()
+        if not gate or str(gate[0] or "") != "paid":
+            raise HTTPException(status_code=402, detail="Pago requerido")
+        if not bool(gate[1]):
+            raise HTTPException(status_code=409, detail="Falta autorización del cliente")
+        if bool(gate[2]):
+            raise HTTPException(
+                status_code=409,
+                detail="La aprobación operativa no admite expedientes test_mode",
+            )
+        authority = verify_signed_case_authority(conn, case_id)
+        resource = _latest_final_resource(conn, case_id)
+        if not resource or not resource.get("is_final"):
+            raise HTTPException(status_code=409, detail="Falta un recurso final congelado")
+        if case["status"] not in {"final_ready", "ready_for_delivery"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"No se puede aprobar desde status={case['status']}",
+            )
         _set_status(conn, case_id, "ready_to_submit")
         _append_event(
             conn,
             case_id,
             "operator_approved",
-            {"note": body.note, "at": _utcnow().isoformat()},
+            {
+                "note": body.note,
+                "at": _utcnow().isoformat(),
+                "resource_id": resource.get("id"),
+                "resource_version": resource.get("version"),
+                "authority_material_sha256": authority["material_sha256"],
+            },
         )
         status = _get_status(conn, case_id)
 
@@ -995,65 +1030,10 @@ def submit_to_dgt(
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     require_operator_token(x_operator_token)
-    engine = get_engine()
-    with engine.begin() as conn:
-        _case_or_404(conn, case_id)
-        current_status = _get_status(conn, case_id)
-
-        if current_status != "ready_to_submit" and not body.force:
-            raise HTTPException(
-                status_code=400,
-                detail="El expediente debe estar en ready_to_submit antes de enviarse a DGT",
-            )
-
-        dgt_id = f"DGT-{case_id}-{int(datetime.now().timestamp())}"
-        submitted_at = _utcnow()
-
-        _set_status(conn, case_id, "submitted")
-
-        try:
-            conn.execute(
-                text("UPDATE cases SET submitted_at = NOW() WHERE id = :id"),
-                {"id": case_id},
-            )
-        except Exception:
-            pass
-
-        try:
-            conn.execute(
-                text("UPDATE cases SET dgt_id = :dgt_id WHERE id = :id"),
-                {"id": case_id, "dgt_id": dgt_id},
-            )
-        except Exception:
-            pass
-
-        try:
-            conn.execute(
-                text("UPDATE cases SET dgt_submission_id = :dgt_id WHERE id = :id"),
-                {"id": case_id, "dgt_id": dgt_id},
-            )
-        except Exception:
-            pass
-
-        _append_event(
-            conn,
-            case_id,
-            "submitted_to_dgt",
-            {
-                "document_url": body.document_url,
-                "dgt_id": dgt_id,
-                "submitted_at": submitted_at.isoformat(),
-                "mode": "stub",
-            },
-        )
-
-        status = _get_status(conn, case_id)
-
-    return {
-        "ok": True,
-        "case_id": case_id,
-        "status": status,
-        "dgt_id": dgt_id,
-        "submitted_at": submitted_at.isoformat(),
-        "mode": "stub",
-    }
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Ruta de presentación simulada retirada. Use una vía con justificante "
+            "externo verificable: automatización autorizada o registro manual OPS."
+        ),
+    )

@@ -1,16 +1,31 @@
+import hashlib
 import json
 import os
 import smtplib
 import uuid
+from datetime import datetime, timezone
 from email.message import EmailMessage
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks, Request, Response
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks, Header, Request, Response
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import text
 
 from database import get_engine
 from b2_storage import upload_bytes
+from case_authority import (
+    AUTHORITY_VERSION,
+    build_case_authority_payload,
+    build_signed_authority_document_attestation,
+    verify_active_case_authority,
+    verify_signed_case_authority,
+)
+from public_case_access import (
+    issue_case_access_token,
+    require_case_access_token,
+    require_operator_case_access,
+)
+from rtm_core.runtime_capabilities import capability_state
 
 # Import interno del engine (Modo Dios)
 from ai.expediente_engine import run_expediente_ai
@@ -21,6 +36,7 @@ from analyze import analyze_existing_case_document
 router = APIRouter(prefix="/cases", tags=["cases"])
 
 MAX_APPEND_FILES = 5
+MAX_PUBLIC_PDF_BYTES = 10 * 1024 * 1024
 PUBLIC_SERVICE_FAMILY_CODES = {
     "trafico",
     "viajes",
@@ -41,10 +57,15 @@ def _env(name: str, default: str = "") -> str:
 
 def _case_link(case_id: str) -> str:
     base = _env("FRONTEND_BASE_URL", "https://www.recurretumulta.eu").rstrip("/")
-    return f"{base}/#/resumen?case={case_id}"
+    token = issue_case_access_token(case_id)
+    return f"{base}/#/resumen?case={case_id}&access_token={token}"
 
 def _smtp_ok() -> bool:
-    return bool(_env("SMTP_HOST") and _env("SMTP_FROM"))
+    return bool(
+        capability_state("outbound_email").enabled
+        and _env("SMTP_HOST")
+        and _env("SMTP_FROM")
+    )
 
 def _send_email(to_email: str, subject: str, body: str) -> None:
     if not to_email or not _smtp_ok():
@@ -131,6 +152,12 @@ class CaseContactIn(BaseModel):
     name: str = Field(...)
     email: EmailStr
 
+
+class AuthorizationConsentIn(BaseModel):
+    authority_version: Literal["v1_dgt_homologado"]
+    consent: Literal[True]
+    representation_confirmed: Literal[True]
+
 # =========================
 # HELPERS
 # =========================
@@ -171,6 +198,83 @@ def _event(case_id: str, typ: str, payload: Dict[str, Any]) -> None:
             ),
             {"c": case_id, "t": typ, "p": json.dumps(payload)},
         )
+
+
+def _event_on_conn(conn, case_id: str, typ: str, payload: Dict[str, Any]) -> None:
+    conn.execute(
+        text(
+            "INSERT INTO events(case_id, type, payload, created_at) "
+            "VALUES (:c,:t,CAST(:p AS JSONB),NOW())"
+        ),
+        {
+            "c": case_id,
+            "t": typ,
+            "p": json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        },
+    )
+
+
+def _validate_public_pdf(data: bytes, content_type: str | None) -> str:
+    if not data:
+        raise HTTPException(status_code=400, detail="Archivo vacío")
+    if len(data) > MAX_PUBLIC_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="PDF demasiado grande")
+    if (content_type or "").split(";", 1)[0].strip().lower() != "application/pdf":
+        raise HTTPException(status_code=415, detail="Solo se admite application/pdf")
+    if not data.startswith(b"%PDF-"):
+        raise HTTPException(status_code=422, detail="El contenido no es un PDF válido")
+    return hashlib.sha256(data).hexdigest()
+
+
+def _require_receipt_upload_state(conn, case_id: str) -> Dict[str, Any]:
+    row = conn.execute(
+        text(
+            "SELECT status, payment_status, authorized FROM cases "
+            "WHERE id=:id FOR UPDATE"
+        ),
+        {"id": case_id},
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Expediente no encontrado")
+    if str(row[1] or "").strip().lower() != "paid":
+        raise HTTPException(status_code=409, detail="El expediente no consta como pagado")
+    if not bool(row[2]):
+        raise HTTPException(status_code=409, detail="El expediente no está autorizado")
+    if str(row[0] or "") != "submission_receipt_pending":
+        raise HTTPException(
+            status_code=409,
+            detail="El expediente no está esperando justificante de presentación",
+        )
+    submission_row = conn.execute(
+        text(
+            """
+            SELECT payload FROM events
+            WHERE case_id=:id
+              AND type='dgt_submission_accepted_receipt_pending'
+              AND (
+                COALESCE(payload->>'registro', '') <> ''
+                OR COALESCE(payload->>'csv', '') <> ''
+              )
+            ORDER BY created_at DESC LIMIT 1
+            """
+        ),
+        {"id": case_id},
+    ).fetchone()
+    submission_payload = submission_row[0] if submission_row else None
+    if isinstance(submission_payload, str):
+        try:
+            submission_payload = json.loads(submission_payload)
+        except json.JSONDecodeError:
+            submission_payload = None
+    if not isinstance(submission_payload, dict):
+        raise HTTPException(
+            status_code=409,
+            detail="No existe una presentación externa pendiente verificable",
+        )
+    return {
+        "authority": verify_signed_case_authority(conn, case_id),
+        "submission": submission_payload,
+    }
 
 
 
@@ -273,6 +377,7 @@ async def create_rtm_intake_draft(
         raise HTTPException(status_code=400, detail="Faltan consentimientos obligatorios")
 
     case_id = str(uuid.uuid4())
+    case_access_token = issue_case_access_token(case_id)
     interested = {
         "full_name": full_name.strip(),
         "dni_nie": dni_nie.strip().upper(),
@@ -336,6 +441,8 @@ async def create_rtm_intake_draft(
     return {
         "ok": True,
         "case_id": case_id,
+        "case_access_token": case_access_token,
+        "case_access_token_header": "X-RTM-Case-Token",
         "status": "authorization_pending",
         "authorized": False,
         "authorization_download_url": f"/cases/{case_id}/rtm-authorization-pdf",
@@ -344,7 +451,11 @@ async def create_rtm_intake_draft(
 
 
 @router.get("/{case_id}/rtm-authorization-pdf")
-def download_rtm_authorization_pdf(case_id: str):
+def download_rtm_authorization_pdf(
+    case_id: str,
+    x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
+):
+    case_id = require_case_access_token(case_id, x_case_token)
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(text("""
@@ -408,7 +519,13 @@ Fecha: _____________________________
 # CONTACTO (PRE-PAGO)
 # =========================
 @router.post("/{case_id}/contact")
-def save_case_contact(case_id: str, data: CaseContactIn, background_tasks: BackgroundTasks):
+def save_case_contact(
+    case_id: str,
+    data: CaseContactIn,
+    background_tasks: BackgroundTasks,
+    x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
+):
+    case_id = require_case_access_token(case_id, x_case_token)
     engine = get_engine()
     with engine.begin() as conn:
         _case_exists(conn, case_id)
@@ -430,16 +547,27 @@ def save_case_contact(case_id: str, data: CaseContactIn, background_tasks: Backg
 # DATOS DEL INTERESADO
 # =========================
 @router.post("/{case_id}/details")
-def save_case_details(case_id: str, data: CaseDetailsIn):
+def save_case_details(
+    case_id: str,
+    data: CaseDetailsIn,
+    x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
+):
     """
     Guarda los datos del interesado antes de generar la autorización.
     Alimenta autorización, pago y recurso.
     """
+    case_id = require_case_access_token(case_id, x_case_token)
     engine = get_engine()
 
     with engine.begin() as conn:
         meta = _case_exists(conn, case_id)
         interested = dict(meta.get("interested_data") or {})
+        previous_identity = {
+            "full_name": str(interested.get("full_name") or "").strip(),
+            "dni_nie": str(interested.get("dni_nie") or "").strip().upper(),
+            "domicilio_notif": str(interested.get("domicilio_notif") or "").strip(),
+            "email": str(interested.get("email") or "").strip().lower(),
+        }
 
         interested.update(
             {
@@ -458,6 +586,14 @@ def save_case_details(case_id: str, data: CaseDetailsIn):
             }
         )
 
+        current_identity = {
+            "full_name": str(interested.get("full_name") or "").strip(),
+            "dni_nie": str(interested.get("dni_nie") or "").strip().upper(),
+            "domicilio_notif": str(interested.get("domicilio_notif") or "").strip(),
+            "email": str(interested.get("email") or "").strip().lower(),
+        }
+        authority_invalidated = bool(meta.get("authorized")) and previous_identity != current_identity
+
         conn.execute(
             text(
                 """
@@ -465,6 +601,8 @@ def save_case_details(case_id: str, data: CaseDetailsIn):
                 SET interested_data = CAST(:interested AS JSONB),
                     contact_name = :contact_name,
                     contact_email = :contact_email,
+                    authorized = CASE WHEN :authority_invalidated THEN FALSE ELSE authorized END,
+                    authorized_at = CASE WHEN :authority_invalidated THEN NULL ELSE authorized_at END,
                     updated_at = NOW()
                 WHERE id = :id
                 """
@@ -474,6 +612,7 @@ def save_case_details(case_id: str, data: CaseDetailsIn):
                 "interested": json.dumps(interested, ensure_ascii=False),
                 "contact_name": interested.get("full_name"),
                 "contact_email": interested.get("email"),
+                "authority_invalidated": authority_invalidated,
             },
         )
 
@@ -500,6 +639,17 @@ def save_case_details(case_id: str, data: CaseDetailsIn):
             },
         )
 
+        if authority_invalidated:
+            _event_on_conn(
+                conn,
+                case_id,
+                "case_authority_invalidated_by_identity_change",
+                {
+                    "authority_version": AUTHORITY_VERSION,
+                    "reason": "identity_material_changed",
+                },
+            )
+
     return {"ok": True, "case_id": case_id, "interested_data": interested}
 
 
@@ -507,7 +657,12 @@ def save_case_details(case_id: str, data: CaseDetailsIn):
 # AÑADIR DOCUMENTOS
 # =========================
 @router.post("/{case_id}/append-documents")
-async def append_documents(case_id: str, files: List[UploadFile] = File(...)):
+async def append_documents(
+    case_id: str,
+    files: List[UploadFile] = File(...),
+    x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
+):
+    case_id = require_case_access_token(case_id, x_case_token)
     if not files:
         raise HTTPException(status_code=400, detail="No se han recibido archivos.")
     if len(files) > MAX_APPEND_FILES:
@@ -622,7 +777,12 @@ async def append_documents(case_id: str, files: List[UploadFile] = File(...)):
 # REVIEW
 # =========================
 @router.post("/{case_id}/review")
-def review_case(case_id: str, background_tasks: BackgroundTasks):
+def review_case(
+    case_id: str,
+    background_tasks: BackgroundTasks,
+    x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
+):
+    case_id = require_case_access_token(case_id, x_case_token)
     engine = get_engine()
     with engine.begin() as conn:
         meta = _case_exists(conn, case_id)
@@ -664,7 +824,11 @@ def review_case(case_id: str, background_tasks: BackgroundTasks):
 # ESTADO PÚBLICO
 # =========================
 @router.get("/{case_id}/public-status")
-def public_status(case_id: str):
+def public_status(
+    case_id: str,
+    x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
+):
+    case_id = require_case_access_token(case_id, x_case_token)
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(
@@ -748,7 +912,13 @@ def public_status(case_id: str):
 # AUTORIZACION DEL EXPEDIENTE + PDF
 # =========================
 @router.post("/{case_id}/authorize")
-async def authorize_case(case_id: str, request: Request):
+async def authorize_case(
+    case_id: str,
+    consent: AuthorizationConsentIn,
+    request: Request,
+    x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
+):
+    case_id = require_case_access_token(case_id, x_case_token)
     engine = get_engine()
 
     with engine.begin() as conn:
@@ -787,43 +957,22 @@ async def authorize_case(case_id: str, request: Request):
                 },
             )
 
-        conn.execute(
-            text(
-                """
-                UPDATE cases
-                SET authorized = TRUE,
-                    authorized_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = :id
-                """
-            ),
-            {"id": case_id},
-        )
-
         ip = get_request_ip(request)
-
-        conn.execute(
-            text(
-                """
-                INSERT INTO events(case_id, type, payload, created_at)
-                VALUES (:id, 'case_authorized', CAST(:payload AS JSONB), NOW())
-                """
-            ),
-            {
-                "id": case_id,
-                "payload": json.dumps(
-                    {"ip": ip, "version": "v1_dgt_homologado"},
-                    ensure_ascii=False,
-                ),
-            },
+        accepted_at = datetime.now(timezone.utc).isoformat()
+        authority_payload = build_case_authority_payload(
+            case_id=case_id,
+            interested=interested,
+            accepted_at=accepted_at,
+            request_ip=ip,
         )
+        authority_material = authority_payload["material"]
 
         try:
             auth_doc = ensure_authorization_pdf(
                 conn,
                 case_id=case_id,
                 request=request,
-                version="v1_dgt_homologado",
+                version=consent.authority_version,
             )
         except Exception as e:
             raise HTTPException(
@@ -831,25 +980,47 @@ async def authorize_case(case_id: str, request: Request):
                 detail=f"Error generando PDF de autorización: {type(e).__name__}: {e}",
             )
 
+        conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET authorized = TRUE,
+                    authorized_at = CAST(:accepted_at AS TIMESTAMPTZ),
+                    updated_at = NOW()
+                WHERE id = :id
+                """
+            ),
+            {"id": case_id, "accepted_at": accepted_at},
+        )
+        _event_on_conn(conn, case_id, "case_authorized", authority_payload)
+
     return {
         "ok": True,
         "case_id": case_id,
         "authorized": True,
+        "authority_id": authority_material["authority_id"],
+        "authority_version": authority_material["authority_version"],
+        "authority_material_sha256": authority_payload["material_sha256"],
         "authorization_pdf": auth_doc.get("document"),
         "download_url": f"/cases/{case_id}/authorization-pdf",
     }
 
 @router.get("/{case_id}/authorization-pdf")
-def download_authorization_pdf(case_id: str, request: Request):
+def download_authorization_pdf(
+    case_id: str,
+    request: Request,
+    x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
+):
     """
     Devuelve el PDF de autorización ya relleno para descargar y firmar.
     """
+    case_id = require_case_access_token(case_id, x_case_token)
     engine = get_engine()
     with engine.begin() as conn:
         _case_exists(conn, case_id)
         ip = get_request_ip(request)
         case_meta = _get_case_snapshot(conn, case_id)
-        payload = _authorization_payload_from_case(case_meta, ip=ip, version="v1_dgt_homologado")
+        payload = _authorization_payload_from_case(case_meta, ip=ip, version=AUTHORITY_VERSION)
 
         payload["representante_nombre"] = "LA TALAMANQUINA, S.L."
         payload["representante_nif"] = "B75440115"
@@ -867,100 +1038,71 @@ def download_authorization_pdf(case_id: str, request: Request):
 # =========================
 # SUBIR AUTORIZACIÓN FIRMADA
 # =========================
-async def _store_authorization_signed(case_id: str, file: UploadFile):
-    """
-    Guarda la autorización firmada del cliente.
-    Endpoint robusto:
-    - comprueba primero que el expediente existe
-    - lee el archivo
-    - sube a B2
-    - inserta en documents como authorization_signed
-    - marca authorized = true
-    - devuelve errores claros si falla B2 o BD
-    """
+async def _store_authorization_signed(
+    case_id: str,
+    file: UploadFile,
+    x_case_token: Optional[str],
+):
+    """Adjunta el PDF firmado a una autorización digital ya verificable."""
+    case_id = require_case_access_token(case_id, x_case_token)
     engine = get_engine()
 
     with engine.begin() as conn:
-        _case_exists(conn, case_id)
+        verify_active_case_authority(conn, case_id)
 
     data = await file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="Archivo vacío")
-
-    filename = (file.filename or "autorizacion_firmada").replace("/", "_").replace("\\", "_")[:140]
-
-    ext = ".pdf"
-    if "." in filename:
-        candidate = "." + filename.rsplit(".", 1)[-1].lower()
-        if 2 <= len(candidate) <= 10:
-            ext = candidate
-
-    content_type = file.content_type or "application/octet-stream"
+    content_type = file.content_type or ""
+    document_sha256 = _validate_public_pdf(data, content_type)
 
     try:
-        b2_bucket, b2_key = upload_bytes(case_id, "authorization_signed", data, ext, content_type)
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"No se pudo guardar el archivo en Backblaze B2: {type(e).__name__}: {e}",
+        b2_bucket, b2_key = upload_bytes(
+            case_id, "authorization_signed", data, ".pdf", "application/pdf"
         )
-
-    try:
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
-                    VALUES (:id, 'authorization_signed', :b, :k, :m, :s, NOW())
-                    """
-                ),
-                {
-                    "id": case_id,
-                    "b": b2_bucket,
-                    "k": b2_key,
-                    "m": content_type,
-                    "s": len(data),
-                },
-            )
-
-            conn.execute(
-                text(
-                    """
-                    UPDATE cases
-                    SET authorized = TRUE,
-                        authorized_at = COALESCE(authorized_at, NOW()),
-                        updated_at = NOW()
-                    WHERE id = :id
-                    """
-                ),
-                {"id": case_id},
-            )
-
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO events(case_id, type, payload, created_at)
-                    VALUES (:id, 'authorization_signed_uploaded', CAST(:payload AS JSONB), NOW())
-                    """
-                ),
-                {
-                    "id": case_id,
-                    "payload": json.dumps(
-                        {
-                            "filename": filename,
-                            "bucket": b2_bucket,
-                            "key": b2_key,
-                            "mime": content_type,
-                            "size_bytes": len(data),
-                        },
-                        ensure_ascii=False,
-                    ),
-                },
-            )
     except Exception as e:
         raise HTTPException(
-            status_code=500,
-            detail=f"Archivo subido a B2, pero falló el registro en base de datos: {type(e).__name__}: {e}",
+            status_code=502,
+            detail=f"No se pudo custodiar el PDF firmado: {type(e).__name__}",
+        ) from e
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("SELECT id FROM cases WHERE id=:id FOR UPDATE"),
+            {"id": case_id},
+        )
+        authority_payload = verify_active_case_authority(conn, case_id)
+        document_row = conn.execute(
+            text(
+                """
+                INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
+                VALUES (:id, 'authorization_signed', :b, :k, 'application/pdf', :s, NOW())
+                RETURNING id
+                """
+            ),
+            {
+                "id": case_id,
+                "b": b2_bucket,
+                "k": b2_key,
+                "s": len(data),
+            },
+        ).fetchone()
+        if not document_row:
+            raise HTTPException(status_code=409, detail="No se registró el PDF firmado")
+        uploaded_at = datetime.now(timezone.utc).isoformat()
+        signed_attestation = build_signed_authority_document_attestation(
+            case_id=case_id,
+            authority_payload=authority_payload,
+            document_id=str(document_row[0]),
+            document_sha256=document_sha256,
+            size_bytes=len(data),
+            storage_bucket=b2_bucket,
+            storage_key=b2_key,
+            uploaded_at=uploaded_at,
+        )
+        _event_on_conn(
+            conn,
+            case_id,
+            "authorization_signed_uploaded",
+            signed_attestation,
         )
 
     return {
@@ -969,36 +1111,59 @@ async def _store_authorization_signed(case_id: str, file: UploadFile):
         "authorized": True,
         "document": {
             "kind": "authorization_signed",
-            "bucket": b2_bucket,
-            "key": b2_key,
-            "mime": content_type,
+            "mime": "application/pdf",
             "size_bytes": len(data),
+            "sha256": document_sha256,
+            "attestation_sha256": signed_attestation["material_sha256"],
         },
     }
 
 
 @router.post("/{case_id}/upload-authorization-signed")
-async def upload_authorization_signed_legacy(case_id: str, file: UploadFile = File(...)):
-    return await _store_authorization_signed(case_id, file)
+async def upload_authorization_signed_legacy(
+    case_id: str,
+    file: UploadFile = File(...),
+    x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
+):
+    return await _store_authorization_signed(case_id, file, x_case_token)
 
 
 @router.post("/{case_id}/authorization-signed")
-async def upload_authorization_signed(case_id: str, file: UploadFile = File(...)):
-    return await _store_authorization_signed(case_id, file)
+async def upload_authorization_signed(
+    case_id: str,
+    file: UploadFile = File(...),
+    x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
+):
+    return await _store_authorization_signed(case_id, file, x_case_token)
 
 
 @router.post("/{case_id}/upload-receipt")
-async def upload_receipt(case_id: str, file: UploadFile = File(...)):
+async def upload_receipt(
+    case_id: str,
+    file: UploadFile = File(...),
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+):
+    case_id = require_operator_case_access(case_id, x_operator_token)
     engine = get_engine()
 
     data = await file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="Archivo vacío")
-
-    b2_bucket, b2_key = upload_bytes(case_id, "receipt", data, ".pdf", "application/pdf")
+    receipt_sha256 = _validate_public_pdf(data, file.content_type or "")
 
     with engine.begin() as conn:
-        _case_exists(conn, case_id)
+        _require_receipt_upload_state(conn, case_id)
+
+    try:
+        b2_bucket, b2_key = upload_bytes(
+            case_id, "receipt", data, ".pdf", "application/pdf"
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"No se pudo custodiar el justificante: {type(exc).__name__}",
+        ) from exc
+
+    with engine.begin() as conn:
+        state_evidence = _require_receipt_upload_state(conn, case_id)
 
         conn.execute(
             text(
@@ -1016,19 +1181,42 @@ async def upload_receipt(case_id: str, file: UploadFile = File(...)):
             },
         )
 
-        conn.execute(
+        updated = conn.execute(
             text(
                 """
                 UPDATE cases
                 SET status='submitted', updated_at=NOW()
-                WHERE id=:id
+                WHERE id=:id AND status='submission_receipt_pending'
+                RETURNING id
                 """
             ),
             {"id": case_id},
+        ).fetchone()
+        if not updated:
+            raise HTTPException(status_code=409, detail="Transición de presentación en conflicto")
+
+        _event_on_conn(
+            conn,
+            case_id,
+            "submission_receipt_uploaded",
+            {
+                "evidence_kind": "submission_receipt",
+                "receipt_sha256": receipt_sha256,
+                "size_bytes": len(data),
+                "registro": state_evidence["submission"].get("registro"),
+                "csv": state_evidence["submission"].get("csv"),
+                "resource_id": state_evidence["submission"].get("resource_id"),
+                "authority_material_sha256": state_evidence["authority"]["material_sha256"],
+                "transition": {
+                    "from": "submission_receipt_pending",
+                    "to": "submitted",
+                },
+            },
         )
 
-        _event(case_id, "submission_receipt_uploaded", {
-            "file": b2_key
-        })
-
-    return {"ok": True}
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "status": "submitted",
+        "receipt_sha256": receipt_sha256,
+    }

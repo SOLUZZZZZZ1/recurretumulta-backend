@@ -1080,6 +1080,12 @@ def begin_review(
     conn: Any, *, tenant_id: str, task_id: str, operator_id: str,
     idempotency_key: str, expected_version: int,
 ) -> dict[str, Any]:
+    def guard(
+        row: Mapping[str, Any], membership: repository.TenantMembership
+    ) -> None:
+        _assert_assignee(row, membership)
+        _task_authority(conn, row)
+
     return _run(lambda: _simple_transition(
         conn,
         tenant_id=tenant_id, task_id=task_id, operator_id=operator_id,
@@ -1087,7 +1093,7 @@ def begin_review(
         permission=a1s_policy.HUMAN_FILING_EXECUTE_PERMISSION,
         scope="human_filing.review.begin",
         target_status="reviewing", reason_code="a1s_human_review_started",
-        material={}, guard=_assert_assignee,
+        material={}, guard=guard,
     ))
 
 
@@ -1117,6 +1123,7 @@ def attest_review(
         if replay:
             return replay
         _assert_assignee(row, membership)
+        action, authorization_version, grant = _task_authority(conn, row)
         if package_sha256 != str(row["package_sha256"]):
             raise repository.HumanFilingReplayConflict(
                 "review_package_sha256_mismatch"
@@ -1129,6 +1136,10 @@ def attest_review(
             "format": "rtm.a1s.human_review.v1",
             "task_id": task_id,
             "tenant_id": tenant_id,
+            "action_id": action.action_id,
+            "authorization_id": grant.authorization_id,
+            "authorization_version": authorization_version,
+            "request_sha256": grant.payload_sha256,
             "package_sha256": package_sha256,
             "principal_id": membership.principal_id,
             "operator_id": operator_id,
@@ -1202,7 +1213,7 @@ def preapprove_verifier(
             row, membership,
             "requester_principal_id", "assignee_principal_id",
         )
-        action, _version, grant = _task_authority(conn, row)
+        action, authorization_version, grant = _task_authority(conn, row)
         _grant_allows_operator(grant, operator_id)
         if package_sha256 != str(row["package_sha256"]):
             raise repository.HumanFilingReplayConflict(
@@ -1217,6 +1228,9 @@ def preapprove_verifier(
             "phase": "preapproval",
             "task_id": task_id,
             "action_id": action.action_id,
+            "authorization_id": grant.authorization_id,
+            "authorization_version": authorization_version,
+            "request_sha256": grant.payload_sha256,
             "package_sha256": package_sha256,
             "membership_id": membership.membership_id,
             "principal_id": membership.principal_id,
@@ -1299,7 +1313,7 @@ def release_human_filing(
             row, membership,
             "requester_principal_id", "assignee_principal_id",
         )
-        action, _version, grant = _task_authority(conn, row)
+        action, authorization_version, grant = _task_authority(conn, row)
         _grant_allows_operator(grant, operator_id)
         approvals = repository.approvals_for_task(
             conn, tenant_id=tenant_id, task_id=task_id
@@ -1326,6 +1340,8 @@ def release_human_filing(
             "task_id": task_id,
             "action_id": action.action_id,
             "authorization_id": grant.authorization_id,
+            "authorization_version": authorization_version,
+            "request_sha256": grant.payload_sha256,
             "package_sha256": package_sha256,
             "review_attestation_sha256": str(
                 row["review_attestation_sha256"]
@@ -1451,6 +1467,7 @@ def record_outcome(
         if replay:
             return replay
         _assert_assignee(row, membership)
+        action, authorization_version, grant = _task_authority(conn, row)
         if str(row["status"]) != "in_progress":
             raise repository.HumanFilingStateConflict(
                 "outcome_requires_in_progress"
@@ -1472,8 +1489,11 @@ def record_outcome(
             report = {
                 "format": "rtm.a1s.synthetic_submission_report.v1",
                 "task_id": task_id,
-                "action_id": str(row["action_id"]),
+                "action_id": action.action_id,
                 "attempt_id": str(row["attempt_id"]),
+                "authorization_id": grant.authorization_id,
+                "authorization_version": authorization_version,
+                "request_sha256": grant.payload_sha256,
                 "external_reference": reference,
                 "witnessed_at": _stamp(witnessed_at),
                 "operator_id": operator_id,
@@ -1500,6 +1520,9 @@ def record_outcome(
                 external_reference=reference,
                 result_metadata={
                     "a1s": True,
+                    "authorization_id": grant.authorization_id,
+                    "authorization_version": authorization_version,
+                    "request_sha256": grant.payload_sha256,
                     "synthetic_only": True,
                     "network_used": False,
                     "legal_submission_executed": False,
@@ -1525,6 +1548,9 @@ def record_outcome(
                 error_code="a1s_outcome_unknown",
                 result_metadata={
                     "a1s": True,
+                    "authorization_id": grant.authorization_id,
+                    "authorization_version": authorization_version,
+                    "request_sha256": grant.payload_sha256,
                     "blind_retry_allowed": False,
                     "network_used": False,
                     "legal_submission_executed": False,
@@ -1543,6 +1569,9 @@ def record_outcome(
             event_payload={
                 "blind_retry_allowed": False,
                 "legal_submission_executed": False,
+                "authorization_id": grant.authorization_id,
+                "authorization_version": authorization_version,
+                "request_sha256": grant.payload_sha256,
             },
         )
         return _complete_command(
@@ -1766,7 +1795,7 @@ def verify_receipt_and_complete(
                 "synthetic_receipt_artifact_missing"
             )
         receipt_payload = dict(receipt["canonical_payload"] or {})
-        action, _version, grant = _task_authority(conn, row)
+        action, authorization_version, grant = _task_authority(conn, row)
         fixture = repository.load_fixture_document(
             conn,
             tenant_id=tenant_id,
@@ -1834,6 +1863,8 @@ def verify_receipt_and_complete(
             "task_id": task_id,
             "action_id": action.action_id,
             "authorization_id": grant.authorization_id,
+            "authorization_version": authorization_version,
+            "request_sha256": grant.payload_sha256,
             "receipt_artifact_id": str(receipt["id"]),
             "receipt_sha256": observed_receipt_sha256,
             "external_reference": observed_external_reference,

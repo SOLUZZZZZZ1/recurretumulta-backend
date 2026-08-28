@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
 from b2_storage import upload_bytes
+from case_authority import verify_signed_case_authority
 from docx_builder import build_docx
 from pdf_builder import build_pdf
 from rtm_core.authority_repository import get_family_resolution, get_validated_facts
@@ -148,7 +149,8 @@ def _case_meta(conn, case_id: str, *, for_update: bool = False) -> Mapping[str, 
         raise HTTPException(status_code=409, detail="Generate CORE no admite test_mode")
     if str(mapping["status"]) in _TERMINAL_CASE_STATUSES:
         raise HTTPException(status_code=409, detail="El expediente está en un estado final")
-    return mapping
+    authority = verify_signed_case_authority(conn, case_id)
+    return {**dict(mapping), "_active_case_authority": authority}
 
 
 def _authority_chain(conn, case_id: str, preview_id: str, *, for_update: bool = False):
@@ -481,6 +483,15 @@ def generate_from_frozen_preview(
             "content_sha256": content_hash,
             "docx_document_id": docx_id,
             "pdf_document_id": pdf_id,
+            "case_authority_id": case["_active_case_authority"]["material"][
+                "authority_id"
+            ],
+            "case_authority_version": case["_active_case_authority"]["material"][
+                "authority_version"
+            ],
+            "case_authority_material_sha256": case["_active_case_authority"][
+                "material_sha256"
+            ],
         },
     )
     return get_generated_resource(conn, case_id, resource_id)
@@ -494,6 +505,12 @@ def approve_resource_for_submission(
     approved_by: str,
 ) -> GeneratedResourceRecord:
     case = _case_meta(conn, case_id, for_update=True)
+    case_status = str(case["status"])
+    if case_status not in {"final_ready", "ready_to_submit"}:
+        raise HTTPException(
+            status_code=409,
+            detail="El expediente no está en una transición aprobable",
+        )
     resource = get_generated_resource(conn, case_id, resource_id, for_update=True)
     if resource.status != "final_ready":
         raise HTTPException(status_code=409, detail="El recurso no está listo para aprobar")
@@ -519,22 +536,38 @@ def approve_resource_for_submission(
     if not pdf or str(pdf[1] or "") != "application/pdf":
         raise HTTPException(status_code=409, detail="El PDF final no está disponible")
 
+    newly_approved = False
     if not resource.approved_at:
-        conn.execute(
+        approved = conn.execute(
             text(
                 """
                 UPDATE rtm_generated_resources
                 SET approved_by=:approved_by, approved_at=NOW(), updated_at=NOW()
-                WHERE id=:resource_id
+                WHERE id=:resource_id AND approved_at IS NULL
+                RETURNING id
                 """
             ),
             {"approved_by": approved_by, "resource_id": resource_id},
-        )
-    if str(case["status"]) != "ready_to_submit":
-        conn.execute(
-            text("UPDATE cases SET status='ready_to_submit', updated_at=NOW() WHERE id=:case_id"),
+        ).fetchone()
+        if not approved:
+            raise HTTPException(status_code=409, detail="Aprobación concurrente detectada")
+        newly_approved = True
+
+    transitioned = False
+    if case_status == "final_ready":
+        updated = conn.execute(
+            text(
+                "UPDATE cases SET status='ready_to_submit', updated_at=NOW() "
+                "WHERE id=:case_id AND status='final_ready' RETURNING id"
+            ),
             {"case_id": case_id},
-        )
+        ).fetchone()
+        if not updated:
+            raise HTTPException(status_code=409, detail="Transición concurrente detectada")
+        transitioned = True
+
+    if newly_approved or transitioned:
+        authority = case["_active_case_authority"]
         _append_event(
             conn,
             case_id,
@@ -544,6 +577,10 @@ def approve_resource_for_submission(
                 "preview_id": resource.legal_preview_id,
                 "approved_by": approved_by,
                 "pdf_document_id": resource.pdf_document_id,
+                "content_sha256": resource.content_sha256,
+                "case_authority_id": authority["material"]["authority_id"],
+                "case_authority_version": authority["material"]["authority_version"],
+                "case_authority_material_sha256": authority["material_sha256"],
             },
         )
     return get_generated_resource(conn, case_id, resource_id)

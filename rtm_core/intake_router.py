@@ -11,13 +11,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from typing import Any, List
+from typing import Any, List, Optional
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Header, HTTPException, UploadFile
 from sqlalchemy import text
 
 from b2_storage import upload_bytes
 from database import get_engine
+from public_case_access import require_case_access_token
 from rtm_core.authority_repository import (
     invalidate_validated_facts,
     latest_validated_facts,
@@ -147,9 +148,11 @@ def _invalidate_authority_after_new_document(conn, case_id: str) -> list[str]:
 async def append_documents_core(
     case_id: str,
     files: List[UploadFile] = File(...),
+    x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
 ):
     """Almacena originales; nunca llama a Analyze, scoring o especialistas."""
 
+    case_id = require_case_access_token(case_id, x_case_token)
     if not files:
         raise HTTPException(status_code=400, detail="No se han recibido archivos")
     if len(files) > MAX_APPEND_FILES:
@@ -307,9 +310,13 @@ async def append_documents_core(
 
 
 @router.post("/{case_id}/review")
-def review_case_core(case_id: str):
+def review_case_core(
+    case_id: str,
+    x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
+):
     """Comprueba preparación documental; no ejecuta inteligencia jurídica."""
 
+    case_id = require_case_access_token(case_id, x_case_token)
     engine = get_engine()
     with engine.begin() as conn:
         snapshot = load_case_review_snapshot(conn, case_id)
@@ -348,9 +355,13 @@ def review_case_core(case_id: str):
 
 
 @router.get("/{case_id}/public-status")
-def public_status_core(case_id: str):
+def public_status_core(
+    case_id: str,
+    x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
+):
     """Proyección pública mínima: nunca devuelve PII, OCR ni extracción."""
 
+    case_id = require_case_access_token(case_id, x_case_token)
     engine = get_engine()
     with engine.begin() as conn:
         snapshot = load_case_review_snapshot(conn, case_id)

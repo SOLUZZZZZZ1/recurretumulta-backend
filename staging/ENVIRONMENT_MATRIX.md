@@ -1,6 +1,6 @@
 # RTM · Matriz vinculante de entornos
 
-Versión lógica: `rtm_environment_contract_v1_0`
+Versión lógica: `rtm_environment_contract_v1_1`
 
 Este documento define cómo debe separarse un servicio de **staging real** de la
 instancia de producción. No contiene credenciales ni autoriza un despliegue. La
@@ -18,6 +18,8 @@ rama propia
 + base PostgreSQL propia
 + frontend y CORS propios
 + token OPS propio
++ secreto propio para enlaces de expediente
++ secreto independiente para firmar la cadena de autoridad
 + bucket propio cuando B2 esté activo
 + claves test cuando Stripe esté activo
 + política synthetic_only cuando el proveedor documental esté activo
@@ -51,6 +53,8 @@ RTM_INSTANCE_ID=rtm-staging
 RTM_DATA_NAMESPACE=rtm-staging
 RTM_SIDE_EFFECT_POLICY=isolated
 RTM_ALLOW_REAL_CUSTOMER_DATA=0
+RTM_PUBLIC_CASE_ACCESS_SECRET=<secreto exclusivo de al menos 32 caracteres>
+RTM_AUTHORITY_SIGNING_SECRET=<otro secreto exclusivo de al menos 32 caracteres>
 RTM_EXPECTED_BRANCH=rtm-core-consolidation-2026-08-08
 ```
 
@@ -80,6 +84,8 @@ Reglas:
 | Frontend | Host propio con marcador de staging | `recurretumulta.eu` | Staging no puede usar el host exacto de producción |
 | CORS | Orígenes explícitos de staging | Orígenes explícitos reales | `*` queda bloqueado |
 | OPS | Token exclusivo de staging | Token exclusivo real | Mínimo de seguridad y sin valores de ejemplo |
+| Acceso público | Secreto HMAC exclusivo | Secreto HMAC exclusivo real | Mínimo 32 caracteres |
+| Autoridad firmada | Secreto HMAC distinto | Secreto HMAC distinto real | No puede coincidir con acceso público |
 | B2 | Bucket dedicado de staging | Bucket real | No puede coincidir con producción |
 | Stripe | Modo test, `sk_test_` | Modo live, `sk_live_` | Una clave live en staging queda bloqueada |
 | Proveedor documental | `synthetic_only` | `customer_documents` | Staging no admite documentos de cliente |
@@ -267,6 +273,7 @@ incluye:
 - claves B2;
 - claves o webhooks Stripe;
 - claves del proveedor documental;
+- secretos de acceso público y autoridad firmada;
 - URLs completas de recursos sensibles.
 
 ## 13. Orden operativo de creación
@@ -275,7 +282,7 @@ incluye:
 1. Crear servicio backend separado sin desplegar main.
 2. Crear PostgreSQL separado.
 3. Reservar host frontend de staging.
-4. Configurar identidad, CORS y token OPS exclusivo.
+4. Configurar identidad, CORS, token OPS y los dos secretos HMAC exclusivos.
 5. Mantener todas las capacidades externas a 0.
 6. Ejecutar preflight.
 7. Importar aplicación y ejecutar pruebas de salud.

@@ -1,8 +1,10 @@
 # ops.py — Panel Operador (PIN + cola + docs + logs + presentado + justificante + descarga segura)
+import hashlib
+import hmac
 import json
 import os
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, List
 
 from fastapi import APIRouter, HTTPException, Header, UploadFile, File, Form, Query
@@ -10,7 +12,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 
 from database import get_engine
-from b2_storage import upload_bytes
+from case_authority import verify_signed_case_authority
+from rtm_staging_guards import require_isolated_synthetic_staging
 
 router = APIRouter(prefix="/ops", tags=["ops"])
 
@@ -45,6 +48,52 @@ TRAVEL_CASE_TYPES = {
     "cruise",
     "travel_agency",
 }
+SUBMISSION_SOURCE_STATES = {
+    "ready_to_submit",
+    "submission_receipt_pending",
+}
+MANUAL_SUBMISSION_CHANNELS = {
+    "ayuntamiento_manual",
+    "correo_administrativo",
+    "dgt",
+    "presencial",
+    "registro_electronico",
+    "sede_electronica",
+    "sir",
+}
+PRESENTED_EVIDENCE_SQL = """
+    EXISTS (
+        SELECT 1
+        FROM events pe
+        WHERE pe.case_id = c.id
+          AND (
+            (
+              pe.type = 'dgt_submitted'
+              AND COALESCE(pe.payload->>'receipt_sha256', '') <> ''
+              AND (
+                COALESCE(pe.payload->>'registro', '') <> ''
+                OR COALESCE(pe.payload->>'csv', '') <> ''
+              )
+            )
+            OR (
+              pe.type = 'manual_submission_registered'
+              AND COALESCE(pe.payload->>'registro', '') <> ''
+            )
+            OR (
+              pe.type = 'ops_mark_submitted'
+              AND COALESCE(pe.payload->>'registro', '') <> ''
+            )
+            OR (
+              pe.type = 'submission_receipt_uploaded'
+              AND COALESCE(pe.payload->>'receipt_sha256', '') <> ''
+              AND (
+                COALESCE(pe.payload->>'registro', '') <> ''
+                OR COALESCE(pe.payload->>'csv', '') <> ''
+              )
+            )
+          )
+    )
+"""
 
 
 def _fold_public_text(value: Any) -> str:
@@ -98,8 +147,10 @@ def _env(name: str) -> str:
 
 def _require_operator(x_operator_token: Optional[str]):
     token = (x_operator_token or "").strip()
-    expected = _env("OPERATOR_TOKEN")
-    if not token or token != expected:
+    expected = (os.getenv("OPERATOR_TOKEN") or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="OPERATOR_TOKEN no configurado")
+    if not token or not hmac.compare_digest(token, expected):
         raise HTTPException(status_code=401, detail="Unauthorized operator")
 
 
@@ -116,13 +167,26 @@ def _download_bytes(bucket: str, key: str) -> bytes:
     raise HTTPException(status_code=500, detail="No existe función de descarga en b2_storage (download_bytes/get_bytes/...)")
 
 
+def _upload_bytes(
+    case_id: str,
+    kind_folder: str,
+    content: bytes,
+    ext: str,
+    mime: str,
+):
+    # La dependencia con credenciales/red se carga solo al ejecutar una subida.
+    from b2_storage import upload_bytes
+
+    return upload_bytes(case_id, kind_folder, content, ext, mime)
+
+
 
 @router.post("/login")
 def ops_login(pin: str = Form(...)) -> Dict[str, Any]:
     expected = (os.getenv("OPERATOR_PIN") or "").strip()
     if not expected:
         raise HTTPException(status_code=500, detail="OPERATOR_PIN no configurado")
-    if pin.strip() != expected:
+    if not hmac.compare_digest(pin.strip(), expected):
         raise HTTPException(status_code=401, detail="PIN incorrecto")
     return {"ok": True, "token": _env("OPERATOR_TOKEN")}
 
@@ -234,21 +298,23 @@ def list_presented_cases_safe(
         if term:
             rows = conn.execute(
                 text(
-                    """
-                    SELECT id, expediente_ref, status, payment_status, contact_email, created_at, updated_at
-                    FROM cases
+                    f"""
+                    SELECT c.id, c.expediente_ref, c.status, c.payment_status,
+                           c.contact_email, c.created_at, c.updated_at
+                    FROM cases c
                     WHERE (
-                        status = 'submitted'
-                        OR status ILIKE 'presentado%%'
-                        OR status ILIKE '%%presentado%%'
+                        c.status = 'submitted'
+                        OR c.status ILIKE 'presentado%%'
+                        OR c.status ILIKE '%%presentado%%'
                     )
+                    AND {PRESENTED_EVIDENCE_SQL}
                     AND (
-                        CAST(id AS TEXT) ILIKE :term
-                        OR COALESCE(expediente_ref, '') ILIKE :term
-                        OR COALESCE(contact_email, '') ILIKE :term
-                        OR COALESCE(status, '') ILIKE :term
+                        CAST(c.id AS TEXT) ILIKE :term
+                        OR COALESCE(c.expediente_ref, '') ILIKE :term
+                        OR COALESCE(c.contact_email, '') ILIKE :term
+                        OR COALESCE(c.status, '') ILIKE :term
                     )
-                    ORDER BY updated_at DESC
+                    ORDER BY c.updated_at DESC
                     LIMIT :limit
                     """
                 ),
@@ -257,15 +323,17 @@ def list_presented_cases_safe(
         else:
             rows = conn.execute(
                 text(
-                    """
-                    SELECT id, expediente_ref, status, payment_status, contact_email, created_at, updated_at
-                    FROM cases
+                    f"""
+                    SELECT c.id, c.expediente_ref, c.status, c.payment_status,
+                           c.contact_email, c.created_at, c.updated_at
+                    FROM cases c
                     WHERE (
-                        status = 'submitted'
-                        OR status ILIKE 'presentado%%'
-                        OR status ILIKE '%%presentado%%'
+                        c.status = 'submitted'
+                        OR c.status ILIKE 'presentado%%'
+                        OR c.status ILIKE '%%presentado%%'
                     )
-                    ORDER BY updated_at DESC
+                    AND {PRESENTED_EVIDENCE_SQL}
+                    ORDER BY c.updated_at DESC
                     LIMIT :limit
                     """
                 ),
@@ -382,9 +450,33 @@ def list_events(
     return {"ok": True, "case_id": case_id, "events": items}
 
 
-def _require_paid_and_authorized(conn, case_id: str):
+def _payload_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _require_lab_key(x_lab_key: Optional[str]) -> None:
+    expected = (os.getenv("LAB_FORCE_KEY") or "").strip()
+    candidate = (x_lab_key or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="LAB_FORCE_KEY no configurado")
+    if not candidate or not hmac.compare_digest(candidate, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized lab key")
+
+
+def _require_paid_and_authorized(conn, case_id: str) -> Dict[str, Any]:
     row = conn.execute(
-        text("SELECT payment_status, authorized FROM cases WHERE id=:id"),
+        text(
+            "SELECT payment_status, authorized, COALESCE(test_mode,FALSE) "
+            "FROM cases WHERE id=:id FOR UPDATE"
+        ),
         {"id": case_id},
     ).fetchone()
     if not row:
@@ -393,6 +485,27 @@ def _require_paid_and_authorized(conn, case_id: str):
         raise HTTPException(status_code=402, detail="Pago requerido")
     if not bool(row[1]):
         raise HTTPException(status_code=409, detail="Falta autorización del cliente")
+    if bool(row[2]):
+        require_isolated_synthetic_staging()
+        synthetic_authority = conn.execute(
+            text(
+                """
+                SELECT payload FROM events
+                WHERE case_id=:id
+                  AND type='ops_lab_force_authorize'
+                  AND COALESCE(payload->>'synthetic', '')='true'
+                ORDER BY created_at DESC LIMIT 1
+                """
+            ),
+            {"id": case_id},
+        ).fetchone()
+        if not synthetic_authority:
+            raise HTTPException(status_code=409, detail="Autoridad sintética no verificable")
+        return {
+            "synthetic": True,
+            "event": _payload_dict(synthetic_authority[0]),
+        }
+    return verify_signed_case_authority(conn, case_id)
 
 
 def _case_exists(conn, case_id: str) -> str:
@@ -459,6 +572,24 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _validated_submitted_at(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return _now_iso()
+    for candidate in (raw, raw.replace(" ", "T"), raw.replace("/", "-")):
+        try:
+            parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.astimezone(timezone.utc)
+        if parsed > datetime.now(timezone.utc) + timedelta(minutes=5):
+            raise HTTPException(status_code=400, detail="submitted_at no puede estar en el futuro")
+        return parsed.isoformat()
+    raise HTTPException(status_code=400, detail="submitted_at no tiene formato ISO válido")
+
+
 @router.post("/cases/{case_id}/mark-submitted")
 def mark_submitted(
     case_id: str,
@@ -468,44 +599,90 @@ def mark_submitted(
     note: Optional[str] = Form(default=None),
 ) -> Dict[str, Any]:
     _require_operator(x_operator_token)
+    registro_clean = (registro or "").strip()
+    channel_clean = (channel or "").strip().lower().replace(" ", "_")
+    if len(registro_clean) < 3:
+        raise HTTPException(status_code=400, detail="Número de registro verificable requerido")
+    if channel_clean not in MANUAL_SUBMISSION_CHANNELS:
+        raise HTTPException(status_code=400, detail="Canal de presentación no reconocido")
 
     engine = get_engine()
     with engine.begin() as conn:
-        _require_paid_and_authorized(conn, case_id)
+        authority = _require_paid_and_authorized(conn, case_id)
 
         row = conn.execute(
             text("SELECT status FROM cases WHERE id=:id"),
             {"id": case_id},
         ).fetchone()
         current_status = row[0] if row else ""
-
-        conn.execute(
-            text("UPDATE cases SET status='submitted', updated_at=NOW() WHERE id=:id"),
-            {"id": case_id},
-        )
-
-        conn.execute(
-            text(
-                """
-                INSERT INTO events(case_id, type, payload, created_at)
-                VALUES (:case_id, 'ops_mark_submitted', CAST(:payload AS JSONB), NOW())
-                """
-            ),
-            {
-                "case_id": case_id,
-                "payload": json.dumps(
-                    {
-                        "from": current_status,
-                        "to": "submitted",
-                        "channel": channel,
-                        "registro": registro,
-                        "note": note,
-                    }
+        if current_status == "submitted":
+            existing = conn.execute(
+                text(
+                    """
+                    SELECT 1 FROM events
+                    WHERE case_id=:id
+                      AND type='ops_mark_submitted'
+                      AND payload->>'registro'=:registro
+                      AND payload->>'channel'=:channel
+                    LIMIT 1
+                    """
                 ),
+                {
+                    "id": case_id,
+                    "registro": registro_clean,
+                    "channel": channel_clean,
+                },
+            ).fetchone()
+            if existing:
+                return {
+                    "ok": True,
+                    "replayed": True,
+                    "case_id": case_id,
+                    "status": "submitted",
+                    "registro": registro_clean,
+                }
+            raise HTTPException(status_code=409, detail="El expediente ya consta como presentado")
+        if current_status not in SUBMISSION_SOURCE_STATES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"No se puede registrar presentación desde status={current_status}",
+            )
+
+        updated = conn.execute(
+            text(
+                "UPDATE cases SET status='submitted', updated_at=NOW() "
+                "WHERE id=:id AND status IN ('ready_to_submit','submission_receipt_pending') "
+                "RETURNING id"
+            ),
+            {"id": case_id},
+        ).fetchone()
+        if not updated:
+            raise HTTPException(status_code=409, detail="Transición de presentación en conflicto")
+
+        _append_event(
+            conn,
+            case_id,
+            "ops_mark_submitted",
+            {
+                "from": current_status,
+                "to": "submitted",
+                "evidence_kind": "operator_registration_attestation",
+                "channel": channel_clean,
+                "registro": registro_clean,
+                "submitted_at": _now_iso(),
+                "authority_material_sha256": authority.get("material_sha256"),
+                "synthetic": bool(authority.get("synthetic")),
+                "note": note or "",
             },
         )
 
-    return {"ok": True, "case_id": case_id, "status": "submitted"}
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "status": "submitted",
+        "registro": registro_clean,
+        "channel": channel_clean,
+    }
 
 
 @router.post("/cases/{case_id}/upload-justificante")
@@ -533,7 +710,7 @@ async def upload_justificante(
         _, ext = os.path.splitext(filename.lower())
         ext = ext or ".bin"
 
-        b2_bucket, b2_key = upload_bytes(case_id, "justificantes", data, ext, content_type)
+        b2_bucket, b2_key = _upload_bytes(case_id, "justificantes", data, ext, content_type)
 
         conn.execute(
             text(
@@ -607,7 +784,7 @@ async def upload_external_document(
     with engine.begin() as conn:
         _case_exists(conn, case_id)
 
-        b2_bucket, b2_key = upload_bytes(case_id, "external", data, ext, content_type)
+        b2_bucket, b2_key = _upload_bytes(case_id, "external", data, ext, content_type)
 
         conn.execute(
             text(
@@ -680,25 +857,59 @@ async def register_manual_submission(
     organismo_clean = (organismo or "").strip()
     registro_clean = (registro or "").strip()
     csv_clean = (csv or "").strip()
-    channel_clean = (channel or "ayuntamiento_manual").strip()
-    submitted_at_clean = (submitted_at or "").strip()
+    channel_clean = (channel or "ayuntamiento_manual").strip().lower().replace(" ", "_")
+    submitted_at_clean = _validated_submitted_at(submitted_at or "")
 
     if not organismo_clean:
         raise HTTPException(status_code=400, detail="Organismo requerido")
-    if not registro_clean:
+    if len(registro_clean) < 3:
         raise HTTPException(status_code=400, detail="Número de registro requerido")
+    if channel_clean not in MANUAL_SUBMISSION_CHANNELS:
+        raise HTTPException(status_code=400, detail="Canal de presentación no reconocido")
 
     document_info: Optional[Dict[str, Any]] = None
 
     engine = get_engine()
     with engine.begin() as conn:
-        _case_exists(conn, case_id)
+        authority = _require_paid_and_authorized(conn, case_id)
 
         row = conn.execute(
             text("SELECT status FROM cases WHERE id=:id"),
             {"id": case_id},
         ).fetchone()
         previous_status = row[0] if row else ""
+        if previous_status == "presentado_manual_ayuntamiento":
+            existing = conn.execute(
+                text(
+                    """
+                    SELECT 1 FROM events
+                    WHERE case_id=:id
+                      AND type='manual_submission_registered'
+                      AND payload->>'registro'=:registro
+                      AND payload->>'channel'=:channel
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "id": case_id,
+                    "registro": registro_clean,
+                    "channel": channel_clean,
+                },
+            ).fetchone()
+            if existing:
+                return {
+                    "ok": True,
+                    "replayed": True,
+                    "case_id": case_id,
+                    "status": previous_status,
+                    "registro": registro_clean,
+                }
+            raise HTTPException(status_code=409, detail="El expediente ya consta como presentado")
+        if previous_status not in SUBMISSION_SOURCE_STATES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"No se puede registrar presentación desde status={previous_status}",
+            )
 
         if file is not None and (file.filename or "").strip():
             filename = (file.filename or "justificante_presentacion").strip()
@@ -708,7 +919,10 @@ async def register_manual_submission(
                 raise HTTPException(status_code=400, detail="Justificante vacío")
 
             ext = _guess_ext_from_filename(filename, content_type)
-            b2_bucket, b2_key = upload_bytes(case_id, "manual_submission", data, ext, content_type)
+            document_sha256 = hashlib.sha256(data).hexdigest()
+            b2_bucket, b2_key = _upload_bytes(
+                case_id, "manual_submission", data, ext, content_type
+            )
 
             conn.execute(
                 text(
@@ -732,13 +946,20 @@ async def register_manual_submission(
                 "key": b2_key,
                 "mime": content_type,
                 "size_bytes": len(data),
+                "sha256": document_sha256,
             }
 
         new_status = "presentado_manual_ayuntamiento"
-        conn.execute(
-            text("UPDATE cases SET status=:status, updated_at=NOW() WHERE id=:id"),
+        updated = conn.execute(
+            text(
+                "UPDATE cases SET status=:status, updated_at=NOW() "
+                "WHERE id=:id AND status IN ('ready_to_submit','submission_receipt_pending') "
+                "RETURNING id"
+            ),
             {"id": case_id, "status": new_status},
-        )
+        ).fetchone()
+        if not updated:
+            raise HTTPException(status_code=409, detail="Transición de presentación en conflicto")
 
         _append_event(
             conn,
@@ -752,6 +973,9 @@ async def register_manual_submission(
                 "csv": csv_clean,
                 "submitted_at": submitted_at_clean,
                 "channel": channel_clean,
+                "evidence_kind": "manual_registration",
+                "authority_material_sha256": authority.get("material_sha256"),
+                "synthetic": bool(authority.get("synthetic")),
                 "note": note or "",
                 "document": document_info,
                 "at": _now_iso(),
@@ -1231,8 +1455,8 @@ def restore_real_case(
     NO toca documentos.
     NO toca eventos anteriores.
 
-    Solo:
-    archived_test -> presentado_manual_ayuntamiento
+    Solo restaura archived_test al estado presentado acreditado por un evento
+    previo con registro, CSV o hash de justificante.
     """
 
     _require_operator(x_operator_token)
@@ -1246,6 +1470,7 @@ def restore_real_case(
                 SELECT status, expediente_ref
                 FROM cases
                 WHERE id = :id
+                FOR UPDATE
                 """
             ),
             {"id": case_id},
@@ -1256,18 +1481,71 @@ def restore_real_case(
 
         previous_status = (row[0] or "").strip()
         expediente_ref = row[1]
+        if previous_status != "archived_test":
+            raise HTTPException(
+                status_code=409,
+                detail="Solo se puede restaurar un expediente archived_test",
+            )
 
-        conn.execute(
+        evidence_row = conn.execute(
             text(
                 """
-                UPDATE cases
-                SET status = 'presentado_manual_ayuntamiento',
-                    updated_at = NOW()
-                WHERE id = :id
+                SELECT type, payload FROM events
+                WHERE case_id=:id
+                  AND (
+                    (
+                      type IN ('dgt_submitted','manual_submission_registered','ops_mark_submitted')
+                      AND (
+                        COALESCE(payload->>'registro', '') <> ''
+                        OR COALESCE(payload->>'csv', '') <> ''
+                      )
+                      AND (
+                        type <> 'dgt_submitted'
+                        OR COALESCE(payload->>'receipt_sha256', '') <> ''
+                      )
+                    )
+                    OR (
+                      type='submission_receipt_uploaded'
+                      AND COALESCE(payload->>'receipt_sha256', '') <> ''
+                      AND (
+                        COALESCE(payload->>'registro', '') <> ''
+                        OR COALESCE(payload->>'csv', '') <> ''
+                      )
+                    )
+                  )
+                ORDER BY created_at DESC
+                LIMIT 1
                 """
             ),
             {"id": case_id},
+        ).fetchone()
+        if not evidence_row:
+            raise HTTPException(
+                status_code=409,
+                detail="No existe evidencia de presentación para restaurar el expediente",
+            )
+        evidence_type = str(evidence_row[0])
+        evidence_payload = _payload_dict(evidence_row[1])
+        restored_status = (
+            "presentado_manual_ayuntamiento"
+            if evidence_type == "manual_submission_registered"
+            else "submitted"
         )
+
+        updated = conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET status = :restored_status,
+                    updated_at = NOW()
+                WHERE id = :id AND status='archived_test'
+                RETURNING id
+                """
+            ),
+            {"id": case_id, "restored_status": restored_status},
+        ).fetchone()
+        if not updated:
+            raise HTTPException(status_code=409, detail="Restauración concurrente en conflicto")
 
         conn.execute(
             text(
@@ -1286,8 +1564,11 @@ def restore_real_case(
                 "payload": json.dumps(
                     {
                         "from": previous_status,
-                        "to": "presentado_manual_ayuntamiento",
+                        "to": restored_status,
                         "expediente_ref": expediente_ref,
+                        "evidence_event_type": evidence_type,
+                        "registro": evidence_payload.get("registro"),
+                        "receipt_sha256": evidence_payload.get("receipt_sha256"),
                         "note": note or "Restauración expediente real",
                     },
                     ensure_ascii=False,
@@ -1298,7 +1579,7 @@ def restore_real_case(
     return {
         "ok": True,
         "case_id": case_id,
-        "status": "presentado_manual_ayuntamiento",
+        "status": restored_status,
         "message": "Expediente real restaurado correctamente.",
     }
 
@@ -1324,21 +1605,23 @@ def list_presented_cases(
         if term:
             rows = conn.execute(
                 text(
-                    """
-                    SELECT id, expediente_ref, status, payment_status, contact_email, created_at, updated_at
-                    FROM cases
+                    f"""
+                    SELECT c.id, c.expediente_ref, c.status, c.payment_status,
+                           c.contact_email, c.created_at, c.updated_at
+                    FROM cases c
                     WHERE (
-                        status = 'submitted'
-                        OR status ILIKE 'presentado%%'
-                        OR status ILIKE '%%presentado%%'
+                        c.status = 'submitted'
+                        OR c.status ILIKE 'presentado%%'
+                        OR c.status ILIKE '%%presentado%%'
                     )
+                    AND {PRESENTED_EVIDENCE_SQL}
                     AND (
-                        CAST(id AS TEXT) ILIKE :term
-                        OR COALESCE(expediente_ref, '') ILIKE :term
-                        OR COALESCE(contact_email, '') ILIKE :term
-                        OR COALESCE(status, '') ILIKE :term
+                        CAST(c.id AS TEXT) ILIKE :term
+                        OR COALESCE(c.expediente_ref, '') ILIKE :term
+                        OR COALESCE(c.contact_email, '') ILIKE :term
+                        OR COALESCE(c.status, '') ILIKE :term
                     )
-                    ORDER BY updated_at DESC
+                    ORDER BY c.updated_at DESC
                     LIMIT :limit
                     """
                 ),
@@ -1347,15 +1630,17 @@ def list_presented_cases(
         else:
             rows = conn.execute(
                 text(
-                    """
-                    SELECT id, expediente_ref, status, payment_status, contact_email, created_at, updated_at
-                    FROM cases
+                    f"""
+                    SELECT c.id, c.expediente_ref, c.status, c.payment_status,
+                           c.contact_email, c.created_at, c.updated_at
+                    FROM cases c
                     WHERE (
-                        status = 'submitted'
-                        OR status ILIKE 'presentado%%'
-                        OR status ILIKE '%%presentado%%'
+                        c.status = 'submitted'
+                        OR c.status ILIKE 'presentado%%'
+                        OR c.status ILIKE '%%presentado%%'
                     )
-                    ORDER BY updated_at DESC
+                    AND {PRESENTED_EVIDENCE_SQL}
+                    ORDER BY c.updated_at DESC
                     LIMIT :limit
                     """
                 ),
@@ -1491,10 +1776,11 @@ def force_ready_to_submit(
     Reglas:
     - Requiere OPERATOR_TOKEN
     - Requiere paid + authorized
-    - NO permite test_mode
+    - Requiere staging aislado y test_mode
     - Deja event auditado
     """
     _require_operator(x_operator_token)
+    require_isolated_synthetic_staging()
 
     engine = get_engine()
     with engine.begin() as conn:
@@ -1502,7 +1788,7 @@ def force_ready_to_submit(
         row = conn.execute(
             text(
                 "SELECT status, payment_status, authorized, COALESCE(test_mode,FALSE) "
-                "FROM cases WHERE id=:id"
+                "FROM cases WHERE id=:id FOR UPDATE"
             ),
             {"id": case_id},
         ).fetchone()
@@ -1515,23 +1801,29 @@ def force_ready_to_submit(
         authorized = bool(row[2])
         test_mode = bool(row[3])
 
-        if test_mode:
-            raise HTTPException(status_code=409, detail="No se permite force-ready-to-submit en test_mode")
+        if not test_mode:
+            raise HTTPException(status_code=409, detail="Se requiere un expediente test_mode")
 
         if payment_status != "paid":
             raise HTTPException(status_code=402, detail="Pago requerido (paid)")
 
         if not authorized:
             raise HTTPException(status_code=409, detail="Falta autorización del cliente")
+        _require_paid_and_authorized(conn, case_id)
 
         if current_status in ("submitted", "closed", "archived"):
             raise HTTPException(status_code=409, detail=f"No se puede forzar desde status={current_status}")
 
         # actualizar a ready_to_submit
-        conn.execute(
-            text("UPDATE cases SET status='ready_to_submit', updated_at=NOW() WHERE id=:id"),
+        updated = conn.execute(
+            text(
+                "UPDATE cases SET status='ready_to_submit', updated_at=NOW() "
+                "WHERE id=:id AND COALESCE(test_mode,FALSE)=TRUE RETURNING id"
+            ),
             {"id": case_id},
-        )
+        ).fetchone()
+        if not updated:
+            raise HTTPException(status_code=409, detail="Mutación sintética concurrente en conflicto")
 
         # auditar
         conn.execute(
@@ -1544,7 +1836,13 @@ def force_ready_to_submit(
             {
                 "case_id": case_id,
                 "payload": json.dumps(
-                    {"from": current_status, "to": "ready_to_submit", "note": note}
+                        {
+                            "from": current_status,
+                            "to": "ready_to_submit",
+                            "synthetic": True,
+                            "data_namespace": os.getenv("RTM_DATA_NAMESPACE") or "",
+                            "note": note or "",
+                        }
                 ),
             },
         )
@@ -1564,22 +1862,18 @@ def lab_force_ready_to_submit(
     - OPERATOR_TOKEN válido
     - X-Lab-Key == LAB_FORCE_KEY
     - authorized = TRUE
-    - NO test_mode
+    - staging aislado y test_mode = TRUE
     """
     _require_operator(x_operator_token)
-
-    expected_lab = (os.getenv("LAB_FORCE_KEY") or "").strip()
-    if not expected_lab:
-        raise HTTPException(status_code=500, detail="LAB_FORCE_KEY no configurado")
-    if (x_lab_key or "").strip() != expected_lab:
-        raise HTTPException(status_code=401, detail="Unauthorized lab key")
+    require_isolated_synthetic_staging()
+    _require_lab_key(x_lab_key)
 
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(
             text(
                 "SELECT status, authorized, COALESCE(test_mode,FALSE) "
-                "FROM cases WHERE id=:id"
+                "FROM cases WHERE id=:id FOR UPDATE"
             ),
             {"id": case_id},
         ).fetchone()
@@ -1591,18 +1885,37 @@ def lab_force_ready_to_submit(
         authorized = bool(row[1])
         test_mode = bool(row[2])
 
-        if test_mode:
-            raise HTTPException(status_code=409, detail="No permitido en test_mode")
+        if not test_mode:
+            raise HTTPException(status_code=409, detail="Se requiere un expediente test_mode")
         if not authorized:
             raise HTTPException(status_code=409, detail="Falta autorización del cliente")
+        synthetic_authority = conn.execute(
+            text(
+                """
+                SELECT 1 FROM events
+                WHERE case_id=:id
+                  AND type='ops_lab_force_authorize'
+                  AND COALESCE(payload->>'synthetic', '')='true'
+                ORDER BY created_at DESC LIMIT 1
+                """
+            ),
+            {"id": case_id},
+        ).fetchone()
+        if not synthetic_authority:
+            raise HTTPException(status_code=409, detail="Autoridad sintética no verificable")
 
         if current_status in ("submitted", "closed", "archived"):
             raise HTTPException(status_code=409, detail=f"No se puede forzar desde status={current_status}")
 
-        conn.execute(
-            text("UPDATE cases SET status='ready_to_submit', updated_at=NOW() WHERE id=:id"),
+        updated = conn.execute(
+            text(
+                "UPDATE cases SET status='ready_to_submit', updated_at=NOW() "
+                "WHERE id=:id AND COALESCE(test_mode,FALSE)=TRUE RETURNING id"
+            ),
             {"id": case_id},
-        )
+        ).fetchone()
+        if not updated:
+            raise HTTPException(status_code=409, detail="Mutación sintética concurrente en conflicto")
 
         conn.execute(
             text(
@@ -1614,7 +1927,13 @@ def lab_force_ready_to_submit(
             {
                 "case_id": case_id,
                 "payload": json.dumps(
-                    {"from": current_status, "to": "ready_to_submit", "note": note or ""}
+                    {
+                        "from": current_status,
+                        "to": "ready_to_submit",
+                        "synthetic": True,
+                        "data_namespace": os.getenv("RTM_DATA_NAMESPACE") or "",
+                        "note": note or "",
+                    }
                 ),
             },
         )
@@ -1629,29 +1948,33 @@ def lab_force_authorize(
     note: Optional[str] = Form(default=None),
 ) -> Dict[str, Any]:
     _require_operator(x_operator_token)
-
-    expected_lab = (os.getenv("LAB_FORCE_KEY") or "").strip()
-    if not expected_lab:
-        raise HTTPException(status_code=500, detail="LAB_FORCE_KEY no configurado")
-    if (x_lab_key or "").strip() != expected_lab:
-        raise HTTPException(status_code=401, detail="Unauthorized lab key")
+    require_isolated_synthetic_staging()
+    _require_lab_key(x_lab_key)
 
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(
-            text("SELECT authorized, COALESCE(test_mode,FALSE) FROM cases WHERE id=:id"),
+            text(
+                "SELECT authorized, COALESCE(test_mode,FALSE) "
+                "FROM cases WHERE id=:id FOR UPDATE"
+            ),
             {"id": case_id},
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Case not found")
 
-        if bool(row[1]):
-            raise HTTPException(status_code=409, detail="No permitido en test_mode")
+        if not bool(row[1]):
+            raise HTTPException(status_code=409, detail="Se requiere un expediente test_mode")
 
-        conn.execute(
-            text("UPDATE cases SET authorized=TRUE, authorized_at=NOW(), updated_at=NOW() WHERE id=:id"),
+        updated = conn.execute(
+            text(
+                "UPDATE cases SET authorized=TRUE, authorized_at=NOW(), updated_at=NOW() "
+                "WHERE id=:id AND COALESCE(test_mode,FALSE)=TRUE RETURNING id"
+            ),
             {"id": case_id},
-        )
+        ).fetchone()
+        if not updated:
+            raise HTTPException(status_code=409, detail="Mutación sintética concurrente en conflicto")
 
         conn.execute(
             text(
@@ -1662,7 +1985,14 @@ def lab_force_authorize(
             ),
             {
                 "case_id": case_id,
-                "payload": json.dumps({"note": note or ""}),
+                "payload": json.dumps(
+                    {
+                        "synthetic": True,
+                        "previous_authorized": bool(row[0]),
+                        "data_namespace": os.getenv("RTM_DATA_NAMESPACE") or "",
+                        "note": note or "",
+                    }
+                ),
             },
         )
 
@@ -1676,29 +2006,33 @@ def lab_force_paid(
     note: Optional[str] = Form(default=None),
 ) -> Dict[str, Any]:
     _require_operator(x_operator_token)
-
-    expected_lab = (os.getenv("LAB_FORCE_KEY") or "").strip()
-    if not expected_lab:
-        raise HTTPException(status_code=500, detail="LAB_FORCE_KEY no configurado")
-    if (x_lab_key or "").strip() != expected_lab:
-        raise HTTPException(status_code=401, detail="Unauthorized lab key")
+    require_isolated_synthetic_staging()
+    _require_lab_key(x_lab_key)
 
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(
-            text("SELECT COALESCE(test_mode,FALSE), payment_status FROM cases WHERE id=:id"),
+            text(
+                "SELECT COALESCE(test_mode,FALSE), payment_status "
+                "FROM cases WHERE id=:id FOR UPDATE"
+            ),
             {"id": case_id},
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Case not found")
 
-        if bool(row[0]):
-            raise HTTPException(status_code=409, detail="No permitido en test_mode")
+        if not bool(row[0]):
+            raise HTTPException(status_code=409, detail="Se requiere un expediente test_mode")
 
-        conn.execute(
-            text("UPDATE cases SET payment_status='paid', updated_at=NOW() WHERE id=:id"),
+        updated = conn.execute(
+            text(
+                "UPDATE cases SET payment_status='paid', updated_at=NOW() "
+                "WHERE id=:id AND COALESCE(test_mode,FALSE)=TRUE RETURNING id"
+            ),
             {"id": case_id},
-        )
+        ).fetchone()
+        if not updated:
+            raise HTTPException(status_code=409, detail="Mutación sintética concurrente en conflicto")
 
         conn.execute(
             text(
@@ -1707,7 +2041,17 @@ def lab_force_paid(
                 VALUES (:case_id, 'ops_lab_force_paid', CAST(:payload AS JSONB), NOW())
                 """
             ),
-            {"case_id": case_id, "payload": json.dumps({"note": note or ""})},
+            {
+                "case_id": case_id,
+                "payload": json.dumps(
+                    {
+                        "synthetic": True,
+                        "previous_payment_status": row[1],
+                        "data_namespace": os.getenv("RTM_DATA_NAMESPACE") or "",
+                        "note": note or "",
+                    }
+                ),
+            },
         )
 
     return {"ok": True, "case_id": case_id, "payment_status": "paid"}

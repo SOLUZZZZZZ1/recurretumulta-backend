@@ -8,6 +8,10 @@ from sqlalchemy import text
 
 from database import get_engine
 from b2_storage import upload_bytes
+from public_case_access import (
+    issue_case_access_token,
+    require_public_case_access_configured,
+)
 
 router = APIRouter(tags=["analyze"])
 
@@ -33,6 +37,8 @@ async def analyze_expediente(files: List[UploadFile] = File(...)) -> Dict[str, A
     if len(files) > MAX_FILES:
         raise HTTPException(status_code=400, detail=f"Máximo {MAX_FILES} documentos por expediente.")
 
+    require_public_case_access_configured()
+
     engine = get_engine()
 
     # 1) Crear caso
@@ -41,6 +47,7 @@ async def analyze_expediente(files: List[UploadFile] = File(...)) -> Dict[str, A
             text("INSERT INTO cases(status, updated_at) VALUES ('uploaded', NOW()) RETURNING id")
         ).fetchone()
         case_id = str(row[0])
+    case_access_token = issue_case_access_token(case_id)
 
     uploaded_docs = []
 
@@ -124,6 +131,8 @@ async def analyze_expediente(files: List[UploadFile] = File(...)) -> Dict[str, A
     return {
         "ok": True,
         "case_id": case_id,
+        "case_access_token": case_access_token,
+        "case_access_token_header": "X-RTM-Case-Token",
         "documents": uploaded_docs,
         "ai_result_seeded": ai_payload,
         "message": "Expediente creado. Ya puedes continuar al resumen.",
