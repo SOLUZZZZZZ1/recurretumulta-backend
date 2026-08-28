@@ -21,6 +21,26 @@ class OperatorAuthRoutesContractTest(unittest.TestCase):
         )
         self.assertIn('@router.post("/login")', ops_source)
 
+    def test_presenter_context_requires_device_possession_atomically(self):
+        app_source = (ROOT / "app.py").read_text(encoding="utf-8")
+        presenter_source = (
+            ROOT / "rtm_presenter_router.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("app.include_router(rtm_presenter_router)", app_source)
+        self.assertNotIn(
+            "dependencies=[Depends(require_operator_device_possession)]",
+            app_source,
+        )
+        self.assertIn(
+            "load_operator_session_with_device_possession(",
+            presenter_source,
+        )
+        self.assertIn(
+            "load_operator_auth_runtime_config(require_enabled=True)",
+            presenter_source,
+        )
+        self.assertIn("with get_engine().begin() as conn:", presenter_source)
+
     def test_individual_routes_are_staging_feature_gated(self):
         source = (
             ROOT / "rtm_core" / "operator_auth_request.py"
@@ -96,6 +116,26 @@ class OperatorAuthRoutesContractTest(unittest.TestCase):
             "password: str = Field(min_length=1, max_length=256, repr=False)",
             source,
         )
+
+    def test_private_session_routes_require_device_cookie_or_header(self):
+        source = (
+            ROOT / "rtm_core" / "operator_auth_router.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('alias="X-RTM-Device"', source)
+        self.assertIn('alias=_DEVICE_COOKIE', source)
+        self.assertIn("normalize_device_token(candidate)", source)
+        self.assertIn("hash_device_secret(normalized)", source)
+        self.assertGreaterEqual(
+            source.count("load_operator_session_with_device_possession("),
+            5,
+        )
+
+    def test_auth_validation_errors_are_generic_and_no_store(self):
+        source = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertIn("@app.exception_handler(RequestValidationError)", source)
+        self.assertIn('path.startswith("/ops/auth/")', source)
+        self.assertIn('content={"detail": "Solicitud no válida"}', source)
+        self.assertIn("request_validation_exception_handler", source)
 
     def test_route_smoke_reuses_full_staging_safety_barriers(self):
         source = (

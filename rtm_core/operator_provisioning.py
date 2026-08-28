@@ -22,7 +22,7 @@ from rtm_core.operator_auth_crypto import (
 )
 
 
-OPERATOR_PROVISIONING_VERSION = "rtm_operator_provisioning_v1_0"
+OPERATOR_PROVISIONING_VERSION = "rtm_operator_provisioning_v1_1"
 DEFAULT_SYNTHETIC_EMAIL = "rtm-staging-supervisor@example.com"
 DEFAULT_SYNTHETIC_DISPLAY_NAME = "RTM STAGING SUPERVISOR"
 
@@ -51,7 +51,12 @@ ROLE_DEFINITIONS: dict[str, OperatorRoleDefinition] = {
             "Rol mínimo de trabajo operativo. La autorización fina se "
             "incorporará en una fase posterior."
         ),
-        permissions=("ops.view",),
+        permissions=(
+            "ops.view",
+            "presenter.documents.ingest",
+            "presenter.documents.read",
+            "presenter.package.freeze",
+        ),
     ),
     "supervisor": OperatorRoleDefinition(
         key="supervisor",
@@ -61,7 +66,13 @@ ROLE_DEFINITIONS: dict[str, OperatorRoleDefinition] = {
             "Rol mínimo de supervisión en staging. La autorización fina se "
             "incorporará en una fase posterior."
         ),
-        permissions=("ops.view", "ops.supervise"),
+        permissions=(
+            "ops.view",
+            "ops.supervise",
+            "presenter.documents.ingest",
+            "presenter.documents.read",
+            "presenter.package.freeze",
+        ),
     ),
 }
 
@@ -113,20 +124,93 @@ def count_non_synthetic_operators(conn) -> int:
                 """
                 SELECT COUNT(*)
                 FROM rtm_operators
-                WHERE lower(COALESCE(profile->>'synthetic', 'false')) <> 'true'
+                WHERE NOT COALESCE(
+                    profile @> '{"synthetic": true}'::JSONB,
+                    FALSE
+                )
                 """
             )
         ).scalar_one()
     )
 
 
+def _lock_and_require_synthetic_only_operator_population(conn) -> None:
+    # Los roles rtm.operator/rtm.supervisor son globales. El bloqueo de tabla
+    # cierra la carrera entre comprobar la población y mutar esos roles: ningún
+    # alta o cambio de operador puede aparecer hasta que termine la transacción.
+    conn.execute(
+        text(
+            """
+            LOCK TABLE rtm_operators, rtm_operator_roles
+            IN SHARE ROW EXCLUSIVE MODE
+            """
+        )
+    )
+    if count_non_synthetic_operators(conn):
+        raise RuntimeError(
+            "La provisión sintética no puede mutar roles compartidos cuando "
+            "existen operadores no sintéticos"
+        )
+
+
+def _invalidate_synthetic_sessions_for_roles(
+    conn,
+    role_ids: list[str],
+) -> None:
+    if not role_ids:
+        return
+    parameters = {
+        "role_ids": json.dumps(role_ids, ensure_ascii=True),
+    }
+    conn.execute(
+        text(
+            """
+            UPDATE rtm_operator_sessions AS s
+            SET status='revoked',
+                revoked_at=NOW(),
+                close_reason='synthetic_role_permissions_changed'
+            FROM rtm_operators AS o
+            WHERE o.id=s.operator_id
+              AND o.profile @> '{"synthetic": true}'::JSONB
+              AND o.primary_role_id IN (
+                  SELECT CAST(value AS UUID)
+                  FROM jsonb_array_elements_text(
+                      CAST(:role_ids AS JSONB)
+                  ) AS changed_role(value)
+              )
+              AND s.status='active'
+            """
+        ),
+        parameters,
+    )
+    conn.execute(
+        text(
+            """
+            UPDATE rtm_operators
+            SET auth_epoch=auth_epoch+1,
+                updated_at=NOW()
+            WHERE profile @> '{"synthetic": true}'::JSONB
+              AND primary_role_id IN (
+                  SELECT CAST(value AS UUID)
+                  FROM jsonb_array_elements_text(
+                      CAST(:role_ids AS JSONB)
+                  ) AS changed_role(value)
+              )
+            """
+        ),
+        parameters,
+    )
+
+
 def ensure_minimum_roles(conn) -> dict[str, str]:
+    _lock_and_require_synthetic_only_operator_population(conn)
     role_ids: dict[str, str] = {}
+    changed_role_ids: list[str] = []
     for definition in ROLE_DEFINITIONS.values():
         row = conn.execute(
             text(
                 """
-                INSERT INTO rtm_operator_roles(
+                INSERT INTO rtm_operator_roles AS current_role(
                     id, code, name, description, permissions,
                     system_role, active, created_at, updated_at
                 ) VALUES (
@@ -134,12 +218,34 @@ def ensure_minimum_roles(conn) -> dict[str, str]:
                     CAST(:permissions AS JSONB), TRUE, TRUE, NOW(), NOW()
                 )
                 ON CONFLICT (code) DO UPDATE SET
-                    name=EXCLUDED.name,
-                    description=EXCLUDED.description,
-                    permissions=EXCLUDED.permissions,
-                    system_role=TRUE,
-                    active=TRUE,
+                    permissions=(
+                        SELECT COALESCE(
+                            jsonb_agg(
+                                merged.permission ORDER BY merged.permission
+                            ),
+                            '[]'::JSONB
+                        )
+                        FROM (
+                            SELECT jsonb_array_elements_text(
+                                CASE
+                                    WHEN jsonb_typeof(
+                                        current_role.permissions
+                                    )='array'
+                                    THEN current_role.permissions
+                                    ELSE '[]'::JSONB
+                                END
+                            ) AS permission
+                            UNION
+                            SELECT jsonb_array_elements_text(
+                                EXCLUDED.permissions
+                            ) AS permission
+                        ) AS merged
+                    ),
                     updated_at=NOW()
+                WHERE current_role.active=TRUE
+                  AND current_role.system_role=TRUE
+                  AND jsonb_typeof(current_role.permissions)='array'
+                  AND NOT current_role.permissions @> EXCLUDED.permissions
                 RETURNING id
                 """
             ),
@@ -154,7 +260,47 @@ def ensure_minimum_roles(conn) -> dict[str, str]:
                 ),
             },
         ).fetchone()
-        role_ids[definition.key] = str(row[0])
+        if row is not None:
+            role_id = str(row[0])
+            changed_role_ids.append(role_id)
+        else:
+            # DO UPDATE ... WHERE no devuelve fila cuando el rol ya satisface
+            # el mínimo. La lectura cerrada también rechaza roles inactivos,
+            # no-sistema o con un JSON de permisos malformado en vez de
+            # "repararlos" pisando estado administrativo.
+            existing_role = conn.execute(
+                text(
+                    """
+                    SELECT id
+                    FROM rtm_operator_roles
+                    WHERE code=:code
+                      AND active=TRUE
+                      AND system_role=TRUE
+                      AND jsonb_typeof(permissions)='array'
+                      AND permissions @> CAST(:permissions AS JSONB)
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "code": definition.code,
+                    "permissions": json.dumps(
+                        list(definition.permissions),
+                        ensure_ascii=False,
+                    ),
+                },
+            ).fetchone()
+            if existing_role is None:
+                raise RuntimeError(
+                    f"El rol compartido {definition.code} no cumple el mínimo "
+                    "y no puede repararse de forma destructiva"
+                )
+            role_id = str(existing_role[0])
+        role_ids[definition.key] = role_id
+
+    # Los permisos se resuelven desde el rol en cada request. Si el mínimo se
+    # amplió, un bearer vivo obtendría privilegios sin reautenticarse; se
+    # revocan las sesiones afectadas y se avanza su epoch en la misma tx.
+    _invalidate_synthetic_sessions_for_roles(conn, changed_role_ids)
     return role_ids
 
 
@@ -196,18 +342,79 @@ def provision_synthetic_operator(
             raise RuntimeError(
                 "La dirección ya pertenece a una cuenta no sintética"
             )
+        # Una cuenta sintética puede preceder a una ampliación aditiva de los
+        # permisos mínimos. No se debe devolver el registro antiguo antes de
+        # refrescar ambos roles y enlazar la cuenta al rol solicitado.
+        role_ids = ensure_minimum_roles(conn)
+        refreshed = find_operator_by_email(conn, normalized_email)
+        if (
+            not refreshed
+            or str(refreshed["id"]) != str(existing["id"])
+            or not _profile_is_synthetic(refreshed["profile"])
+        ):
+            raise RuntimeError(
+                "La cuenta cambió durante la provisión sintética"
+            )
+        current_role = str(refreshed["role_code"] or "")
+        if current_role != definition.code:
+            if (
+                current_role == "rtm.supervisor"
+                and definition.code != "rtm.supervisor"
+            ):
+                raise RuntimeError(
+                    "La provisión no puede retirar el rol supervisor; use el "
+                    "ciclo de vida administrativo"
+                )
+            if (
+                definition.code == "rtm.supervisor"
+                and bool(refreshed["must_change_password"])
+            ):
+                raise RuntimeError(
+                    "La contraseña temporal debe cambiarse antes de asignar "
+                    "el rol supervisor"
+                )
+            conn.execute(
+                text(
+                    """
+                    UPDATE rtm_operator_sessions
+                    SET status='revoked',
+                        revoked_at=NOW(),
+                        close_reason='synthetic_operator_role_changed'
+                    WHERE operator_id=CAST(:operator_id AS UUID)
+                      AND status='active'
+                    """
+                ),
+                {"operator_id": str(refreshed["id"])},
+            )
+            assignment = conn.execute(
+                text(
+                    """
+                    UPDATE rtm_operators
+                    SET primary_role_id=CAST(:role_id AS UUID),
+                        auth_epoch=auth_epoch+1,
+                        updated_at=NOW()
+                    WHERE id=CAST(:operator_id AS UUID)
+                      AND profile @> '{"synthetic": true}'::JSONB
+                      AND primary_role_id IS DISTINCT FROM
+                          CAST(:role_id AS UUID)
+                    """
+                ),
+                {
+                    "operator_id": str(refreshed["id"]),
+                    "role_id": role_ids[definition.key],
+                },
+            )
+            if int(assignment.rowcount or 0) != 1:
+                raise RuntimeError(
+                    "No se pudo actualizar de forma segura la cuenta sintética"
+                )
         return ProvisionedOperator(
-            operator_id=str(existing["id"]),
-            email=str(existing["email"]),
-            display_name=str(existing["display_name"]),
-            role_code=str(existing["role_code"] or ""),
+            operator_id=str(refreshed["id"]),
+            email=str(refreshed["email"]),
+            display_name=str(refreshed["display_name"]),
+            role_code=definition.code,
             created=False,
             password_issued=False,
-        )
-
-    if count_non_synthetic_operators(conn):
-        raise RuntimeError(
-            "La provisión inicial se bloquea porque existen operadores no sintéticos"
         )
 
     role_ids = ensure_minimum_roles(conn)

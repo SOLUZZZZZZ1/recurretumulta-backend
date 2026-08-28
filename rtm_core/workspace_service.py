@@ -20,6 +20,11 @@ from rtm_core.reanalysis_adapter import (
     load_latest_reanalysis_snapshot,
 )
 from rtm_core.workspace_policy import determine_workspace_stage
+from rtm_presenter_policy import (
+    PresenterPolicyError,
+    PresenterRuntimeDisabled,
+    load_presenter_runtime_configuration,
+)
 
 
 WORKSPACE_VERSION = "rtm_ops_workspace_v1_0"
@@ -74,6 +79,16 @@ def _table_exists(conn, table_name: str) -> bool:
     return bool(row and row[0])
 
 
+def _presenter_available(case_payload: Mapping[str, Any]) -> bool:
+    if case_payload.get("test_mode") is not True:
+        return False
+    try:
+        load_presenter_runtime_configuration(require_enabled=True)
+    except (PresenterRuntimeDisabled, PresenterPolicyError):
+        return False
+    return True
+
+
 def _case_row(conn, case_id: str) -> dict[str, Any]:
     row = conn.execute(
         text("SELECT to_jsonb(c) FROM cases c WHERE c.id=:case_id"),
@@ -106,7 +121,8 @@ def _document_rows(conn, case_id: str) -> list[dict[str, Any]]:
             "mime": str(row[2] or ""),
             "size_bytes": int(row[3] or 0),
             "created_at": row[4].isoformat() if row[4] else None,
-            "download_endpoint": f"/ops/documents/{row[0]}/download",
+            "custody": "rtm_internal_only",
+            "operator_export_allowed": False,
         }
         for row in rows
     ]
@@ -299,5 +315,8 @@ def build_case_workspace(conn, case_id: str) -> dict[str, Any]:
             },
         },
         "next_step": next_step,
+        "actions": {
+            "presenter_available": _presenter_available(case_payload),
+        },
         "timeline": _timeline(conn, case_id),
     }

@@ -15,7 +15,7 @@ from sqlalchemy import text
 from rtm_core.operator_auth_crypto import hash_session_token
 
 
-OPERATOR_AUTH_REPOSITORY_VERSION = "rtm_operator_auth_repository_v1_1"
+OPERATOR_AUTH_REPOSITORY_VERSION = "rtm_operator_auth_repository_v1_3"
 DEFAULT_LOCK_THRESHOLD = 5
 DEFAULT_LOCK_MINUTES = 15
 DEFAULT_SESSION_HOURS = 8
@@ -32,6 +32,9 @@ class ActiveOperatorSession:
     permissions: tuple[str, ...]
     must_change_password: bool
     mfa_required: bool
+    login_at: datetime
+    last_verified_at: datetime | None
+    device_id: str | None
     expires_at: datetime
     absolute_expires_at: datetime | None
 
@@ -50,7 +53,9 @@ def find_operator_for_login(conn, normalized_email: str):
                    r.code AS role_code,
                    COALESCE(r.permissions, '[]'::jsonb) AS permissions
             FROM rtm_operators o
-            LEFT JOIN rtm_operator_roles r ON r.id = o.primary_role_id
+            JOIN rtm_operator_roles r
+              ON r.id = o.primary_role_id
+             AND r.active = TRUE
             WHERE lower(btrim(o.email)) = :email
             LIMIT 1
             """
@@ -102,6 +107,24 @@ def clear_failed_logins(conn, operator_id: str) -> None:
                 last_failed_login_at=NULL,
                 locked_until=NULL,
                 last_login_at=NOW(),
+                updated_at=NOW()
+            WHERE id=CAST(:operator_id AS UUID)
+            """
+        ),
+        {"operator_id": operator_id},
+    )
+
+
+def clear_failed_reauthentication_attempts(conn, operator_id: str) -> None:
+    """Limpia el bloqueo sin convertir el step-up en un nuevo login."""
+
+    conn.execute(
+        text(
+            """
+            UPDATE rtm_operators
+            SET failed_login_count=0,
+                last_failed_login_at=NULL,
+                locked_until=NULL,
                 updated_at=NOW()
             WHERE id=CAST(:operator_id AS UUID)
             """
@@ -195,10 +218,17 @@ def load_active_operator_session(
                    r.code AS role_code,
                    COALESCE(r.permissions, '[]'::jsonb) AS permissions,
                    o.must_change_password, o.mfa_required,
+                   s.login_at, s.last_verified_at, s.device_id,
                    s.expires_at, s.absolute_expires_at
             FROM rtm_operator_sessions s
             JOIN rtm_operators o ON o.id = s.operator_id
-            LEFT JOIN rtm_operator_roles r ON r.id = o.primary_role_id
+            JOIN rtm_operator_devices d
+              ON d.id = s.device_id
+             AND d.operator_id = o.id
+             AND d.status IN ('known', 'trusted')
+            JOIN rtm_operator_roles r
+              ON r.id = o.primary_role_id
+             AND r.active = TRUE
             WHERE s.token_sha256 = :token_sha256
               AND s.status = 'active'
               AND s.expires_at > :now
@@ -211,6 +241,10 @@ def load_active_operator_session(
         ),
         {"token_sha256": hash_session_token(raw_token), "now": current},
     ).mappings().fetchone()
+    return _active_operator_session_from_row(row)
+
+
+def _active_operator_session_from_row(row) -> ActiveOperatorSession | None:
     if not row:
         return None
     permissions = row["permissions"] if isinstance(row["permissions"], list) else []
@@ -223,9 +257,152 @@ def load_active_operator_session(
         permissions=tuple(str(value) for value in permissions),
         must_change_password=bool(row["must_change_password"]),
         mfa_required=bool(row["mfa_required"]),
+        login_at=row["login_at"],
+        last_verified_at=row["last_verified_at"],
+        device_id=(
+            str(row["device_id"])
+            if row["device_id"] is not None
+            else None
+        ),
         expires_at=row["expires_at"],
         absolute_expires_at=row["absolute_expires_at"],
     )
+
+
+def load_active_operator_session_for_device(
+    conn,
+    raw_token: str,
+    *,
+    device_key_sha256: str,
+    now: datetime | None = None,
+) -> ActiveOperatorSession | None:
+    """Carga la sesion y prueba su dispositivo usando solo un digest."""
+
+    digest = str(device_key_sha256 or "").strip().lower()
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        return None
+    current = now or utcnow()
+    row = conn.execute(
+        text(
+            """
+            SELECT s.id, s.operator_id, o.email, o.display_name,
+                   r.code AS role_code,
+                   COALESCE(r.permissions, '[]'::jsonb) AS permissions,
+                   o.must_change_password, o.mfa_required,
+                   s.login_at, s.last_verified_at, s.device_id,
+                   s.expires_at, s.absolute_expires_at
+            FROM rtm_operator_sessions s
+            JOIN rtm_operators o ON o.id = s.operator_id
+            JOIN rtm_operator_devices d
+              ON d.id = s.device_id
+             AND d.operator_id = o.id
+             AND d.status IN ('known', 'trusted')
+             AND d.device_key_sha256 = :device_key_sha256
+            JOIN rtm_operator_roles r
+              ON r.id = o.primary_role_id
+             AND r.active = TRUE
+            WHERE s.token_sha256 = :token_sha256
+              AND s.status = 'active'
+              AND s.expires_at > :now
+              AND (s.absolute_expires_at IS NULL OR s.absolute_expires_at > :now)
+              AND o.status = 'active'
+              AND (o.locked_until IS NULL OR o.locked_until <= :now)
+              AND s.auth_epoch = o.auth_epoch
+            LIMIT 1
+            """
+        ),
+        {
+            "token_sha256": hash_session_token(raw_token),
+            "device_key_sha256": digest,
+            "now": current,
+        },
+    ).mappings().fetchone()
+    return _active_operator_session_from_row(row)
+
+
+def find_operator_for_reauthentication(
+    conn,
+    *,
+    operator_id: str,
+    session_id: str,
+):
+    """Bloquea identidad, rol activo, sesion y dispositivo del step-up."""
+
+    return conn.execute(
+        text(
+            """
+            SELECT o.id, o.password_hash, o.status,
+                   o.must_change_password, o.mfa_required,
+                   o.failed_login_count, o.locked_until, o.auth_epoch,
+                   s.id AS session_id, s.status AS session_status,
+                   s.expires_at, s.absolute_expires_at,
+                   s.auth_epoch AS session_auth_epoch, s.device_id,
+                   d.status AS device_status, r.id AS role_id
+            FROM rtm_operators o
+            JOIN rtm_operator_roles r
+              ON r.id = o.primary_role_id
+             AND r.active = TRUE
+            JOIN rtm_operator_sessions s
+              ON s.operator_id=o.id
+             AND s.id=CAST(:session_id AS UUID)
+            JOIN rtm_operator_devices d
+              ON d.id=s.device_id
+             AND d.operator_id=o.id
+            WHERE o.id=CAST(:operator_id AS UUID)
+            FOR UPDATE OF o, r, s, d
+            """
+        ),
+        {
+            "operator_id": operator_id,
+            "session_id": session_id,
+        },
+    ).mappings().fetchone()
+
+
+def mark_operator_session_verified(
+    conn,
+    *,
+    session_id: str,
+    operator_id: str,
+    now: datetime | None = None,
+) -> bool:
+    """Actualiza el reloj de verificación solo si toda la cadena sigue activa."""
+
+    current = now or utcnow()
+    row = conn.execute(
+        text(
+            """
+            UPDATE rtm_operator_sessions s
+            SET last_verified_at=:now
+            FROM rtm_operators o, rtm_operator_devices d,
+                 rtm_operator_roles r
+            WHERE s.id=CAST(:session_id AS UUID)
+              AND s.operator_id=CAST(:operator_id AS UUID)
+              AND o.id=s.operator_id
+              AND d.id=s.device_id
+              AND d.operator_id=o.id
+              AND d.status IN ('known', 'trusted')
+              AND r.id = o.primary_role_id
+              AND r.active = TRUE
+              AND s.status='active'
+              AND s.expires_at > :now
+              AND (
+                    s.absolute_expires_at IS NULL
+                    OR s.absolute_expires_at > :now
+                  )
+              AND o.status='active'
+              AND (o.locked_until IS NULL OR o.locked_until <= :now)
+              AND s.auth_epoch=o.auth_epoch
+            RETURNING s.id
+            """
+        ),
+        {
+            "session_id": session_id,
+            "operator_id": operator_id,
+            "now": current,
+        },
+    ).fetchone()
+    return bool(row)
 
 
 def touch_operator_session(
@@ -238,7 +415,7 @@ def touch_operator_session(
         text(
             """
             UPDATE rtm_operator_sessions
-            SET last_seen_at=:now, last_verified_at=:now
+            SET last_seen_at=:now
             WHERE id=CAST(:session_id AS UUID) AND status='active'
             """
         ),
@@ -291,11 +468,15 @@ __all__ = [
     "DEFAULT_SESSION_HOURS",
     "OPERATOR_AUTH_REPOSITORY_VERSION",
     "clear_failed_logins",
+    "clear_failed_reauthentication_attempts",
     "close_operator_session",
     "create_operator_session",
     "find_operator_for_login",
+    "find_operator_for_reauthentication",
     "increment_operator_auth_epoch",
     "load_active_operator_session",
+    "load_active_operator_session_for_device",
+    "mark_operator_session_verified",
     "register_failed_login",
     "touch_operator_session",
     "utcnow",

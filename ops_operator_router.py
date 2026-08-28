@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import hashlib
 import hmac
 import json
 import os
@@ -15,6 +16,11 @@ from b2_storage import upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
 from reanalysis import reanalyze_traffic_fine_case
+from rtm_presenter_policy import (
+    PresenterPolicyError,
+    PresenterRuntimeDisabled,
+    load_presenter_runtime_configuration,
+)
 
 router = APIRouter(prefix="/ops/cases", tags=["ops-operator"])
 
@@ -94,7 +100,7 @@ def _case_or_404(conn, case_id: str):
     row = conn.execute(
         text(
             '''
-            SELECT id, status, updated_at
+            SELECT id, status, updated_at, COALESCE(test_mode,FALSE)
             FROM cases
             WHERE id = :id
             '''
@@ -107,7 +113,18 @@ def _case_or_404(conn, case_id: str):
         "id": str(row[0]),
         "status": row[1] or "pending_review",
         "updated_at": row[2],
+        "test_mode": bool(row[3]),
     }
+
+
+def _presenter_available(case: Dict[str, Any]) -> bool:
+    if case.get("test_mode") is not True:
+        return False
+    try:
+        load_presenter_runtime_configuration(require_enabled=True)
+    except (PresenterRuntimeDisabled, PresenterPolicyError):
+        return False
+    return True
 
 
 def _get_status(conn, case_id: str) -> str:
@@ -444,11 +461,12 @@ def finalize_resource(
             "application/pdf",
         )
 
-        documents = [
+        stored_documents = [
             {
                 "kind": "final_resource_text",
                 "bucket": b2_bucket,
                 "key": b2_key_txt,
+                "sha256": hashlib.sha256(txt_bytes).hexdigest(),
                 "mime": "text/plain; charset=utf-8",
                 "size_bytes": len(txt_bytes),
             },
@@ -456,6 +474,7 @@ def finalize_resource(
                 "kind": "final_resource_docx",
                 "bucket": b2_bucket,
                 "key": b2_key_docx,
+                "sha256": hashlib.sha256(docx_bytes).hexdigest(),
                 "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 "size_bytes": len(docx_bytes),
             },
@@ -463,17 +482,25 @@ def finalize_resource(
                 "kind": "final_resource_pdf",
                 "bucket": b2_bucket,
                 "key": b2_key_pdf,
+                "sha256": hashlib.sha256(pdf_bytes).hexdigest(),
                 "mime": "application/pdf",
                 "size_bytes": len(pdf_bytes),
             },
         ]
 
-        for doc in documents:
-            conn.execute(
+        documents = []
+        for doc in stored_documents:
+            document_row = conn.execute(
                 text(
                     '''
-                    INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
-                    VALUES (:case_id, :kind, :bucket, :key, :mime, :size_bytes, NOW())
+                    INSERT INTO documents(
+                        case_id, kind, b2_bucket, b2_key, sha256,
+                        mime, size_bytes, created_at
+                    ) VALUES (
+                        :case_id, :kind, :bucket, :key, :sha256,
+                        :mime, :size_bytes, NOW()
+                    )
+                    RETURNING id
                     '''
                 ),
                 {
@@ -481,9 +508,21 @@ def finalize_resource(
                     "kind": doc["kind"],
                     "bucket": doc["bucket"],
                     "key": doc["key"],
+                    "sha256": doc["sha256"],
                     "mime": doc["mime"],
                     "size_bytes": doc["size_bytes"],
                 },
+            ).fetchone()
+            documents.append(
+                {
+                    "id": str(document_row[0]),
+                    "kind": doc["kind"],
+                    "sha256": doc["sha256"],
+                    "mime": doc["mime"],
+                    "size_bytes": doc["size_bytes"],
+                    "custody": "rtm_internal_only",
+                    "operator_export_allowed": False,
+                }
             )
 
         _set_status(conn, case_id, "final_ready")
@@ -628,6 +667,9 @@ def get_case_detail(
             "hecho": hecho,
             "ai_overrides": overrides,
             "updated_at": case["updated_at"],
+            "actions": {
+                "presenter_available": _presenter_available(case),
+            },
         }
 
 

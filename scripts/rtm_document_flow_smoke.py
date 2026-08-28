@@ -9,7 +9,8 @@ Ejercita los endpoints que utiliza el backend para:
 4. subir la autorización firmada;
 5. subir el justificante de presentación;
 6. comprobar que PostgreSQL conserva cada referencia B2;
-7. descargar el original mediante SDK, URL prefirmada y OPS;
+7. validar B2 mediante SDK, una URL pública limitada al expediente y el bloqueo
+   de descarga directa desde OPS;
 8. eliminar objetos y registros de prueba al terminar.
 
 No utiliza datos de clientes, no activa pagos, correo ni presentaciones externas y
@@ -276,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
     report: dict[str, Any] = {
         "ok": False,
         "authority": "rtm_document_flow_smoke",
-        "version": "rtm_document_flow_smoke_v1_0",
+        "version": "rtm_document_flow_smoke_v1_1",
         "environment": environment,
         "synthetic_only": True,
         "run_id": run_id,
@@ -331,12 +332,19 @@ def main(argv: list[str] | None = None) -> int:
             case_id = str(intake.get("case_id") or "")
             if not case_id:
                 raise RuntimeError("intake-draft no devolvió case_id.")
+            case_access_token = str(intake.get("case_access_token") or "")
+            if not case_access_token:
+                raise RuntimeError("intake-draft no devolvió la capacidad del expediente.")
+            case_headers = {"X-RTM-Case-Token": case_access_token}
             report["case_id"] = case_id
             report["checks"]["intake_draft"] = True
             _mark_synthetic_case(case_id)
 
             authorization = _response_payload(
-                client.post(f"/cases/{case_id}/authorize")
+                client.post(
+                    f"/cases/{case_id}/authorize",
+                    headers=case_headers,
+                )
             )
             report["checks"]["authorization_generated"] = bool(
                 authorization.get("authorized")
@@ -345,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
             appended = _response_payload(
                 client.post(
                     f"/cases/{case_id}/append-documents",
+                    headers=case_headers,
                     files=[
                         (
                             "files",
@@ -362,6 +371,7 @@ def main(argv: list[str] | None = None) -> int:
             signed = _response_payload(
                 client.post(
                     f"/cases/{case_id}/authorization-signed",
+                    headers=case_headers,
                     files={
                         "file": (
                             "synthetic-authorization-signed.pdf",
@@ -378,6 +388,7 @@ def main(argv: list[str] | None = None) -> int:
             receipt = _response_payload(
                 client.post(
                     f"/cases/{case_id}/upload-receipt",
+                    headers=case_headers,
                     files={
                         "file": (
                             "synthetic-submission-receipt.pdf",
@@ -390,7 +401,10 @@ def main(argv: list[str] | None = None) -> int:
             report["checks"]["receipt_uploaded"] = bool(receipt.get("ok"))
 
             public_status = _response_payload(
-                client.get(f"/cases/{case_id}/public-status")
+                client.get(
+                    f"/cases/{case_id}/public-status",
+                    headers=case_headers,
+                )
             )
             report["checks"]["public_status_submitted"] = (
                 public_status.get("status") == "submitted"
@@ -441,10 +455,10 @@ def main(argv: list[str] | None = None) -> int:
                     "/files/presign",
                     params={
                         "case_id": case_id,
-                        "bucket": original_doc["bucket"],
-                        "key": original_doc["key"],
+                        "document_id": original_doc["id"],
                         "expires": 60,
                     },
+                    headers=case_headers,
                 )
             )
             signed_url = str(presign.get("url") or "")
@@ -476,12 +490,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"/ops/documents/{original_doc['id']}/download",
                 headers={"X-Operator-Token": operator_token},
             )
-            if not ops_download.is_success:
-                raise RuntimeError(
-                    f"OPS download HTTP {ops_download.status_code}: {ops_download.text[:500]}"
-                )
-            report["checks"]["ops_original_download"] = (
-                _sha256(ops_download.content) == _sha256(original_pdf)
+            report["checks"]["ops_original_download_blocked"] = (
+                ops_download.status_code == 403
             )
 
         tests_ok = all(bool(value) for value in report["checks"].values())
