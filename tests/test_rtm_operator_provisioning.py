@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from rtm_core import operator_provisioning
@@ -63,6 +64,18 @@ class OperatorProvisioningTest(unittest.TestCase):
         self.assertGreaterEqual(len(first), 12)
         self.assertNotEqual(first, second)
         self.assertTrue(first.startswith("RTM-"))
+
+    def test_manual_provisioning_never_echoes_entered_password(self):
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "rtm_staging_operator_provision.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "if result.password_issued and args.generate_password:",
+            source,
+        )
+        self.assertNotIn("if result.password_issued:\\n", source)
 
     def test_existing_synthetic_operator_refreshes_roles_and_assignment(self):
         operator_id = "00000000-0000-4000-8000-000000000001"
