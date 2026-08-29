@@ -31,11 +31,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-SCRIPT_VERSION = "rtm_staging_presenter_synthetic_fixture_v1_0"
+SCRIPT_VERSION = "rtm_staging_presenter_synthetic_fixture_v1_1"
 APPLY_CONFIRMATION = "STAGING_PRESENTER_SYNTHETIC_FIXTURE_ONLY"
 DEFAULT_FIXTURE_KEY = "runtime-a94dcd3-v1"
 PROFILE_CODE = "synthetic.example"
-PROFILE_VERSION = 1
+PROFILE_VERSION = 2
 PROFILE_ORIGIN = "https://synthetic.example"
 PRESENTER_MARKER = "RTM_PRESENTER_SYNTHETIC_ONLY"
 A1S_MARKER = "RTM_A1S_SYNTHETIC_ONLY"
@@ -117,6 +117,49 @@ def destination_requirements() -> dict[str, Any]:
         "contract_version": "rtm.presenter.destination.requirements.v1",
         "synthetic_only": True,
         "representation_modes": ["self"],
+        "delivery": {
+            "email": {
+                "verified": True,
+                "recipient": "reclamaciones@synthetic.example",
+                "legal_entity_name": "Energía Comercializadora Sintética, S.A.",
+                "entity_role": "comercializadora",
+                "channel_label": "Correo electrónico oficial verificado",
+                "channel_status": "accepted",
+                "routing_scope_label": (
+                    "Facturación, cobros, contrato, altas, bajas y cambio de compañía"
+                ),
+                "routing_warning": (
+                    "Para cortes, averías, contador o lecturas debe buscarse la "
+                    "distribuidora correspondiente"
+                ),
+                "official_source_label": "Área sintética de atención al cliente",
+                "official_source_url": (
+                    "https://synthetic.example/atencion/reclamaciones"
+                ),
+                "recommended_evidence_channel": "correo_certificado_o_burofax",
+                "sensitive_attachment_policy": "cifrado_o_enlace_seguro",
+                "template_code": "consumer_problem",
+                "template_version": 1,
+                "subject_template": (
+                    "Reclamación contrato [referencia] – "
+                    "Expediente RTM [expediente]"
+                ),
+                "body_template": (
+                    "A la atención de [empresa]:\n\n"
+                    "Se remite una reclamación completamente sintética relativa "
+                    "al contrato [referencia]. La pretensión y los hechos deben "
+                    "ser revisados por el operador antes de preparar el envío.\n\n"
+                    "Expediente RTM: [expediente]."
+                ),
+                "matter_codes": [
+                    "facturacion_incorrecta",
+                    "cobro_indebido",
+                    "incumplimiento_contractual",
+                    "alta_baja_compania",
+                    "cambio_compania",
+                ],
+            }
+        },
         "fields": [
             {
                 "step_order": 1,
@@ -145,7 +188,7 @@ def _profile_configuration() -> dict[str, Any]:
         "profile_code": PROFILE_CODE,
         "version_number": PROFILE_VERSION,
         "authority_code": PROFILE_CODE,
-        "display_name": "Synthetic Example staging portal",
+        "display_name": "Destino sintético de sede y correspondencia",
         "portal_origin": PROFILE_ORIGIN,
         "requirements": destination_requirements(),
     }
@@ -466,7 +509,9 @@ def build_seed_plan(source: Mapping[str, Any]) -> dict[str, Any]:
     configuration = _profile_configuration()
     profile = {
         **configuration,
-        "id": _stable_uuid(f"destination-profile:{PROFILE_CODE}:v1"),
+        "id": _stable_uuid(
+            f"destination-profile:{PROFILE_CODE}:v{PROFILE_VERSION}"
+        ),
         "status": "active",
         "profile_sha256": _canonical_sha256(configuration),
         "created_by_operator_id": str(source["creator_operator_id"]),

@@ -39,6 +39,43 @@ PORTAL_ORIGIN = "https://sede.synthetic.example"
 IDEMPOTENCY_KEY = "rtm-delivery-command-0001"
 
 
+def _email_requirements() -> dict[str, Any]:
+    return {
+        "delivery": {
+            "email": {
+                "verified": True,
+                "recipient": "reclamaciones@synthetic.example",
+                "legal_entity_name": "Empresa sintética, S.A.",
+                "entity_role": "comercializadora",
+                "channel_status": "accepted",
+                "official_source_label": "Atención sintética oficial",
+                "official_source_url": (
+                    "https://synthetic.example/reclamaciones"
+                ),
+                "recommended_evidence_channel": "correo_certificado",
+                "sensitive_attachment_policy": "cifrado_o_enlace_seguro",
+                "template_code": "consumer_claim",
+                "template_version": 2,
+            }
+        }
+    }
+
+
+def _correspondence() -> dict[str, Any]:
+    return {
+        "subject": "Reclamación sintética – Expediente RTM 0001",
+        "body": "Texto sintético revisado por el operador.",
+        "confirmations": {
+            "destination_reviewed": True,
+            "interested_confirmed": True,
+            "representation_confirmed": True,
+            "text_confirmed": True,
+            "attachments_confirmed": True,
+            "data_minimization_confirmed": True,
+        },
+    }
+
+
 def _actor(
     *, operator_id: str = OPERATOR_ID, include_permission: bool = True
 ) -> PresenterActorContext:
@@ -181,7 +218,16 @@ class PresenterDeliveryServiceTest(unittest.TestCase):
         )
         self.conn = object()
 
-    def _prepare(self, *, channel: str = "portal") -> dict[str, Any]:
+    def _prepare(
+        self,
+        *,
+        channel: str = "portal",
+        recipient_email: str | None = None,
+        recipient_confirmed: bool = False,
+        correspondence: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if channel == "email" and correspondence is None:
+            correspondence = _correspondence()
         return self.service.prepare(
             self.conn,
             actor=_actor(),
@@ -189,6 +235,9 @@ class PresenterDeliveryServiceTest(unittest.TestCase):
             package_id=PACKAGE_ID,
             channel=channel,
             idempotency_key=IDEMPOTENCY_KEY,
+            recipient_email=recipient_email,
+            recipient_confirmed=recipient_confirmed,
+            correspondence=correspondence,
         )
 
     def test_portal_delivery_is_ordered_audited_and_has_no_external_effect(self):
@@ -261,25 +310,107 @@ class PresenterDeliveryServiceTest(unittest.TestCase):
         )
         self.assertEqual(self.repository.events, [])
 
-        self.repository.package["destination_requirements"] = {
-            "delivery": {
-                "email": {
-                    "verified": True,
-                    "recipient": "reclamaciones@synthetic.example",
-                    "template_code": "consumer_claim",
-                    "template_version": 2,
-                }
-            }
-        }
+        self.repository.package["destination_requirements"] = _email_requirements()
         delivery = self._prepare(channel="email")
         self.assertEqual(
             delivery["destination"]["recipient"],
             "reclamaciones@synthetic.example",
         )
         self.assertEqual(delivery["mode"], "server_side_email_from_custody")
+        self.assertTrue(delivery["destination"]["verified"])
         self.assertEqual(
-            delivery["next_action"], "compose_review_and_step_up_required"
+            delivery["next_action"], "step_up_and_send_blocked_in_staging"
         )
+        self.assertEqual(
+            delivery["correspondence"]["sender"], "info@recurretumulta.eu"
+        )
+        self.assertEqual(
+            delivery["correspondence"]["subject"],
+            "Reclamación sintética – Expediente RTM 0001",
+        )
+        self.assertEqual(len(delivery["correspondence"]["attachments"]), 2)
+        self.assertFalse(
+            delivery["correspondence"]["transport_evidence"]["server_accepted"]
+        )
+        self.assertFalse(
+            delivery["correspondence"]["transport_evidence"][
+                "delivery_receipt_proven"
+            ]
+        )
+
+    def test_manual_synthetic_email_is_prepared_but_never_treated_as_verified(self):
+        self.repository.package["destination_requirements"] = _email_requirements()
+        with self.assertRaises(PresenterConflict) as unconfirmed:
+            self._prepare(
+                channel="email",
+                recipient_email="manual@synthetic.example",
+            )
+        self.assertEqual(
+            unconfirmed.exception.code,
+            "presenter.delivery_manual_email_confirmation_required",
+        )
+
+        delivery = self._prepare(
+            channel="email",
+            recipient_email="manual@synthetic.example",
+            recipient_confirmed=True,
+        )
+        self.assertEqual(
+            delivery["destination"]["kind"],
+            "operator_entered_email_pending_verification",
+        )
+        self.assertEqual(
+            delivery["destination"]["recipient"],
+            "manual@synthetic.example",
+        )
+        self.assertFalse(delivery["destination"]["verified"])
+        self.assertEqual(
+            delivery["destination"]["official_profile_recipient"],
+            "reclamaciones@synthetic.example",
+        )
+        self.assertEqual(
+            delivery["next_action"], "recipient_verification_required"
+        )
+        self.assertFalse(delivery["external_effects_allowed"])
+
+    def test_manual_email_rejects_real_domains_and_portal_channel(self):
+        self.repository.package["destination_requirements"] = _email_requirements()
+        with self.assertRaises(PresenterConflict) as real_email:
+            self._prepare(
+                channel="email",
+                recipient_email="persona@example.es",
+                recipient_confirmed=True,
+            )
+        self.assertEqual(
+            real_email.exception.code,
+            "presenter.delivery_manual_email_not_synthetic",
+        )
+
+        with self.assertRaises(PresenterConflict) as portal_email:
+            self._prepare(
+                channel="portal",
+                recipient_email="manual@synthetic.example",
+                recipient_confirmed=True,
+                correspondence=_correspondence(),
+            )
+        self.assertEqual(
+            portal_email.exception.code,
+            "presenter.delivery_email_not_allowed_for_portal",
+        )
+
+    def test_correspondence_requires_every_human_confirmation(self):
+        self.repository.package["destination_requirements"] = _email_requirements()
+        draft = _correspondence()
+        draft["confirmations"]["data_minimization_confirmed"] = False
+
+        with self.assertRaises(PresenterConflict) as denied:
+            self._prepare(channel="email", correspondence=draft)
+
+        self.assertEqual(
+            denied.exception.code,
+            "presenter.correspondence_confirmation_required",
+        )
+        self.assertEqual(self.repository.events, [])
 
     def test_expired_or_stale_package_is_rejected_before_audit(self):
         self.repository.package["expires_at"] = NOW

@@ -18,6 +18,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Protocol, Sequence
+from urllib.parse import urlsplit
 
 from sqlalchemy import text
 
@@ -936,6 +937,38 @@ class SqlPresenterRepository:
                     OR POSITION(LOWER(:query) IN LOWER(display_name)) > 0
                     OR POSITION(LOWER(:query) IN LOWER(authority_code)) > 0
                     OR POSITION(LOWER(:query) IN LOWER(profile_code)) > 0
+                    OR POSITION(
+                        LOWER(:query) IN LOWER(
+                            COALESCE(
+                                requirements #>> '{delivery,email,recipient}',
+                                ''
+                            )
+                        )
+                    ) > 0
+                    OR POSITION(
+                        LOWER(:query) IN LOWER(
+                            COALESCE(
+                                requirements #>> '{delivery,email,legal_entity_name}',
+                                ''
+                            )
+                        )
+                    ) > 0
+                    OR POSITION(
+                        LOWER(:query) IN LOWER(
+                            COALESCE(
+                                requirements #>> '{delivery,email,matter_codes}',
+                                ''
+                            )
+                        )
+                    ) > 0
+                    OR POSITION(
+                        LOWER(:query) IN LOWER(
+                            COALESCE(
+                                requirements #>> '{delivery,email,routing_scope_label}',
+                                ''
+                            )
+                        )
+                    ) > 0
                   )
                 ORDER BY authority_code, profile_code, version_number DESC
                 LIMIT :limit
@@ -1782,6 +1815,133 @@ _WORKSPACE_CODE_RE = re.compile(r"^[a-z][a-z0-9_.-]{1,127}$")
 _WORKSPACE_MEDIA_TYPE_RE = re.compile(
     r"^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]{0,126}$"
 )
+_WORKSPACE_EMAIL_RE = re.compile(
+    r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$"
+)
+_WORKSPACE_SYNTHETIC_EMAIL_DOMAINS = frozenset(
+    {"example.com", "example.net", "example.org"}
+)
+
+
+def _verified_email_projection(
+    requirements: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    delivery = requirements.get("delivery")
+    if delivery is None:
+        return None
+    if not isinstance(delivery, Mapping):
+        raise PresenterConflict(
+            "presenter.profile_contract_invalid",
+            "Configuracion de entrega no valida",
+        )
+    email = delivery.get("email")
+    if email is None:
+        return None
+    if not isinstance(email, Mapping):
+        raise PresenterConflict(
+            "presenter.profile_contract_invalid",
+            "Configuracion de correo no valida",
+        )
+    recipient = str(email.get("recipient") or "").strip().lower()
+    template_code = str(email.get("template_code") or "").strip().lower()
+    template_version = email.get("template_version")
+    legal_entity_name = " ".join(
+        str(email.get("legal_entity_name") or "").split()
+    )
+    entity_role = str(email.get("entity_role") or "").strip().lower()
+    channel_label = " ".join(str(email.get("channel_label") or "").split())
+    channel_status = str(email.get("channel_status") or "").strip().lower()
+    routing_scope_label = " ".join(
+        str(email.get("routing_scope_label") or "").split()
+    )
+    routing_warning = " ".join(
+        str(email.get("routing_warning") or "").split()
+    )
+    official_source_label = " ".join(
+        str(email.get("official_source_label") or "").split()
+    )
+    official_source_url = str(email.get("official_source_url") or "").strip()
+    recommended_evidence_channel = str(
+        email.get("recommended_evidence_channel") or ""
+    ).strip().lower()
+    sensitive_attachment_policy = str(
+        email.get("sensitive_attachment_policy") or ""
+    ).strip().lower()
+    subject_template = str(email.get("subject_template") or "").strip()
+    body_template = (
+        str(email.get("body_template") or "")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .strip()
+    )
+    matter_codes = sorted(
+        {
+            str(value).strip().lower()
+            for value in email.get("matter_codes", ())
+        }
+    )
+    source = urlsplit(official_source_url)
+    recipient_domain = recipient.rpartition("@")[2]
+    if (
+        email.get("verified") is not True
+        or not _WORKSPACE_EMAIL_RE.fullmatch(recipient)
+        or not (
+            recipient_domain in _WORKSPACE_SYNTHETIC_EMAIL_DOMAINS
+            or recipient_domain.endswith(".example")
+        )
+        or not _WORKSPACE_CODE_RE.fullmatch(template_code)
+        or type(template_version) is not int
+        or template_version < 1
+        or not 2 <= len(legal_entity_name) <= 200
+        or not _WORKSPACE_CODE_RE.fullmatch(entity_role)
+        or not 2 <= len(channel_label) <= 120
+        or channel_status not in {"accepted", "form_required", "alternative_preferred"}
+        or not 2 <= len(routing_scope_label) <= 500
+        or not 2 <= len(routing_warning) <= 500
+        or not 2 <= len(official_source_label) <= 160
+        or source.scheme != "https"
+        or not source.netloc
+        or source.username is not None
+        or source.password is not None
+        or not _WORKSPACE_CODE_RE.fullmatch(recommended_evidence_channel)
+        or not _WORKSPACE_CODE_RE.fullmatch(sensitive_attachment_policy)
+        or not 1 <= len(subject_template) <= 240
+        or "\n" in subject_template
+        or any(ord(character) < 32 for character in subject_template)
+        or not 1 <= len(body_template) <= 12000
+        or any(
+            ord(character) < 32 and character not in {"\n", "\t"}
+            for character in body_template
+        )
+        or not matter_codes
+        or any(not _WORKSPACE_CODE_RE.fullmatch(value) for value in matter_codes)
+    ):
+        raise PresenterConflict(
+            "presenter.profile_contract_invalid",
+            "El correo del perfil no tiene verificacion suficiente",
+        )
+    return {
+        "recipient": recipient,
+        "verified": True,
+        "template_code": template_code,
+        "template_version": template_version,
+        "sender": "info@recurretumulta.eu",
+        "legal_entity_name": legal_entity_name,
+        "entity_role": entity_role,
+        "channel_label": channel_label,
+        "channel_status": channel_status,
+        "routing_scope_label": routing_scope_label,
+        "routing_warning": routing_warning,
+        "official_source_label": official_source_label,
+        "official_source_url": official_source_url,
+        "recommended_evidence_channel": recommended_evidence_channel,
+        "sensitive_attachment_policy": sensitive_attachment_policy,
+        "subject_template": subject_template,
+        "body_template": body_template,
+        "matter_codes": matter_codes,
+    }
 
 
 def _destination_workspace_projection(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -1902,6 +2062,7 @@ def _destination_workspace_projection(row: Mapping[str, Any]) -> dict[str, Any]:
             "presenter.profile_contract_invalid",
             "Perfil representativo sin campo de autorizacion",
         )
+    verified_email = _verified_email_projection(requirements)
     return {
         "destination_profile_id": str(row["id"]),
         "profile_code": str(row["profile_code"]),
@@ -1910,6 +2071,16 @@ def _destination_workspace_projection(row: Mapping[str, Any]) -> dict[str, Any]:
         "authority_code": str(row["authority_code"]),
         "display_name": str(row["display_name"]),
         "portal_origin": normalize_origin(row["portal_origin"]),
+        "delivery_channels": [
+            "portal",
+            *(
+                ["email"]
+                if verified_email
+                and verified_email["channel_status"] == "accepted"
+                else []
+            ),
+        ],
+        "verified_email": verified_email,
         "representation_modes": modes,
         "authorization_field_code": (
             authorization_field_code if "representative" in modes else None

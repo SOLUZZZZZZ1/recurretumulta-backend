@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import urlsplit
 
 from rtm_presenter_contracts import (
     RTM_PRESENTER_MAX_FILE_BYTES,
@@ -37,7 +38,7 @@ from rtm_presenter_service import (
 )
 
 
-RTM_PRESENTER_DELIVERY_VERSION = "rtm_presenter_delivery_v1_0"
+RTM_PRESENTER_DELIVERY_VERSION = "rtm_presenter_delivery_v1_1"
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _EMAIL_RE = re.compile(
@@ -45,7 +46,22 @@ _EMAIL_RE = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$"
 )
+_SYNTHETIC_EMAIL_DOMAINS = frozenset({"example.com", "example.net", "example.org"})
 _DELIVERY_NAMESPACE = uuid.UUID("bd82c37f-6c59-4e13-9ba0-96b40f5ed35d")
+RTM_CORRESPONDENCE_SENDER = "info@recurretumulta.eu"
+_CORRESPONDENCE_CONFIRMATIONS = (
+    "destination_reviewed",
+    "interested_confirmed",
+    "representation_confirmed",
+    "text_confirmed",
+    "attachments_confirmed",
+    "data_minimization_confirmed",
+)
+
+
+def _synthetic_email_allowed(recipient: str) -> bool:
+    domain = recipient.rpartition("@")[2]
+    return domain in _SYNTHETIC_EMAIL_DOMAINS or domain.endswith(".example")
 
 
 class PresenterDeliveryChannel(str, Enum):
@@ -99,13 +115,44 @@ def _email_destination(requirements: Mapping[str, Any]) -> dict[str, Any]:
     recipient = str(email.get("recipient") or "").strip().lower()
     template_code = str(email.get("template_code") or "").strip().lower()
     template_version = email.get("template_version")
+    legal_entity_name = " ".join(
+        str(email.get("legal_entity_name") or "").split()
+    )
+    entity_role = str(email.get("entity_role") or "").strip().lower()
+    channel_status = str(email.get("channel_status") or "").strip().lower()
+    official_source_label = " ".join(
+        str(email.get("official_source_label") or "").split()
+    )
+    official_source_url = str(email.get("official_source_url") or "").strip()
+    recommended_evidence_channel = str(
+        email.get("recommended_evidence_channel") or ""
+    ).strip().lower()
+    sensitive_attachment_policy = str(
+        email.get("sensitive_attachment_policy") or ""
+    ).strip().lower()
+    source = urlsplit(official_source_url)
     if (
         email.get("verified") is not True
         or not _EMAIL_RE.fullmatch(recipient)
+        or not _synthetic_email_allowed(recipient)
         or not re.fullmatch(r"[a-z][a-z0-9_.-]{2,95}", template_code)
         or isinstance(template_version, bool)
         or not isinstance(template_version, int)
         or template_version < 1
+        or not 2 <= len(legal_entity_name) <= 200
+        or not re.fullmatch(r"[a-z][a-z0-9_.-]{1,127}", entity_role)
+        or channel_status != "accepted"
+        or not 2 <= len(official_source_label) <= 160
+        or source.scheme != "https"
+        or not source.netloc
+        or source.username is not None
+        or source.password is not None
+        or not re.fullmatch(
+            r"[a-z][a-z0-9_.-]{1,127}", recommended_evidence_channel
+        )
+        or not re.fullmatch(
+            r"[a-z][a-z0-9_.-]{1,127}", sensitive_attachment_policy
+        )
     ):
         raise PresenterConflict(
             "presenter.delivery_email_destination_unverified",
@@ -114,8 +161,101 @@ def _email_destination(requirements: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "kind": "verified_email",
         "recipient": recipient,
+        "verified": True,
         "template_code": template_code,
         "template_version": template_version,
+        "legal_entity_name": legal_entity_name,
+        "entity_role": entity_role,
+        "channel_status": channel_status,
+        "official_source_label": official_source_label,
+        "official_source_url": official_source_url,
+        "recommended_evidence_channel": recommended_evidence_channel,
+        "sensitive_attachment_policy": sensitive_attachment_policy,
+    }
+
+
+def _operator_email_destination(
+    recipient_email: str | None,
+    *,
+    recipient_confirmed: bool,
+) -> dict[str, Any] | None:
+    """Normaliza un destinatario escrito por el operador sin aprobarlo.
+
+    Presenter sigue siendo exclusivamente sintético en este corte. Una
+    dirección manual nunca se convierte en destino verificado y, además, solo
+    puede usar dominios reservados para pruebas. El comando se puede preparar
+    y auditar, pero un canal de salida posterior deberá exigir verificación
+    independiente antes de enviar.
+    """
+
+    recipient = str(recipient_email or "").strip().lower()
+    if not recipient:
+        return None
+    if (
+        not _EMAIL_RE.fullmatch(recipient)
+        or not _synthetic_email_allowed(recipient)
+    ):
+        raise PresenterConflict(
+            "presenter.delivery_manual_email_not_synthetic",
+            "El correo manual de staging debe usar un dominio sintético reservado",
+        )
+    if recipient_confirmed is not True:
+        raise PresenterConflict(
+            "presenter.delivery_manual_email_confirmation_required",
+            "Confirma la dirección manual antes de preparar el correo",
+        )
+    return {
+        "kind": "operator_entered_email_pending_verification",
+        "recipient": recipient,
+        "verified": False,
+    }
+
+
+def _correspondence_draft(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Valida el texto exacto y las confirmaciones que quedarán auditadas."""
+
+    if not isinstance(value, Mapping):
+        raise PresenterConflict(
+            "presenter.correspondence_draft_required",
+            "RTM Correspondencia exige asunto, texto y confirmaciones",
+        )
+    if set(value) != {"subject", "body", "confirmations"}:
+        raise PresenterConflict(
+            "presenter.correspondence_draft_invalid",
+            "El borrador contiene campos fuera del contrato",
+        )
+    subject = " ".join(str(value.get("subject") or "").split())
+    body = str(value.get("body") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if (
+        not 1 <= len(subject) <= 240
+        or "\n" in subject
+        or any(ord(character) < 32 for character in subject)
+        or not 1 <= len(body) <= 12000
+        or any(
+            ord(character) < 32 and character not in {"\n", "\t"}
+            for character in body
+        )
+    ):
+        raise PresenterConflict(
+            "presenter.correspondence_text_invalid",
+            "El asunto o el texto del correo no es válido",
+        )
+    raw_confirmations = value.get("confirmations")
+    if (
+        not isinstance(raw_confirmations, Mapping)
+        or set(raw_confirmations) != set(_CORRESPONDENCE_CONFIRMATIONS)
+        or any(raw_confirmations.get(name) is not True for name in _CORRESPONDENCE_CONFIRMATIONS)
+    ):
+        raise PresenterConflict(
+            "presenter.correspondence_confirmation_required",
+            "Revisa destinatario, interesado, representación, texto y adjuntos",
+        )
+    return {
+        "subject": subject,
+        "body": body,
+        "confirmations": {
+            name: True for name in _CORRESPONDENCE_CONFIRMATIONS
+        },
     }
 
 
@@ -281,6 +421,9 @@ class PresenterDeliveryService:
         package_id: str,
         channel: str,
         idempotency_key: str | None,
+        recipient_email: str | None = None,
+        recipient_confirmed: bool = False,
+        correspondence: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._open(conn)
         authorize_delivery_prepare(actor)
@@ -298,6 +441,20 @@ class PresenterDeliveryService:
                 "presenter.delivery_channel_invalid",
                 "Canal de presentación no admitido",
             ) from exc
+        manual_email: dict[str, Any] | None = None
+        correspondence_draft: dict[str, Any] | None = None
+        if exact_channel == PresenterDeliveryChannel.PORTAL.value:
+            if recipient_email or recipient_confirmed or correspondence is not None:
+                raise PresenterConflict(
+                    "presenter.delivery_email_not_allowed_for_portal",
+                    "Una presentación en sede no admite datos de correspondencia",
+                )
+        else:
+            manual_email = _operator_email_destination(
+                recipient_email,
+                recipient_confirmed=recipient_confirmed,
+            )
+            correspondence_draft = _correspondence_draft(correspondence)
         current = self._now()
         package = self.repository.load_frozen_package(
             conn, case_id=case_id, package_id=package_id, for_update=True
@@ -322,6 +479,10 @@ class PresenterDeliveryService:
                 "package_id": package_id,
                 "package_manifest_sha256": str(package["manifest_sha256"]),
                 "channel": exact_channel,
+                "recipient_email": (
+                    str(manual_email["recipient"]) if manual_email else None
+                ),
+                "correspondence": correspondence_draft,
                 "operator_id": actor.operator_id,
             }
         )
@@ -353,9 +514,64 @@ class PresenterDeliveryService:
                 else "managed_bridge_activation_required"
             )
         else:
-            destination = _email_destination(requirements)
+            verified_email = _email_destination(requirements)
+            destination = (
+                {
+                    **manual_email,
+                    "official_profile_recipient": verified_email["recipient"],
+                    **{
+                        key: verified_email[key]
+                        for key in (
+                            "legal_entity_name",
+                            "entity_role",
+                            "channel_status",
+                            "official_source_label",
+                            "official_source_url",
+                            "recommended_evidence_channel",
+                            "sensitive_attachment_policy",
+                        )
+                    },
+                }
+                if manual_email
+                else verified_email
+            )
             mode = "server_side_email_from_custody"
-            next_action = "compose_review_and_step_up_required"
+            next_action = (
+                "recipient_verification_required"
+                if manual_email
+                else "step_up_and_send_blocked_in_staging"
+            )
+
+        correspondence_snapshot = None
+        if exact_channel == PresenterDeliveryChannel.EMAIL.value:
+            assert correspondence_draft is not None
+            correspondence_snapshot = {
+                "sender": RTM_CORRESPONDENCE_SENDER,
+                "recipient": str(destination["recipient"]),
+                "subject": correspondence_draft["subject"],
+                "body": correspondence_draft["body"],
+                "template_code": verified_email["template_code"],
+                "template_version": verified_email["template_version"],
+                "confirmations": correspondence_draft["confirmations"],
+                "attachments": [
+                    {
+                        "package_item_id": item["package_item_id"],
+                        "document_version_id": item["document_version_id"],
+                        "document_sha256": item["document_sha256"],
+                        "filename": item["portal_filename"],
+                    }
+                    for item in items
+                ],
+                "transport_evidence": {
+                    "message_id": None,
+                    "smtp_response": None,
+                    "server_accepted": False,
+                    "delivery_receipt_proven": False,
+                    "bounce_status": None,
+                    "reply_recorded": False,
+                    "claim_reference": None,
+                },
+            }
 
         snapshot = {
             "delivery_contract_version": RTM_PRESENTER_DELIVERY_VERSION,
@@ -374,6 +590,11 @@ class PresenterDeliveryService:
             "mode": mode,
             "state": PresenterDeliveryState.PREPARED.value,
             "destination": destination,
+            **(
+                {"correspondence": correspondence_snapshot}
+                if correspondence_snapshot is not None
+                else {}
+            ),
             "items": list(items),
             "prepared_at": current.isoformat(),
             "prepared_by_operator_id": actor.operator_id,
@@ -429,6 +650,7 @@ class PresenterDeliveryService:
 
 
 __all__ = [
+    "RTM_CORRESPONDENCE_SENDER",
     "RTM_PRESENTER_DELIVERY_VERSION",
     "PresenterDeliveryChannel",
     "PresenterDeliveryService",

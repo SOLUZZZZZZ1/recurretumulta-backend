@@ -174,6 +174,35 @@ class FakePresenterRepository:
                     },
                 ],
                 "authorization_field_code": "representation_authorization",
+                "delivery": {
+                    "email": {
+                        "verified": True,
+                        "recipient": "recursos@synthetic.example",
+                        "legal_entity_name": "Entidad de tráfico sintética",
+                        "entity_role": "organismo_reclamado",
+                        "channel_label": "Correo oficial verificado",
+                        "channel_status": "accepted",
+                        "routing_scope_label": "Recursos y alegaciones de tráfico",
+                        "routing_warning": (
+                            "No usar para materias ajenas al expediente de tráfico"
+                        ),
+                        "official_source_label": "Directorio sintético oficial",
+                        "official_source_url": (
+                            "https://synthetic.example/reclamaciones"
+                        ),
+                        "recommended_evidence_channel": "correo_certificado",
+                        "sensitive_attachment_policy": "cifrado_o_enlace_seguro",
+                        "template_code": "traffic_claim",
+                        "template_version": 1,
+                        "subject_template": (
+                            "Reclamación [referencia] – Expediente [expediente]"
+                        ),
+                        "body_template": (
+                            "A la atención de [empresa]. Expediente [expediente]."
+                        ),
+                        "matter_codes": ["sancion_trafico"],
+                    }
+                },
                 "unknown_secret": "must-not-be-projected",
             },
             "profile_sha256": "b" * 64,
@@ -763,6 +792,25 @@ class RTMPresenterServiceTest(unittest.TestCase):
         self.assertEqual(
             result["destinations"][0]["portal_origin"], PORTAL_ORIGIN
         )
+        self.assertEqual(
+            result["destinations"][0]["delivery_channels"],
+            ["portal", "email"],
+        )
+        self.assertEqual(
+            result["destinations"][0]["verified_email"]["recipient"],
+            "recursos@synthetic.example",
+        )
+        self.assertTrue(
+            result["destinations"][0]["verified_email"]["verified"]
+        )
+        self.assertEqual(
+            result["destinations"][0]["verified_email"]["legal_entity_name"],
+            "Entidad de tráfico sintética",
+        )
+        self.assertEqual(
+            result["destinations"][0]["verified_email"]["sender"],
+            "info@recurretumulta.eu",
+        )
         self.assertNotIn("metadata", result["destinations"][0])
         self.assertNotIn("unknown_secret", result["destinations"][0])
         self.assertEqual(self.repository.destination_search_calls, 1)
@@ -786,6 +834,14 @@ class RTMPresenterServiceTest(unittest.TestCase):
         self.assertIn("created_by_operator_id <> verified_by_operator_id", source)
         self.assertIn("verified_at IS NOT NULL", source)
         self.assertIn("POSITION(LOWER(:query) IN LOWER(display_name))", source)
+        self.assertIn("requirements #>> '{delivery,email,recipient}'", source)
+        self.assertIn(
+            "requirements #>> '{delivery,email,legal_entity_name}'", source
+        )
+        self.assertIn("requirements #>> '{delivery,email,matter_codes}'", source)
+        self.assertIn(
+            "requirements #>> '{delivery,email,routing_scope_label}'", source
+        )
         self.assertIn("LIMIT :limit", source)
         self.assertNotIn("ILIKE", source)
 
@@ -944,6 +1000,20 @@ class RTMPresenterServiceTest(unittest.TestCase):
         self.repository.profile["created_by_operator_id"] = self.repository.profile[
             "verified_by_operator_id"
         ]
+
+        with self.assertRaises(PresenterConflict) as invalid:
+            self.service.workspace(
+                self.conn,
+                actor=_operator_actor(),
+                case_id=CASE_ID,
+            )
+
+        self.assertEqual(invalid.exception.code, "presenter.profile_contract_invalid")
+
+    def test_staging_correspondence_rejects_real_recipient_metadata(self):
+        self.repository.profile["requirements"]["delivery"]["email"][
+            "recipient"
+        ] = "reclamaciones@empresa-real.es"
 
         with self.assertRaises(PresenterConflict) as invalid:
             self.service.workspace(

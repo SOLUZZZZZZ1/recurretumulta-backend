@@ -114,8 +114,26 @@ class AdminExportBody(_StrictModel):
     reason: str = Field(min_length=12, max_length=500)
 
 
+class CorrespondenceConfirmationsBody(_StrictModel):
+    destination_reviewed: bool
+    interested_confirmed: bool
+    representation_confirmed: bool
+    text_confirmed: bool
+    attachments_confirmed: bool
+    data_minimization_confirmed: bool
+
+
+class CorrespondenceDraftBody(_StrictModel):
+    subject: str = Field(min_length=1, max_length=240)
+    body: str = Field(min_length=1, max_length=12000)
+    confirmations: CorrespondenceConfirmationsBody
+
+
 class PrepareDeliveryBody(_StrictModel):
     channel: Literal["portal", "email"]
+    recipient_email: str | None = Field(default=None, min_length=3, max_length=254)
+    recipient_confirmed: bool = False
+    correspondence: CorrespondenceDraftBody | None = None
 
 
 @dataclass(frozen=True)
@@ -646,6 +664,13 @@ def prepare_presenter_delivery_route(
             package_id=str(package_id),
             channel=body.channel,
             idempotency_key=idempotency_key,
+            recipient_email=body.recipient_email,
+            recipient_confirmed=body.recipient_confirmed,
+            correspondence=(
+                body.correspondence.model_dump()
+                if body.correspondence is not None
+                else None
+            ),
         )
     except Exception as exc:
         raise _as_http_exception(context, exc) from exc

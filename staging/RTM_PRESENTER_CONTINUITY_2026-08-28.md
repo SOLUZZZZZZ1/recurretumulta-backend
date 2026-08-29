@@ -4,17 +4,50 @@
 **Estado:** implementación sintética preparada para revisión; no operativa con
 datos reales ni sedes externas.
 
+## Addendum 29/08/2026 · contenedor primero y RTM Correspondencia
+
+Este addendum sustituye cualquier afirmación anterior incompatible sobre el
+canal de correo o el estado de publicación.
+
+- Rama común: `rtm-ops-controlled-delivery-2026-08-29`.
+- Base remota ya igualada en el único PC:
+  - backend `a44ec0d79be4d60bf4ec2720225672fbe44b188a`;
+  - frontend `4fe4ef042621682e5111771c350bd0f8acbe6dc1`.
+- La UI se reorganiza como: contenedor documental → canal → Centro de destinos
+  → selección ordenada → paquete fijo → preparación de salida.
+- El segundo canal pasa a llamarse **RTM Correspondencia**. Resuelve entidad,
+  papel, materias, canal oficial, fuente y alternativa probatoria antes de
+  ofrecer destinatario y plantilla.
+- Se admite una dirección manual únicamente como pendiente de verificación; en
+  este staging solo puede usar dominios reservados sintéticos.
+- El operador revisa asunto, cuerpo y seis confirmaciones obligatorias. La orden
+  auditada liga el texto exacto a versiones y huellas de los adjuntos.
+- El remitente previsto queda fijado en `info@recurretumulta.eu`, pero no se abre
+  SMTP ni se envía mensaje en este corte.
+- `Message-ID`, respuesta SMTP, aceptación, rebotes, respuesta de la empresa y
+  número de reclamación nacen vacíos. La aceptación SMTP no equivale a recepción
+  acreditada.
+- Perfiles con formulario obligatorio o alternativa preferente no habilitan el
+  canal email. Los adjuntos sensibles pueden exigir cifrado o enlace seguro.
+- Contrato actualizado: `rtm_presenter_delivery_v1_1`.
+- Evidencia local de este addendum: 112 pruebas focales backend, 43 frontend y
+  build Vite, todos OK. La comprobación visual automática no se ejecutó porque
+  el binario `agent-browser` no está disponible en este entorno; no se presenta
+  como evidencia obtenida.
+- Estos cambios de Correspondencia aún no están publicados ni desplegados. El
+  despliegue anterior continúa siendo sintético y sin efectos externos.
+
 ## Addendum 29/08/2026 · entrega controlada y Documento 2
 
 - Rama de trabajo: `rtm-ops-controlled-delivery-2026-08-29`.
-- Se incorpora `rtm_presenter_delivery_v1_0`: preparación idempotente y
+- Se incorporó inicialmente `rtm_presenter_delivery_v1_0`: preparación idempotente y
   auditada de entrega desde un paquete congelado, sin leer bytes ni producir
   efectos externos.
 - La sede se busca dentro de un registro de perfiles activos y verificados; el
-  operador no puede introducir una URL o dirección de correo libre.
+  operador no puede introducir una URL libre.
 - El paquete se presenta documento a documento en el orden propio del perfil.
-- El canal email queda modelado, pero solo acepta destinatario y plantilla
-  verificados y no ejecuta envío en este corte.
+- El canal email inicial quedó modelado sin ejecución; su contrato vigente es el
+  de RTM Correspondencia descrito en el addendum superior.
 - Se añade el permiso mínimo `presenter.delivery.prepare`; no concede ejecución
   externa.
 - Se añade la finalidad documental `prejudicial_authorization` y la preferencia
