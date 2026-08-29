@@ -753,9 +753,29 @@ class RTMPresenterServiceTest(unittest.TestCase):
         )
 
         self.assertTrue(allowed)
+        self.assertEqual(conn.params["case_id"], CASE_ID)
+        self.assertEqual(conn.params["operator_id"], OPERATOR_ID)
         self.assertEqual(
-            conn.params,
-            {"case_id": CASE_ID, "operator_id": OPERATOR_ID},
+            json.loads(conn.params["a1s_binding_marker"]),
+            {
+                "synthetic_marker": "RTM_A1S_SYNTHETIC_ONLY",
+                "synthetic_only": True,
+                "test_mode": True,
+            },
+        )
+        self.assertEqual(
+            json.loads(conn.params["a1s_scope_marker"]),
+            {
+                "synthetic_marker": "RTM_A1S_SYNTHETIC_ONLY",
+                "synthetic_only": True,
+            },
+        )
+        self.assertEqual(
+            json.loads(conn.params["presenter_assignment_marker"]),
+            {
+                "synthetic_marker": "RTM_PRESENTER_SYNTHETIC_ONLY",
+                "synthetic_only": True,
+            },
         )
         normalized = " ".join(conn.sql.split()).lower()
         self.assertIn("select exists", normalized)
@@ -770,8 +790,14 @@ class RTMPresenterServiceTest(unittest.TestCase):
         self.assertIn("w.status='active'", normalized)
         self.assertIn("w.accepted_at is not null", normalized)
         self.assertIn("'responsible', 'reviewer', 'supervisor'", normalized)
-        self.assertIn("rtm_presenter_synthetic_only", normalized)
+        self.assertIn("cast(:a1s_binding_marker as jsonb)", normalized)
+        self.assertIn("cast(:a1s_scope_marker as jsonb)", normalized)
+        self.assertIn(
+            "cast(:presenter_assignment_marker as jsonb)",
+            normalized,
+        )
         self.assertIn("synthetic_only", normalized)
+        self.assertNotIn(":true", normalized)
 
         class MissingA1STables:
             def execute(self, statement: Any, params: Mapping[str, str]) -> Any:
@@ -785,6 +811,13 @@ class RTMPresenterServiceTest(unittest.TestCase):
                 operator_id=OPERATOR_ID,
             )
         )
+
+    def test_sql_repository_has_no_json_boolean_phantom_bind(self):
+        source = inspect.getsource(SqlPresenterRepository)
+
+        self.assertNotIn('":true', source)
+        self.assertNotIn('":false', source)
+        self.assertIn("jsonb_build_object('synthetic_only', TRUE)", source)
 
     def test_workspace_is_a_sanitized_checklist_without_binary_actions(self):
         payload = self.service.workspace(
