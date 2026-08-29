@@ -301,6 +301,9 @@ class PresenterRepository(Protocol):
     def load_frozen_package(self, conn: Any, *, case_id: str, package_id: str, for_update: bool = False) -> Mapping[str, Any] | None: ...
     def lock_delivery_command(self, conn: Any, *, package_id: str, delivery_id: str) -> None: ...
     def list_delivery_events(self, conn: Any, *, case_id: str, package_id: str, delivery_id: str) -> Sequence[Mapping[str, Any]]: ...
+    def lock_portal_session(self, conn: Any, *, case_id: str, portal_session_id: str) -> None: ...
+    def list_portal_session_events(self, conn: Any, *, case_id: str, portal_session_id: str) -> Sequence[Mapping[str, Any]]: ...
+    def emit_deadline_tracking_event(self, conn: Any, *, case_id: str, portal_session_id: str, payload: Mapping[str, Any]) -> bool: ...
     def insert_ticket(self, conn: Any, *, binding: PresenterTicketBinding) -> None: ...
     def consume_ticket(self, conn: Any, *, ticket_sha256: str, actor: PresenterActorContext, portal_origin: str, used_at: datetime) -> Mapping[str, Any] | None: ...
     def load_document_bytes(self, conn: Any, *, case_id: str, document_version_id: str, expected_sha256: str) -> bytes: ...
@@ -1020,7 +1023,7 @@ class SqlPresenterRepository:
                     SELECT id, case_id, logical_document_id, version_number,
                            supersedes_version_id, sha256, purpose, state,
                            scan_status, original_filename, detected_mime,
-                           size_bytes, source_kind
+                           size_bytes, source_kind, metadata
                     FROM rtm_presenter_document_versions
                     WHERE id=CAST(:document_version_id AS UUID)
                       AND case_id=CAST(:case_id AS UUID)
@@ -1490,6 +1493,93 @@ class SqlPresenterRepository:
                 "delivery_id": delivery_id,
             },
         ).mappings().all()
+
+    def lock_portal_session(
+        self,
+        conn: Any,
+        *,
+        case_id: str,
+        portal_session_id: str,
+    ) -> None:
+        """Serializa el ledger aditivo de una sesión sin tabla nueva."""
+
+        conn.execute(
+            text(
+                """
+                SELECT pg_advisory_xact_lock(
+                    hashtextextended(
+                        'rtm-presenter-portal-session:' || :case_id || ':'
+                        || :portal_session_id,
+                        0
+                    )
+                )
+                """
+            ),
+            {
+                "case_id": case_id,
+                "portal_session_id": portal_session_id,
+            },
+        )
+
+    def list_portal_session_events(
+        self,
+        conn: Any,
+        *,
+        case_id: str,
+        portal_session_id: str,
+    ) -> Sequence[Mapping[str, Any]]:
+        return conn.execute(
+            text(
+                """
+                SELECT sequence_number, event_type, reason_code, payload,
+                       created_at, actor_operator_id
+                FROM rtm_presenter_audit_events
+                WHERE case_id=CAST(:case_id AS UUID)
+                  AND event_type LIKE 'presenter.portal_session.%'
+                  AND payload->>'portal_session_id'=:portal_session_id
+                ORDER BY sequence_number ASC
+                """
+            ),
+            {
+                "case_id": case_id,
+                "portal_session_id": portal_session_id,
+            },
+        ).mappings().all()
+
+    def emit_deadline_tracking_event(
+        self,
+        conn: Any,
+        *,
+        case_id: str,
+        portal_session_id: str,
+        payload: Mapping[str, Any],
+    ) -> bool:
+        """Emite una señal idempotente; no calcula ni crea plazos jurídicos."""
+
+        result = conn.execute(
+            text(
+                """
+                INSERT INTO events(case_id, type, payload, created_at)
+                SELECT CAST(:case_id AS UUID),
+                       'presenter_followup_activation_ready',
+                       CAST(:payload AS JSONB), NOW()
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM events
+                    WHERE case_id=CAST(:case_id AS UUID)
+                      AND type='presenter_followup_activation_ready'
+                      AND payload->>'portal_session_id'=:portal_session_id
+                )
+                RETURNING id
+                """
+            ),
+            {
+                "case_id": case_id,
+                "portal_session_id": portal_session_id,
+                "payload": _json(dict(payload)),
+            },
+        )
+        return result.first() is not None
 
     def insert_ticket(self, conn: Any, *, binding: PresenterTicketBinding) -> None:
         conn.execute(

@@ -8,6 +8,7 @@ ZIP vive en un canal admin separado y conserva sus controles adicionales.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterator, Literal
@@ -47,13 +48,17 @@ from rtm_presenter_contracts import (
     RTM_PRESENTER_MAX_FILE_BYTES,
     PresenterClientKind,
     PresenterContractError,
+    normalize_origin,
+    safe_filename,
 )
 from rtm_presenter_delivery import PresenterDeliveryService
+from rtm_presenter_portal_session import PresenterPortalSessionService
 from rtm_presenter_policy import (
     RTM_PRESENTER_EXTENSION_CLIENT_ID,
     PresenterActorContext,
     PresenterPolicyError,
     PresenterRuntimeDisabled,
+    authorize_handoff_exchange_client,
     load_presenter_runtime_configuration,
 )
 from rtm_presenter_service import (
@@ -66,7 +71,7 @@ from rtm_presenter_service import (
 )
 
 
-RTM_PRESENTER_ROUTER_VERSION = "rtm_presenter_router_v1_1"
+RTM_PRESENTER_ROUTER_VERSION = "rtm_presenter_router_v1_3"
 router = APIRouter(
     prefix="/ops/presenter",
     tags=["ops-presenter"],
@@ -78,6 +83,13 @@ _NO_STORE_HEADERS = {
     "Pragma": "no-cache",
 }
 _MAX_MULTIPART_OVERHEAD_BYTES = 2 * 1024 * 1024
+_RAW_RECEIPT_CONTENT_TYPES = frozenset(
+    {"application/pdf", "application/octet-stream"}
+)
+_RAW_RECEIPT_IDEMPOTENCY_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$"
+)
+_RAW_RECEIPT_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class _StrictModel(BaseModel):
@@ -134,6 +146,30 @@ class PrepareDeliveryBody(_StrictModel):
     recipient_email: str | None = Field(default=None, min_length=3, max_length=254)
     recipient_confirmed: bool = False
     correspondence: CorrespondenceDraftBody | None = None
+
+
+class OpenPortalSessionBody(_StrictModel):
+    destination_profile_id: UUID
+    portal_origin: str = Field(min_length=9, max_length=255)
+    representation_mode: Literal["self", "representative"]
+
+
+class PreparePortalAttachmentIntentBody(_StrictModel):
+    field_code: str = Field(min_length=2, max_length=128)
+    portal_field_fingerprint_sha256: str = Field(min_length=64, max_length=64)
+    document_version_id: UUID
+    portal_filename: str | None = Field(default=None, min_length=1, max_length=180)
+
+
+class RecordSyntheticPortalAttachmentBody(_StrictModel):
+    observed_portal_origin: str = Field(min_length=9, max_length=255)
+    portal_field_fingerprint_sha256: str = Field(min_length=64, max_length=64)
+    observed_document_sha256: str = Field(min_length=64, max_length=64)
+
+
+class VerifyPortalReceiptBody(_StrictModel):
+    receipt_document_version_id: UUID
+    expected_receipt_sha256: str = Field(min_length=64, max_length=64)
 
 
 @dataclass(frozen=True)
@@ -365,6 +401,13 @@ def _service() -> PresenterService:
 
 def _delivery_service() -> PresenterDeliveryService:
     return PresenterDeliveryService(
+        repository=SqlPresenterRepository(),
+        runtime=load_presenter_runtime_configuration(require_enabled=True),
+    )
+
+
+def _portal_session_service() -> PresenterPortalSessionService:
+    return PresenterPortalSessionService(
         repository=SqlPresenterRepository(),
         runtime=load_presenter_runtime_configuration(require_enabled=True),
     )
@@ -711,6 +754,388 @@ def presenter_delivery_status_route(
             "storage_references_exposed": False,
             "synthetic_only": True,
         },
+    )
+
+
+@router.post("/cases/{case_id}/portal-sessions")
+def open_presenter_portal_session_route(
+    case_id: UUID,
+    body: OpenPortalSessionBody,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        session = _portal_session_service().open_session(
+            context.connection,
+            actor=context.actor,
+            case_id=str(case_id),
+            destination_profile_id=str(body.destination_profile_id),
+            portal_origin=body.portal_origin,
+            representation_mode=body.representation_mode,
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "portal_session": session,
+            "storage_references_exposed": False,
+            "synthetic_only": True,
+        },
+        status_code=201,
+    )
+
+
+@router.get("/cases/{case_id}/portal-sessions/{portal_session_id}")
+def presenter_portal_session_status_route(
+    case_id: UUID,
+    portal_session_id: UUID,
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        session = _portal_session_service().status(
+            context.connection,
+            actor=context.actor,
+            case_id=str(case_id),
+            portal_session_id=str(portal_session_id),
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "portal_session": session,
+            "storage_references_exposed": False,
+            "synthetic_only": True,
+        },
+    )
+
+
+@router.post(
+    "/cases/{case_id}/portal-sessions/{portal_session_id}/attachment-intents"
+)
+def prepare_presenter_portal_attachment_intent_route(
+    case_id: UUID,
+    portal_session_id: UUID,
+    body: PreparePortalAttachmentIntentBody,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        intent = _portal_session_service().prepare_attachment_intent(
+            context.connection,
+            actor=context.actor,
+            case_id=str(case_id),
+            portal_session_id=str(portal_session_id),
+            field_code=body.field_code,
+            portal_field_fingerprint_sha256=(
+                body.portal_field_fingerprint_sha256
+            ),
+            document_version_id=str(body.document_version_id),
+            portal_filename=body.portal_filename,
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "attachment_intent": intent,
+            "document_count": 1,
+            "storage_references_exposed": False,
+            "synthetic_only": True,
+        },
+        status_code=201,
+    )
+
+
+@router.post(
+    "/extension/cases/{case_id}/portal-sessions/{portal_session_id}"
+    "/attachment-intents/{attachment_intent_id}/record-synthetic"
+)
+def record_presenter_synthetic_attachment_route(
+    case_id: UUID,
+    portal_session_id: UUID,
+    attachment_intent_id: UUID,
+    body: RecordSyntheticPortalAttachmentBody,
+    x_extension_client: str | None = Header(
+        default=None, alias="X-RTM-Presenter-Extension"
+    ),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        actor = _extension_actor(context, x_extension_client)
+        attachment = _portal_session_service().record_synthetic_attachment(
+            context.connection,
+            actor=actor,
+            case_id=str(case_id),
+            portal_session_id=str(portal_session_id),
+            attachment_intent_id=str(attachment_intent_id),
+            request_origin=body.observed_portal_origin,
+            portal_field_fingerprint_sha256=(
+                body.portal_field_fingerprint_sha256
+            ),
+            observed_document_sha256=body.observed_document_sha256,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "attachment": attachment,
+            "document_bytes_read": False,
+            "external_effects_executed": False,
+            "synthetic_only": True,
+        },
+        status_code=201,
+    )
+
+
+@router.post(
+    "/extension/cases/{case_id}/portal-sessions/{portal_session_id}"
+    "/receipts/capture"
+)
+async def capture_presenter_receipt_pending_route(
+    case_id: UUID,
+    portal_session_id: UUID,
+    request: Request,
+    capture_source: str | None = Header(
+        default=None, alias="X-RTM-Receipt-Capture-Source"
+    ),
+    observed_portal_origin: str | None = Header(
+        default=None, alias="X-RTM-Observed-Portal-Origin"
+    ),
+    attachment_manifest_sha256: str | None = Header(
+        default=None, alias="X-RTM-Attachment-Manifest-SHA256"
+    ),
+    receipt_filename: str | None = Header(
+        default=None, alias="X-RTM-Receipt-Filename"
+    ),
+    receipt_media_type: str | None = Header(
+        default=None, alias="X-RTM-Receipt-Media-Type"
+    ),
+    synthetic_confirmed: str | None = Header(
+        default=None, alias="X-RTM-Synthetic-Confirmed"
+    ),
+    content_type: str | None = Header(default=None, alias="Content-Type"),
+    content_length: str | None = Header(default=None, alias="Content-Length"),
+    x_extension_client: str | None = Header(
+        default=None, alias="X-RTM-Presenter-Extension"
+    ),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    body_buffer = bytearray()
+    content: bytes | None = None
+    try:
+        # Todas las barreras se evalúan antes de abrir el stream. El header de
+        # extensión solo declara audience; no sustituye atestación gestionada.
+        actor = _extension_actor(context, x_extension_client)
+        runtime = load_presenter_runtime_configuration(require_enabled=True)
+        if runtime.managed_extension_attestation_enabled is not True:
+            raise PresenterPolicyError("Canal Presenter no disponible")
+        authorize_handoff_exchange_client(actor)
+        source = str(capture_source or "").strip().lower()
+        if source == "email_attachment":
+            raise PresenterConflict(
+                "presenter.receipt_email_capture_not_ready",
+                "La fuente email está reservada pero todavía no tiene actor confiable",
+            )
+        if source != "portal_download":
+            raise PresenterConflict(
+                "presenter.receipt_capture_source_invalid",
+                "Fuente de justificante no admitida",
+            )
+        if synthetic_confirmed != "true":
+            raise PresenterConflict(
+                "presenter.synthetic_confirmation_required",
+                "Confirmación sintética obligatoria",
+            )
+        exact_origin = normalize_origin(observed_portal_origin)
+        if exact_origin != str(observed_portal_origin or "").strip():
+            raise PresenterConflict(
+                "presenter.receipt_origin_invalid",
+                "El origen observado debe ser HTTPS exacto y canónico",
+            )
+        exact_manifest_sha = str(attachment_manifest_sha256 or "").strip()
+        if not _RAW_RECEIPT_SHA256_RE.fullmatch(exact_manifest_sha):
+            raise PresenterConflict(
+                "presenter.receipt_attachment_manifest_invalid",
+                "La huella del manifiesto no es válida",
+            )
+        exact_filename = safe_filename(receipt_filename)
+        if (
+            exact_filename != str(receipt_filename or "").strip()
+            or not exact_filename.lower().endswith(".pdf")
+        ):
+            raise PresenterConflict(
+                "presenter.receipt_filename_invalid",
+                "El nombre del justificante PDF no es válido",
+            )
+        exact_media_type = str(receipt_media_type or "").strip().lower()
+        exact_content_type = str(content_type or "").strip().lower()
+        if (
+            exact_media_type != "application/pdf"
+            or exact_content_type not in _RAW_RECEIPT_CONTENT_TYPES
+        ):
+            raise PresenterConflict(
+                "presenter.receipt_content_type_invalid",
+                "La captura raw solo admite bytes de un justificante PDF",
+            )
+        raw_content_length = str(content_length or "").strip()
+        if (
+            not raw_content_length.isascii()
+            or not raw_content_length.isdecimal()
+        ):
+            raise PresenterConflict(
+                "presenter.receipt_length_required",
+                "Content-Length exacto es obligatorio antes de capturar",
+            )
+        declared_length = int(raw_content_length)
+        if (
+            declared_length <= 0
+            or declared_length > RTM_PRESENTER_MAX_FILE_BYTES
+        ):
+            raise PresenterConflict(
+                "presenter.receipt_too_large",
+                "El justificante está vacío o supera el límite Presenter",
+            )
+        if str(request.headers.get("transfer-encoding") or "").strip():
+            raise PresenterConflict(
+                "presenter.receipt_transfer_encoding_forbidden",
+                "La captura exige longitud exacta y no admite transferencia ambigua",
+            )
+        if str(request.headers.get("content-encoding") or "").strip():
+            raise PresenterConflict(
+                "presenter.receipt_content_encoding_forbidden",
+                "La captura exige bytes PDF sin codificación de contenido",
+            )
+        exact_idempotency_key = str(idempotency_key or "").strip()
+        if not _RAW_RECEIPT_IDEMPOTENCY_RE.fullmatch(exact_idempotency_key):
+            raise PresenterConflict(
+                "presenter.portal_idempotency_key_required",
+                "La captura exige una clave idempotente válida",
+            )
+
+        async for chunk in request.stream():
+            if not isinstance(chunk, (bytes, bytearray)):
+                raise PresenterConflict(
+                    "presenter.receipt_stream_invalid",
+                    "El stream del justificante no es binario",
+                )
+            if not chunk:
+                continue
+            if (
+                len(body_buffer) + len(chunk) > declared_length
+                or len(body_buffer) + len(chunk) > RTM_PRESENTER_MAX_FILE_BYTES
+            ):
+                raise PresenterConflict(
+                    "presenter.receipt_length_mismatch",
+                    "Los bytes recibidos superan la longitud declarada",
+                )
+            body_buffer.extend(chunk)
+        if len(body_buffer) != declared_length:
+            raise PresenterConflict(
+                "presenter.receipt_length_mismatch",
+                "Los bytes recibidos no coinciden con Content-Length",
+            )
+        content = bytes(body_buffer)
+
+        def storage_writer(
+            upload: PresenterExternalDocumentUpload,
+            register_rollback_cleanup: Callable[[str, str], None],
+        ) -> tuple[str, str]:
+            bucket = get_b2_bucket()
+            key = (
+                f"cases/{case_id}/presenter_receipts/"
+                f"{uuid4().hex}{upload.extension}"
+            )
+            register_rollback_cleanup(bucket, key)
+            get_s3_client().put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=upload.content,
+                ContentType=upload.media_type,
+            )
+            return bucket, key
+
+        capture = PresenterPortalSessionService(
+            repository=SqlPresenterRepository(), runtime=runtime
+        ).capture_receipt_pending(
+            context.connection,
+            actor=actor,
+            case_id=str(case_id),
+            portal_session_id=str(portal_session_id),
+            request_origin=exact_origin,
+            capture_source=source,
+            attachment_manifest_sha256=exact_manifest_sha,
+            content=content,
+            original_filename=exact_filename,
+            declared_mime=exact_media_type,
+            synthetic_confirmed=True,
+            idempotency_key=exact_idempotency_key,
+            storage_writer=storage_writer,
+            register_rollback_cleanup=context.register_storage_rollback,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    finally:
+        if body_buffer:
+            body_buffer[:] = b"\x00" * len(body_buffer)
+            body_buffer.clear()
+        if content is not None:
+            del content
+    return _success(
+        context,
+        {
+            "receipt_capture": capture,
+            "state": "receipt_pending",
+            "capture_requires_explicit_human_action": True,
+            "native_download_observed": False,
+            "download_is_submission": False,
+            "sent_at": None,
+            "followup_activation_ready": False,
+            "case_status_changed": False,
+            "storage_references_exposed": False,
+            "synthetic_only": True,
+        },
+        status_code=201,
+    )
+
+
+@router.post(
+    "/cases/{case_id}/portal-sessions/{portal_session_id}/receipt/verify"
+)
+def verify_presenter_portal_receipt_route(
+    case_id: UUID,
+    portal_session_id: UUID,
+    body: VerifyPortalReceiptBody,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        receipt = _portal_session_service().verify_receipt_and_enable_tracking(
+            context.connection,
+            actor=context.actor,
+            case_id=str(case_id),
+            portal_session_id=str(portal_session_id),
+            receipt_document_version_id=str(body.receipt_document_version_id),
+            expected_receipt_sha256=body.expected_receipt_sha256,
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "receipt": receipt,
+            "followup_activation_ready": True,
+            "legal_deadline_calculated": False,
+            "case_status_changed": False,
+            "synthetic_only": True,
+        },
+        status_code=201,
     )
 
 

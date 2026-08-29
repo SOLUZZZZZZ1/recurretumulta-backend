@@ -20,7 +20,7 @@ from rtm_presenter_contracts import (
 )
 
 
-RTM_PRESENTER_POLICY_VERSION = "rtm_presenter_policy_v1_2"
+RTM_PRESENTER_POLICY_VERSION = "rtm_presenter_policy_v1_3"
 RTM_PRESENTER_FEATURE_FLAG = "RTM_ENABLE_PRESENTER_MVP"
 RTM_PRESENTER_EXTENSION_CLIENT_ID = "rtm.presenter.browser_extension.v1"
 
@@ -28,6 +28,7 @@ PRESENTER_DOCUMENT_READ_PERMISSION = "presenter.documents.read"
 PRESENTER_DOCUMENT_INGEST_PERMISSION = "presenter.documents.ingest"
 PRESENTER_PACKAGE_FREEZE_PERMISSION = "presenter.package.freeze"
 PRESENTER_DELIVERY_PREPARE_PERMISSION = "presenter.delivery.prepare"
+PRESENTER_RECEIPT_VERIFY_PERMISSION = "presenter.receipt.verify"
 PRESENTER_HANDOFF_ISSUE_PERMISSION = "presenter.handoff.issue"
 PRESENTER_HANDOFF_EXCHANGE_PERMISSION = "presenter.handoff.exchange"
 PRESENTER_ADMIN_EXPORT_PERMISSION = "ops.documents.export_exceptional"
@@ -274,6 +275,16 @@ def authorize_delivery_prepare(actor: PresenterActorContext) -> None:
     _require_permission(actor, PRESENTER_DELIVERY_PREPARE_PERMISSION)
 
 
+def authorize_receipt_verification(actor: PresenterActorContext) -> None:
+    """Autoridad separada: preparar nunca habilita verificar un justificante."""
+
+    if actor.client_kind is not PresenterClientKind.OPERATOR_UI:
+        raise PresenterPolicyError(
+            "La verificación de justificante exige un revisor de OPS"
+        )
+    _require_permission(actor, PRESENTER_RECEIPT_VERIFY_PERMISSION)
+
+
 def authorize_handoff_issue(actor: PresenterActorContext) -> None:
     if actor.client_kind is not PresenterClientKind.TRUSTED_EXTENSION:
         raise PresenterPolicyError("El ticket solo puede entregarse a la extension")
@@ -382,6 +393,7 @@ __all__ = [
     "PRESENTER_HANDOFF_EXCHANGE_PERMISSION",
     "PRESENTER_HANDOFF_ISSUE_PERMISSION",
     "PRESENTER_PACKAGE_FREEZE_PERMISSION",
+    "PRESENTER_RECEIPT_VERIFY_PERMISSION",
     "PRESENTER_REAUTH_MAX_AGE_SECONDS",
     "RTM_PRESENTER_EXTENSION_CLIENT_ID",
     "RTM_PRESENTER_FEATURE_FLAG",
@@ -399,6 +411,7 @@ __all__ = [
     "authorize_handoff_exchange_client",
     "authorize_handoff_issue",
     "authorize_package_freeze",
+    "authorize_receipt_verification",
     "load_presenter_runtime_configuration",
     "require_presenter_runtime",
 ]
