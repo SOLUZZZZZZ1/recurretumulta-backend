@@ -609,32 +609,52 @@ class SqlPresenterRepository:
                           AND b.status='active'
                           AND b.synthetic_only=TRUE
                           AND b.revoked_at IS NULL
-                          AND b.metadata @> '{"synthetic_marker":
-                              "RTM_A1S_SYNTHETIC_ONLY", "synthetic_only":true,
-                              "test_mode":true}'::jsonb
+                          AND b.metadata @>
+                              CAST(:a1s_binding_marker AS JSONB)
                           AND t.status='active'
                           AND t.synthetic_only=TRUE
-                          AND t.metadata @> '{"synthetic_marker":
-                              "RTM_A1S_SYNTHETIC_ONLY", "synthetic_only":true}'::jsonb
+                          AND t.metadata @>
+                              CAST(:a1s_scope_marker AS JSONB)
                           AND m.operator_id=CAST(:operator_id AS UUID)
                           AND m.status='active'
                           AND m.synthetic_only=TRUE
                           AND m.revoked_at IS NULL
-                          AND m.metadata @> '{"synthetic_marker":
-                              "RTM_A1S_SYNTHETIC_ONLY", "synthetic_only":true}'::jsonb
+                          AND m.metadata @>
+                              CAST(:a1s_scope_marker AS JSONB)
                           AND w.status='active'
                           AND w.assignment_role IN (
                               'responsible', 'reviewer', 'supervisor'
                           )
                           AND w.accepted_at IS NOT NULL
                           AND w.released_at IS NULL
-                          AND w.metadata @> '{"synthetic_marker":
-                              "RTM_PRESENTER_SYNTHETIC_ONLY",
-                              "synthetic_only":true}'::jsonb
+                          AND w.metadata @>
+                              CAST(:presenter_assignment_marker AS JSONB)
                     )
                     """
                 ),
-                {"case_id": case_id, "operator_id": operator_id},
+                {
+                    "case_id": case_id,
+                    "operator_id": operator_id,
+                    "a1s_binding_marker": _json(
+                        {
+                            "synthetic_marker": "RTM_A1S_SYNTHETIC_ONLY",
+                            "synthetic_only": True,
+                            "test_mode": True,
+                        }
+                    ),
+                    "a1s_scope_marker": _json(
+                        {
+                            "synthetic_marker": "RTM_A1S_SYNTHETIC_ONLY",
+                            "synthetic_only": True,
+                        }
+                    ),
+                    "presenter_assignment_marker": _json(
+                        {
+                            "synthetic_marker": "RTM_PRESENTER_SYNTHETIC_ONLY",
+                            "synthetic_only": True,
+                        }
+                    ),
+                },
             ).scalar()
         except Exception:
             return False
@@ -658,7 +678,9 @@ class SqlPresenterRepository:
                                 AND newer.logical_document_id=v.logical_document_id
                                 AND newer.version_number > v.version_number
                                 AND newer.metadata @>
-                                    '{"synthetic_only":true}'::jsonb
+                                    jsonb_build_object(
+                                        'synthetic_only', TRUE
+                                    )
                           )
                          THEN 'superseded'
                          ELSE v.state
@@ -667,7 +689,8 @@ class SqlPresenterRepository:
                        v.size_bytes, v.source_kind
                 FROM rtm_presenter_document_versions v
                 WHERE v.case_id=CAST(:case_id AS UUID)
-                  AND v.metadata @> '{"synthetic_only":true}'::jsonb
+                  AND v.metadata @>
+                      jsonb_build_object('synthetic_only', TRUE)
                 ORDER BY v.purpose, v.logical_document_id,
                          v.version_number DESC
                 LIMIT 500
@@ -701,7 +724,8 @@ class SqlPresenterRepository:
                         FROM rtm_presenter_document_versions
                         WHERE id=CAST(:document_version_id AS UUID)
                           AND case_id=CAST(:case_id AS UUID)
-                          AND metadata @> '{"synthetic_only":true}'::jsonb
+                          AND metadata @>
+                              jsonb_build_object('synthetic_only', TRUE)
                         """
                     ),
                     {
@@ -738,7 +762,8 @@ class SqlPresenterRepository:
                           AND case_id=CAST(:case_id AS UUID)
                           AND logical_document_id=
                               CAST(:logical_document_id AS UUID)
-                          AND metadata @> '{"synthetic_only":true}'::jsonb
+                          AND metadata @>
+                              jsonb_build_object('synthetic_only', TRUE)
                         FOR UPDATE
                         """
                     ),
@@ -764,7 +789,8 @@ class SqlPresenterRepository:
                     FROM rtm_presenter_document_versions
                     WHERE case_id=CAST(:case_id AS UUID)
                       AND logical_document_id=CAST(:logical_document_id AS UUID)
-                      AND metadata @> '{"synthetic_only":true}'::jsonb
+                      AND metadata @>
+                          jsonb_build_object('synthetic_only', TRUE)
                     """
                 ),
                 {
@@ -878,7 +904,8 @@ class SqlPresenterRepository:
                            requirements, profile_sha256,
                            created_by_operator_id, verified_by_operator_id,
                            verified_at,
-                           metadata @> '{"synthetic_only":true}'::jsonb
+                           metadata @>
+                               jsonb_build_object('synthetic_only', TRUE)
                                AS synthetic_only
                     FROM rtm_presenter_destination_profiles
                     ORDER BY profile_code, version_number DESC, id DESC
@@ -948,7 +975,8 @@ class SqlPresenterRepository:
                     FROM rtm_presenter_document_versions
                     WHERE id=CAST(:document_version_id AS UUID)
                       AND case_id=CAST(:case_id AS UUID)
-                      AND metadata @> '{"synthetic_only":true}'::jsonb
+                      AND metadata @>
+                          jsonb_build_object('synthetic_only', TRUE)
                       AND NOT EXISTS (
                           SELECT 1
                           FROM rtm_presenter_document_versions newer
@@ -959,7 +987,7 @@ class SqlPresenterRepository:
                             AND newer.version_number >
                                 rtm_presenter_document_versions.version_number
                             AND newer.metadata @>
-                                '{"synthetic_only":true}'::jsonb
+                                jsonb_build_object('synthetic_only', TRUE)
                       )
                     """ + lock
                 ),
@@ -990,7 +1018,8 @@ class SqlPresenterRepository:
                       AND p.created_by_operator_id <>
                           p.verified_by_operator_id
                       AND p.verified_at IS NOT NULL
-                      AND p.metadata @> '{"synthetic_only":true}'::jsonb
+                      AND p.metadata @>
+                          jsonb_build_object('synthetic_only', TRUE)
                       AND NOT EXISTS (
                           SELECT 1
                           FROM rtm_presenter_destination_profiles newer
@@ -1320,7 +1349,8 @@ class SqlPresenterRepository:
                     WHERE p.id=CAST(:package_id AS UUID)
                       AND p.case_id=CAST(:case_id AS UUID)
                       AND p.status='frozen'
-                      AND p.metadata @> '{"synthetic_only":true}'::jsonb
+                      AND p.metadata @>
+                          jsonb_build_object('synthetic_only', TRUE)
                     """ + lock
                 ),
                 {"package_id": package_id, "case_id": case_id},
@@ -1345,7 +1375,7 @@ class SqlPresenterRepository:
                              AND newer.logical_document_id=v.logical_document_id
                              AND newer.version_number > v.version_number
                              AND newer.metadata @>
-                                 '{"synthetic_only":true}'::jsonb
+                                 jsonb_build_object('synthetic_only', TRUE)
                          ) THEN 'superseded'
                          ELSE v.state
                        END AS state,
@@ -1459,7 +1489,8 @@ class SqlPresenterRepository:
                       AND v.sha256=:sha256
                       AND v.state='active'
                       AND v.scan_status='clean'
-                      AND v.metadata @> '{"synthetic_only":true}'::jsonb
+                      AND v.metadata @>
+                          jsonb_build_object('synthetic_only', TRUE)
                       AND NOT EXISTS (
                           SELECT 1
                           FROM rtm_presenter_document_versions newer
@@ -1467,7 +1498,7 @@ class SqlPresenterRepository:
                             AND newer.logical_document_id=v.logical_document_id
                             AND newer.version_number > v.version_number
                             AND newer.metadata @>
-                                '{"synthetic_only":true}'::jsonb
+                                jsonb_build_object('synthetic_only', TRUE)
                       )
                       AND d.case_id=v.case_id
                     LIMIT 1
