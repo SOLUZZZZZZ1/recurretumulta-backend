@@ -22,7 +22,7 @@ from rtm_core.operator_auth_crypto import (
 )
 
 
-OPERATOR_PROVISIONING_VERSION = "rtm_operator_provisioning_v1_1"
+OPERATOR_PROVISIONING_VERSION = "rtm_operator_provisioning_v1_2"
 DEFAULT_SYNTHETIC_EMAIL = "rtm-staging-supervisor@example.com"
 DEFAULT_SYNTHETIC_DISPLAY_NAME = "RTM STAGING SUPERVISOR"
 
@@ -210,7 +210,7 @@ def ensure_minimum_roles(conn) -> dict[str, str]:
         row = conn.execute(
             text(
                 """
-                INSERT INTO rtm_operator_roles AS current_role(
+                INSERT INTO rtm_operator_roles AS role_row(
                     id, code, name, description, permissions,
                     system_role, active, created_at, updated_at
                 ) VALUES (
@@ -229,9 +229,9 @@ def ensure_minimum_roles(conn) -> dict[str, str]:
                             SELECT jsonb_array_elements_text(
                                 CASE
                                     WHEN jsonb_typeof(
-                                        current_role.permissions
+                                        role_row.permissions
                                     )='array'
-                                    THEN current_role.permissions
+                                    THEN role_row.permissions
                                     ELSE '[]'::JSONB
                                 END
                             ) AS permission
@@ -242,10 +242,10 @@ def ensure_minimum_roles(conn) -> dict[str, str]:
                         ) AS merged
                     ),
                     updated_at=NOW()
-                WHERE current_role.active=TRUE
-                  AND current_role.system_role=TRUE
-                  AND jsonb_typeof(current_role.permissions)='array'
-                  AND NOT current_role.permissions @> EXCLUDED.permissions
+                WHERE role_row.active=TRUE
+                  AND role_row.system_role=TRUE
+                  AND jsonb_typeof(role_row.permissions)='array'
+                  AND NOT role_row.permissions @> EXCLUDED.permissions
                 RETURNING id
                 """
             ),
