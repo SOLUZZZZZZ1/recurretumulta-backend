@@ -194,7 +194,10 @@ class OperatorProvisioningTest(unittest.TestCase):
             self.assertIn(
                 "INSERTINTO", statement,
             )
-            self.assertIn("current_role.permissions", statement)
+            self.assertIn("ASrole_row(", statement)
+            self.assertIn("role_row.permissions", statement)
+            self.assertNotIn("AScurrent_role(", statement)
+            self.assertNotIn("current_role.permissions", statement)
             self.assertIn("UNION", statement)
             self.assertIn("EXCLUDED.permissions", statement)
             self.assertNotIn(
