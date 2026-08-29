@@ -1,10 +1,8 @@
 import hashlib
 import json
 import os
-import smtplib
 import uuid
 from datetime import datetime, timezone
-from email.message import EmailMessage
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks, Header, Request, Response
@@ -13,6 +11,7 @@ from sqlalchemy import text
 
 from database import get_engine
 from b2_storage import upload_bytes
+from email_utils import send_email
 from case_authority import (
     AUTHORITY_VERSION,
     build_case_authority_payload,
@@ -25,7 +24,6 @@ from public_case_access import (
     require_case_access_token,
     require_operator_case_access,
 )
-from rtm_core.runtime_capabilities import capability_state
 
 # Import interno del engine (Modo Dios)
 from ai.expediente_engine import run_expediente_ai
@@ -48,6 +46,29 @@ PUBLIC_SERVICE_FAMILY_CODES = {
     "seguros",
     "vivienda",
 }
+DOCUMENT_CUSTODY = "rtm_internal_only"
+PRIVATE_DOCUMENT_HEADERS = {
+    "Cache-Control": "no-store, private, max-age=0",
+    "Pragma": "no-cache",
+    "Referrer-Policy": "no-referrer",
+    "Vary": "X-RTM-Case-Token",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
+def _document_projection(
+    document_id: str,
+    document_sha256: str,
+    mime: str,
+    size_bytes: int,
+) -> Dict[str, Any]:
+    return {
+        "id": str(document_id),
+        "sha256": str(document_sha256),
+        "mime": str(mime),
+        "size_bytes": int(size_bytes),
+        "custody": DOCUMENT_CUSTODY,
+    }
 
 # =========================
 # EMAILS AUTOMÁTICOS (SILENCIOSO)
@@ -60,45 +81,13 @@ def _case_link(case_id: str) -> str:
     token = issue_case_access_token(case_id)
     return f"{base}/#/resumen?case={case_id}&access_token={token}"
 
-def _smtp_ok() -> bool:
-    return bool(
-        capability_state("outbound_email").enabled
-        and _env("SMTP_HOST")
-        and _env("SMTP_FROM")
-    )
-
 def _send_email(to_email: str, subject: str, body: str) -> None:
-    if not to_email or not _smtp_ok():
+    if not to_email:
         return
-
-    host = _env("SMTP_HOST")
-    port = int(_env("SMTP_PORT", "587") or "587")
-    user = _env("SMTP_USER")
-    pwd = _env("SMTP_PASS")
-    from_addr = _env("SMTP_FROM")
-
-    msg = EmailMessage()
-    msg["From"] = from_addr
-    msg["To"] = to_email
-    msg["Subject"] = subject
-    msg.set_content(body)
-
     try:
-        if port == 465:
-            with smtplib.SMTP_SSL(host, port, timeout=20) as s:
-                if user and pwd:
-                    s.login(user, pwd)
-                s.send_message(msg)
-        else:
-            with smtplib.SMTP(host, port, timeout=20) as s:
-                try:
-                    s.starttls()
-                except Exception:
-                    pass
-                if user and pwd:
-                    s.login(user, pwd)
-                s.send_message(msg)
+        send_email(to_email=to_email, subject=subject, body=body)
     except Exception:
+        # Las notificaciones no deben romper el flujo principal del expediente.
         pass
 
 def _email_contact_saved(case_id: str, name: str, email: str) -> None:
@@ -328,17 +317,30 @@ async def _rtm_store_file(case_id: str, file: UploadFile, kind: str, folder: str
         candidate = "." + filename.rsplit(".", 1)[-1].lower()
         if 2 <= len(candidate) <= 10:
             ext = candidate
+    document_sha256 = hashlib.sha256(content).hexdigest()
     bucket, key = upload_bytes(case_id, folder, content, ext, mime)
     engine = get_engine()
     with engine.begin() as conn:
-        conn.execute(text("""
-            INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
-            VALUES (:case_id, :kind, :bucket, :key, :mime, :size_bytes, NOW())
+        document_row = conn.execute(text("""
+            INSERT INTO documents(
+                case_id, kind, b2_bucket, b2_key, mime, size_bytes, sha256, created_at
+            )
+            VALUES (
+                :case_id, :kind, :bucket, :key, :mime, :size_bytes, :sha256, NOW()
+            )
+            RETURNING id
         """), {
             "case_id": case_id, "kind": kind, "bucket": bucket, "key": key,
-            "mime": mime, "size_bytes": len(content)
-        })
-    return {"kind": kind, "bucket": bucket, "key": key, "mime": mime, "size_bytes": len(content)}
+            "mime": mime, "size_bytes": len(content), "sha256": document_sha256,
+        }).fetchone()
+    if not document_row:
+        raise HTTPException(status_code=409, detail="No se registró el documento")
+    return {
+        "kind": kind,
+        **_document_projection(
+            str(document_row[0]), document_sha256, mime, len(content)
+        ),
+    }
 
 
 @router.post("/intake-draft")
@@ -445,7 +447,6 @@ async def create_rtm_intake_draft(
         "case_access_token_header": "X-RTM-Case-Token",
         "status": "authorization_pending",
         "authorized": False,
-        "authorization_download_url": f"/cases/{case_id}/rtm-authorization-pdf",
         "next_path": _rtm_next_path(department, case_type),
     }
 
@@ -511,7 +512,10 @@ DNI/NIE/Pasaporte: {dni}
 Fecha: _____________________________
 """
     pdf_bytes = build_pdf("AUTORIZACIÓN DE REPRESENTACIÓN RTM", body)
-    headers = {"Content-Disposition": f'attachment; filename="autorizacion_RTM_{case_id}.pdf"'}
+    headers = {
+        **PRIVATE_DOCUMENT_HEADERS,
+        "Content-Disposition": f'attachment; filename="autorizacion_RTM_{case_id}.pdf"',
+    }
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
 
@@ -709,22 +713,31 @@ async def append_documents(
 
         b2_bucket, b2_key = upload_bytes(case_id, "original", data, ext, mime)
 
-        uploaded_docs.append({"bucket": b2_bucket, "key": b2_key, "filename": filename, "mime": mime})
-
         with engine.begin() as conn:
-            conn.execute(
+            document_sha256 = hashlib.sha256(data).hexdigest()
+            document_row = conn.execute(
                 text(
-                    "INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at) "
-                    "VALUES (:id,'original',:b,:k,:m,:s,NOW())"
+                    "INSERT INTO documents("
+                    "case_id, kind, b2_bucket, b2_key, mime, size_bytes, sha256, created_at"
+                    ") VALUES (:id,'original',:b,:k,:m,:s,:sha256,NOW()) "
+                    "RETURNING id"
                 ),
                 {
                     "id": case_id,
                     "b": b2_bucket,
                     "k": b2_key,
-                    "m": uf.content_type,
+                    "m": mime,
                     "s": len(data),
+                    "sha256": document_sha256,
                 },
+            ).fetchone()
+        if not document_row:
+            raise HTTPException(status_code=409, detail="No se registró el documento")
+        uploaded_docs.append(
+            _document_projection(
+                str(document_row[0]), document_sha256, mime, len(data)
             )
+        )
 
         # RTM CORE -> motor legacy de multas, SOLO para traffic/fine.
         # El mismo case_id recibe la extraction que luego consume generate.py.
@@ -1002,7 +1015,6 @@ async def authorize_case(
         "authority_version": authority_material["authority_version"],
         "authority_material_sha256": authority_payload["material_sha256"],
         "authorization_pdf": auth_doc.get("document"),
-        "download_url": f"/cases/{case_id}/authorization-pdf",
     }
 
 @router.get("/{case_id}/authorization-pdf")
@@ -1029,7 +1041,8 @@ def download_authorization_pdf(
         pdf_bytes = generate_authorization_pdf(payload)
 
     headers = {
-        "Content-Disposition": f'attachment; filename="autorizacion_{case_id}.pdf"'
+        **PRIVATE_DOCUMENT_HEADERS,
+        "Content-Disposition": f'attachment; filename="autorizacion_{case_id}.pdf"',
     }
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
@@ -1073,8 +1086,12 @@ async def _store_authorization_signed(
         document_row = conn.execute(
             text(
                 """
-                INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
-                VALUES (:id, 'authorization_signed', :b, :k, 'application/pdf', :s, NOW())
+                INSERT INTO documents(
+                    case_id, kind, b2_bucket, b2_key, mime, size_bytes, sha256, created_at
+                )
+                VALUES (
+                    :id, 'authorization_signed', :b, :k, 'application/pdf', :s, :sha256, NOW()
+                )
                 RETURNING id
                 """
             ),
@@ -1083,6 +1100,7 @@ async def _store_authorization_signed(
                 "b": b2_bucket,
                 "k": b2_key,
                 "s": len(data),
+                "sha256": document_sha256,
             },
         ).fetchone()
         if not document_row:
@@ -1109,13 +1127,9 @@ async def _store_authorization_signed(
         "ok": True,
         "case_id": case_id,
         "authorized": True,
-        "document": {
-            "kind": "authorization_signed",
-            "mime": "application/pdf",
-            "size_bytes": len(data),
-            "sha256": document_sha256,
-            "attestation_sha256": signed_attestation["material_sha256"],
-        },
+        "document": _document_projection(
+            str(document_row[0]), document_sha256, "application/pdf", len(data)
+        ),
     }
 
 

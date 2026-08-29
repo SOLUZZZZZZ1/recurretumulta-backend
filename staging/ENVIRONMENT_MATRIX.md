@@ -122,6 +122,31 @@ RTM_ENABLE_EXTERNAL_SUBMISSION=0
 Después se activa una capacidad cada vez, se vuelve a ejecutar el preflight y se
 realiza su prueba específica.
 
+### 5.1 Correo RecurreTuMulta en Nominalia
+
+El transporte de correo se configura una sola vez para todos los puntos de
+entrada del backend. La contraseña canónica es `SMTP_PASSWORD`; no se admite el
+nombre legacy `SMTP_PASS`.
+
+```text
+SMTP_HOST=authsmtp.securemail.pro
+SMTP_PORT=465
+SMTP_SECURITY=ssl
+SMTP_USER=info@recurretumulta.eu
+SMTP_PASSWORD=<secreto exclusivo en Render>
+SMTP_FROM=RecurreTuMulta <info@recurretumulta.eu>
+CONTACT_TO=info@recurretumulta.eu
+```
+
+Nominalia publica actualmente SMTP autenticado mediante SSL implícito en el
+puerto 465. `SMTP_SECURITY=starttls` queda reservado para proveedores que
+expongan STARTTLS, normalmente en el puerto 587.
+
+En staging, `RTM_ENABLE_OUTBOUND_EMAIL=0` sigue siendo obligatorio. Las
+variables SMTP pueden prepararse, pero ninguna ruta, job o notificación puede
+abrir una conexión ni enviar un mensaje. La activación real se hará únicamente
+en producción, mediante cambio explícito y prueba controlada.
+
 ## 6. PostgreSQL
 
 Staging debe usar una base dedicada. Ejemplo de nombre válido:

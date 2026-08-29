@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -14,6 +15,9 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Image
 from sqlalchemy import text
 
 from b2_storage import upload_bytes
+
+
+DOCUMENT_CUSTODY = "rtm_internal_only"
 
 
 def _utcnow_iso() -> str:
@@ -278,10 +282,13 @@ def _existing_authorization_doc(conn, case_id: str) -> Optional[Dict[str, Any]]:
     row = conn.execute(
         text(
             """
-            SELECT id, b2_bucket, b2_key, mime, created_at
+            SELECT id, sha256, mime, size_bytes
             FROM documents
             WHERE case_id = :id
               AND kind = 'authorization_pdf'
+              AND sha256 ~ '^[0-9a-f]{64}$'
+              AND mime = 'application/pdf'
+              AND size_bytes > 0
             ORDER BY created_at DESC
             LIMIT 1
             """
@@ -294,14 +301,21 @@ def _existing_authorization_doc(conn, case_id: str) -> Optional[Dict[str, Any]]:
 
     return {
         "id": str(row[0]),
-        "bucket": row[1],
-        "key": row[2],
-        "mime": row[3],
-        "created_at": str(row[4]),
+        "sha256": str(row[1]),
+        "mime": row[2],
+        "size_bytes": int(row[3]),
+        "custody": DOCUMENT_CUSTODY,
     }
 
 
 def ensure_authorization_pdf(conn, case_id: str, request, version: str = "v1") -> Dict[str, Any]:
+    case_row = conn.execute(
+        text("SELECT id FROM cases WHERE id = :id FOR UPDATE"),
+        {"id": case_id},
+    ).fetchone()
+    if not case_row:
+        raise ValueError("Case not found")
+
     existing = _existing_authorization_doc(conn, case_id)
     if existing:
         return {"ok": True, "existing": True, "document": existing}
@@ -310,6 +324,7 @@ def ensure_authorization_pdf(conn, case_id: str, request, version: str = "v1") -
     case_meta = _get_case_snapshot(conn, case_id)
     payload = _authorization_payload_from_case(case_meta, ip=ip, version=version)
     pdf_bytes = generate_authorization_pdf(payload)
+    pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
 
     bucket, key = upload_bytes(
         case_id,
@@ -319,15 +334,36 @@ def ensure_authorization_pdf(conn, case_id: str, request, version: str = "v1") -
         "application/pdf",
     )
 
-    conn.execute(
+    document_row = conn.execute(
         text(
             """
-            INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
-            VALUES (:id, 'authorization_pdf', :b, :k, 'application/pdf', :s, NOW())
+            INSERT INTO documents(
+                case_id, kind, b2_bucket, b2_key, mime, size_bytes, sha256, created_at
+            )
+            VALUES (
+                :id, 'authorization_pdf', :b, :k, 'application/pdf', :s, :sha256, NOW()
+            )
+            RETURNING id
             """
         ),
-        {"id": case_id, "b": bucket, "k": key, "s": len(pdf_bytes)},
-    )
+        {
+            "id": case_id,
+            "b": bucket,
+            "k": key,
+            "s": len(pdf_bytes),
+            "sha256": pdf_sha256,
+        },
+    ).fetchone()
+    if not document_row:
+        raise RuntimeError("Authorization document was not registered")
+
+    document = {
+        "id": str(document_row[0]),
+        "sha256": pdf_sha256,
+        "mime": "application/pdf",
+        "size_bytes": len(pdf_bytes),
+        "custody": DOCUMENT_CUSTODY,
+    }
 
     conn.execute(
         text(
@@ -340,12 +376,10 @@ def ensure_authorization_pdf(conn, case_id: str, request, version: str = "v1") -
             "id": case_id,
             "payload": json.dumps(
                 {
-                    "bucket": bucket,
-                    "key": key,
+                    "document": document,
                     "ip": ip,
                     "version": version,
                     "generated_at": payload["authorized_at"],
-                    "signature_path_found": _find_signature_path(),
                 }
             ),
         },
@@ -354,9 +388,5 @@ def ensure_authorization_pdf(conn, case_id: str, request, version: str = "v1") -
     return {
         "ok": True,
         "existing": False,
-        "document": {
-            "bucket": bucket,
-            "key": key,
-            "mime": "application/pdf",
-        },
+        "document": document,
     }

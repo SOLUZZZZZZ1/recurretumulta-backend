@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, List
 
 from fastapi import APIRouter, HTTPException, Header, UploadFile, File, Form, Query
-from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 
 from database import get_engine
@@ -154,17 +153,46 @@ def _require_operator(x_operator_token: Optional[str]):
         raise HTTPException(status_code=401, detail="Unauthorized operator")
 
 
-# =========================================================
-# B2 download helper (NO rompe aunque b2_storage no tenga download_bytes)
-# =========================================================
-def _download_bytes(bucket: str, key: str) -> bytes:
-    import b2_storage
+_INTERNAL_EVENT_KEYS = {
+    "b2_bucket",
+    "b2_key",
+    "bucket",
+    "key",
+    "object_key",
+    "original_bucket",
+    "original_key",
+    "source_bucket",
+    "source_key",
+    "source_keys",
+    "storage_bucket",
+    "storage_coordinates",
+    "storage_locator",
+    "storage_key",
+    "storage_path",
+    "internal_path",
+    "download_endpoint",
+    "download_url",
+    "document_url",
+    "presigned_url",
+    "signed_url",
+    "access_token",
+    "token",
+    "secret",
+}
 
-    for fn_name in ("download_bytes", "get_bytes", "b2_download_bytes", "download_file_bytes"):
-        fn = getattr(b2_storage, fn_name, None)
-        if callable(fn):
-            return fn(bucket, key)
-    raise HTTPException(status_code=500, detail="No existe función de descarga en b2_storage (download_bytes/get_bytes/...)")
+
+def _sanitize_operator_payload(value: Any, depth: int = 0) -> Any:
+    if depth > 8:
+        return "<truncated>"
+    if isinstance(value, list):
+        return [_sanitize_operator_payload(item, depth + 1) for item in value]
+    if not isinstance(value, dict):
+        return value
+    return {
+        str(key): _sanitize_operator_payload(child, depth + 1)
+        for key, child in value.items()
+        if str(key).strip().lower() not in _INTERNAL_EVENT_KEYS
+    }
 
 
 def _upload_bytes(
@@ -368,7 +396,7 @@ def list_documents(
         rows = conn.execute(
             text(
                 """
-                SELECT id, kind, b2_bucket, b2_key, mime, size_bytes, created_at
+                SELECT id, kind, sha256, mime, size_bytes, created_at
                 FROM documents
                 WHERE case_id = :case_id
                 ORDER BY created_at DESC
@@ -381,45 +409,34 @@ def list_documents(
     for r in rows:
         items.append(
             {
-                "id": str(r[0]),             # 👈 nuevo: id para descargar
+                "id": str(r[0]),
                 "kind": r[1],
-                "bucket": r[2],
-                "key": r[3],
-                "mime": r[4],
-                "size_bytes": int(r[5] or 0),
-                "created_at": r[6],
+                "sha256": str(r[2] or ""),
+                "mime": r[3],
+                "size_bytes": int(r[4] or 0),
+                "created_at": r[5],
+                "custody": "rtm_internal_only",
+                "operator_export_allowed": False,
             }
         )
 
     return {"ok": True, "case_id": case_id, "documents": items}
 
 
-# ✅ NUEVO: descarga segura sin exponer B2
 @router.get("/documents/{doc_id}/download")
 def download_document(
     doc_id: str,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     _require_operator(x_operator_token)
-
-    engine = get_engine()
-    with engine.begin() as conn:
-        row = conn.execute(
-            text("SELECT b2_bucket, b2_key, mime FROM documents WHERE id=:id"),
-            {"id": doc_id},
-        ).fetchone()
-
-    if not row:
-        raise HTTPException(status_code=404, detail="Documento no encontrado")
-
-    bucket, key, mime = row
-    data = _download_bytes(bucket, key)
-    filename = (key or "documento").split("/")[-1] or "documento"
-
-    return StreamingResponse(
-        iter([data]),
-        media_type=(mime or "application/octet-stream"),
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    del doc_id
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "La descarga directa está desactivada para operadores. "
+            "Utiliza RTM Presenter; la exportación excepcional requiere "
+            "sesión individual y capacidad administrativa específica."
+        ),
     )
 
 
@@ -446,7 +463,14 @@ def list_events(
             {"case_id": case_id, "limit": limit},
         ).fetchall()
 
-    items = [{"type": r[0], "payload": r[1], "created_at": r[2]} for r in rows]
+    items = [
+        {
+            "type": r[0],
+            "payload": _sanitize_operator_payload(r[1]),
+            "created_at": r[2],
+        }
+        for r in rows
+    ]
     return {"ok": True, "case_id": case_id, "events": items}
 
 
@@ -702,6 +726,7 @@ async def upload_justificante(
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Archivo vacío")
+    document_sha256 = hashlib.sha256(data).hexdigest()
 
     engine = get_engine()
     with engine.begin() as conn:
@@ -712,11 +737,17 @@ async def upload_justificante(
 
         b2_bucket, b2_key = _upload_bytes(case_id, "justificantes", data, ext, content_type)
 
-        conn.execute(
+        document_row = conn.execute(
             text(
                 """
-                INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
-                VALUES (:case_id, :kind, :b2_bucket, :b2_key, :mime, :size_bytes, NOW())
+                INSERT INTO documents(
+                    case_id, kind, b2_bucket, b2_key, sha256,
+                    mime, size_bytes, created_at
+                ) VALUES (
+                    :case_id, :kind, :b2_bucket, :b2_key, :sha256,
+                    :mime, :size_bytes, NOW()
+                )
+                RETURNING id
                 """
             ),
             {
@@ -724,10 +755,12 @@ async def upload_justificante(
                 "kind": kind,
                 "b2_bucket": b2_bucket,
                 "b2_key": b2_key,
+                "sha256": document_sha256,
                 "mime": content_type,
                 "size_bytes": len(data),
             },
-        )
+        ).fetchone()
+        document_id = str(document_row[0])
 
         conn.execute(
             text(
@@ -740,9 +773,10 @@ async def upload_justificante(
                 "case_id": case_id,
                 "payload": json.dumps(
                     {
+                        "document_id": document_id,
                         "kind": kind,
-                        "bucket": b2_bucket,
-                        "key": b2_key,
+                        "filename": filename,
+                        "sha256": document_sha256,
                         "mime": content_type,
                         "size_bytes": len(data),
                     }
@@ -750,84 +784,34 @@ async def upload_justificante(
             },
         )
 
-    return {"ok": True, "case_id": case_id, "kind": kind, "bucket": b2_bucket, "key": b2_key}
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "document_id": document_id,
+        "kind": kind,
+        "sha256": document_sha256,
+        "mime": content_type,
+        "size_bytes": len(data),
+        "custody": "rtm_internal_only",
+    }
 
 @router.post("/cases/{case_id}/upload-external-document")
 async def upload_external_document(
     case_id: str,
-    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
-    file: UploadFile = File(...),
-    kind: str = Form("documento_externo"),
-    note: Optional[str] = Form(default=None),
-) -> Dict[str, Any]:
-    """
-    Adjunta documentación externa real al expediente:
-    resoluciones, requerimientos, justificantes, instancias, CSV, pruebas externas, etc.
+) -> None:
+    """Cierra el ingreso OPS compartido; no procesa el cuerpo multipart."""
 
-    No exige pago ni autorización: es una acción interna OPS para completar expediente.
-    """
-    _require_operator(x_operator_token)
-
-    filename = (file.filename or "").strip()
-    if not filename:
-        raise HTTPException(status_code=400, detail="Filename requerido")
-
-    content_type = (file.content_type or "application/octet-stream").strip()
-    data = await file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="Archivo vacío")
-
-    clean_kind = _clean_kind(kind)
-    ext = _guess_ext_from_filename(filename, content_type)
-
-    engine = get_engine()
-    with engine.begin() as conn:
-        _case_exists(conn, case_id)
-
-        b2_bucket, b2_key = _upload_bytes(case_id, "external", data, ext, content_type)
-
-        conn.execute(
-            text(
-                """
-                INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
-                VALUES (:case_id, :kind, :b2_bucket, :b2_key, :mime, :size_bytes, NOW())
-                """
+    raise HTTPException(
+        status_code=410,
+        headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+        detail={
+            "code": "presenter.external_ingest_required",
+            "message": "Usa la sesión individual y el ingreso versionado de Presenter",
+            "replacement": (
+                f"/ops/presenter/cases/{case_id}/documents/external"
             ),
-            {
-                "case_id": case_id,
-                "kind": clean_kind,
-                "b2_bucket": b2_bucket,
-                "b2_key": b2_key,
-                "mime": content_type,
-                "size_bytes": len(data),
-            },
-        )
-
-        _append_event(
-            conn,
-            case_id,
-            "external_document_uploaded",
-            {
-                "kind": clean_kind,
-                "filename": filename,
-                "bucket": b2_bucket,
-                "key": b2_key,
-                "mime": content_type,
-                "size_bytes": len(data),
-                "note": note or "",
-                "at": _now_iso(),
-            },
-        )
-
-    return {
-        "ok": True,
-        "case_id": case_id,
-        "kind": clean_kind,
-        "bucket": b2_bucket,
-        "key": b2_key,
-        "mime": content_type,
-        "size_bytes": len(data),
-    }
+        },
+    )
 
 
 @router.post("/cases/{case_id}/register-manual-submission")
@@ -924,26 +908,34 @@ async def register_manual_submission(
                 case_id, "manual_submission", data, ext, content_type
             )
 
-            conn.execute(
+            document_row = conn.execute(
                 text(
                     """
-                    INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
-                    VALUES (:case_id, 'justificante_presentacion', :b2_bucket, :b2_key, :mime, :size_bytes, NOW())
+                    INSERT INTO documents(
+                        case_id, kind, b2_bucket, b2_key, sha256,
+                        mime, size_bytes, created_at
+                    ) VALUES (
+                        :case_id, 'justificante_presentacion',
+                        :b2_bucket, :b2_key, :sha256,
+                        :mime, :size_bytes, NOW()
+                    )
+                    RETURNING id
                     """
                 ),
                 {
                     "case_id": case_id,
                     "b2_bucket": b2_bucket,
                     "b2_key": b2_key,
+                    "sha256": document_sha256,
                     "mime": content_type,
                     "size_bytes": len(data),
                 },
-            )
+            ).fetchone()
+            document_id = str(document_row[0])
 
             document_info = {
+                "document_id": document_id,
                 "filename": filename,
-                "bucket": b2_bucket,
-                "key": b2_key,
                 "mime": content_type,
                 "size_bytes": len(data),
                 "sha256": document_sha256,

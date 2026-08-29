@@ -226,7 +226,7 @@ def queue_smart(
             doc_rows = conn.execute(
                 text(
                     '''
-                    SELECT id, kind, b2_bucket, b2_key, mime, size_bytes, created_at
+                    SELECT id, kind, mime, size_bytes, created_at
                     FROM documents
                     WHERE case_id = :case_id
                     ORDER BY created_at DESC
@@ -240,11 +240,11 @@ def queue_smart(
                 {
                     "id": str(r[0]),
                     "kind": r[1],
-                    "bucket": r[2],
-                    "key": r[3],
-                    "mime": r[4],
-                    "size_bytes": int(r[5] or 0),
-                    "created_at": r[6],
+                    "mime": r[2],
+                    "size_bytes": int(r[3] or 0),
+                    "created_at": r[4],
+                    "custody": "rtm_internal_only",
+                    "operator_export_allowed": False,
                 }
                 for r in doc_rows
             ]

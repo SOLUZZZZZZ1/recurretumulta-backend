@@ -1,5 +1,7 @@
 import os
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -45,15 +47,14 @@ from rtm_core.migration_router import router as rtm_core_migration_router
 from rtm_core.document_extraction_migration import (
     router as rtm_core_document_extraction_migration_router,
 )
-from rtm_core.operator_auth_router import (
-    router as rtm_operator_auth_router,
-)
+from rtm_core.operator_auth_router import router as rtm_operator_auth_router
 from rtm_core.operator_admin_router import (
     router as rtm_operator_admin_router,
 )
 from rtm_core.operator_lifecycle_router import (
     router as rtm_operator_lifecycle_router,
 )
+from rtm_presenter_router import router as rtm_presenter_router
 from rtm_connect.supervisor_router import (
     connect_supervisor_gate_middleware,
     router as connect_supervisor_router,
@@ -77,6 +78,28 @@ from partner import router as partner_router
 install_safe_extraction_policy()
 
 app = FastAPI(title="RecurreTuMulta Backend", version="0.1.0")
+
+_NO_STORE_HEADERS = {
+    "Cache-Control": "no-store, max-age=0",
+    "Pragma": "no-cache",
+}
+
+
+@app.exception_handler(RequestValidationError)
+async def redact_operator_auth_validation_error(
+    request: Request,
+    exc: RequestValidationError,
+):
+    """No refleja inputs sensibles en errores 422 de autenticacion."""
+
+    path = request.url.path
+    if path != "/ops/auth" and not path.startswith("/ops/auth/"):
+        return await request_validation_exception_handler(request, exc)
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "Solicitud no válida"},
+        headers=_NO_STORE_HEADERS,
+    )
 
 
 @app.middleware("http")
@@ -115,6 +138,36 @@ app.middleware("http")(connect_supervisor_gate_middleware)
 # cuando la fase no esta habilitada.
 app.middleware("http")(human_filing_gate_middleware)
 
+
+@app.middleware("http")
+async def no_store_private_ops(request: Request, call_next):
+    """Evita cachear cualquier respuesta privada de OPS, incluidos errores."""
+
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/ops" or path.startswith("/ops/"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        vary = [
+            value.strip()
+            for value in response.headers.get("Vary", "").split(",")
+            if value.strip()
+        ]
+        if "*" in vary:
+            return response
+        known_vary = {value.casefold() for value in vary}
+        for value in (
+            "Authorization",
+            "Cookie",
+            "X-Operator-Token",
+            "X-RTM-Device",
+        ):
+            if value.casefold() not in known_vary:
+                vary.append(value)
+                known_vary.add(value.casefold())
+        response.headers["Vary"] = ", ".join(vary)
+    return response
+
 # El cortafuegos y las rutas seguras CORE se registran antes de los routers legacy.
 app.include_router(rtm_core_legacy_guard_router)
 app.include_router(rtm_core_intake_router)
@@ -151,6 +204,7 @@ app.include_router(rtm_core_document_extraction_migration_router)
 app.include_router(rtm_operator_auth_router)
 app.include_router(rtm_operator_admin_router)
 app.include_router(rtm_operator_lifecycle_router)
+app.include_router(rtm_presenter_router)
 app.include_router(connect_supervisor_router)
 app.include_router(connect_human_filing_router)
 
