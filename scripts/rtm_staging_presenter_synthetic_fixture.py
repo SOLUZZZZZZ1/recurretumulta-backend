@@ -31,11 +31,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-SCRIPT_VERSION = "rtm_staging_presenter_synthetic_fixture_v1_1"
+SCRIPT_VERSION = "rtm_staging_presenter_synthetic_fixture_v1_2"
 APPLY_CONFIRMATION = "STAGING_PRESENTER_SYNTHETIC_FIXTURE_ONLY"
 DEFAULT_FIXTURE_KEY = "runtime-a94dcd3-v1"
 PROFILE_CODE = "synthetic.example"
 PROFILE_VERSION = 2
+LEGACY_PROFILE_VERSION = 1
 PROFILE_ORIGIN = "https://synthetic.example"
 PRESENTER_MARKER = "RTM_PRESENTER_SYNTHETIC_ONLY"
 A1S_MARKER = "RTM_A1S_SYNTHETIC_ONLY"
@@ -183,6 +184,36 @@ def destination_requirements() -> dict[str, Any]:
     }
 
 
+def _legacy_destination_requirements() -> dict[str, Any]:
+    """Contrato inmutable que pudo sembrar la fixture v1_0."""
+
+    return {
+        "contract_version": "rtm.presenter.destination.requirements.v1",
+        "synthetic_only": True,
+        "representation_modes": ["self"],
+        "fields": [
+            {
+                "step_order": 1,
+                "field_code": "main_document",
+                "required": True,
+                "purposes": ["main_filing"],
+                "media_types": ["text/plain"],
+                "max_files": 1,
+                "max_bytes": 1048576,
+            },
+            {
+                "step_order": 2,
+                "field_code": "submission_receipt",
+                "required": False,
+                "purposes": ["submission_receipt"],
+                "media_types": ["application/json"],
+                "max_files": 1,
+                "max_bytes": 1048576,
+            },
+        ],
+    }
+
+
 def _profile_configuration() -> dict[str, Any]:
     return {
         "profile_code": PROFILE_CODE,
@@ -191,6 +222,30 @@ def _profile_configuration() -> dict[str, Any]:
         "display_name": "Destino sintético de sede y correspondencia",
         "portal_origin": PROFILE_ORIGIN,
         "requirements": destination_requirements(),
+    }
+
+
+def _legacy_profile(expected_profile: Mapping[str, Any]) -> dict[str, Any]:
+    """Reconstruye exactamente la fila append-only creada por la fixture v1_0."""
+
+    configuration = {
+        "profile_code": PROFILE_CODE,
+        "version_number": LEGACY_PROFILE_VERSION,
+        "authority_code": PROFILE_CODE,
+        "display_name": "Synthetic Example staging portal",
+        "portal_origin": PROFILE_ORIGIN,
+        "requirements": _legacy_destination_requirements(),
+    }
+    return {
+        **configuration,
+        "id": _stable_uuid(
+            f"destination-profile:{PROFILE_CODE}:v{LEGACY_PROFILE_VERSION}"
+        ),
+        "status": "active",
+        "profile_sha256": _canonical_sha256(configuration),
+        "created_by_operator_id": expected_profile["created_by_operator_id"],
+        "verified_by_operator_id": expected_profile["verified_by_operator_id"],
+        "metadata": dict(expected_profile["metadata"]),
     }
 
 
@@ -529,6 +584,7 @@ def build_seed_plan(source: Mapping[str, Any]) -> dict[str, Any]:
     }
     if profile["created_by_operator_id"] == profile["verified_by_operator_id"]:
         raise PresenterFixtureError("profile_requires_distinct_creator_verifier")
+    legacy_profile = _legacy_profile(profile)
     assignment = {
         "id": _stable_uuid(f"{fixture_key}:presenter-work-assignment:v1"),
         "case_id": str(source["case_id"]),
@@ -549,6 +605,7 @@ def build_seed_plan(source: Mapping[str, Any]) -> dict[str, Any]:
         "fixture_key": fixture_key,
         "case_id": str(source["case_id"]),
         "document_versions": tuple(document_rows),
+        "destination_profiles": (legacy_profile, profile),
         "destination_profile": profile,
         "work_assignment": assignment,
     }
@@ -639,22 +696,48 @@ def reconcile_fixture_state(
         if _json_object(actual.get("metadata")) != expected["metadata"]:
             raise PresenterFixtureError("presenter_document_metadata_collision")
 
-    if len(profile_rows) > 1:
-        raise PresenterFixtureError("synthetic_example_profile_not_unique")
     expected_profile = plan["destination_profile"]
-    profile_missing = not profile_rows
-    if profile_rows:
-        actual_profile = profile_rows[0]
+    expected_profiles = {
+        int(row["version_number"]): row
+        for row in plan.get(
+            "destination_profiles",
+            (_legacy_profile(expected_profile), expected_profile),
+        )
+    }
+    actual_profiles: dict[int, Mapping[str, Any]] = {}
+    for actual_profile in profile_rows:
+        try:
+            version_number = int(actual_profile.get("version_number"))
+        except (TypeError, ValueError) as exc:
+            raise PresenterFixtureError(
+                "synthetic_example_profile_collision"
+            ) from exc
+        if version_number in actual_profiles:
+            raise PresenterFixtureError("synthetic_example_profile_not_unique")
+        actual_profiles[version_number] = actual_profile
+    if set(actual_profiles) - set(expected_profiles):
+        raise PresenterFixtureError("synthetic_example_profile_collision")
+    missing_profile_versions = sorted(
+        set(expected_profiles) - set(actual_profiles)
+    )
+    if actual_profiles and any(
+        version_number < max(actual_profiles)
+        for version_number in missing_profile_versions
+    ):
+        raise PresenterFixtureError("synthetic_example_profile_version_gap")
+    profile_missing = bool(missing_profile_versions)
+    for version_number, actual_profile in actual_profiles.items():
+        accepted_profile = expected_profiles[version_number]
         if any(
-            not _same_scalar(actual_profile.get(key), expected_profile.get(key))
+            not _same_scalar(actual_profile.get(key), accepted_profile.get(key))
             for key in _PROFILE_COMPARE_KEYS
         ):
             raise PresenterFixtureError("synthetic_example_profile_collision")
-        if _json_object(actual_profile.get("requirements")) != expected_profile[
+        if _json_object(actual_profile.get("requirements")) != accepted_profile[
             "requirements"
         ]:
             raise PresenterFixtureError("synthetic_example_requirements_collision")
-        if _json_object(actual_profile.get("metadata")) != expected_profile[
+        if _json_object(actual_profile.get("metadata")) != accepted_profile[
             "metadata"
         ]:
             raise PresenterFixtureError("synthetic_example_metadata_collision")
@@ -691,9 +774,10 @@ def reconcile_fixture_state(
         ),
         "missing_source_document_ids": sorted(missing_document_ids),
         "profile_missing": profile_missing,
+        "missing_profile_versions": missing_profile_versions,
         "assignment_missing": assignment_missing,
         "would_insert_document_versions": len(missing_document_ids),
-        "would_insert_destination_profiles": int(profile_missing),
+        "would_insert_destination_profiles": len(missing_profile_versions),
         "would_insert_work_assignments": int(assignment_missing),
     }
 
@@ -844,8 +928,13 @@ def insert_fixture(conn: Any, *, plan: Mapping[str, Any]) -> int:
         result = conn.execute(document_sql, values)
         inserted += max(0, int(getattr(result, "rowcount", 0) or 0))
 
-    if before["profile_missing"]:
-        profile = dict(plan["destination_profile"])
+    missing_profile_versions = set(before["missing_profile_versions"])
+    for planned_profile in plan.get(
+        "destination_profiles", (plan["destination_profile"],)
+    ):
+        if int(planned_profile["version_number"]) not in missing_profile_versions:
+            continue
+        profile = dict(planned_profile)
         profile["requirements"] = _canonical_json(profile["requirements"])
         profile["metadata"] = _canonical_json(profile["metadata"])
         result = conn.execute(

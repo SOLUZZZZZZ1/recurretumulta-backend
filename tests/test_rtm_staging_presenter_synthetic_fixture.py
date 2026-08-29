@@ -9,6 +9,7 @@ import sys
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -123,6 +124,20 @@ class _ColumnConnection:
         if "pg_indexes" in str(statement):
             return _Rows([{"indexname": value} for value in self.indexes])
         return _Rows([{"column_name": value} for value in self.columns])
+
+
+class _InsertResult:
+    rowcount = 1
+
+
+class _InsertConnection:
+    def __init__(self):
+        self.profile_versions = []
+
+    def execute(self, _statement, values):
+        if "profile_code" in values:
+            self.profile_versions.append(int(values["version_number"]))
+        return _InsertResult()
 
 
 class StagingPresenterSyntheticFixtureTest(unittest.TestCase):
@@ -246,6 +261,10 @@ class StagingPresenterSyntheticFixtureTest(unittest.TestCase):
 
         self.assertNotIn("bytes", keys(plan))
         profile = plan["destination_profile"]
+        self.assertEqual(
+            [row["version_number"] for row in plan["destination_profiles"]],
+            [1, 2],
+        )
         self.assertEqual(profile["profile_code"], "synthetic.example")
         self.assertEqual(profile["portal_origin"], "https://synthetic.example")
         self.assertEqual(
@@ -293,11 +312,12 @@ class StagingPresenterSyntheticFixtureTest(unittest.TestCase):
             assignment_rows=[],
         )
         self.assertEqual(empty["would_insert_document_versions"], 2)
-        self.assertEqual(empty["would_insert_destination_profiles"], 1)
+        self.assertEqual(empty["would_insert_destination_profiles"], 2)
         self.assertEqual(empty["would_insert_work_assignments"], 1)
 
         documents = [copy.deepcopy(row) for row in plan["document_versions"]]
         profile = copy.deepcopy(plan["destination_profile"])
+        legacy_profile = copy.deepcopy(plan["destination_profiles"][0])
         assignment = copy.deepcopy(plan["work_assignment"])
         assignment.update(
             {
@@ -309,7 +329,7 @@ class StagingPresenterSyntheticFixtureTest(unittest.TestCase):
         ready = script.reconcile_fixture_state(
             plan=plan,
             document_rows=documents,
-            profile_rows=[profile],
+            profile_rows=[legacy_profile, profile],
             assignment_rows=[assignment],
         )
         self.assertTrue(ready["ready"])
@@ -317,14 +337,67 @@ class StagingPresenterSyntheticFixtureTest(unittest.TestCase):
         self.assertEqual(ready["would_insert_destination_profiles"], 0)
         self.assertEqual(ready["would_insert_work_assignments"], 0)
 
-        profile["portal_origin"] = "https://collision.example"
-        with self.assertRaises(script.PresenterFixtureError):
+        upgrade = script.reconcile_fixture_state(
+            plan=plan,
+            document_rows=documents,
+            profile_rows=[legacy_profile],
+            assignment_rows=[assignment],
+        )
+        self.assertFalse(upgrade["ready"])
+        self.assertEqual(upgrade["would_insert_destination_profiles"], 1)
+
+        upgraded = script.reconcile_fixture_state(
+            plan=plan,
+            document_rows=documents,
+            profile_rows=[
+                legacy_profile,
+                copy.deepcopy(plan["destination_profile"]),
+            ],
+            assignment_rows=[assignment],
+        )
+        self.assertTrue(upgraded["ready"])
+        self.assertEqual(upgraded["would_insert_destination_profiles"], 0)
+
+        with self.assertRaisesRegex(
+            script.PresenterFixtureError,
+            "synthetic_example_profile_version_gap",
+        ):
             script.reconcile_fixture_state(
                 plan=plan,
                 document_rows=documents,
                 profile_rows=[profile],
                 assignment_rows=[assignment],
             )
+
+        profile["portal_origin"] = "https://collision.example"
+        with self.assertRaises(script.PresenterFixtureError):
+            script.reconcile_fixture_state(
+                plan=plan,
+                document_rows=documents,
+                profile_rows=[legacy_profile, profile],
+                assignment_rows=[assignment],
+            )
+
+    def test_fresh_database_inserts_profile_versions_in_trigger_order(self):
+        script = _import_script()
+        plan = _seed_plan(script)
+        before = {
+            "missing_source_document_ids": [],
+            "missing_profile_versions": [1, 2],
+            "assignment_missing": False,
+        }
+        after = {"ready": True}
+        connection = _InsertConnection()
+
+        with mock.patch.object(
+            script,
+            "load_fixture_state",
+            side_effect=[before, after],
+        ):
+            inserted = script.insert_fixture(connection, plan=plan)
+
+        self.assertEqual(inserted, 2)
+        self.assertEqual(connection.profile_versions, [1, 2])
 
     def test_work_assignment_schema_is_required_fail_closed(self):
         script = _import_script()
