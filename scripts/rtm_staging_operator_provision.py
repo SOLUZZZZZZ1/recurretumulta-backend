@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     report: dict[str, Any] = {
         "ok": False,
         "authority": "rtm_staging_operator_provision",
-        "version": "rtm_staging_operator_provision_v1_0",
+        "version": "rtm_staging_operator_provision_v1_1",
         "environment": (os.getenv("RTM_ENV") or "").strip().lower() or "unset",
         "synthetic_only": True,
         "operator_auth_enabled": bool(
@@ -174,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
                 password=password,
             )
 
-        if result.password_issued:
+        if result.password_issued and args.generate_password:
             print(
                 "\nRTM_STAGING_TEMPORARY_PASSWORD_BEGIN\n"
                 f"{password}\n"
