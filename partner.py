@@ -11,6 +11,8 @@ from sqlalchemy import text
 
 from database import get_engine
 from b2_storage import upload_bytes
+from email_utils import send_email
+from rtm_core.runtime_capabilities import require_http_capability
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
@@ -510,16 +512,9 @@ class PartnerSignupRequest(BaseModel):
 
 @router.post("/signup")
 def partner_signup(payload: PartnerSignupRequest):
-    try:
-        import smtplib
-        from email.message import EmailMessage
+    require_http_capability("outbound_email")
 
-        msg = EmailMessage()
-        msg["Subject"] = "Nueva solicitud de alta asesoría"
-        msg["From"] = os.getenv("SMTP_FROM")
-        msg["To"] = "soporte@recurretumulta.eu"
-
-        body = f"""
+    body = f"""
 Nueva solicitud de asesoría:
 
 Empresa: {payload.empresa}
@@ -531,16 +526,21 @@ Volumen: {payload.volumen}
 
 Mensaje:
 {payload.mensaje}
-        """
+    """
 
-        msg.set_content(body)
-
-        with smtplib.SMTP(os.getenv("SMTP_HOST"), int(os.getenv("SMTP_PORT", "587"))) as server:
-            server.starttls()
-            server.login(os.getenv("SMTP_USER"), os.getenv("SMTP_PASS"))
-            server.send_message(msg)
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error enviando email: {e}")
+    try:
+        sent = send_email(
+            to_email=(os.getenv("CONTACT_TO") or "info@recurretumulta.eu").strip(),
+            subject="Nueva solicitud de alta asesoría",
+            body=body,
+            reply_to=str(payload.email),
+        )
+    except Exception:
+        raise HTTPException(status_code=500, detail="No se pudo enviar la solicitud.")
+    if not sent:
+        raise HTTPException(
+            status_code=500,
+            detail="Falta configuración SMTP en el servidor.",
+        )
 
     return {"ok": True}

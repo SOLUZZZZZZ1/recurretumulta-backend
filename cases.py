@@ -1,10 +1,8 @@
 import hashlib
 import json
 import os
-import smtplib
 import uuid
 from datetime import datetime, timezone
-from email.message import EmailMessage
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks, Header, Request, Response
@@ -13,6 +11,7 @@ from sqlalchemy import text
 
 from database import get_engine
 from b2_storage import upload_bytes
+from email_utils import send_email
 from case_authority import (
     AUTHORITY_VERSION,
     build_case_authority_payload,
@@ -25,7 +24,6 @@ from public_case_access import (
     require_case_access_token,
     require_operator_case_access,
 )
-from rtm_core.runtime_capabilities import capability_state
 
 # Import interno del engine (Modo Dios)
 from ai.expediente_engine import run_expediente_ai
@@ -83,45 +81,13 @@ def _case_link(case_id: str) -> str:
     token = issue_case_access_token(case_id)
     return f"{base}/#/resumen?case={case_id}&access_token={token}"
 
-def _smtp_ok() -> bool:
-    return bool(
-        capability_state("outbound_email").enabled
-        and _env("SMTP_HOST")
-        and _env("SMTP_FROM")
-    )
-
 def _send_email(to_email: str, subject: str, body: str) -> None:
-    if not to_email or not _smtp_ok():
+    if not to_email:
         return
-
-    host = _env("SMTP_HOST")
-    port = int(_env("SMTP_PORT", "587") or "587")
-    user = _env("SMTP_USER")
-    pwd = _env("SMTP_PASS")
-    from_addr = _env("SMTP_FROM")
-
-    msg = EmailMessage()
-    msg["From"] = from_addr
-    msg["To"] = to_email
-    msg["Subject"] = subject
-    msg.set_content(body)
-
     try:
-        if port == 465:
-            with smtplib.SMTP_SSL(host, port, timeout=20) as s:
-                if user and pwd:
-                    s.login(user, pwd)
-                s.send_message(msg)
-        else:
-            with smtplib.SMTP(host, port, timeout=20) as s:
-                try:
-                    s.starttls()
-                except Exception:
-                    pass
-                if user and pwd:
-                    s.login(user, pwd)
-                s.send_message(msg)
+        send_email(to_email=to_email, subject=subject, body=body)
     except Exception:
+        # Las notificaciones no deben romper el flujo principal del expediente.
         pass
 
 def _email_contact_saved(case_id: str, name: str, email: str) -> None:
