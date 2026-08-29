@@ -66,6 +66,7 @@ _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$")
 RTM_PRESENTER_EXTERNAL_PURPOSES = frozenset(
     {
         "main_filing",
+        "prejudicial_authorization",
         "representation_authorization",
         "submission_receipt",
         "supporting_evidence",
@@ -289,6 +290,7 @@ class PresenterRepository(Protocol):
     def list_document_versions(self, conn: Any, *, case_id: str) -> Sequence[Mapping[str, Any]]: ...
     def insert_external_document_version(self, conn: Any, *, case_id: str, created_by_operator_id: str, upload: PresenterExternalDocumentUpload, storage_bucket: str, storage_key: str, supersedes_document_version_id: str | None) -> Mapping[str, Any]: ...
     def list_destination_profiles(self, conn: Any) -> Sequence[Mapping[str, Any]]: ...
+    def search_destination_profiles(self, conn: Any, *, query: str, limit: int) -> Sequence[Mapping[str, Any]]: ...
     def lock_document_version_lineages(self, conn: Any, *, case_id: str, document_version_ids: Sequence[str]) -> None: ...
     def load_document_version(self, conn: Any, *, case_id: str, document_version_id: str, for_update: bool = False) -> Mapping[str, Any] | None: ...
     def load_destination_profile(self, conn: Any, *, profile_id: str) -> Mapping[str, Any] | None: ...
@@ -296,6 +298,8 @@ class PresenterRepository(Protocol):
     def load_idempotent_frozen_package(self, conn: Any, *, operator_id: str, idempotency_key: str) -> Mapping[str, Any] | None: ...
     def persist_frozen_package(self, conn: Any, *, package: FrozenPresenterPackage, supersedes_package_id: str | None, idempotency_key: str, request_sha256: str) -> None: ...
     def load_frozen_package(self, conn: Any, *, case_id: str, package_id: str, for_update: bool = False) -> Mapping[str, Any] | None: ...
+    def lock_delivery_command(self, conn: Any, *, package_id: str, delivery_id: str) -> None: ...
+    def list_delivery_events(self, conn: Any, *, case_id: str, package_id: str, delivery_id: str) -> Sequence[Mapping[str, Any]]: ...
     def insert_ticket(self, conn: Any, *, binding: PresenterTicketBinding) -> None: ...
     def consume_ticket(self, conn: Any, *, ticket_sha256: str, actor: PresenterActorContext, portal_origin: str, used_at: datetime) -> Mapping[str, Any] | None: ...
     def load_document_bytes(self, conn: Any, *, case_id: str, document_version_id: str, expected_sha256: str) -> bytes: ...
@@ -892,6 +896,11 @@ class SqlPresenterRepository:
         return version
 
     def list_destination_profiles(self, conn: Any) -> Sequence[Mapping[str, Any]]:
+        return self.search_destination_profiles(conn, query="", limit=100)
+
+    def search_destination_profiles(
+        self, conn: Any, *, query: str, limit: int
+    ) -> Sequence[Mapping[str, Any]]:
         # Proyeccion de configuracion verificada; no selecciona metadata libre,
         # credenciales, storage ni ningun localizador documental.
         return conn.execute(
@@ -922,10 +931,17 @@ class SqlPresenterRepository:
                   AND verified_by_operator_id IS NOT NULL
                   AND created_by_operator_id <> verified_by_operator_id
                   AND verified_at IS NOT NULL
+                  AND (
+                    :query=''
+                    OR POSITION(LOWER(:query) IN LOWER(display_name)) > 0
+                    OR POSITION(LOWER(:query) IN LOWER(authority_code)) > 0
+                    OR POSITION(LOWER(:query) IN LOWER(profile_code)) > 0
+                  )
                 ORDER BY authority_code, profile_code, version_number DESC
-                LIMIT 100
+                LIMIT :limit
                 """
-            )
+            ),
+            {"query": query, "limit": limit},
         ).mappings().all()
 
     def load_document_version(
@@ -1342,6 +1358,9 @@ class SqlPresenterRepository:
                            p.created_by_operator_id, p.frozen_by_operator_id,
                            p.frozen_at, p.expires_at,
                            d.profile_code, d.version_number AS profile_version,
+                           d.display_name AS destination_display_name,
+                           d.authority_code AS destination_authority_code,
+                           d.requirements AS destination_requirements,
                            d.portal_origin, d.profile_sha256, d.status AS profile_status
                     FROM rtm_presenter_filing_packages p
                     JOIN rtm_presenter_destination_profiles d
@@ -1392,6 +1411,52 @@ class SqlPresenterRepository:
             {"package_id": package_id, "case_id": case_id},
         ).mappings().all()
         return {**dict(package), "items": list(items)}
+
+    def lock_delivery_command(
+        self, conn: Any, *, package_id: str, delivery_id: str
+    ) -> None:
+        conn.execute(
+            text(
+                """
+                SELECT pg_advisory_xact_lock(
+                    hashtextextended(
+                        'rtm-presenter-delivery:' || :package_id || ':'
+                        || :delivery_id,
+                        0
+                    )
+                )
+                """
+            ),
+            {"package_id": package_id, "delivery_id": delivery_id},
+        )
+
+    def list_delivery_events(
+        self,
+        conn: Any,
+        *,
+        case_id: str,
+        package_id: str,
+        delivery_id: str,
+    ) -> Sequence[Mapping[str, Any]]:
+        return conn.execute(
+            text(
+                """
+                SELECT sequence_number, event_type, reason_code, payload,
+                       created_at, actor_operator_id
+                FROM rtm_presenter_audit_events
+                WHERE case_id=CAST(:case_id AS UUID)
+                  AND package_id=CAST(:package_id AS UUID)
+                  AND event_type LIKE 'presenter.delivery.%'
+                  AND payload->>'delivery_id'=:delivery_id
+                ORDER BY sequence_number ASC
+                """
+            ),
+            {
+                "case_id": case_id,
+                "package_id": package_id,
+                "delivery_id": delivery_id,
+            },
+        ).mappings().all()
 
     def insert_ticket(self, conn: Any, *, binding: PresenterTicketBinding) -> None:
         conn.execute(
@@ -2181,6 +2246,48 @@ class PresenterService:
                 "operator_zip": False,
                 "operator_handoff": False,
             },
+            "storage_references_exposed": False,
+            "synthetic_only": True,
+        }
+
+    def search_destinations(
+        self,
+        conn: Any,
+        *,
+        actor: PresenterActorContext,
+        case_id: str,
+        query: str,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Busca solo perfiles activos y verificados; nunca acepta URLs libres."""
+
+        self._open(conn)
+        authorize_document_list(actor)
+        self._authorize_case_scope(conn, actor=actor, case_id=case_id)
+        clean_query = " ".join(str(query or "").split())
+        if not 2 <= len(clean_query) <= 100:
+            raise PresenterConflict(
+                "presenter.destination_query_invalid",
+                "La búsqueda de sede debe tener entre 2 y 100 caracteres",
+            )
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+            raise PresenterConflict(
+                "presenter.destination_limit_invalid",
+                "El límite de búsqueda no es válido",
+            )
+        destinations = [
+            _destination_workspace_projection(row)
+            for row in self.repository.search_destination_profiles(
+                conn, query=clean_query, limit=limit
+            )
+        ]
+        return {
+            "case_id": case_id,
+            "query": clean_query,
+            "destinations": destinations,
+            "result_count": len(destinations),
+            "unverified_destination_allowed": False,
+            "operator_supplied_url_allowed": False,
             "storage_references_exposed": False,
             "synthetic_only": True,
         }

@@ -4,6 +4,27 @@
 **Estado:** implementación sintética preparada para revisión; no operativa con
 datos reales ni sedes externas.
 
+## Addendum 29/08/2026 · entrega controlada y Documento 2
+
+- Rama de trabajo: `rtm-ops-controlled-delivery-2026-08-29`.
+- Se incorpora `rtm_presenter_delivery_v1_0`: preparación idempotente y
+  auditada de entrega desde un paquete congelado, sin leer bytes ni producir
+  efectos externos.
+- La sede se busca dentro de un registro de perfiles activos y verificados; el
+  operador no puede introducir una URL o dirección de correo libre.
+- El paquete se presenta documento a documento en el orden propio del perfil.
+- El canal email queda modelado, pero solo acepta destinatario y plantilla
+  verificados y no ejecuta envío en este corte.
+- Se añade el permiso mínimo `presenter.delivery.prepare`; no concede ejecución
+  externa.
+- Se añade la finalidad documental `prejudicial_authorization` y la preferencia
+  opcional de toma de datos `prejudicial_counsel_requested`; no constituyen por
+  sí solas autorización o mandato.
+- Contrato detallado: `staging/RTM_CONTROLLED_DELIVERY_CONTRACT_2026-08-29.md`.
+- Continúan cerrados: puente remoto sin atestación, correo real, datos reales,
+  scanner/CDR, firma, Cl@ve, CAPTCHA, submit final y reintento tras resultado
+  incierto.
+
 ## Resultado de este corte
 
 RTM dispone de un flujo aislado de **Presentador** para preparar, en el orden

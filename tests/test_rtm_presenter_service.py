@@ -78,6 +78,7 @@ class FakePresenterRepository:
         self.case_access_checks = 0
         self.document_list_calls = 0
         self.destination_list_calls = 0
+        self.destination_search_calls = 0
         self.document_lineage_lock_calls = 0
         self.locked_document_version_ids: tuple[str, ...] = ()
         self.document_load_calls = 0
@@ -239,6 +240,20 @@ class FakePresenterRepository:
         del conn
         self.destination_list_calls += 1
         return [dict(self.profile)]
+
+    def search_destination_profiles(
+        self, conn: Any, *, query: str, limit: int
+    ) -> list[Mapping[str, Any]]:
+        del conn
+        self.destination_search_calls += 1
+        haystack = " ".join(
+            (
+                str(self.profile["display_name"]),
+                str(self.profile["authority_code"]),
+                str(self.profile["profile_code"]),
+            )
+        ).lower()
+        return [dict(self.profile)][:limit] if query.lower() in haystack else []
 
     def lock_document_version_lineages(
         self,
@@ -729,6 +744,50 @@ class RTMPresenterServiceTest(unittest.TestCase):
         self.assertEqual(denied.exception.code, "presenter.forbidden")
         self.assertNotIn("a1s", denied.exception.message.lower())
         self.assertEqual(repository.document_list_calls, 0)
+
+    def test_destination_search_returns_only_verified_profile_projection(self):
+        result = self.service.search_destinations(
+            self.conn,
+            actor=_operator_actor(),
+            case_id=CASE_ID,
+            query="DGT synthetic",
+            limit=20,
+        )
+
+        self.assertEqual(result["case_id"], CASE_ID)
+        self.assertEqual(result["query"], "DGT synthetic")
+        self.assertEqual(result["result_count"], 1)
+        self.assertFalse(result["unverified_destination_allowed"])
+        self.assertFalse(result["operator_supplied_url_allowed"])
+        self.assertFalse(result["storage_references_exposed"])
+        self.assertEqual(
+            result["destinations"][0]["portal_origin"], PORTAL_ORIGIN
+        )
+        self.assertNotIn("metadata", result["destinations"][0])
+        self.assertNotIn("unknown_secret", result["destinations"][0])
+        self.assertEqual(self.repository.destination_search_calls, 1)
+
+    def test_destination_search_rejects_short_query_before_repository(self):
+        with self.assertRaises(PresenterConflict) as denied:
+            self.service.search_destinations(
+                self.conn,
+                actor=_operator_actor(),
+                case_id=CASE_ID,
+                query="D",
+                limit=20,
+            )
+
+        self.assertEqual(denied.exception.code, "presenter.destination_query_invalid")
+        self.assertEqual(self.repository.destination_search_calls, 0)
+
+    def test_sql_destination_search_has_four_eyes_and_literal_substring_filter(self):
+        source = inspect.getsource(SqlPresenterRepository.search_destination_profiles)
+
+        self.assertIn("created_by_operator_id <> verified_by_operator_id", source)
+        self.assertIn("verified_at IS NOT NULL", source)
+        self.assertIn("POSITION(LOWER(:query) IN LOWER(display_name))", source)
+        self.assertIn("LIMIT :limit", source)
+        self.assertNotIn("ILIKE", source)
 
     def test_sql_case_scope_is_one_existential_tenant_and_assignment_query(self):
         class ScalarResult:

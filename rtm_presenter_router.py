@@ -21,6 +21,7 @@ from fastapi import (
     Form,
     Header,
     HTTPException,
+    Query,
     Request,
     UploadFile,
 )
@@ -47,6 +48,7 @@ from rtm_presenter_contracts import (
     PresenterClientKind,
     PresenterContractError,
 )
+from rtm_presenter_delivery import PresenterDeliveryService
 from rtm_presenter_policy import (
     RTM_PRESENTER_EXTENSION_CLIENT_ID,
     PresenterActorContext,
@@ -110,6 +112,10 @@ class ExchangeTicketBody(_StrictModel):
 
 class AdminExportBody(_StrictModel):
     reason: str = Field(min_length=12, max_length=500)
+
+
+class PrepareDeliveryBody(_StrictModel):
+    channel: Literal["portal", "email"]
 
 
 @dataclass(frozen=True)
@@ -339,6 +345,13 @@ def _service() -> PresenterService:
     )
 
 
+def _delivery_service() -> PresenterDeliveryService:
+    return PresenterDeliveryService(
+        repository=SqlPresenterRepository(),
+        runtime=load_presenter_runtime_configuration(require_enabled=True),
+    )
+
+
 def _as_http_exception(
     context: PresenterRequestContext, exc: Exception
 ) -> HTTPException:
@@ -521,6 +534,26 @@ def presenter_workspace_route(
     return _success(context, result)
 
 
+@router.get("/cases/{case_id}/destinations/search")
+def search_presenter_destinations_route(
+    case_id: UUID,
+    q: str = Query(min_length=2, max_length=100),
+    limit: int = Query(default=20, ge=1, le=50),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        result = _service().search_destinations(
+            context.connection,
+            actor=context.actor,
+            case_id=str(case_id),
+            query=q,
+            limit=limit,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(context, result)
+
+
 @router.post("/cases/{case_id}/packages/freeze")
 def freeze_presenter_package_route(
     case_id: UUID,
@@ -589,6 +622,70 @@ def freeze_presenter_package_route(
             }
         },
         status_code=201,
+    )
+
+
+@router.post(
+    "/cases/{case_id}/packages/{package_id}/deliveries/prepare"
+)
+def prepare_presenter_delivery_route(
+    case_id: UUID,
+    package_id: UUID,
+    body: PrepareDeliveryBody,
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        delivery = _delivery_service().prepare(
+            context.connection,
+            actor=context.actor,
+            case_id=str(case_id),
+            package_id=str(package_id),
+            channel=body.channel,
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "delivery": delivery,
+            "storage_references_exposed": False,
+            "synthetic_only": True,
+        },
+        status_code=201,
+    )
+
+
+@router.get(
+    "/cases/{case_id}/packages/{package_id}/deliveries/{delivery_id}"
+)
+def presenter_delivery_status_route(
+    case_id: UUID,
+    package_id: UUID,
+    delivery_id: UUID,
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        delivery = _delivery_service().status(
+            context.connection,
+            actor=context.actor,
+            case_id=str(case_id),
+            package_id=str(package_id),
+            delivery_id=str(delivery_id),
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "delivery": delivery,
+            "storage_references_exposed": False,
+            "synthetic_only": True,
+        },
     )
 
 

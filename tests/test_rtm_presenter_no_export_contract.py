@@ -609,7 +609,10 @@ class RtmPresenterBackendNoExportContractTest(unittest.TestCase):
         for projection in (frozen_projection, bytes_projection):
             self.assertIn("newer.logical_document_id=v.logical_document_id", projection)
             self.assertIn("newer.version_number > v.version_number", projection)
-            self.assertIn("'{\"synthetic_only\":true}'::jsonb", projection)
+            self.assertIn(
+                "jsonb_build_object('synthetic_only', TRUE)", projection
+            )
+            self.assertNotIn("'{\"synthetic_only\":true}'::jsonb", projection)
         self.assertIn("THEN 'superseded'", frozen_projection)
         self.assertIn("AND NOT EXISTS", bytes_projection)
 

@@ -364,6 +364,7 @@ async def create_rtm_intake_draft(
     preferred_contact: str = Form("email"),
     customer_comment: str = Form(...),
     representation_confirmed: bool = Form(...),
+    prejudicial_counsel_requested: bool = Form(False),
     privacy_accepted: bool = Form(...),
     dni_front: UploadFile = File(...),
     dni_back: UploadFile = File(...),
@@ -398,6 +399,10 @@ async def create_rtm_intake_draft(
         "department": department,
         "case_type": case_type,
         "source_module": (source_module or "rtm_web").strip().lower(),
+        # Es una solicitud informativa, no consentimiento ni apoderamiento.
+        "prejudicial_counsel_requested": bool(
+            prejudicial_counsel_requested
+        ),
     }
     if public_service_family:
         interested["public_service_family"] = public_service_family
@@ -431,6 +436,9 @@ async def create_rtm_intake_draft(
                 "department": department,
                 "case_type": case_type,
                 "public_service_family": public_service_family or None,
+                "prejudicial_counsel_requested": bool(
+                    prejudicial_counsel_requested
+                ),
             }),
         })
 

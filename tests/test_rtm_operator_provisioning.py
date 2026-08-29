@@ -39,6 +39,7 @@ class OperatorProvisioningTest(unittest.TestCase):
                 "ops.view",
                 "presenter.documents.ingest",
                 "presenter.documents.read",
+                "presenter.delivery.prepare",
                 "presenter.package.freeze",
             ),
         )
@@ -49,6 +50,7 @@ class OperatorProvisioningTest(unittest.TestCase):
                 "ops.supervise",
                 "presenter.documents.ingest",
                 "presenter.documents.read",
+                "presenter.delivery.prepare",
                 "presenter.package.freeze",
             ),
         )
