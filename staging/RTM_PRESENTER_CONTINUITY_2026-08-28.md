@@ -57,9 +57,14 @@ una capacidad de firma.
   `374d60c2a9fc3cfcda52c000edeefbf71799fa00` y frontend
   `b53bd398dd2a74e44f2ebeb8c2877f16b80a9197`, ambos únicamente en
   `rtm-ops-controlled-delivery-2026-08-29`; `main` no se ha modificado.
-- Estado externo: ramas publicadas, todavía no desplegadas. No se han creado
-  cuentas ni asignaciones remotas, no se ha abierto REG y no se ha realizado
-  ninguna presentación.
+- Estado externo: el frontend `b53bd398dd2a74e44f2ebeb8c2877f16b80a9197`
+  figura `success` en los proyectos Vercel principal y staging. El backend
+  `8d844d44e6ba5beeedddbaf4f92f376c06f82efa` se desplegó manualmente en
+  Render mediante `dep-daa2jetg1s2s73bulor0` y quedó `Live` tras superar el
+  preflight aislado y el control interno de salud. Siguen deshabilitados pagos
+  finales, correo saliente y presentación externa. No se han creado cuentas ni
+  asignaciones remotas, no se ha abierto REG y no se ha realizado ninguna
+  presentación.
 - Siguiente corte real: cliente instalado y atestado en el PC de Ramón, adaptador
   REG, apertura local de la sede, tickets de bytes por documento y parada en el
   paso final. La elección de certificado, firma y submit seguirán siendo humanos;
