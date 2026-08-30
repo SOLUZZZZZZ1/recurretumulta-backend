@@ -53,11 +53,13 @@ una capacidad de firma.
   y acceso sintético, 38 pruebas Node, 16 contratos frontend y build Vite, todo
   OK. La revisión React confirmó carga abortable, recuperación paralela, cierre
   de sesión al desmontar y defensa frente a respuestas tardías de otra sesión.
-- Commits funcionales locales: backend
-  `c4e113b2f361d2f5e0d5ab52628bd15eb131fe5b` y frontend
-  `edd93d4a141770596360e7793291831ce5aa2849`.
-- Estado externo: no publicado, no desplegado, no se han creado cuentas ni
-  asignaciones remotas, no se ha abierto REG y no se ha realizado presentación.
+- Publicación verificada con árboles idénticos a los cortes locales: backend
+  `374d60c2a9fc3cfcda52c000edeefbf71799fa00` y frontend
+  `b53bd398dd2a74e44f2ebeb8c2877f16b80a9197`, ambos únicamente en
+  `rtm-ops-controlled-delivery-2026-08-29`; `main` no se ha modificado.
+- Estado externo: ramas publicadas, todavía no desplegadas. No se han creado
+  cuentas ni asignaciones remotas, no se ha abierto REG y no se ha realizado
+  ninguna presentación.
 - Siguiente corte real: cliente instalado y atestado en el PC de Ramón, adaptador
   REG, apertura local de la sede, tickets de bytes por documento y parada en el
   paso final. La elección de certificado, firma y submit seguirán siendo humanos;
