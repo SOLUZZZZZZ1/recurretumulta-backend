@@ -38,7 +38,8 @@ from rtm_presenter_service import (
 )
 
 
-RTM_PRESENTER_DELIVERY_VERSION = "rtm_presenter_delivery_v1_1"
+RTM_PRESENTER_DELIVERY_VERSION = "rtm_presenter_delivery_v1_3"
+RTM_PRESENTER_SIGNATURE_QUEUE_VERSION = "rtm_presenter_signature_queue_v1_0"
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _EMAIL_RE = re.compile(
@@ -57,6 +58,13 @@ _CORRESPONDENCE_CONFIRMATIONS = (
     "attachments_confirmed",
     "data_minimization_confirmed",
 )
+_PORTAL_PREPARATION_CONFIRMATIONS = (
+    "destination_reviewed",
+    "interested_confirmed",
+    "representation_confirmed",
+    "text_confirmed",
+    "attachments_confirmed",
+)
 
 
 def _synthetic_email_allowed(recipient: str) -> bool:
@@ -71,6 +79,7 @@ class PresenterDeliveryChannel(str, Enum):
 
 class PresenterDeliveryState(str, Enum):
     PREPARED = "prepared"
+    AWAITING_SIGNATURE = "awaiting_signature"
     IN_PROGRESS = "in_progress"
     AWAITING_RECEIPT = "awaiting_receipt"
     COMPLETED = "completed"
@@ -259,6 +268,145 @@ def _correspondence_draft(value: Mapping[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _portal_preparation(
+    requirements: Mapping[str, Any], value: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Valida la hoja exacta que el operador deja para el puesto de firma.
+
+    Los campos permitidos nacen exclusivamente del perfil de destino verificado.
+    El operador no puede inventar selectores, URL, acciones de navegador ni datos
+    de certificado. Esta instantánea solo prepara; no abre una sesión externa.
+    """
+
+    contract = requirements.get("portal_preparation")
+    if not isinstance(contract, Mapping) or contract.get("enabled") is not True:
+        raise PresenterConflict(
+            "presenter.portal_preparation_profile_required",
+            "El destino todavía no admite preparación para la cola de firma",
+        )
+    if not isinstance(value, Mapping) or set(value) != {
+        "form_code",
+        "values",
+        "confirmations",
+    }:
+        raise PresenterConflict(
+            "presenter.portal_preparation_required",
+            "Completa y revisa la hoja del trámite antes de dejarla para firma",
+        )
+
+    form_code = str(contract.get("form_code") or "").strip().lower()
+    if (
+        not re.fullmatch(r"[a-z][a-z0-9_.-]{1,127}", form_code)
+        or str(value.get("form_code") or "").strip().lower() != form_code
+    ):
+        raise PresenterConflict(
+            "presenter.portal_preparation_form_mismatch",
+            "La hoja preparada no corresponde al perfil de destino",
+        )
+
+    raw_fields = contract.get("fields")
+    if (
+        not isinstance(raw_fields, Sequence)
+        or isinstance(raw_fields, (str, bytes))
+        or not 1 <= len(raw_fields) <= 32
+        or any(not isinstance(item, Mapping) for item in raw_fields)
+    ):
+        raise PresenterConflict(
+            "presenter.portal_preparation_profile_invalid",
+            "El perfil no define una hoja de trámite verificable",
+        )
+
+    fields: list[dict[str, Any]] = []
+    seen_codes: set[str] = set()
+    for order, raw_field in enumerate(raw_fields, start=1):
+        field = dict(raw_field)
+        code = str(field.get("field_code") or "").strip().lower()
+        label = " ".join(str(field.get("label") or "").split())
+        required = field.get("required")
+        multiline = field.get("multiline")
+        max_length = field.get("max_length")
+        if (
+            not re.fullmatch(r"[a-z][a-z0-9_.-]{1,127}", code)
+            or code in seen_codes
+            or not 2 <= len(label) <= 120
+            or type(required) is not bool
+            or type(multiline) is not bool
+            or type(max_length) is not int
+            or not 1 <= max_length <= 12000
+        ):
+            raise PresenterConflict(
+                "presenter.portal_preparation_profile_invalid",
+                "El perfil contiene campos de trámite no válidos",
+            )
+        fields.append(
+            {
+                "field_code": code,
+                "label": label,
+                "required": required,
+                "multiline": multiline,
+                "max_length": max_length,
+                "step_order": order,
+            }
+        )
+        seen_codes.add(code)
+
+    raw_values = value.get("values")
+    if not isinstance(raw_values, Mapping) or set(raw_values) != seen_codes:
+        raise PresenterConflict(
+            "presenter.portal_preparation_values_invalid",
+            "La hoja no contiene exactamente los campos exigidos por el destino",
+        )
+    exact_values: dict[str, str] = {}
+    for field in fields:
+        code = field["field_code"]
+        raw_text = raw_values.get(code)
+        if not isinstance(raw_text, str):
+            raise PresenterConflict(
+                "presenter.portal_preparation_values_invalid",
+                "La hoja contiene un valor no textual",
+            )
+        text_value = raw_text.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not field["multiline"]:
+            text_value = " ".join(text_value.split())
+        if (
+            (field["required"] and not text_value)
+            or len(text_value) > field["max_length"]
+            or any(
+                ord(character) < 32 and character not in {"\n", "\t"}
+                for character in text_value
+            )
+            or (not field["multiline"] and "\n" in text_value)
+        ):
+            raise PresenterConflict(
+                "presenter.portal_preparation_values_invalid",
+                f"El campo {field['label']} no es válido",
+            )
+        exact_values[code] = text_value
+
+    confirmations = value.get("confirmations")
+    if (
+        not isinstance(confirmations, Mapping)
+        or set(confirmations) != set(_PORTAL_PREPARATION_CONFIRMATIONS)
+        or any(
+            confirmations.get(name) is not True
+            for name in _PORTAL_PREPARATION_CONFIRMATIONS
+        )
+    ):
+        raise PresenterConflict(
+            "presenter.portal_preparation_confirmation_required",
+            "Revisa destino, interesado, representación, texto y adjuntos",
+        )
+
+    return {
+        "form_code": form_code,
+        "fields": fields,
+        "values": exact_values,
+        "confirmations": {
+            name: True for name in _PORTAL_PREPARATION_CONFIRMATIONS
+        },
+    }
+
+
 class PresenterDeliveryService:
     """Deriva órdenes de entrega desde paquetes congelados y auditados."""
 
@@ -410,6 +558,12 @@ class PresenterDeliveryService:
                 "presenter.delivery_history_invalid",
                 "El historial de la entrega no es verificable",
             )
+        # El repositorio añade estos marcadores al ledger, pero no pertenecen al
+        # contrato público de la entrega. Así una repetición idempotente devuelve
+        # exactamente la misma forma que la primera preparación.
+        payload.pop("service_version", None)
+        payload.pop("synthetic_marker", None)
+        payload.pop("synthetic_only", None)
         return payload
 
     def prepare(
@@ -424,6 +578,7 @@ class PresenterDeliveryService:
         recipient_email: str | None = None,
         recipient_confirmed: bool = False,
         correspondence: Mapping[str, Any] | None = None,
+        portal_preparation: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._open(conn)
         authorize_delivery_prepare(actor)
@@ -443,6 +598,7 @@ class PresenterDeliveryService:
             ) from exc
         manual_email: dict[str, Any] | None = None
         correspondence_draft: dict[str, Any] | None = None
+        portal_preparation_snapshot: dict[str, Any] | None = None
         if exact_channel == PresenterDeliveryChannel.PORTAL.value:
             if recipient_email or recipient_confirmed or correspondence is not None:
                 raise PresenterConflict(
@@ -450,6 +606,11 @@ class PresenterDeliveryService:
                     "Una presentación en sede no admite datos de correspondencia",
                 )
         else:
+            if portal_preparation is not None:
+                raise PresenterConflict(
+                    "presenter.portal_preparation_not_allowed_for_email",
+                    "RTM Correspondencia no admite una hoja de sede",
+                )
             manual_email = _operator_email_destination(
                 recipient_email,
                 recipient_confirmed=recipient_confirmed,
@@ -461,9 +622,22 @@ class PresenterDeliveryService:
         )
         if not package:
             raise PresenterNotFound("Paquete Presenter no encontrado")
+        representation_mode = str(
+            package.get("representation_mode") or ""
+        ).strip().lower()
+        if representation_mode not in {"self", "representative"}:
+            raise PresenterConflict(
+                "presenter.delivery_package_invalid",
+                "La representación del paquete no es verificable",
+            )
         items = self._validate_package(
             package, case_id=case_id, package_id=package_id, now=current
         )
+        requirements = _json_object(package.get("destination_requirements"))
+        if exact_channel == PresenterDeliveryChannel.PORTAL.value:
+            portal_preparation_snapshot = _portal_preparation(
+                requirements, portal_preparation
+            )
         delivery_id = str(
             uuid.uuid5(
                 _DELIVERY_NAMESPACE,
@@ -483,6 +657,7 @@ class PresenterDeliveryService:
                     str(manual_email["recipient"]) if manual_email else None
                 ),
                 "correspondence": correspondence_draft,
+                "portal_preparation": portal_preparation_snapshot,
                 "operator_id": actor.operator_id,
             }
         )
@@ -501,17 +676,16 @@ class PresenterDeliveryService:
                 )
             return snapshot
 
-        requirements = _json_object(package.get("destination_requirements"))
         if exact_channel == PresenterDeliveryChannel.PORTAL.value:
             destination = {
                 "kind": "verified_portal_origin",
                 "portal_origin": normalize_origin(package.get("portal_origin")),
             }
-            mode = "portal_fields_in_profile_order"
+            mode = "operator_prepared_signer_local_bridge"
             next_action = (
-                "attach_in_profile_order"
+                "signer_local_activation_ready"
                 if self.runtime.managed_extension_attestation_enabled
-                else "managed_bridge_activation_required"
+                else "managed_signing_bridge_activation_required"
             )
         else:
             verified_email = _email_destination(requirements)
@@ -586,10 +760,20 @@ class PresenterDeliveryService:
             "destination_display_name": str(
                 package.get("destination_display_name") or package.get("profile_code")
             ),
+            "representation_mode": representation_mode,
             "channel": exact_channel,
             "mode": mode,
-            "state": PresenterDeliveryState.PREPARED.value,
+            "state": (
+                PresenterDeliveryState.AWAITING_SIGNATURE.value
+                if exact_channel == PresenterDeliveryChannel.PORTAL.value
+                else PresenterDeliveryState.PREPARED.value
+            ),
             "destination": destination,
+            **(
+                {"portal_preparation": portal_preparation_snapshot}
+                if portal_preparation_snapshot is not None
+                else {}
+            ),
             **(
                 {"correspondence": correspondence_snapshot}
                 if correspondence_snapshot is not None
@@ -606,6 +790,23 @@ class PresenterDeliveryService:
             "automatic_retry_allowed": False,
             "human_final_submit_required": True,
             "receipt_required": True,
+            **(
+                {
+                    "signature_queue_ready": True,
+                    "signing_controls": {
+                        "certificate_stored_by_rtm": False,
+                        "certificate_secret_allowed": False,
+                        "browser_session_shared_with_operator": False,
+                        "remote_desktop_required": False,
+                        "local_signer_activation_required": True,
+                        "final_review_required": True,
+                        "signature_automated": False,
+                        "final_submit_automated": False,
+                    },
+                }
+                if exact_channel == PresenterDeliveryChannel.PORTAL.value
+                else {}
+            ),
             "next_action": next_action,
         }
         self.repository.append_audit(
@@ -618,6 +819,110 @@ class PresenterDeliveryService:
             payload=snapshot,
         )
         return snapshot
+
+    def signature_queue(
+        self,
+        conn: Any,
+        *,
+        actor: PresenterActorContext,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Devuelve la cola del actor sin concederle sesión ni firma remota."""
+
+        self._open(conn)
+        authorize_delivery_prepare(actor)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise PresenterConflict(
+                "presenter.signature_queue_limit_invalid",
+                "El límite de la cola de firma no es válido",
+            )
+        try:
+            events = self.repository.list_signature_queue_events(
+                conn,
+                operator_id=actor.operator_id,
+                limit=limit,
+            )
+        except Exception as exc:
+            raise PresenterServiceError(
+                "presenter.signature_queue_unavailable",
+                "No se pudo consultar la cola de firma",
+                status_code=503,
+            ) from exc
+
+        entries: list[dict[str, Any]] = []
+        seen_delivery_ids: set[str] = set()
+        for event in events:
+            snapshot = self._snapshot_from_event(event)
+            try:
+                delivery_id = str(uuid.UUID(str(snapshot.get("delivery_id") or "")))
+                case_id = str(uuid.UUID(str(snapshot.get("case_id") or "")))
+                package_id = str(uuid.UUID(str(snapshot.get("package_id") or "")))
+                prepared_by_operator_id = str(
+                    uuid.UUID(str(snapshot.get("prepared_by_operator_id") or ""))
+                )
+            except (TypeError, ValueError, AttributeError) as exc:
+                raise PresenterConflict(
+                    "presenter.signature_queue_history_invalid",
+                    "La cola contiene una tarea no verificable",
+                ) from exc
+            items = snapshot.get("items")
+            controls = snapshot.get("signing_controls")
+            destination = " ".join(
+                str(snapshot.get("destination_display_name") or "").split()
+            )
+            prepared_at = _aware(snapshot.get("prepared_at"), "prepared_at")
+            if (
+                delivery_id in seen_delivery_ids
+                or snapshot.get("channel") != PresenterDeliveryChannel.PORTAL.value
+                or snapshot.get("state")
+                != PresenterDeliveryState.AWAITING_SIGNATURE.value
+                or snapshot.get("signature_queue_ready") is not True
+                or not isinstance(items, list)
+                or not items
+                or not destination
+                or not isinstance(controls, Mapping)
+                or controls.get("certificate_stored_by_rtm") is not False
+                or controls.get("certificate_secret_allowed") is not False
+                or controls.get("browser_session_shared_with_operator") is not False
+                or controls.get("local_signer_activation_required") is not True
+                or controls.get("signature_automated") is not False
+                or controls.get("final_submit_automated") is not False
+            ):
+                raise PresenterConflict(
+                    "presenter.signature_queue_history_invalid",
+                    "La cola contiene una tarea no verificable",
+                )
+            entries.append(
+                {
+                    "delivery_id": delivery_id,
+                    "case_id": case_id,
+                    "package_id": package_id,
+                    "destination_display_name": destination,
+                    "prepared_at": prepared_at.isoformat(),
+                    "prepared_by_operator_id": prepared_by_operator_id,
+                    "document_count": len(items),
+                    "state": PresenterDeliveryState.AWAITING_SIGNATURE.value,
+                    "authoritative_submission": False,
+                    "local_signer_activation_required": True,
+                    "local_activation_available": (
+                        self.runtime.managed_extension_attestation_enabled is True
+                    ),
+                    "certificate_stored_by_rtm": False,
+                    "browser_session_shared": False,
+                }
+            )
+            seen_delivery_ids.add(delivery_id)
+        return {
+            "queue_contract_version": RTM_PRESENTER_SIGNATURE_QUEUE_VERSION,
+            "state": PresenterDeliveryState.AWAITING_SIGNATURE.value,
+            "items": entries,
+            "item_count": len(entries),
+            "certificate_stored_by_rtm": False,
+            "browser_session_shared": False,
+            "local_activation_available": (
+                self.runtime.managed_extension_attestation_enabled is True
+            ),
+        }
 
     def status(
         self,
@@ -652,6 +957,7 @@ class PresenterDeliveryService:
 __all__ = [
     "RTM_CORRESPONDENCE_SENDER",
     "RTM_PRESENTER_DELIVERY_VERSION",
+    "RTM_PRESENTER_SIGNATURE_QUEUE_VERSION",
     "PresenterDeliveryChannel",
     "PresenterDeliveryService",
     "PresenterDeliveryState",

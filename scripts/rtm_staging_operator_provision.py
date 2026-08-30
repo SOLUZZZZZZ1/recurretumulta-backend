@@ -41,7 +41,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--role",
-        choices=("operator", "supervisor"),
+        choices=("operator", "supervisor", "signer"),
         default="supervisor",
     )
     parser.add_argument("--generate-password", action="store_true")

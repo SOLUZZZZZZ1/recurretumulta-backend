@@ -26,14 +26,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-SCRIPT_VERSION = "rtm_staging_presenter_case_access_v1_0"
+SCRIPT_VERSION = "rtm_staging_presenter_case_access_v1_1"
 APPLY_CONFIRMATION = "STAGING_PRESENTER_SYNTHETIC_CASE_ACCESS_ONLY"
 DEFAULT_FIXTURE_KEY = "runtime-a94dcd3-v1"
 DEFAULT_OPERATOR_EMAIL = "rtm-staging-presenter-ramon@example.com"
+DEFAULT_SIGNER_EMAIL = "rtm-staging-signer-ramon@example.com"
 A1S_MARKER = "RTM_A1S_SYNTHETIC_ONLY"
 PRESENTER_MARKER = "RTM_PRESENTER_SYNTHETIC_ONLY"
 MEMBERSHIP_ROLE = "executor"
 ASSIGNMENT_ROLE = "reviewer"
+SIGNER_ASSIGNMENT_ROLE = "supervisor"
 
 _NAMESPACE = uuid.UUID("9a59059c-1f04-48f6-9018-f8302bd4904a")
 _TRUE = frozenset({"1", "true", "yes", "on", "enabled"})
@@ -51,6 +53,11 @@ def _parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("--email", default=DEFAULT_OPERATOR_EMAIL)
+    parser.add_argument(
+        "--access-kind",
+        choices=("operator", "signer"),
+        default="operator",
+    )
     parser.add_argument("--fixture-key", default=DEFAULT_FIXTURE_KEY)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirmation", default="")
@@ -73,7 +80,12 @@ def safety_blockers(
 ) -> list[str]:
     env = values if values is not None else os.environ
     blockers: list[str] = []
-    if str(args.email or "").strip().lower() != DEFAULT_OPERATOR_EMAIL:
+    expected_email = (
+        DEFAULT_SIGNER_EMAIL
+        if str(args.access_kind or "").strip().lower() == "signer"
+        else DEFAULT_OPERATOR_EMAIL
+    )
+    if str(args.email or "").strip().lower() != expected_email:
         blockers.append("operator_email_must_match_presenter_fixture")
     if str(args.fixture_key or "").strip() != DEFAULT_FIXTURE_KEY:
         blockers.append("fixture_key_must_match_presenter_fixture")
@@ -144,13 +156,16 @@ def _require_marker(
 
 
 def expected_membership_metadata(
-    *, fixture_key: str, case_id: str
+    *,
+    fixture_key: str,
+    case_id: str,
+    purpose: str = "rtm_presenter_case_access",
 ) -> dict[str, Any]:
     return {
         "synthetic_marker": A1S_MARKER,
         "synthetic_only": True,
         "fixture_key": fixture_key,
-        "purpose": "rtm_presenter_case_access",
+        "purpose": purpose,
         "case_id": case_id,
         "real_data_used": False,
         "external_effects_executed": False,
@@ -158,14 +173,16 @@ def expected_membership_metadata(
 
 
 def expected_assignment_metadata(
-    *, fixture_key: str
+    *,
+    fixture_key: str,
+    accepted_for: str = "rtm_presenter_synthetic_operator_access",
 ) -> dict[str, Any]:
     return {
         "synthetic_marker": PRESENTER_MARKER,
         "source_synthetic_marker": A1S_MARKER,
         "synthetic_only": True,
         "fixture_key": fixture_key,
-        "accepted_for": "rtm_presenter_synthetic_operator_access",
+        "accepted_for": accepted_for,
         "real_data_used": False,
         "external_effects_executed": False,
     }
@@ -189,6 +206,11 @@ def _load_access_plan(
     *,
     email: str,
     fixture_key: str,
+    expected_role_code: str = "rtm.operator",
+    membership_role: str = MEMBERSHIP_ROLE,
+    assignment_role: str = ASSIGNMENT_ROLE,
+    membership_purpose: str = "rtm_presenter_case_access",
+    assignment_accepted_for: str = "rtm_presenter_synthetic_operator_access",
 ) -> dict[str, Any]:
     from sqlalchemy import text
     from rtm_connect.human_filing_runtime import build_runtime_fixture_plan
@@ -223,7 +245,7 @@ def _load_access_plan(
     )
     if (
         str(operator.get("status") or "") != "active"
-        or str(operator.get("role_code") or "") != "rtm.operator"
+        or str(operator.get("role_code") or "") != expected_role_code
         or profile.get("synthetic") is not True
         or profile.get("environment") != "staging"
     ):
@@ -337,24 +359,29 @@ def _load_access_plan(
             f"{fixture_key}:presenter-principal:{operator_id}:v1"
         ),
         "operator_id": operator_id,
-        "role": MEMBERSHIP_ROLE,
+        "role": membership_role,
         "status": "active",
         "synthetic_only": True,
         "granted_by_operator_id": str(grantor["operator_id"]),
         "metadata": expected_membership_metadata(
-            fixture_key=fixture_key, case_id=case_id
+            fixture_key=fixture_key,
+            case_id=case_id,
+            purpose=membership_purpose,
         ),
     }
     expected_assignment = {
         "id": _stable_uuid(
-            f"{fixture_key}:presenter-assignment:{operator_id}:{ASSIGNMENT_ROLE}:v1"
+            f"{fixture_key}:presenter-assignment:{operator_id}:{assignment_role}:v1"
         ),
         "case_id": case_id,
         "operator_id": operator_id,
-        "assignment_role": ASSIGNMENT_ROLE,
+        "assignment_role": assignment_role,
         "status": "active",
         "assigned_by": str(grantor["operator_id"]),
-        "metadata": expected_assignment_metadata(fixture_key=fixture_key),
+        "metadata": expected_assignment_metadata(
+            fixture_key=fixture_key,
+            accepted_for=assignment_accepted_for,
+        ),
     }
 
     membership_rows = _mappings(
@@ -407,7 +434,7 @@ def _load_access_plan(
                 LIMIT 2
                 """
             ),
-            {"case_id": case_id, "assignment_role": ASSIGNMENT_ROLE},
+            {"case_id": case_id, "assignment_role": assignment_role},
         )
     )
     if len(reviewer_slot) > 1:
@@ -420,6 +447,9 @@ def _load_access_plan(
         "operator_id": operator_id,
         "tenant_id": tenant_id,
         "grantor_operator_id": str(grantor["operator_id"]),
+        "expected_role_code": expected_role_code,
+        "membership_role": membership_role,
+        "assignment_role": assignment_role,
         "expected_membership": expected_membership,
         "expected_assignment": expected_assignment,
         "membership": membership,
@@ -492,10 +522,29 @@ def _assignment_ready(plan: Mapping[str, Any]) -> bool:
     return True
 
 
-def audit_access(conn: Any, *, email: str, fixture_key: str) -> dict[str, Any]:
+def audit_access(
+    conn: Any,
+    *,
+    email: str,
+    fixture_key: str,
+    expected_role_code: str = "rtm.operator",
+    membership_role: str = MEMBERSHIP_ROLE,
+    assignment_role: str = ASSIGNMENT_ROLE,
+    membership_purpose: str = "rtm_presenter_case_access",
+    assignment_accepted_for: str = "rtm_presenter_synthetic_operator_access",
+) -> dict[str, Any]:
     from rtm_presenter_service import SqlPresenterRepository
 
-    plan = _load_access_plan(conn, email=email, fixture_key=fixture_key)
+    plan = _load_access_plan(
+        conn,
+        email=email,
+        fixture_key=fixture_key,
+        expected_role_code=expected_role_code,
+        membership_role=membership_role,
+        assignment_role=assignment_role,
+        membership_purpose=membership_purpose,
+        assignment_accepted_for=assignment_accepted_for,
+    )
     membership_ready = _membership_ready(plan)
     assignment_ready = _assignment_ready(plan)
     case_access = SqlPresenterRepository().has_active_synthetic_case_access(
@@ -516,10 +565,32 @@ def audit_access(conn: Any, *, email: str, fixture_key: str) -> dict[str, Any]:
     }
 
 
-def apply_access(conn: Any, *, email: str, fixture_key: str) -> dict[str, Any]:
+def apply_access(
+    conn: Any,
+    *,
+    email: str,
+    fixture_key: str,
+    expected_role_code: str = "rtm.operator",
+    membership_role: str = MEMBERSHIP_ROLE,
+    assignment_role: str = ASSIGNMENT_ROLE,
+    membership_purpose: str = "rtm_presenter_case_access",
+    assignment_accepted_for: str = "rtm_presenter_synthetic_operator_access",
+) -> dict[str, Any]:
     from sqlalchemy import text
 
-    before = audit_access(conn, email=email, fixture_key=fixture_key)
+    access_options = {
+        "expected_role_code": expected_role_code,
+        "membership_role": membership_role,
+        "assignment_role": assignment_role,
+        "membership_purpose": membership_purpose,
+        "assignment_accepted_for": assignment_accepted_for,
+    }
+    before = audit_access(
+        conn,
+        email=email,
+        fixture_key=fixture_key,
+        **access_options,
+    )
     inserted = 0
     if not before["membership_ready"]:
         membership = dict(before["expected_membership"])
@@ -570,7 +641,12 @@ def apply_access(conn: Any, *, email: str, fixture_key: str) -> dict[str, Any]:
         )
         inserted += max(0, int(getattr(result, "rowcount", 0) or 0))
 
-    after = audit_access(conn, email=email, fixture_key=fixture_key)
+    after = audit_access(
+        conn,
+        email=email,
+        fixture_key=fixture_key,
+        **access_options,
+    )
     if not after["ready"]:
         raise PresenterCaseAccessError("presenter_case_access_not_ready_after_insert")
     return {**after, "inserted_rows": inserted}
@@ -581,8 +657,8 @@ def _public_report(state: Mapping[str, Any]) -> dict[str, Any]:
         "fixture_key": state["fixture_key"],
         "case_id": state["case_id"],
         "email": state["email"],
-        "membership_role": MEMBERSHIP_ROLE,
-        "assignment_role": ASSIGNMENT_ROLE,
+        "membership_role": state.get("membership_role", MEMBERSHIP_ROLE),
+        "assignment_role": state.get("assignment_role", ASSIGNMENT_ROLE),
         "membership_ready": bool(state["membership_ready"]),
         "assignment_ready": bool(state["assignment_ready"]),
         "case_access": bool(state["case_access"]),
@@ -648,15 +724,39 @@ def main(argv: list[str] | None = None) -> int:
             load_presenter_runtime_configuration(require_enabled=True)
         )
         engine = get_engine()
+        signer_access = args.access_kind == "signer"
+        access_options = {
+            "expected_role_code": "rtm.signer" if signer_access else "rtm.operator",
+            "membership_role": MEMBERSHIP_ROLE,
+            "assignment_role": (
+                SIGNER_ASSIGNMENT_ROLE if signer_access else ASSIGNMENT_ROLE
+            ),
+            "membership_purpose": (
+                "rtm_presenter_signer_case_access"
+                if signer_access
+                else "rtm_presenter_case_access"
+            ),
+            "assignment_accepted_for": (
+                "rtm_presenter_synthetic_signer_access"
+                if signer_access
+                else "rtm_presenter_synthetic_operator_access"
+            ),
+        }
         if args.apply:
             with engine.begin() as conn:
                 state = apply_access(
-                    conn, email=args.email, fixture_key=args.fixture_key
+                    conn,
+                    email=args.email,
+                    fixture_key=args.fixture_key,
+                    **access_options,
                 )
         else:
             with engine.connect() as conn:
                 state = audit_access(
-                    conn, email=args.email, fixture_key=args.fixture_key
+                    conn,
+                    email=args.email,
+                    fixture_key=args.fixture_key,
+                    **access_options,
                 )
         report.update(_public_report(state))
         report["ok"] = True

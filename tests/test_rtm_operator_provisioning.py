@@ -32,11 +32,14 @@ class OperatorProvisioningTest(unittest.TestCase):
                     normalize_synthetic_operator_email(value)
 
     def test_minimum_roles_are_explicit_and_small(self):
-        self.assertEqual(set(ROLE_DEFINITIONS), {"operator", "supervisor"})
+        self.assertEqual(
+            set(ROLE_DEFINITIONS), {"operator", "supervisor", "signer"}
+        )
         self.assertEqual(
             ROLE_DEFINITIONS["operator"].permissions,
             (
                 "ops.view",
+                "presenter.destination.propose",
                 "presenter.documents.ingest",
                 "presenter.documents.read",
                 "presenter.delivery.prepare",
@@ -48,11 +51,28 @@ class OperatorProvisioningTest(unittest.TestCase):
             (
                 "ops.view",
                 "ops.supervise",
+                "presenter.destination.propose",
                 "presenter.documents.ingest",
                 "presenter.documents.read",
                 "presenter.delivery.prepare",
                 "presenter.package.freeze",
             ),
+        )
+        self.assertEqual(
+            ROLE_DEFINITIONS["signer"].permissions,
+            (
+                "ops.view",
+                "presenter.signing.claim",
+                "presenter.signing.queue",
+            ),
+        )
+        self.assertNotIn(
+            "presenter.documents.read",
+            ROLE_DEFINITIONS["signer"].permissions,
+        )
+        self.assertNotIn(
+            "presenter.delivery.prepare",
+            ROLE_DEFINITIONS["signer"].permissions,
         )
 
     def test_role_lookup_fails_closed(self):
@@ -182,10 +202,15 @@ class OperatorProvisioningTest(unittest.TestCase):
         supervisor_role_result.fetchone.return_value = (
             "00000000-0000-4000-8000-000000000011",
         )
+        signer_role_result = Mock()
+        signer_role_result.fetchone.return_value = (
+            "00000000-0000-4000-8000-000000000012",
+        )
         conn.execute.side_effect = [
             Mock(),
             operator_role_result,
             supervisor_role_result,
+            signer_role_result,
             Mock(),
             Mock(),
         ]
@@ -202,9 +227,10 @@ class OperatorProvisioningTest(unittest.TestCase):
             {
                 "operator": "00000000-0000-4000-8000-000000000010",
                 "supervisor": "00000000-0000-4000-8000-000000000011",
+                "signer": "00000000-0000-4000-8000-000000000012",
             },
         )
-        for call in conn.execute.call_args_list[1:3]:
+        for call in conn.execute.call_args_list[1:4]:
             statement = "".join(str(call.args[0]).split())
             self.assertIn(
                 "INSERTINTO", statement,
@@ -220,7 +246,7 @@ class OperatorProvisioningTest(unittest.TestCase):
                 statement,
             )
         invalidation_statements = [
-            str(call.args[0]) for call in conn.execute.call_args_list[3:]
+            str(call.args[0]) for call in conn.execute.call_args_list[4:]
         ]
         self.assertIn(
             "UPDATE rtm_operator_sessions",
@@ -242,12 +268,20 @@ class OperatorProvisioningTest(unittest.TestCase):
         supervisor_lookup.fetchone.return_value = (
             "00000000-0000-4000-8000-000000000021",
         )
+        signer_upsert = Mock()
+        signer_upsert.fetchone.return_value = None
+        signer_lookup = Mock()
+        signer_lookup.fetchone.return_value = (
+            "00000000-0000-4000-8000-000000000022",
+        )
         conn.execute.side_effect = [
             Mock(),
             operator_upsert,
             operator_lookup,
             supervisor_upsert,
             supervisor_lookup,
+            signer_upsert,
+            signer_lookup,
         ]
 
         with patch.object(
@@ -265,10 +299,14 @@ class OperatorProvisioningTest(unittest.TestCase):
             role_ids["supervisor"],
             "00000000-0000-4000-8000-000000000021",
         )
+        self.assertEqual(
+            role_ids["signer"],
+            "00000000-0000-4000-8000-000000000022",
+        )
         statements = [
             str(call.args[0]) for call in conn.execute.call_args_list
         ]
-        self.assertEqual(len(statements), 5)
+        self.assertEqual(len(statements), 7)
         self.assertFalse(
             any("UPDATE rtm_operator_sessions" in sql for sql in statements)
         )
@@ -399,6 +437,41 @@ class OperatorProvisioningTest(unittest.TestCase):
                     role_key="supervisor",
                     password="unused-existing-password",
                 )
+
+    def test_signer_account_cannot_be_repurposed_from_an_operator(self):
+        existing = {
+            "id": "00000000-0000-4000-8000-000000000030",
+            "email": DEFAULT_SYNTHETIC_EMAIL,
+            "display_name": "Synthetic operator",
+            "role_code": "rtm.operator",
+            "profile": {"synthetic": True},
+            "must_change_password": False,
+        }
+        conn = Mock()
+
+        with patch.object(
+            operator_provisioning,
+            "find_operator_by_email",
+            return_value=existing,
+        ), patch.object(
+            operator_provisioning,
+            "ensure_minimum_roles",
+            return_value={
+                "operator": "00000000-0000-4000-8000-000000000031",
+                "supervisor": "00000000-0000-4000-8000-000000000032",
+                "signer": "00000000-0000-4000-8000-000000000033",
+            },
+        ):
+            with self.assertRaisesRegex(RuntimeError, "cuenta sintética separada"):
+                operator_provisioning.provision_synthetic_operator(
+                    conn,
+                    email=DEFAULT_SYNTHETIC_EMAIL,
+                    display_name="Synthetic operator",
+                    role_key="signer",
+                    password="unused-existing-password",
+                )
+
+        conn.execute.assert_not_called()
 
 
 if __name__ == "__main__":

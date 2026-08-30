@@ -52,6 +52,7 @@ from rtm_presenter_contracts import (
     safe_filename,
 )
 from rtm_presenter_delivery import PresenterDeliveryService
+from rtm_presenter_directory import default_presenter_directory
 from rtm_presenter_portal_session import PresenterPortalSessionService
 from rtm_presenter_policy import (
     RTM_PRESENTER_EXTENSION_CLIENT_ID,
@@ -69,9 +70,10 @@ from rtm_presenter_service import (
     PresenterServiceError,
     SqlPresenterRepository,
 )
+from rtm_presenter_signer_station import PresenterSignerStationService
 
 
-RTM_PRESENTER_ROUTER_VERSION = "rtm_presenter_router_v1_3"
+RTM_PRESENTER_ROUTER_VERSION = "rtm_presenter_router_v1_6"
 router = APIRouter(
     prefix="/ops/presenter",
     tags=["ops-presenter"],
@@ -141,11 +143,31 @@ class CorrespondenceDraftBody(_StrictModel):
     confirmations: CorrespondenceConfirmationsBody
 
 
+class PortalPreparationConfirmationsBody(_StrictModel):
+    destination_reviewed: bool
+    interested_confirmed: bool
+    representation_confirmed: bool
+    text_confirmed: bool
+    attachments_confirmed: bool
+
+
+class PortalPreparationBody(_StrictModel):
+    form_code: str = Field(min_length=2, max_length=128)
+    values: dict[str, str] = Field(min_length=1, max_length=32)
+    confirmations: PortalPreparationConfirmationsBody
+
+
 class PrepareDeliveryBody(_StrictModel):
     channel: Literal["portal", "email"]
     recipient_email: str | None = Field(default=None, min_length=3, max_length=254)
     recipient_confirmed: bool = False
     correspondence: CorrespondenceDraftBody | None = None
+    portal_preparation: PortalPreparationBody | None = None
+
+
+class DestinationLinkProposalBody(_StrictModel):
+    label: str = Field(min_length=3, max_length=120)
+    portal_url: str = Field(min_length=9, max_length=1024)
 
 
 class OpenPortalSessionBody(_StrictModel):
@@ -389,6 +411,18 @@ def _admin_actor(context: PresenterRequestContext) -> PresenterActorContext:
     )
 
 
+def _signer_actor(context: PresenterRequestContext) -> PresenterActorContext:
+    """Cambia solo el canal; rol y permisos proceden de la sesión verificada."""
+
+    return replace(
+        context.actor,
+        client_kind=PresenterClientKind.SIGNER_STATION,
+        extension_client_id=None,
+        managed_extension_attested=False,
+        extension_attestation_id=None,
+    )
+
+
 def _service() -> PresenterService:
     return PresenterService(
         repository=SqlPresenterRepository(),
@@ -396,6 +430,7 @@ def _service() -> PresenterService:
         # La exportacion permanece cerrada hasta inyectar un motor que aplique
         # una marca real al tipo documental correspondiente.
         watermarker=None,
+        directory=default_presenter_directory(),
     )
 
 
@@ -408,6 +443,13 @@ def _delivery_service() -> PresenterDeliveryService:
 
 def _portal_session_service() -> PresenterPortalSessionService:
     return PresenterPortalSessionService(
+        repository=SqlPresenterRepository(),
+        runtime=load_presenter_runtime_configuration(require_enabled=True),
+    )
+
+
+def _signer_station_service() -> PresenterSignerStationService:
+    return PresenterSignerStationService(
         repository=SqlPresenterRepository(),
         runtime=load_presenter_runtime_configuration(require_enabled=True),
     )
@@ -458,6 +500,7 @@ async def ingest_external_document_route(
     request: Request,
     file: UploadFile = File(...),
     purpose: str = Form(..., min_length=3, max_length=64),
+    source_original_filename: str | None = Form(default=None, max_length=180),
     synthetic_confirmed: Literal[True] = Form(...),
     supersedes_document_version_id: UUID | None = Form(default=None),
     context: PresenterRequestContext = Depends(require_presenter_context),
@@ -536,6 +579,11 @@ async def ingest_external_document_route(
             original_filename=str(file.filename or ""),
             declared_mime=str(file.content_type or ""),
             purpose=purpose,
+            source_original_filename=(
+                source_original_filename
+                if isinstance(source_original_filename, str)
+                else str(file.filename or "")
+            ),
             synthetic_confirmed=synthetic_confirmed,
             supersedes_document_version_id=(
                 str(supersedes_document_version_id)
@@ -613,6 +661,25 @@ def search_presenter_destinations_route(
     except Exception as exc:
         raise _as_http_exception(context, exc) from exc
     return _success(context, result)
+
+
+@router.post("/cases/{case_id}/destinations/proposals")
+def propose_presenter_destination_link_route(
+    case_id: UUID,
+    body: DestinationLinkProposalBody,
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        result = _service().propose_destination_link(
+            context.connection,
+            actor=context.actor,
+            case_id=str(case_id),
+            label=body.label,
+            portal_url=body.portal_url,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(context, result, status_code=202)
 
 
 @router.post("/cases/{case_id}/packages/freeze")
@@ -714,6 +781,11 @@ def prepare_presenter_delivery_route(
                 if body.correspondence is not None
                 else None
             ),
+            portal_preparation=(
+                body.portal_preparation.model_dump()
+                if body.portal_preparation is not None
+                else None
+            ),
         )
     except Exception as exc:
         raise _as_http_exception(context, exc) from exc
@@ -725,6 +797,138 @@ def prepare_presenter_delivery_route(
             "synthetic_only": True,
         },
         status_code=201,
+    )
+
+
+@router.get("/signature-queue")
+def presenter_signature_queue_route(
+    limit: int = Query(default=50, ge=1, le=100),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        queue = _delivery_service().signature_queue(
+            context.connection,
+            actor=context.actor,
+            limit=limit,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "queue": queue,
+            "storage_references_exposed": False,
+            "synthetic_only": True,
+        },
+    )
+
+
+@router.get("/signer/queue")
+def presenter_signer_station_queue_route(
+    limit: int = Query(default=50, ge=1, le=100),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        queue = _signer_station_service().queue(
+            context.connection,
+            actor=_signer_actor(context),
+            limit=limit,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "station_queue": queue,
+            "storage_references_exposed": False,
+            "document_bytes_exposed": False,
+            "synthetic_only": True,
+        },
+    )
+
+
+@router.post("/signer/tasks/{delivery_id}/claim")
+def presenter_signer_station_claim_route(
+    delivery_id: UUID,
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        claim = _signer_station_service().claim(
+            context.connection,
+            actor=_signer_actor(context),
+            delivery_id=str(delivery_id),
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "claim": claim,
+            "storage_references_exposed": False,
+            "document_bytes_exposed": False,
+            "synthetic_only": True,
+        },
+        status_code=201,
+    )
+
+
+@router.get("/signer/tasks/{delivery_id}/claim")
+def presenter_signer_station_current_claim_route(
+    delivery_id: UUID,
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        claim = _signer_station_service().current_claim(
+            context.connection,
+            actor=_signer_actor(context),
+            delivery_id=str(delivery_id),
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "claim": claim,
+            "storage_references_exposed": False,
+            "document_bytes_exposed": False,
+            "synthetic_only": True,
+        },
+    )
+
+
+@router.post("/signer/tasks/{delivery_id}/claims/{claim_id}/release")
+def presenter_signer_station_release_route(
+    delivery_id: UUID,
+    claim_id: UUID,
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        release = _signer_station_service().release(
+            context.connection,
+            actor=_signer_actor(context),
+            delivery_id=str(delivery_id),
+            claim_id=str(claim_id),
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "release": release,
+            "storage_references_exposed": False,
+            "document_bytes_exposed": False,
+            "synthetic_only": True,
+        },
     )
 
 

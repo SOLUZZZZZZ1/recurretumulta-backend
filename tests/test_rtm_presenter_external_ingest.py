@@ -180,13 +180,18 @@ class ExternalDocumentValidationTest(unittest.TestCase):
     def test_filename_is_sanitized_before_persistence(self):
         upload = validate_external_document_upload(
             content=PDF,
-            original_filename="../../external revision.pdf",
+            original_filename="Resolucion_sancionadora_DGT.pdf",
+            source_original_filename="../../external revision.pdf",
             declared_mime="application/pdf",
             purpose="main_filing",
         )
         self.assertNotIn("/", upload.original_filename)
         self.assertNotIn("\\", upload.original_filename)
         self.assertTrue(upload.original_filename.endswith(".pdf"))
+        self.assertEqual(upload.original_filename, "Resolucion_sancionadora_DGT.pdf")
+        self.assertNotIn("/", upload.source_original_filename)
+        self.assertNotIn("\\", upload.source_original_filename)
+        self.assertTrue(upload.source_original_filename.endswith(".pdf"))
 
     def test_limit_is_strictly_25_mib(self):
         with self.assertRaises(PresenterConflict) as raised:
@@ -225,6 +230,7 @@ class ExternalDocumentServiceTest(unittest.TestCase):
             case_id=CASE_ID,
             content=PDF,
             original_filename="improved-resource.pdf",
+            source_original_filename="IMG_3842.pdf",
             declared_mime="application/pdf",
             purpose="main_filing",
             synthetic_confirmed=True,
@@ -243,6 +249,10 @@ class ExternalDocumentServiceTest(unittest.TestCase):
         self.assertEqual(audit["reason_code"], "pending_security_scan")
         self.assertFalse(audit["payload"]["eligible_for_package"])
         self.assertTrue(audit["payload"]["synthetic_confirmed"])
+        self.assertEqual(
+            audit["payload"]["source_original_filename"],
+            "IMG_3842.pdf",
+        )
         forbidden = {"bucket", "key", "b2_bucket", "b2_key", "url", "note"}
         self.assertFalse(forbidden.intersection(audit["payload"]))
 

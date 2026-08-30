@@ -20,15 +20,18 @@ from rtm_presenter_contracts import (
 )
 
 
-RTM_PRESENTER_POLICY_VERSION = "rtm_presenter_policy_v1_3"
+RTM_PRESENTER_POLICY_VERSION = "rtm_presenter_policy_v1_4"
 RTM_PRESENTER_FEATURE_FLAG = "RTM_ENABLE_PRESENTER_MVP"
 RTM_PRESENTER_EXTENSION_CLIENT_ID = "rtm.presenter.browser_extension.v1"
 
 PRESENTER_DOCUMENT_READ_PERMISSION = "presenter.documents.read"
 PRESENTER_DOCUMENT_INGEST_PERMISSION = "presenter.documents.ingest"
+PRESENTER_DESTINATION_PROPOSE_PERMISSION = "presenter.destination.propose"
 PRESENTER_PACKAGE_FREEZE_PERMISSION = "presenter.package.freeze"
 PRESENTER_DELIVERY_PREPARE_PERMISSION = "presenter.delivery.prepare"
 PRESENTER_RECEIPT_VERIFY_PERMISSION = "presenter.receipt.verify"
+PRESENTER_SIGNING_QUEUE_PERMISSION = "presenter.signing.queue"
+PRESENTER_SIGNING_CLAIM_PERMISSION = "presenter.signing.claim"
 PRESENTER_HANDOFF_ISSUE_PERMISSION = "presenter.handoff.issue"
 PRESENTER_HANDOFF_EXCHANGE_PERMISSION = "presenter.handoff.exchange"
 PRESENTER_ADMIN_EXPORT_PERMISSION = "ops.documents.export_exceptional"
@@ -39,6 +42,14 @@ PRESENTER_EXPORT_REASON_MIN_LENGTH = 12
 _TRUE = frozenset({"1", "true", "yes", "on", "enabled"})
 _FALSE = frozenset({"0", "false", "no", "off", "disabled"})
 PRESENTER_ADMIN_ROLE_CODE = "rtm.admin"
+PRESENTER_SIGNER_ROLE_CODE = "rtm.signer"
+PRESENTER_SIGNER_PERMISSION_SET = frozenset(
+    {
+        "ops.view",
+        PRESENTER_SIGNING_CLAIM_PERMISSION,
+        PRESENTER_SIGNING_QUEUE_PERMISSION,
+    }
+)
 
 
 class PresenterPolicyError(PermissionError):
@@ -259,6 +270,14 @@ def authorize_document_ingest(actor: PresenterActorContext) -> None:
     _require_permission(actor, PRESENTER_DOCUMENT_INGEST_PERMISSION)
 
 
+def authorize_destination_proposal(actor: PresenterActorContext) -> None:
+    if actor.client_kind is not PresenterClientKind.OPERATOR_UI:
+        raise PresenterPolicyError(
+            "La propuesta de sede pertenece a la UI de operador"
+        )
+    _require_permission(actor, PRESENTER_DESTINATION_PROPOSE_PERMISSION)
+
+
 def authorize_package_freeze(actor: PresenterActorContext) -> None:
     if actor.client_kind is not PresenterClientKind.OPERATOR_UI:
         raise PresenterPolicyError("Solo la UI de operador congela paquetes")
@@ -283,6 +302,30 @@ def authorize_receipt_verification(actor: PresenterActorContext) -> None:
             "La verificación de justificante exige un revisor de OPS"
         )
     _require_permission(actor, PRESENTER_RECEIPT_VERIFY_PERMISSION)
+
+
+def _require_signer_station(actor: PresenterActorContext) -> None:
+    if actor.client_kind is not PresenterClientKind.SIGNER_STATION:
+        raise PresenterPolicyError("Canal de puesto local de firma requerido")
+    if set(actor.role_codes) != {PRESENTER_SIGNER_ROLE_CODE}:
+        raise PresenterPolicyError("Rol rtm.signer requerido")
+    if set(actor.permissions) != PRESENTER_SIGNER_PERMISSION_SET:
+        raise PresenterPolicyError("El rol rtm.signer no conserva su perfil mínimo")
+
+
+def authorize_signing_queue(actor: PresenterActorContext) -> None:
+    """Autoriza solo a consultar metadatos de tareas asignadas al firmante."""
+
+    _require_signer_station(actor)
+    _require_permission(actor, PRESENTER_SIGNING_QUEUE_PERMISSION)
+
+
+def authorize_signing_claim(actor: PresenterActorContext) -> None:
+    """Autoriza una toma temporal; nunca concede certificado, firma o envío."""
+
+    _require_signer_station(actor)
+    _require_permission(actor, PRESENTER_SIGNING_QUEUE_PERMISSION)
+    _require_permission(actor, PRESENTER_SIGNING_CLAIM_PERMISSION)
 
 
 def authorize_handoff_issue(actor: PresenterActorContext) -> None:
@@ -394,6 +437,10 @@ __all__ = [
     "PRESENTER_HANDOFF_ISSUE_PERMISSION",
     "PRESENTER_PACKAGE_FREEZE_PERMISSION",
     "PRESENTER_RECEIPT_VERIFY_PERMISSION",
+    "PRESENTER_SIGNER_ROLE_CODE",
+    "PRESENTER_SIGNER_PERMISSION_SET",
+    "PRESENTER_SIGNING_CLAIM_PERMISSION",
+    "PRESENTER_SIGNING_QUEUE_PERMISSION",
     "PRESENTER_REAUTH_MAX_AGE_SECONDS",
     "RTM_PRESENTER_EXTENSION_CLIENT_ID",
     "RTM_PRESENTER_FEATURE_FLAG",
@@ -412,6 +459,8 @@ __all__ = [
     "authorize_handoff_issue",
     "authorize_package_freeze",
     "authorize_receipt_verification",
+    "authorize_signing_claim",
+    "authorize_signing_queue",
     "load_presenter_runtime_configuration",
     "require_presenter_runtime",
 ]

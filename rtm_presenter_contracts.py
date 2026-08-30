@@ -58,6 +58,7 @@ class PresenterPackageStatus(str, Enum):
 
 class PresenterClientKind(str, Enum):
     OPERATOR_UI = "operator_ui"
+    SIGNER_STATION = "signer_station"
     TRUSTED_EXTENSION = "trusted_extension"
     ADMIN_EXPORT = "admin_export"
 

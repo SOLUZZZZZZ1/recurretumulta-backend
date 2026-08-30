@@ -19,6 +19,7 @@ from rtm_presenter_contracts import (
 from rtm_presenter_policy import (
     PRESENTER_ADMIN_EXPORT_PERMISSION,
     PRESENTER_ADMIN_ROLE_CODE,
+    PRESENTER_DESTINATION_PROPOSE_PERMISSION,
     PRESENTER_DOCUMENT_READ_PERMISSION,
     PRESENTER_HANDOFF_EXCHANGE_PERMISSION,
     PRESENTER_HANDOFF_ISSUE_PERMISSION,
@@ -37,6 +38,7 @@ from rtm_presenter_service import (
     PresenterSchemaNotReady,
     PresenterService,
     SqlPresenterRepository,
+    validate_destination_link_proposal,
 )
 
 
@@ -174,6 +176,34 @@ class FakePresenterRepository:
                     },
                 ],
                 "authorization_field_code": "representation_authorization",
+                "portal_preparation": {
+                    "enabled": True,
+                    "form_code": "reg_general_v1",
+                    "fields": [
+                        {
+                            "field_code": "subject",
+                            "label": "Asunto",
+                            "required": True,
+                            "multiline": False,
+                            "max_length": 80,
+                        },
+                        {
+                            "field_code": "facts",
+                            "label": "Expone",
+                            "required": True,
+                            "multiline": True,
+                            "max_length": 4000,
+                        },
+                        {
+                            "field_code": "request",
+                            "label": "Solicita",
+                            "required": True,
+                            "multiline": True,
+                            "max_length": 4000,
+                        },
+                    ],
+                    "private_selector": "must-not-be-projected",
+                },
                 "delivery": {
                     "email": {
                         "verified": True,
@@ -525,6 +555,55 @@ class FakePresenterRepository:
         self.exports.append(dict(kwargs))
 
 
+class FakePresenterDirectory:
+    def __init__(self) -> None:
+        self.search_calls = 0
+
+    def source_projection(self) -> dict[str, Any]:
+        return {
+            "available": True,
+            "snapshot_id": "d" * 64,
+            "official_source_url": (
+                "https://administracionelectronica.gob.es/ctt/dir3/descargas"
+            ),
+            "official_listing_modified_at": "2026-06-30",
+            "reference_only": True,
+            "real_public_directory_data": True,
+        }
+
+    def search(self, query: str, *, limit: int) -> list[dict[str, Any]]:
+        self.search_calls += 1
+        if "dgt" not in query.casefold():
+            return []
+        return [
+            {
+                "directory_code": "E00130201",
+                "display_name": "JEFATURA CENTRAL DE TRÁFICO",
+                "administration_level": "Administración del Estado",
+                "autonomous_community": "Comunidad de Madrid",
+                "province": "Madrid",
+                "locality_name": "",
+                "entity_type_code": "OA",
+                "sir_listed": True,
+                "sir_offices": [
+                    {
+                        "office_code": "O00009247",
+                        "office_name": (
+                            "REGISTRO GENERAL DE LA DIRECCIÓN GENERAL DE TRÁFICO"
+                        ),
+                    }
+                ],
+                "source_basis": "sir",
+                "directory_snapshot_id": "d" * 64,
+                "source_listed_modified_at": "2026-06-30",
+                "reference_only": True,
+                "usable_as_destination": False,
+                "procedure_profile_available": False,
+                "routing_decision_available": False,
+            }
+        ][:limit]
+
+
 def _runtime(
     *, enabled: bool = True, managed_extension_attestation_enabled: bool = False
 ) -> PresenterRuntimeConfiguration:
@@ -546,6 +625,7 @@ def _operator_actor() -> PresenterActorContext:
         operator_id=OPERATOR_ID,
         operator_session_id=OPERATOR_SESSION_ID,
         permissions=(
+            PRESENTER_DESTINATION_PROPOSE_PERMISSION,
             PRESENTER_DOCUMENT_READ_PERMISSION,
             PRESENTER_PACKAGE_FREEZE_PERMISSION,
         ),
@@ -599,6 +679,7 @@ def _admin_actor(
 class RTMPresenterServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.repository = FakePresenterRepository()
+        self.directory = FakePresenterDirectory()
         self.service = PresenterService(
             repository=self.repository,
             runtime=_runtime(managed_extension_attestation_enabled=True),
@@ -611,6 +692,7 @@ class RTMPresenterServiceTest(unittest.TestCase):
                 + b"]:"
                 + watermark.encode("utf-8")
             ),
+            directory=self.directory,
         )
         self.conn = object()
 
@@ -786,8 +868,20 @@ class RTMPresenterServiceTest(unittest.TestCase):
         self.assertEqual(result["case_id"], CASE_ID)
         self.assertEqual(result["query"], "DGT synthetic")
         self.assertEqual(result["result_count"], 1)
+        self.assertEqual(result["directory_result_count"], 1)
+        self.assertFalse(result["directory_results_selectable"])
+        self.assertFalse(result["directory_network_used"])
+        self.assertFalse(result["directory_procedure_inference_performed"])
+        self.assertTrue(result["directory_source"]["reference_only"])
+        self.assertEqual(
+            result["directory_results"][0]["directory_code"], "E00130201"
+        )
+        self.assertFalse(
+            result["directory_results"][0]["usable_as_destination"]
+        )
         self.assertFalse(result["unverified_destination_allowed"])
         self.assertFalse(result["operator_supplied_url_allowed"])
+        self.assertTrue(result["operator_url_proposal_allowed"])
         self.assertFalse(result["storage_references_exposed"])
         self.assertEqual(
             result["destinations"][0]["portal_origin"], PORTAL_ORIGIN
@@ -811,9 +905,86 @@ class RTMPresenterServiceTest(unittest.TestCase):
             result["destinations"][0]["verified_email"]["sender"],
             "info@recurretumulta.eu",
         )
+        portal_preparation = result["destinations"][0]["portal_preparation"]
+        self.assertEqual(portal_preparation["form_code"], "reg_general_v1")
+        self.assertEqual(
+            [field["field_code"] for field in portal_preparation["fields"]],
+            ["subject", "facts", "request"],
+        )
+        self.assertFalse(portal_preparation["operator_can_open_portal_session"])
+        self.assertFalse(portal_preparation["certificate_stored_by_rtm"])
+        self.assertNotIn("private_selector", portal_preparation)
         self.assertNotIn("metadata", result["destinations"][0])
         self.assertNotIn("unknown_secret", result["destinations"][0])
         self.assertEqual(self.repository.destination_search_calls, 1)
+        self.assertEqual(self.directory.search_calls, 1)
+
+    def test_destination_link_proposal_is_pending_audited_and_never_opened(self):
+        result = self.service.propose_destination_link(
+            self.conn,
+            actor=_operator_actor(),
+            case_id=CASE_ID,
+            label="  Recurso de tráfico sintético  ",
+            portal_url="https://tramite.synthetic.example/recurso",
+        )
+
+        self.assertEqual(result["label"], "Recurso de tráfico sintético")
+        self.assertEqual(
+            result["portal_url"],
+            "https://tramite.synthetic.example/recurso",
+        )
+        self.assertEqual(result["status"], "pending_independent_verification")
+        self.assertFalse(result["usable_as_destination"])
+        self.assertFalse(result["profile_created"])
+        self.assertFalse(result["portal_opened"])
+        self.assertFalse(result["network_used"])
+        self.assertFalse(result["external_effects_executed"])
+        audit = self.repository.audits[-1]
+        self.assertEqual(
+            audit["event_type"], "presenter.destination_link.proposed"
+        )
+        self.assertEqual(
+            audit["reason_code"], "pending_independent_verification"
+        )
+        self.assertEqual(audit["payload"]["proposal_id"], result["proposal_id"])
+
+    def test_destination_link_proposal_requires_the_exact_operator_permission(self):
+        actor = PresenterActorContext(
+            operator_id=OPERATOR_ID,
+            operator_session_id=OPERATOR_SESSION_ID,
+            permissions=(PRESENTER_DOCUMENT_READ_PERMISSION,),
+            role_codes=("rtm.operator",),
+            client_kind=PresenterClientKind.OPERATOR_UI,
+            authenticated_at=NOW - timedelta(hours=1),
+        )
+
+        with self.assertRaises(PresenterPolicyError):
+            self.service.propose_destination_link(
+                self.conn,
+                actor=actor,
+                case_id=CASE_ID,
+                label="Recurso de tráfico sintético",
+                portal_url="https://tramite.synthetic.example/recurso",
+            )
+
+        self.assertEqual(self.repository.audits, [])
+
+    def test_destination_link_proposal_rejects_real_or_credentialed_urls(self):
+        rejected = (
+            "https://sede.dgt.gob.es/recurso",
+            "http://tramite.synthetic.example/recurso",
+            "https://user:secret@tramite.synthetic.example/recurso",
+            "https://tramite.synthetic.example/recurso?session=secret",
+            "https://tramite.synthetic.example/recurso#paso",
+            "https://tramite.synthetic.example/a/%2e%2e/b",
+        )
+        for portal_url in rejected:
+            with self.subTest(portal_url=portal_url):
+                with self.assertRaises(PresenterConflict):
+                    validate_destination_link_proposal(
+                        label="Sede sintética",
+                        portal_url=portal_url,
+                    )
 
     def test_destination_search_rejects_short_query_before_repository(self):
         with self.assertRaises(PresenterConflict) as denied:
@@ -827,6 +998,7 @@ class RTMPresenterServiceTest(unittest.TestCase):
 
         self.assertEqual(denied.exception.code, "presenter.destination_query_invalid")
         self.assertEqual(self.repository.destination_search_calls, 0)
+        self.assertEqual(self.directory.search_calls, 0)
 
     def test_sql_destination_search_has_four_eyes_and_literal_substring_filter(self):
         source = inspect.getsource(SqlPresenterRepository.search_destination_profiles)
@@ -927,6 +1099,60 @@ class RTMPresenterServiceTest(unittest.TestCase):
             )
         )
 
+    def test_sql_signature_queue_is_latest_and_scoped_to_actor_assignment(self):
+        class MappingResult:
+            def mappings(self) -> "MappingResult":
+                return self
+
+            def all(self) -> list[Mapping[str, Any]]:
+                return []
+
+        class CapturingConnection:
+            def __init__(self) -> None:
+                self.sql = ""
+                self.params: dict[str, Any] = {}
+
+            def execute(
+                self,
+                statement: Any,
+                params: Mapping[str, Any] | None = None,
+            ) -> MappingResult:
+                self.sql = " ".join(str(statement).split()).lower()
+                self.params = dict(params or {})
+                return MappingResult()
+
+        conn = CapturingConnection()
+        rows = SqlPresenterRepository().list_signature_queue_events(
+            conn,
+            operator_id=OPERATOR_ID,
+            limit=25,
+        )
+
+        self.assertEqual(rows, [])
+        self.assertEqual(conn.params["operator_id"], OPERATOR_ID)
+        self.assertEqual(conn.params["limit"], 25)
+        self.assertIn("distinct on (event.payload->>'delivery_id')", conn.sql)
+        self.assertIn("event.event_type like 'presenter.delivery.%'", conn.sql)
+        self.assertIn("event.payload->>'channel'='portal'", conn.sql)
+        self.assertIn("delivery.payload->>'state'='awaiting_signature'", conn.sql)
+        self.assertIn("coalesce(c.test_mode,false)=true", conn.sql)
+        self.assertIn("exists ( select 1", conn.sql)
+        self.assertIn("rtm_connect_a1s_case_bindings", conn.sql)
+        self.assertIn("rtm_connect_a1s_tenants", conn.sql)
+        self.assertIn("rtm_connect_a1s_memberships", conn.sql)
+        self.assertIn("rtm_work_assignments", conn.sql)
+        self.assertIn("m.operator_id=cast(:operator_id as uuid)", conn.sql)
+        self.assertIn("w.operator_id=cast(:operator_id as uuid)", conn.sql)
+        self.assertIn("w.accepted_at is not null", conn.sql)
+        self.assertIn("w.released_at is null", conn.sql)
+        self.assertIn("'responsible', 'reviewer', 'supervisor'", conn.sql)
+        self.assertIn("cast(:a1s_binding_marker as jsonb)", conn.sql)
+        self.assertIn("cast(:a1s_scope_marker as jsonb)", conn.sql)
+        self.assertIn("cast(:presenter_assignment_marker as jsonb)", conn.sql)
+        self.assertIn("limit :limit", conn.sql)
+        for forbidden in ("b2_bucket", "b2_key", "storage_key", "presigned_url"):
+            self.assertNotIn(forbidden, conn.sql)
+
     def test_sql_repository_has_no_json_boolean_phantom_bind(self):
         source = inspect.getsource(SqlPresenterRepository)
 
@@ -959,6 +1185,10 @@ class RTMPresenterServiceTest(unittest.TestCase):
             ],
         )
         self.assertEqual([field["step_order"] for field in fields], [1, 2, 3])
+        portal_preparation = payload["destinations"][0]["portal_preparation"]
+        self.assertTrue(portal_preparation["signer_local_activation_required"])
+        self.assertFalse(portal_preparation["signature_automated"])
+        self.assertFalse(portal_preparation["final_submit_automated"])
         serialized = json.dumps(payload, sort_keys=True).lower()
         for forbidden in (
             "b2_bucket",
@@ -1703,6 +1933,12 @@ class RTMPresenterServiceTest(unittest.TestCase):
             Path(__file__).resolve().parents[1] / "rtm_presenter_router.py"
         ).read_text(encoding="utf-8")
         self.assertIn('@router.get("/cases/{case_id}/workspace")', router_source)
+        self.assertIn(
+            '@router.post("/cases/{case_id}/destinations/proposals")',
+            router_source,
+        )
+        self.assertIn("directory=default_presenter_directory()", router_source)
+        self.assertIn("status_code=202", router_source)
         self.assertIn('"/extension/tickets/exchange"', router_source)
         self.assertNotIn('@router.get("/cases/{case_id}/download', router_source)
         self.assertNotIn('@router.post("/cases/{case_id}/handoff', router_source)

@@ -263,13 +263,52 @@ class StagingPresenterSyntheticFixtureTest(unittest.TestCase):
         profile = plan["destination_profile"]
         self.assertEqual(
             [row["version_number"] for row in plan["destination_profiles"]],
-            [1, 2],
+            [1, 2, 3, 4],
+        )
+        self.assertEqual(
+            plan["destination_profiles"][1]["profile_sha256"],
+            "91241e7ac237bd65eaf2ae0fdb77007e2766edb305c301f095d6a6e390ae981a",
         )
         self.assertEqual(profile["profile_code"], "synthetic.example")
         self.assertEqual(profile["portal_origin"], "https://synthetic.example")
         self.assertEqual(
             [field["step_order"] for field in profile["requirements"]["fields"]],
             [1, 2],
+        )
+        self.assertNotIn(
+            "submission_receipt",
+            {
+                field["field_code"]
+                for field in profile["requirements"]["fields"]
+            },
+        )
+        self.assertEqual(
+            profile["requirements"]["representation_modes"],
+            ["self", "representative"],
+        )
+        self.assertEqual(
+            profile["requirements"]["authorization_field_code"],
+            "representation_authorization",
+        )
+        authorization_field = profile["requirements"]["fields"][1]
+        self.assertEqual(
+            authorization_field["field_code"], "representation_authorization"
+        )
+        self.assertEqual(
+            authorization_field["required_for_modes"], ["representative"]
+        )
+        self.assertEqual(
+            profile["requirements"]["portal_preparation"]["form_code"],
+            "reg_general_v1",
+        )
+        self.assertEqual(
+            [
+                field["field_code"]
+                for field in profile["requirements"]["portal_preparation"][
+                    "fields"
+                ]
+            ],
+            ["subject", "facts", "request"],
         )
         self.assertNotEqual(
             profile["created_by_operator_id"],
@@ -312,12 +351,14 @@ class StagingPresenterSyntheticFixtureTest(unittest.TestCase):
             assignment_rows=[],
         )
         self.assertEqual(empty["would_insert_document_versions"], 2)
-        self.assertEqual(empty["would_insert_destination_profiles"], 2)
+        self.assertEqual(empty["would_insert_destination_profiles"], 4)
         self.assertEqual(empty["would_insert_work_assignments"], 1)
 
         documents = [copy.deepcopy(row) for row in plan["document_versions"]]
         profile = copy.deepcopy(plan["destination_profile"])
         legacy_profile = copy.deepcopy(plan["destination_profiles"][0])
+        compat_profile = copy.deepcopy(plan["destination_profiles"][1])
+        prior_profile = copy.deepcopy(plan["destination_profiles"][2])
         assignment = copy.deepcopy(plan["work_assignment"])
         assignment.update(
             {
@@ -329,7 +370,12 @@ class StagingPresenterSyntheticFixtureTest(unittest.TestCase):
         ready = script.reconcile_fixture_state(
             plan=plan,
             document_rows=documents,
-            profile_rows=[legacy_profile, profile],
+            profile_rows=[
+                legacy_profile,
+                compat_profile,
+                prior_profile,
+                profile,
+            ],
             assignment_rows=[assignment],
         )
         self.assertTrue(ready["ready"])
@@ -340,7 +386,7 @@ class StagingPresenterSyntheticFixtureTest(unittest.TestCase):
         upgrade = script.reconcile_fixture_state(
             plan=plan,
             document_rows=documents,
-            profile_rows=[legacy_profile],
+            profile_rows=[legacy_profile, compat_profile, prior_profile],
             assignment_rows=[assignment],
         )
         self.assertFalse(upgrade["ready"])
@@ -351,6 +397,8 @@ class StagingPresenterSyntheticFixtureTest(unittest.TestCase):
             document_rows=documents,
             profile_rows=[
                 legacy_profile,
+                compat_profile,
+                prior_profile,
                 copy.deepcopy(plan["destination_profile"]),
             ],
             assignment_rows=[assignment],
@@ -383,7 +431,7 @@ class StagingPresenterSyntheticFixtureTest(unittest.TestCase):
         plan = _seed_plan(script)
         before = {
             "missing_source_document_ids": [],
-            "missing_profile_versions": [1, 2],
+            "missing_profile_versions": [1, 2, 3, 4],
             "assignment_missing": False,
         }
         after = {"ready": True}
@@ -396,8 +444,8 @@ class StagingPresenterSyntheticFixtureTest(unittest.TestCase):
         ):
             inserted = script.insert_fixture(connection, plan=plan)
 
-        self.assertEqual(inserted, 2)
-        self.assertEqual(connection.profile_versions, [1, 2])
+        self.assertEqual(inserted, 4)
+        self.assertEqual(connection.profile_versions, [1, 2, 3, 4])
 
     def test_work_assignment_schema_is_required_fail_closed(self):
         script = _import_script()

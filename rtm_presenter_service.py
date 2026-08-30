@@ -18,7 +18,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Protocol, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from sqlalchemy import text
 
@@ -44,11 +44,16 @@ from rtm_presenter_contracts import (
     normalize_origin,
     safe_filename,
 )
+from rtm_presenter_directory import (
+    EmptyPresenterDirectory,
+    PresenterDirectoryProvider,
+)
 from rtm_presenter_policy import (
     PresenterActorContext,
     PresenterPolicyError,
     PresenterRuntimeConfiguration,
     authorize_admin_export,
+    authorize_destination_proposal,
     authorize_document_ingest,
     authorize_document_list,
     authorize_handoff_exchange,
@@ -59,11 +64,14 @@ from rtm_presenter_policy import (
 )
 
 
-RTM_PRESENTER_SERVICE_VERSION = "rtm_presenter_service_v1_1"
+RTM_PRESENTER_SERVICE_VERSION = "rtm_presenter_service_v1_3"
 DEFAULT_TICKET_TTL_SECONDS = 90
 MAX_PACKAGE_LIFETIME_SECONDS = 24 * 60 * 60
 ADMIN_EXPORT_LIFETIME_SECONDS = 15 * 60
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$")
+_DESTINATION_PROPOSAL_NAMESPACE = uuid.UUID(
+    "52884e48-c6ea-43d5-9a02-f3ff8d8e878d"
+)
 RTM_PRESENTER_EXTERNAL_PURPOSES = frozenset(
     {
         "main_filing",
@@ -120,6 +128,64 @@ class PresenterSchemaNotReady(PresenterServiceError):
         )
 
 
+def validate_destination_link_proposal(
+    *, label: str, portal_url: str
+) -> dict[str, str]:
+    """Valida una propuesta sintética; nunca crea un perfil verificado."""
+
+    clean_label = " ".join(str(label or "").split())
+    raw_url = str(portal_url or "").strip()
+    if not 3 <= len(clean_label) <= 120:
+        raise PresenterConflict(
+            "presenter.destination_proposal_label_invalid",
+            "El nombre de la sede debe tener entre 3 y 120 caracteres",
+        )
+    if not 9 <= len(raw_url) <= 1024 or any(
+        ord(character) < 32 or ord(character) == 127 for character in raw_url
+    ):
+        raise PresenterConflict(
+            "presenter.destination_proposal_url_invalid",
+            "El enlace de sede no es válido",
+        )
+    try:
+        parsed = urlsplit(raw_url)
+        hostname = str(parsed.hostname or "").lower()
+        hostname.encode("ascii")
+        port = parsed.port
+    except (UnicodeError, ValueError):
+        raise PresenterConflict(
+            "presenter.destination_proposal_url_invalid",
+            "El enlace de sede no es válido",
+        ) from None
+    if (
+        parsed.scheme.lower() != "https"
+        or not hostname
+        or (hostname != "synthetic.example" and not hostname.endswith(".synthetic.example"))
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise PresenterConflict(
+            "presenter.destination_proposal_url_not_synthetic",
+            "Staging solo admite enlaces HTTPS sintéticos sin credenciales, parámetros ni fragmentos",
+        )
+    decoded_segments = [unquote(segment).strip().lower() for segment in parsed.path.split("/")]
+    if any(segment in {".", ".."} for segment in decoded_segments):
+        raise PresenterConflict(
+            "presenter.destination_proposal_url_invalid",
+            "El enlace de sede no es válido",
+        )
+    path = parsed.path or "/"
+    canonical_url = f"https://{hostname}{path}"
+    return {
+        "label": clean_label,
+        "portal_url": canonical_url,
+        "portal_origin": f"https://{hostname}",
+    }
+
+
 @dataclass(frozen=True)
 class PresenterExternalDocumentUpload:
     content: bytes
@@ -129,6 +195,7 @@ class PresenterExternalDocumentUpload:
     size_bytes: int
     purpose: str
     extension: str
+    source_original_filename: str | None = None
 
 
 def validate_external_document_upload(
@@ -137,6 +204,7 @@ def validate_external_document_upload(
     original_filename: str,
     declared_mime: str,
     purpose: str,
+    source_original_filename: str | None = None,
 ) -> PresenterExternalDocumentUpload:
     """Valida bytes y metadatos antes de realizar ningun efecto B2."""
 
@@ -150,6 +218,9 @@ def validate_external_document_upload(
             "El documento supera el limite Presenter",
         )
     clean_filename = safe_filename(original_filename)
+    clean_source_filename = safe_filename(
+        source_original_filename or original_filename
+    )
     clean_purpose = str(purpose or "").strip().lower()
     if clean_purpose not in RTM_PRESENTER_EXTERNAL_PURPOSES:
         raise PresenterConflict(
@@ -274,6 +345,7 @@ def validate_external_document_upload(
         size_bytes=len(content),
         purpose=clean_purpose,
         extension=extension,
+        source_original_filename=clean_source_filename,
     )
 
 
@@ -301,6 +373,10 @@ class PresenterRepository(Protocol):
     def load_frozen_package(self, conn: Any, *, case_id: str, package_id: str, for_update: bool = False) -> Mapping[str, Any] | None: ...
     def lock_delivery_command(self, conn: Any, *, package_id: str, delivery_id: str) -> None: ...
     def list_delivery_events(self, conn: Any, *, case_id: str, package_id: str, delivery_id: str) -> Sequence[Mapping[str, Any]]: ...
+    def list_signature_queue_events(self, conn: Any, *, operator_id: str, limit: int) -> Sequence[Mapping[str, Any]]: ...
+    def lock_signature_claim(self, conn: Any, *, delivery_id: str) -> None: ...
+    def load_signature_queue_event(self, conn: Any, *, operator_id: str, delivery_id: str) -> Mapping[str, Any] | None: ...
+    def list_signature_claim_events(self, conn: Any, *, case_id: str, package_id: str, delivery_id: str) -> Sequence[Mapping[str, Any]]: ...
     def lock_portal_session(self, conn: Any, *, case_id: str, portal_session_id: str) -> None: ...
     def list_portal_session_events(self, conn: Any, *, case_id: str, portal_session_id: str) -> Sequence[Mapping[str, Any]]: ...
     def emit_deadline_tracking_event(self, conn: Any, *, case_id: str, portal_session_id: str, payload: Mapping[str, Any]) -> bool: ...
@@ -847,6 +923,8 @@ class SqlPresenterRepository:
         metadata = {
             "ingest_channel": "presenter_external_upload",
             "security_disposition": "pending_security_scan",
+            "attachment_filename": upload.original_filename,
+            "source_original_filename": upload.source_original_filename,
             "synthetic_marker": RTM_PRESENTER_SYNTHETIC_MARKER,
             "synthetic_only": True,
         }
@@ -1494,6 +1572,259 @@ class SqlPresenterRepository:
             },
         ).mappings().all()
 
+    def list_signature_queue_events(
+        self,
+        conn: Any,
+        *,
+        operator_id: str,
+        limit: int,
+    ) -> Sequence[Mapping[str, Any]]:
+        """Lista solo tareas de firma de expedientes asignados al actor.
+
+        La cola no concede acceso global: reutiliza la misma frontera A1-S y la
+        asignación aceptada que protege el workspace de cada expediente. Se toma
+        el último evento de cada entrega para no reabrir tareas ya resueltas.
+        """
+
+        return conn.execute(
+            text(
+                """
+                WITH latest_delivery AS (
+                    SELECT DISTINCT ON (event.payload->>'delivery_id')
+                           event.sequence_number, event.event_type,
+                           event.reason_code, event.payload, event.created_at,
+                           event.actor_operator_id, event.case_id,
+                           event.package_id
+                    FROM rtm_presenter_audit_events AS event
+                    WHERE event.event_type LIKE 'presenter.delivery.%'
+                      AND event.payload->>'channel'='portal'
+                      AND COALESCE(
+                            (event.payload->>'synthetic_only')::BOOLEAN,
+                            FALSE
+                          )=TRUE
+                    ORDER BY event.payload->>'delivery_id',
+                             event.sequence_number DESC
+                )
+                SELECT delivery.sequence_number, delivery.event_type,
+                       delivery.reason_code, delivery.payload,
+                       delivery.created_at, delivery.actor_operator_id,
+                       delivery.case_id, delivery.package_id
+                FROM latest_delivery AS delivery
+                JOIN cases AS c ON c.id=delivery.case_id
+                WHERE delivery.payload->>'state'='awaiting_signature'
+                  AND COALESCE(c.test_mode,FALSE)=TRUE
+                  AND EXISTS (
+                      SELECT 1
+                      FROM rtm_connect_a1s_case_bindings AS b
+                      JOIN rtm_connect_a1s_tenants AS t
+                        ON t.id=b.tenant_id
+                      JOIN rtm_connect_a1s_memberships AS m
+                        ON m.tenant_id=b.tenant_id
+                       AND m.operator_id=CAST(:operator_id AS UUID)
+                      JOIN rtm_work_assignments AS w
+                        ON w.case_id=c.id
+                       AND w.operator_id=CAST(:operator_id AS UUID)
+                      WHERE b.case_id=c.id
+                        AND b.status='active'
+                        AND b.synthetic_only=TRUE
+                        AND b.revoked_at IS NULL
+                        AND b.metadata @>
+                            CAST(:a1s_binding_marker AS JSONB)
+                        AND t.status='active'
+                        AND t.synthetic_only=TRUE
+                        AND t.metadata @>
+                            CAST(:a1s_scope_marker AS JSONB)
+                        AND m.status='active'
+                        AND m.synthetic_only=TRUE
+                        AND m.revoked_at IS NULL
+                        AND m.metadata @>
+                            CAST(:a1s_scope_marker AS JSONB)
+                        AND w.status='active'
+                        AND w.assignment_role IN (
+                            'responsible', 'reviewer', 'supervisor'
+                        )
+                        AND w.accepted_at IS NOT NULL
+                        AND w.released_at IS NULL
+                        AND w.metadata @>
+                            CAST(:presenter_assignment_marker AS JSONB)
+                  )
+                ORDER BY delivery.created_at ASC, delivery.sequence_number ASC
+                LIMIT :limit
+                """
+            ),
+            {
+                "operator_id": operator_id,
+                "limit": limit,
+                "a1s_binding_marker": _json(
+                    {
+                        "synthetic_marker": "RTM_A1S_SYNTHETIC_ONLY",
+                        "synthetic_only": True,
+                        "test_mode": True,
+                    }
+                ),
+                "a1s_scope_marker": _json(
+                    {
+                        "synthetic_marker": "RTM_A1S_SYNTHETIC_ONLY",
+                        "synthetic_only": True,
+                    }
+                ),
+                "presenter_assignment_marker": _json(
+                    {
+                        "synthetic_marker": "RTM_PRESENTER_SYNTHETIC_ONLY",
+                        "synthetic_only": True,
+                    }
+                ),
+            },
+        ).mappings().all()
+
+    def lock_signature_claim(self, conn: Any, *, delivery_id: str) -> None:
+        """Serializa la toma local de una entrega sin crear estado mutable."""
+
+        conn.execute(
+            text(
+                """
+                SELECT pg_advisory_xact_lock(
+                    hashtextextended(
+                        'rtm-presenter-signature-claim:' || :delivery_id,
+                        0
+                    )
+                )
+                """
+            ),
+            {"delivery_id": delivery_id},
+        )
+
+    def load_signature_queue_event(
+        self,
+        conn: Any,
+        *,
+        operator_id: str,
+        delivery_id: str,
+    ) -> Mapping[str, Any] | None:
+        """Carga una tarea exacta conservando la frontera A1-S del firmante."""
+
+        return _row_mapping(
+            conn.execute(
+                text(
+                    """
+                    WITH latest_delivery AS (
+                        SELECT event.sequence_number, event.event_type,
+                               event.reason_code, event.payload,
+                               event.created_at, event.actor_operator_id,
+                               event.case_id, event.package_id
+                        FROM rtm_presenter_audit_events AS event
+                        WHERE event.event_type LIKE 'presenter.delivery.%'
+                          AND event.payload->>'delivery_id'=:delivery_id
+                          AND event.payload->>'channel'='portal'
+                          AND COALESCE(
+                                (event.payload->>'synthetic_only')::BOOLEAN,
+                                FALSE
+                              )=TRUE
+                        ORDER BY event.sequence_number DESC
+                        LIMIT 1
+                    )
+                    SELECT delivery.sequence_number, delivery.event_type,
+                           delivery.reason_code, delivery.payload,
+                           delivery.created_at, delivery.actor_operator_id,
+                           delivery.case_id, delivery.package_id
+                    FROM latest_delivery AS delivery
+                    JOIN cases AS c ON c.id=delivery.case_id
+                    WHERE delivery.payload->>'state'='awaiting_signature'
+                      AND COALESCE(c.test_mode,FALSE)=TRUE
+                      AND EXISTS (
+                          SELECT 1
+                          FROM rtm_connect_a1s_case_bindings AS b
+                          JOIN rtm_connect_a1s_tenants AS t
+                            ON t.id=b.tenant_id
+                          JOIN rtm_connect_a1s_memberships AS m
+                            ON m.tenant_id=b.tenant_id
+                           AND m.operator_id=CAST(:operator_id AS UUID)
+                          JOIN rtm_work_assignments AS w
+                            ON w.case_id=c.id
+                           AND w.operator_id=CAST(:operator_id AS UUID)
+                          WHERE b.case_id=c.id
+                            AND b.status='active'
+                            AND b.synthetic_only=TRUE
+                            AND b.revoked_at IS NULL
+                            AND b.metadata @>
+                                CAST(:a1s_binding_marker AS JSONB)
+                            AND t.status='active'
+                            AND t.synthetic_only=TRUE
+                            AND t.metadata @>
+                                CAST(:a1s_scope_marker AS JSONB)
+                            AND m.status='active'
+                            AND m.synthetic_only=TRUE
+                            AND m.revoked_at IS NULL
+                            AND m.metadata @>
+                                CAST(:a1s_scope_marker AS JSONB)
+                            AND w.status='active'
+                            AND w.assignment_role IN (
+                                'responsible', 'reviewer', 'supervisor'
+                            )
+                            AND w.accepted_at IS NOT NULL
+                            AND w.released_at IS NULL
+                            AND w.metadata @>
+                                CAST(:presenter_assignment_marker AS JSONB)
+                      )
+                    """
+                ),
+                {
+                    "delivery_id": delivery_id,
+                    "operator_id": operator_id,
+                    "a1s_binding_marker": _json(
+                        {
+                            "synthetic_marker": "RTM_A1S_SYNTHETIC_ONLY",
+                            "synthetic_only": True,
+                            "test_mode": True,
+                        }
+                    ),
+                    "a1s_scope_marker": _json(
+                        {
+                            "synthetic_marker": "RTM_A1S_SYNTHETIC_ONLY",
+                            "synthetic_only": True,
+                        }
+                    ),
+                    "presenter_assignment_marker": _json(
+                        {
+                            "synthetic_marker": "RTM_PRESENTER_SYNTHETIC_ONLY",
+                            "synthetic_only": True,
+                        }
+                    ),
+                },
+            )
+        )
+
+    def list_signature_claim_events(
+        self,
+        conn: Any,
+        *,
+        case_id: str,
+        package_id: str,
+        delivery_id: str,
+    ) -> Sequence[Mapping[str, Any]]:
+        return conn.execute(
+            text(
+                """
+                SELECT sequence_number, event_type, reason_code, payload,
+                       created_at, actor_operator_id
+                FROM rtm_presenter_audit_events
+                WHERE case_id=CAST(:case_id AS UUID)
+                  AND package_id=CAST(:package_id AS UUID)
+                  AND event_type IN (
+                      'presenter.signer_station.claimed',
+                      'presenter.signer_station.released'
+                  )
+                  AND payload->>'delivery_id'=:delivery_id
+                ORDER BY sequence_number ASC
+                """
+            ),
+            {
+                "case_id": case_id,
+                "package_id": package_id,
+                "delivery_id": delivery_id,
+            },
+        ).mappings().all()
+
     def lock_portal_session(
         self,
         conn: Any,
@@ -2034,6 +2365,80 @@ def _verified_email_projection(
     }
 
 
+def _portal_preparation_projection(
+    requirements: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Expone únicamente la hoja de operador aprobada por el perfil.
+
+    No contiene selectores DOM, credenciales, acciones de firma ni valores del
+    expediente. Es solo el esquema que la UI debe completar y congelar.
+    """
+
+    raw = requirements.get("portal_preparation")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping) or raw.get("enabled") is not True:
+        raise PresenterConflict(
+            "presenter.profile_contract_invalid",
+            "Configuración de preparación para firma no válida",
+        )
+    form_code = str(raw.get("form_code") or "").strip().lower()
+    raw_fields = raw.get("fields")
+    if (
+        not _WORKSPACE_CODE_RE.fullmatch(form_code)
+        or not isinstance(raw_fields, list)
+        or not 1 <= len(raw_fields) <= 32
+        or any(not isinstance(item, Mapping) for item in raw_fields)
+    ):
+        raise PresenterConflict(
+            "presenter.profile_contract_invalid",
+            "Hoja de preparación para firma no verificable",
+        )
+    fields: list[dict[str, Any]] = []
+    seen_codes: set[str] = set()
+    for step_order, raw_field in enumerate(raw_fields, start=1):
+        field = dict(raw_field)
+        code = str(field.get("field_code") or "").strip().lower()
+        label = " ".join(str(field.get("label") or "").split())
+        required = field.get("required")
+        multiline = field.get("multiline")
+        max_length = field.get("max_length")
+        if (
+            not _WORKSPACE_CODE_RE.fullmatch(code)
+            or code in seen_codes
+            or not 2 <= len(label) <= 120
+            or type(required) is not bool
+            or type(multiline) is not bool
+            or type(max_length) is not int
+            or not 1 <= max_length <= 12000
+        ):
+            raise PresenterConflict(
+                "presenter.profile_contract_invalid",
+                "Campo de preparación para firma no válido",
+            )
+        fields.append(
+            {
+                "field_code": code,
+                "label": label,
+                "required": required,
+                "multiline": multiline,
+                "max_length": max_length,
+                "step_order": step_order,
+            }
+        )
+        seen_codes.add(code)
+    return {
+        "enabled": True,
+        "form_code": form_code,
+        "fields": fields,
+        "operator_can_open_portal_session": False,
+        "signer_local_activation_required": True,
+        "certificate_stored_by_rtm": False,
+        "signature_automated": False,
+        "final_submit_automated": False,
+    }
+
+
 def _destination_workspace_projection(row: Mapping[str, Any]) -> dict[str, Any]:
     """Reduce un perfil a los unicos campos necesarios para el checklist UI."""
 
@@ -2153,6 +2558,7 @@ def _destination_workspace_projection(row: Mapping[str, Any]) -> dict[str, Any]:
             "Perfil representativo sin campo de autorizacion",
         )
     verified_email = _verified_email_projection(requirements)
+    portal_preparation = _portal_preparation_projection(requirements)
     return {
         "destination_profile_id": str(row["id"]),
         "profile_code": str(row["profile_code"]),
@@ -2171,6 +2577,7 @@ def _destination_workspace_projection(row: Mapping[str, Any]) -> dict[str, Any]:
             ),
         ],
         "verified_email": verified_email,
+        "portal_preparation": portal_preparation,
         "representation_modes": modes,
         "authorization_field_code": (
             authorization_field_code if "representative" in modes else None
@@ -2284,12 +2691,14 @@ class PresenterService:
         clock: Callable[[], datetime] | None = None,
         token_factory: Callable[[], str] | None = None,
         watermarker: Callable[[bytes, str, str], bytes] | None = None,
+        directory: PresenterDirectoryProvider | None = None,
     ) -> None:
         self.repository = repository
         self.runtime = runtime
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.token_factory = token_factory or (lambda: secrets.token_urlsafe(48))
         self.watermarker = watermarker
+        self.directory = directory or EmptyPresenterDirectory()
 
     def _now(self) -> datetime:
         current = self.clock()
@@ -2338,6 +2747,7 @@ class PresenterService:
         original_filename: str,
         declared_mime: str,
         purpose: str,
+        source_original_filename: str | None = None,
         synthetic_confirmed: bool,
         supersedes_document_version_id: str | None,
         storage_writer: Callable[
@@ -2368,6 +2778,7 @@ class PresenterService:
             original_filename=original_filename,
             declared_mime=declared_mime,
             purpose=purpose,
+            source_original_filename=source_original_filename,
         )
         registered_coordinates: set[tuple[str, str]] = set()
 
@@ -2445,6 +2856,7 @@ class PresenterService:
                 "scan_status": document.scan_status,
                 "security_disposition": "pending_security_scan",
                 "original_filename": document.original_filename,
+                "source_original_filename": upload.source_original_filename,
                 "media_type": document.media_type,
                 "size_bytes": document.size_bytes,
                 "source_kind": document.source_kind,
@@ -2542,14 +2954,85 @@ class PresenterService:
                 conn, query=clean_query, limit=limit
             )
         ]
+        directory_results = self.directory.search(clean_query, limit=limit)
         return {
             "case_id": case_id,
             "query": clean_query,
             "destinations": destinations,
             "result_count": len(destinations),
+            "directory_results": directory_results,
+            "directory_result_count": len(directory_results),
+            "directory_source": self.directory.source_projection(),
+            "directory_results_selectable": False,
+            "directory_network_used": False,
+            "directory_procedure_inference_performed": False,
             "unverified_destination_allowed": False,
             "operator_supplied_url_allowed": False,
+            "operator_url_proposal_allowed": True,
             "storage_references_exposed": False,
+            "synthetic_only": True,
+        }
+
+    def propose_destination_link(
+        self,
+        conn: Any,
+        *,
+        actor: PresenterActorContext,
+        case_id: str,
+        label: str,
+        portal_url: str,
+    ) -> dict[str, Any]:
+        """Registra una candidata; no la abre ni crea un perfil utilizable."""
+
+        self._open(conn)
+        authorize_destination_proposal(actor)
+        self._authorize_case_scope(conn, actor=actor, case_id=case_id)
+        proposal = validate_destination_link_proposal(
+            label=label,
+            portal_url=portal_url,
+        )
+        proposal_id = str(
+            uuid.uuid5(
+                _DESTINATION_PROPOSAL_NAMESPACE,
+                ":".join(
+                    (
+                        case_id,
+                        actor.operator_id,
+                        proposal["label"].casefold(),
+                        proposal["portal_url"],
+                    )
+                ),
+            )
+        )
+        self.repository.append_audit(
+            conn,
+            event_type="presenter.destination_link.proposed",
+            reason_code="pending_independent_verification",
+            actor=actor,
+            case_id=case_id,
+            payload={
+                "proposal_id": proposal_id,
+                "label": proposal["label"],
+                "portal_url": proposal["portal_url"],
+                "portal_origin": proposal["portal_origin"],
+                "status": "pending_independent_verification",
+                "profile_created": False,
+                "portal_opened": False,
+                "network_used": False,
+                "external_effects_executed": False,
+                "synthetic_only": True,
+            },
+        )
+        return {
+            "case_id": case_id,
+            "proposal_id": proposal_id,
+            **proposal,
+            "status": "pending_independent_verification",
+            "usable_as_destination": False,
+            "profile_created": False,
+            "portal_opened": False,
+            "network_used": False,
+            "external_effects_executed": False,
             "synthetic_only": True,
         }
 

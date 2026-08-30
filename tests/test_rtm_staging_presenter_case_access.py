@@ -159,6 +159,44 @@ class StagingPresenterCaseAccessTest(unittest.TestCase):
             "rtm-staging-presenter-ramon@example.com",
         )
 
+    def test_signer_access_requires_its_separate_exact_account(self):
+        script = _import_script()
+        wrong_pair = script._parser().parse_args(["--access-kind", "signer"])
+        self.assertIn(
+            "operator_email_must_match_presenter_fixture",
+            script.safety_blockers(wrong_pair, _safe_env()),
+        )
+        signer = script._parser().parse_args(
+            [
+                "--access-kind",
+                "signer",
+                "--email",
+                script.DEFAULT_SIGNER_EMAIL,
+            ]
+        )
+        self.assertEqual(script.safety_blockers(signer, _safe_env()), [])
+        self.assertEqual(
+            script.DEFAULT_SIGNER_EMAIL,
+            "rtm-staging-signer-ramon@example.com",
+        )
+        self.assertEqual(script.SIGNER_ASSIGNMENT_ROLE, "supervisor")
+        membership = script.expected_membership_metadata(
+            fixture_key=script.DEFAULT_FIXTURE_KEY,
+            case_id=CASE_ID,
+            purpose="rtm_presenter_signer_case_access",
+        )
+        assignment = script.expected_assignment_metadata(
+            fixture_key=script.DEFAULT_FIXTURE_KEY,
+            accepted_for="rtm_presenter_synthetic_signer_access",
+        )
+        self.assertEqual(
+            membership["purpose"], "rtm_presenter_signer_case_access"
+        )
+        self.assertEqual(
+            assignment["accepted_for"],
+            "rtm_presenter_synthetic_signer_access",
+        )
+
     def test_real_data_external_effects_or_production_fail_closed(self):
         script = _import_script()
         for name, value, blocker in (

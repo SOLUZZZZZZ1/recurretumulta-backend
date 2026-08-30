@@ -31,11 +31,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-SCRIPT_VERSION = "rtm_staging_presenter_synthetic_fixture_v1_2"
+SCRIPT_VERSION = "rtm_staging_presenter_synthetic_fixture_v1_4"
 APPLY_CONFIRMATION = "STAGING_PRESENTER_SYNTHETIC_FIXTURE_ONLY"
 DEFAULT_FIXTURE_KEY = "runtime-a94dcd3-v1"
 PROFILE_CODE = "synthetic.example"
-PROFILE_VERSION = 2
+PROFILE_VERSION = 4
+PRIOR_PROFILE_VERSION = 3
+COMPAT_PROFILE_VERSION = 2
 LEGACY_PROFILE_VERSION = 1
 PROFILE_ORIGIN = "https://synthetic.example"
 PRESENTER_MARKER = "RTM_PRESENTER_SYNTHETIC_ONLY"
@@ -111,8 +113,8 @@ def _json_object(value: Any) -> dict[str, Any]:
     raise PresenterFixtureError("fixture_metadata_must_be_json_object")
 
 
-def destination_requirements() -> dict[str, Any]:
-    """Contrato de un portal ficticio, con su orden humano explicito."""
+def _v3_destination_requirements() -> dict[str, Any]:
+    """Contrato inmutable de v3: correspondencia y documentos separados."""
 
     return {
         "contract_version": "rtm.presenter.destination.requirements.v1",
@@ -171,17 +173,82 @@ def destination_requirements() -> dict[str, Any]:
                 "max_files": 1,
                 "max_bytes": 1048576,
             },
+        ],
+    }
+
+
+def destination_requirements() -> dict[str, Any]:
+    """Contrato v4 con hoja REG sintética preparada para la cola de firma."""
+
+    requirements = _v3_destination_requirements()
+    requirements["representation_modes"] = ["self", "representative"]
+    requirements["authorization_field_code"] = "representation_authorization"
+    requirements["fields"] = [
+        *requirements["fields"],
+        {
+            "step_order": 2,
+            "field_code": "representation_authorization",
+            "required": False,
+            "required_for_modes": ["representative"],
+            "purposes": ["representation_authorization"],
+            "media_types": ["application/pdf"],
+            "max_files": 1,
+            "max_bytes": 10485760,
+        },
+    ]
+    requirements["portal_preparation"] = {
+        "enabled": True,
+        "form_code": "reg_general_v1",
+        "fields": [
             {
-                "step_order": 2,
-                "field_code": "submission_receipt",
-                "required": False,
-                "purposes": ["submission_receipt"],
-                "media_types": ["application/json"],
-                "max_files": 1,
-                "max_bytes": 1048576,
+                "field_code": "subject",
+                "label": "Asunto",
+                "required": True,
+                "multiline": False,
+                "max_length": 80,
+            },
+            {
+                "field_code": "facts",
+                "label": "Expone",
+                "required": True,
+                "multiline": True,
+                "max_length": 4000,
+            },
+            {
+                "field_code": "request",
+                "label": "Solicita",
+                "required": True,
+                "multiline": True,
+                "max_length": 4000,
             },
         ],
     }
+    return requirements
+
+
+def _prior_destination_requirements() -> dict[str, Any]:
+    """Contrato inmutable de v3, antes de la cola de firma."""
+
+    return _v3_destination_requirements()
+
+
+def _compat_destination_requirements() -> dict[str, Any]:
+    """Contrato inmutable de v2, antes de separar la evidencia de salida."""
+
+    requirements = _v3_destination_requirements()
+    requirements["fields"] = [
+        *requirements["fields"],
+        {
+            "step_order": 2,
+            "field_code": "submission_receipt",
+            "required": False,
+            "purposes": ["submission_receipt"],
+            "media_types": ["application/json"],
+            "max_files": 1,
+            "max_bytes": 1048576,
+        },
+    ]
+    return requirements
 
 
 def _legacy_destination_requirements() -> dict[str, Any]:
@@ -240,6 +307,54 @@ def _legacy_profile(expected_profile: Mapping[str, Any]) -> dict[str, Any]:
         **configuration,
         "id": _stable_uuid(
             f"destination-profile:{PROFILE_CODE}:v{LEGACY_PROFILE_VERSION}"
+        ),
+        "status": "active",
+        "profile_sha256": _canonical_sha256(configuration),
+        "created_by_operator_id": expected_profile["created_by_operator_id"],
+        "verified_by_operator_id": expected_profile["verified_by_operator_id"],
+        "metadata": dict(expected_profile["metadata"]),
+    }
+
+
+def _prior_profile(expected_profile: Mapping[str, Any]) -> dict[str, Any]:
+    """Reconstruye exactamente la fila append-only creada por la fixture v1_3."""
+
+    configuration = {
+        "profile_code": PROFILE_CODE,
+        "version_number": PRIOR_PROFILE_VERSION,
+        "authority_code": PROFILE_CODE,
+        "display_name": "Destino sintético de sede y correspondencia",
+        "portal_origin": PROFILE_ORIGIN,
+        "requirements": _prior_destination_requirements(),
+    }
+    return {
+        **configuration,
+        "id": _stable_uuid(
+            f"destination-profile:{PROFILE_CODE}:v{PRIOR_PROFILE_VERSION}"
+        ),
+        "status": "active",
+        "profile_sha256": _canonical_sha256(configuration),
+        "created_by_operator_id": expected_profile["created_by_operator_id"],
+        "verified_by_operator_id": expected_profile["verified_by_operator_id"],
+        "metadata": dict(expected_profile["metadata"]),
+    }
+
+
+def _compat_profile(expected_profile: Mapping[str, Any]) -> dict[str, Any]:
+    """Reconstruye exactamente la fila append-only v2 creada por v1_2."""
+
+    configuration = {
+        "profile_code": PROFILE_CODE,
+        "version_number": COMPAT_PROFILE_VERSION,
+        "authority_code": PROFILE_CODE,
+        "display_name": "Destino sintético de sede y correspondencia",
+        "portal_origin": PROFILE_ORIGIN,
+        "requirements": _compat_destination_requirements(),
+    }
+    return {
+        **configuration,
+        "id": _stable_uuid(
+            f"destination-profile:{PROFILE_CODE}:v{COMPAT_PROFILE_VERSION}"
         ),
         "status": "active",
         "profile_sha256": _canonical_sha256(configuration),
@@ -585,6 +700,8 @@ def build_seed_plan(source: Mapping[str, Any]) -> dict[str, Any]:
     if profile["created_by_operator_id"] == profile["verified_by_operator_id"]:
         raise PresenterFixtureError("profile_requires_distinct_creator_verifier")
     legacy_profile = _legacy_profile(profile)
+    compat_profile = _compat_profile(profile)
+    prior_profile = _prior_profile(profile)
     assignment = {
         "id": _stable_uuid(f"{fixture_key}:presenter-work-assignment:v1"),
         "case_id": str(source["case_id"]),
@@ -605,7 +722,12 @@ def build_seed_plan(source: Mapping[str, Any]) -> dict[str, Any]:
         "fixture_key": fixture_key,
         "case_id": str(source["case_id"]),
         "document_versions": tuple(document_rows),
-        "destination_profiles": (legacy_profile, profile),
+        "destination_profiles": (
+            legacy_profile,
+            compat_profile,
+            prior_profile,
+            profile,
+        ),
         "destination_profile": profile,
         "work_assignment": assignment,
     }

@@ -22,7 +22,7 @@ from rtm_core.operator_auth_crypto import (
 )
 
 
-OPERATOR_PROVISIONING_VERSION = "rtm_operator_provisioning_v1_2"
+OPERATOR_PROVISIONING_VERSION = "rtm_operator_provisioning_v1_3"
 DEFAULT_SYNTHETIC_EMAIL = "rtm-staging-supervisor@example.com"
 DEFAULT_SYNTHETIC_DISPLAY_NAME = "RTM STAGING SUPERVISOR"
 
@@ -53,6 +53,7 @@ ROLE_DEFINITIONS: dict[str, OperatorRoleDefinition] = {
         ),
         permissions=(
             "ops.view",
+            "presenter.destination.propose",
             "presenter.documents.ingest",
             "presenter.documents.read",
             "presenter.delivery.prepare",
@@ -70,10 +71,25 @@ ROLE_DEFINITIONS: dict[str, OperatorRoleDefinition] = {
         permissions=(
             "ops.view",
             "ops.supervise",
+            "presenter.destination.propose",
             "presenter.documents.ingest",
             "presenter.documents.read",
             "presenter.delivery.prepare",
             "presenter.package.freeze",
+        ),
+    ),
+    "signer": OperatorRoleDefinition(
+        key="signer",
+        code="rtm.signer",
+        name="Firmante local RTM",
+        description=(
+            "Rol separado para consultar y tomar temporalmente tareas de firma "
+            "asignadas. No concede lectura general, preparación ni envío."
+        ),
+        permissions=(
+            "ops.view",
+            "presenter.signing.claim",
+            "presenter.signing.queue",
         ),
     ),
 }
@@ -137,7 +153,7 @@ def count_non_synthetic_operators(conn) -> int:
 
 
 def _lock_and_require_synthetic_only_operator_population(conn) -> None:
-    # Los roles rtm.operator/rtm.supervisor son globales. El bloqueo de tabla
+    # Los roles RTM sintéticos son globales. El bloqueo de tabla
     # cierra la carrera entre comprobar la población y mutar esos roles: ningún
     # alta o cambio de operador puede aparecer hasta que termine la transacción.
     conn.execute(
@@ -359,6 +375,11 @@ def provision_synthetic_operator(
             )
         current_role = str(refreshed["role_code"] or "")
         if current_role != definition.code:
+            if "rtm.signer" in {current_role, definition.code}:
+                raise RuntimeError(
+                    "La provisión no puede reutilizar una cuenta operativa "
+                    "como firmante; use una cuenta sintética separada"
+                )
             if (
                 current_role == "rtm.supervisor"
                 and definition.code != "rtm.supervisor"

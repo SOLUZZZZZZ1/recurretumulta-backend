@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from rtm_presenter_contracts import PresenterClientKind
 from rtm_presenter_delivery import (
     RTM_PRESENTER_DELIVERY_VERSION,
+    RTM_PRESENTER_SIGNATURE_QUEUE_VERSION,
     PresenterDeliveryService,
 )
 from rtm_presenter_policy import (
@@ -76,6 +77,56 @@ def _correspondence() -> dict[str, Any]:
     }
 
 
+def _portal_requirements() -> dict[str, Any]:
+    return {
+        "portal_preparation": {
+            "enabled": True,
+            "form_code": "reg_general_v1",
+            "fields": [
+                {
+                    "field_code": "subject",
+                    "label": "Asunto",
+                    "required": True,
+                    "multiline": False,
+                    "max_length": 80,
+                },
+                {
+                    "field_code": "facts",
+                    "label": "Expone",
+                    "required": True,
+                    "multiline": True,
+                    "max_length": 4000,
+                },
+                {
+                    "field_code": "request",
+                    "label": "Solicita",
+                    "required": True,
+                    "multiline": True,
+                    "max_length": 4000,
+                },
+            ],
+        }
+    }
+
+
+def _portal_preparation() -> dict[str, Any]:
+    return {
+        "form_code": "reg_general_v1",
+        "values": {
+            "subject": "Recurso sintético",
+            "facts": "Se exponen hechos completamente sintéticos.",
+            "request": "Se solicita una respuesta sintética.",
+        },
+        "confirmations": {
+            "destination_reviewed": True,
+            "interested_confirmed": True,
+            "representation_confirmed": True,
+            "text_confirmed": True,
+            "attachments_confirmed": True,
+        },
+    }
+
+
 def _actor(
     *, operator_id: str = OPERATOR_ID, include_permission: bool = True
 ) -> PresenterActorContext:
@@ -110,6 +161,7 @@ class FakeDeliveryRepository:
         self.events: list[dict[str, Any]] = []
         self.locks: list[tuple[str, str]] = []
         self.byte_loads = 0
+        self.queue_calls: list[tuple[str, int]] = []
         self.package: dict[str, Any] = {
             "id": PACKAGE_ID,
             "case_id": CASE_ID,
@@ -122,7 +174,8 @@ class FakeDeliveryRepository:
             "profile_sha256": PROFILE_SHA256,
             "profile_status": "active",
             "destination_display_name": "Ayuntamiento sintético",
-            "destination_requirements": {},
+            "representation_mode": "self",
+            "destination_requirements": _portal_requirements(),
             "portal_origin": PORTAL_ORIGIN,
             "items": [
                 {
@@ -207,6 +260,18 @@ class FakeDeliveryRepository:
         del conn
         self.events.append(dict(kwargs))
 
+    def list_signature_queue_events(
+        self, conn: Any, *, operator_id: str, limit: int
+    ) -> list[Mapping[str, Any]]:
+        del conn
+        self.queue_calls.append((operator_id, limit))
+        return [
+            event
+            for event in self.events
+            if event["payload"].get("channel") == "portal"
+            and event["payload"].get("state") == "awaiting_signature"
+        ][:limit]
+
 
 class PresenterDeliveryServiceTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -225,9 +290,12 @@ class PresenterDeliveryServiceTest(unittest.TestCase):
         recipient_email: str | None = None,
         recipient_confirmed: bool = False,
         correspondence: Mapping[str, Any] | None = None,
+        portal_preparation: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if channel == "email" and correspondence is None:
             correspondence = _correspondence()
+        if channel == "portal" and portal_preparation is None:
+            portal_preparation = _portal_preparation()
         return self.service.prepare(
             self.conn,
             actor=_actor(),
@@ -238,6 +306,7 @@ class PresenterDeliveryServiceTest(unittest.TestCase):
             recipient_email=recipient_email,
             recipient_confirmed=recipient_confirmed,
             correspondence=correspondence,
+            portal_preparation=portal_preparation,
         )
 
     def test_portal_delivery_is_ordered_audited_and_has_no_external_effect(self):
@@ -247,8 +316,9 @@ class PresenterDeliveryServiceTest(unittest.TestCase):
             delivery["delivery_contract_version"],
             RTM_PRESENTER_DELIVERY_VERSION,
         )
-        self.assertEqual(delivery["state"], "prepared")
+        self.assertEqual(delivery["state"], "awaiting_signature")
         self.assertEqual(delivery["channel"], "portal")
+        self.assertEqual(delivery["representation_mode"], "self")
         self.assertEqual(
             delivery["destination"],
             {
@@ -271,8 +341,21 @@ class PresenterDeliveryServiceTest(unittest.TestCase):
         self.assertTrue(delivery["human_final_submit_required"])
         self.assertTrue(delivery["receipt_required"])
         self.assertEqual(
-            delivery["next_action"], "managed_bridge_activation_required"
+            delivery["next_action"],
+            "managed_signing_bridge_activation_required",
         )
+        self.assertTrue(delivery["signature_queue_ready"])
+        self.assertEqual(
+            delivery["portal_preparation"]["values"]["subject"],
+            "Recurso sintético",
+        )
+        self.assertFalse(
+            delivery["signing_controls"]["certificate_stored_by_rtm"]
+        )
+        self.assertFalse(
+            delivery["signing_controls"]["browser_session_shared_with_operator"]
+        )
+        self.assertFalse(delivery["signing_controls"]["signature_automated"])
         self.assertEqual(len(self.repository.events), 1)
         self.assertEqual(
             self.repository.events[0]["event_type"],
@@ -286,7 +369,65 @@ class PresenterDeliveryServiceTest(unittest.TestCase):
 
         self.assertEqual(first, second)
         self.assertEqual(len(self.repository.events), 1)
+
+    def test_ledger_markers_do_not_change_idempotent_response_contract(self):
+        first = self._prepare()
+        self.repository.events[0]["payload"] = {
+            **first,
+            "service_version": "rtm_presenter_service_v1_3",
+            "synthetic_marker": "RTM_PRESENTER_SYNTHETIC_ONLY",
+            "synthetic_only": True,
+        }
+
+        second = self._prepare()
+
+        self.assertEqual(second, first)
+        self.assertNotIn("service_version", second)
+        self.assertNotIn("synthetic_marker", second)
+        self.assertNotIn("synthetic_only", second)
+        self.assertEqual(len(self.repository.events), 1)
         self.assertEqual(len(self.repository.locks), 2)
+
+    def test_signature_queue_lists_assigned_portal_tasks_without_signing_authority(self):
+        prepared = self._prepare()
+
+        queue = self.service.signature_queue(
+            self.conn,
+            actor=_actor(),
+            limit=25,
+        )
+
+        self.assertEqual(
+            queue["queue_contract_version"],
+            RTM_PRESENTER_SIGNATURE_QUEUE_VERSION,
+        )
+        self.assertEqual(queue["item_count"], 1)
+        self.assertEqual(queue["items"][0]["delivery_id"], prepared["delivery_id"])
+        self.assertEqual(queue["items"][0]["case_id"], CASE_ID)
+        self.assertEqual(queue["items"][0]["document_count"], 2)
+        self.assertFalse(queue["items"][0]["authoritative_submission"])
+        self.assertTrue(queue["items"][0]["local_signer_activation_required"])
+        self.assertFalse(queue["items"][0]["local_activation_available"])
+        self.assertFalse(queue["certificate_stored_by_rtm"])
+        self.assertFalse(queue["browser_session_shared"])
+        self.assertEqual(self.repository.queue_calls, [(OPERATOR_ID, 25)])
+
+    def test_signature_queue_requires_prepare_permission_and_valid_limit(self):
+        with self.assertRaises(PresenterPolicyError):
+            self.service.signature_queue(
+                self.conn,
+                actor=_actor(include_permission=False),
+            )
+        with self.assertRaises(PresenterConflict) as invalid_limit:
+            self.service.signature_queue(
+                self.conn,
+                actor=_actor(),
+                limit=0,
+            )
+        self.assertEqual(
+            invalid_limit.exception.code,
+            "presenter.signature_queue_limit_invalid",
+        )
 
     def test_same_idempotency_key_cannot_change_channel(self):
         self._prepare()
@@ -409,6 +550,26 @@ class PresenterDeliveryServiceTest(unittest.TestCase):
         self.assertEqual(
             denied.exception.code,
             "presenter.correspondence_confirmation_required",
+        )
+        self.assertEqual(self.repository.events, [])
+
+    def test_portal_preparation_is_profile_bound_and_requires_confirmations(self):
+        missing_confirmation = _portal_preparation()
+        missing_confirmation["confirmations"]["attachments_confirmed"] = False
+        with self.assertRaises(PresenterConflict) as denied:
+            self._prepare(portal_preparation=missing_confirmation)
+        self.assertEqual(
+            denied.exception.code,
+            "presenter.portal_preparation_confirmation_required",
+        )
+
+        wrong_form = _portal_preparation()
+        wrong_form["form_code"] = "other_form"
+        with self.assertRaises(PresenterConflict) as mismatch:
+            self._prepare(portal_preparation=wrong_form)
+        self.assertEqual(
+            mismatch.exception.code,
+            "presenter.portal_preparation_form_mismatch",
         )
         self.assertEqual(self.repository.events, [])
 
