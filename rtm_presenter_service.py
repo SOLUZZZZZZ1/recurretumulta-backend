@@ -377,6 +377,13 @@ class PresenterRepository(Protocol):
     def lock_signature_claim(self, conn: Any, *, delivery_id: str) -> None: ...
     def load_signature_queue_event(self, conn: Any, *, operator_id: str, delivery_id: str) -> Mapping[str, Any] | None: ...
     def list_signature_claim_events(self, conn: Any, *, case_id: str, package_id: str, delivery_id: str) -> Sequence[Mapping[str, Any]]: ...
+    def lock_signer_installation(self, conn: Any, *, operator_id: str, operator_device_id: str, client_instance_id: str, client_binding_sha256: str) -> None: ...
+    def load_signer_installation(self, conn: Any, *, installation_id: str, operator_id: str, operator_device_id: str) -> Mapping[str, Any] | None: ...
+    def load_signer_installation_by_instance(self, conn: Any, *, operator_id: str, operator_device_id: str, client_instance_id: str) -> Mapping[str, Any] | None: ...
+    def load_signer_installation_by_binding(self, conn: Any, *, client_binding_sha256: str) -> Mapping[str, Any] | None: ...
+    def insert_signer_installation(self, conn: Any, *, installation_id: str, operator_id: str, operator_device_id: str, client_instance_id: str, client_binding_sha256: str, station_label: str, platform: str, client_version: str, registered_at: datetime, metadata: Mapping[str, Any]) -> Mapping[str, Any]: ...
+    def lock_signer_workspace(self, conn: Any, *, delivery_id: str, workspace_id: str) -> None: ...
+    def list_signer_workspace_events(self, conn: Any, *, case_id: str, package_id: str, delivery_id: str, workspace_id: str) -> Sequence[Mapping[str, Any]]: ...
     def lock_portal_session(self, conn: Any, *, case_id: str, portal_session_id: str) -> None: ...
     def list_portal_session_events(self, conn: Any, *, case_id: str, portal_session_id: str) -> Sequence[Mapping[str, Any]]: ...
     def emit_deadline_tracking_event(self, conn: Any, *, case_id: str, portal_session_id: str, payload: Mapping[str, Any]) -> bool: ...
@@ -1822,6 +1829,248 @@ class SqlPresenterRepository:
                 "case_id": case_id,
                 "package_id": package_id,
                 "delivery_id": delivery_id,
+            },
+        ).mappings().all()
+
+    def lock_signer_installation(
+        self,
+        conn: Any,
+        *,
+        operator_id: str,
+        operator_device_id: str,
+        client_instance_id: str,
+        client_binding_sha256: str,
+    ) -> None:
+        """Serializa el alta candidata sin convertirla en atestacion."""
+
+        conn.execute(
+            text(
+                """
+                SELECT pg_advisory_xact_lock(
+                    hashtextextended(
+                        'rtm-presenter-signer-installation:'
+                        || :operator_id || ':' || :operator_device_id || ':'
+                        || :client_instance_id,
+                        0
+                    )
+                )
+                """
+            ),
+            {
+                "operator_id": operator_id,
+                "operator_device_id": operator_device_id,
+                "client_instance_id": client_instance_id,
+            },
+        )
+        conn.execute(
+            text(
+                """
+                SELECT pg_advisory_xact_lock(
+                    hashtextextended(
+                        'rtm-presenter-signer-binding:'
+                        || :client_binding_sha256,
+                        0
+                    )
+                )
+                """
+            ),
+            {"client_binding_sha256": client_binding_sha256},
+        )
+
+    @staticmethod
+    def _signer_installation_projection() -> str:
+        return """
+            id, operator_id, operator_device_id, client_instance_id,
+            client_binding_sha256, station_label, platform, client_version,
+            status, registered_at
+        """
+
+    def load_signer_installation(
+        self,
+        conn: Any,
+        *,
+        installation_id: str,
+        operator_id: str,
+        operator_device_id: str,
+    ) -> Mapping[str, Any] | None:
+        return _row_mapping(
+            conn.execute(
+                text(
+                    f"""
+                    SELECT {self._signer_installation_projection()}
+                    FROM rtm_presenter_signer_installations
+                    WHERE id=CAST(:installation_id AS UUID)
+                      AND operator_id=CAST(:operator_id AS UUID)
+                      AND operator_device_id=CAST(:operator_device_id AS UUID)
+                      AND status='candidate'
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "installation_id": installation_id,
+                    "operator_id": operator_id,
+                    "operator_device_id": operator_device_id,
+                },
+            )
+        )
+
+    def load_signer_installation_by_instance(
+        self,
+        conn: Any,
+        *,
+        operator_id: str,
+        operator_device_id: str,
+        client_instance_id: str,
+    ) -> Mapping[str, Any] | None:
+        return _row_mapping(
+            conn.execute(
+                text(
+                    f"""
+                    SELECT {self._signer_installation_projection()}
+                    FROM rtm_presenter_signer_installations
+                    WHERE operator_id=CAST(:operator_id AS UUID)
+                      AND operator_device_id=CAST(:operator_device_id AS UUID)
+                      AND client_instance_id=CAST(:client_instance_id AS UUID)
+                      AND status='candidate'
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "operator_id": operator_id,
+                    "operator_device_id": operator_device_id,
+                    "client_instance_id": client_instance_id,
+                },
+            )
+        )
+
+    def load_signer_installation_by_binding(
+        self,
+        conn: Any,
+        *,
+        client_binding_sha256: str,
+    ) -> Mapping[str, Any] | None:
+        return _row_mapping(
+            conn.execute(
+                text(
+                    f"""
+                    SELECT {self._signer_installation_projection()}
+                    FROM rtm_presenter_signer_installations
+                    WHERE client_binding_sha256=:client_binding_sha256
+                    LIMIT 1
+                    """
+                ),
+                {"client_binding_sha256": client_binding_sha256},
+            )
+        )
+
+    def insert_signer_installation(
+        self,
+        conn: Any,
+        *,
+        installation_id: str,
+        operator_id: str,
+        operator_device_id: str,
+        client_instance_id: str,
+        client_binding_sha256: str,
+        station_label: str,
+        platform: str,
+        client_version: str,
+        registered_at: datetime,
+        metadata: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        row = _row_mapping(
+            conn.execute(
+                text(
+                    f"""
+                    INSERT INTO rtm_presenter_signer_installations(
+                        id, operator_id, operator_device_id,
+                        client_instance_id, client_binding_sha256,
+                        station_label, platform, client_version, status,
+                        registered_at, metadata
+                    ) VALUES (
+                        CAST(:installation_id AS UUID),
+                        CAST(:operator_id AS UUID),
+                        CAST(:operator_device_id AS UUID),
+                        CAST(:client_instance_id AS UUID),
+                        :client_binding_sha256, :station_label, :platform,
+                        :client_version, 'candidate', :registered_at,
+                        CAST(:metadata AS JSONB)
+                    )
+                    RETURNING {self._signer_installation_projection()}
+                    """
+                ),
+                {
+                    "installation_id": installation_id,
+                    "operator_id": operator_id,
+                    "operator_device_id": operator_device_id,
+                    "client_instance_id": client_instance_id,
+                    "client_binding_sha256": client_binding_sha256,
+                    "station_label": station_label,
+                    "platform": platform,
+                    "client_version": client_version,
+                    "registered_at": registered_at,
+                    "metadata": _json(metadata),
+                },
+            )
+        )
+        if row is None:
+            raise RuntimeError("signer_installation_insert_returned_no_row")
+        return row
+
+    def lock_signer_workspace(
+        self,
+        conn: Any,
+        *,
+        delivery_id: str,
+        workspace_id: str,
+    ) -> None:
+        conn.execute(
+            text(
+                """
+                SELECT pg_advisory_xact_lock(
+                    hashtextextended(
+                        'rtm-presenter-signer-workspace:' || :delivery_id
+                        || ':' || :workspace_id,
+                        0
+                    )
+                )
+                """
+            ),
+            {"delivery_id": delivery_id, "workspace_id": workspace_id},
+        )
+
+    def list_signer_workspace_events(
+        self,
+        conn: Any,
+        *,
+        case_id: str,
+        package_id: str,
+        delivery_id: str,
+        workspace_id: str,
+    ) -> Sequence[Mapping[str, Any]]:
+        return conn.execute(
+            text(
+                """
+                SELECT sequence_number, event_type, reason_code, payload,
+                       created_at, actor_operator_id
+                FROM rtm_presenter_audit_events
+                WHERE case_id=CAST(:case_id AS UUID)
+                  AND package_id=CAST(:package_id AS UUID)
+                  AND event_type IN (
+                      'presenter.signer_workspace.prepared',
+                      'presenter.signer_workspace.portal_session_expired',
+                      'presenter.signer_workspace.resumed'
+                  )
+                  AND payload->>'delivery_id'=:delivery_id
+                  AND payload->>'workspace_id'=:workspace_id
+                ORDER BY sequence_number ASC
+                """
+            ),
+            {
+                "case_id": case_id,
+                "package_id": package_id,
+                "delivery_id": delivery_id,
+                "workspace_id": workspace_id,
             },
         ).mappings().all()
 

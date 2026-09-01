@@ -72,6 +72,13 @@ Una mejora de un recurso crea una versión nueva; nunca sustituye en silencio la
 versión ya congelada. Cambiar cualquier documento, destino, representación o
 procedimiento invalida las aprobaciones y capacidades pendientes.
 
+La sesión de una sede no es un borrador RTM. Si REG caduca o descarta el
+formulario, RTM conserva la instantánea anterior, pero no su cookie, credencial
+ni material de sesión. La recuperación exige autenticación humana nueva y una
+comparación exacta de la huella de tarea antes de reconstruir campos y mapa
+documental. Nunca se reintenta automáticamente una firma o presentación cuyo
+resultado sea incierto.
+
 Un archivo elaborado fuera de RTM entra una sola vez mediante el ingreso
 documental del expediente, con identidad individual, hash calculado por el
 backend y procedencia auditada. Puede registrarse como documento lógico nuevo o

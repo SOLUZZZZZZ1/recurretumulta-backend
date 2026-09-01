@@ -223,6 +223,30 @@ han ejecutado remotamente en este corte. El enrutamiento futuro de todos los
 expedientes pagados a una cola central requiere una decisión y un contrato
 adicional.
 
+### 4.3 Recuperación cuando REG pierde el formulario
+
+REG no se considera un sistema de borradores. La caducidad observada por
+inactividad, aproximadamente a los 15–20 minutos, puede destruir el formulario
+no presentado. RTM debe poder reconstruirlo sin conservar una cookie de la sede
+ni automatizar su autenticación.
+
+El contrato recuperable mantiene dos capas separadas:
+
+1. La entrega `awaiting_signature` es la fuente durable: fija destino, origen,
+   representación, campos, valores, documentos, versiones, nombres, orden y
+   huellas.
+2. El workspace registra únicamente el estado de un intento bajo una toma
+   exclusiva: `ready`, `reg_session_expired` y una nueva vuelta a `ready` tras
+   solicitar reautenticación. No contiene un borrador de REG ni material de su
+   sesión.
+
+Una reanudación válida exige la misma cuenta firmante, dispositivo, candidato,
+toma, entrega y huella de tarea. Si la toma RTM ya no está activa, se crea otro
+intento desde la entrega durable. En todos los casos el firmante vuelve a
+autenticarse humanamente en REG. El cliente gestionado que en el futuro abra y
+rellene la sede, así como la entrega de bytes, permanecen bloqueados en este
+corte.
+
 Cuando se incorpore un documento al contenedor, el operador podrá darle un
 nombre reconocible. RTM mantendrá separadamente el tipo documental controlado,
 el nombre seguro que se ofrecerá a la sede, el nombre original de origen, la

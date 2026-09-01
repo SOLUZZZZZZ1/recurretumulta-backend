@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 
-RTM_PRESENTER_SCHEMA_VERSION = "rtm_presenter_schema_v1_1"
+RTM_PRESENTER_SCHEMA_VERSION = "rtm_presenter_schema_v1_2"
 RTM_PRESENTER_EXTENSION_CLIENT_ID = "rtm.presenter.browser_extension.v1"
 
 PRESENTER_REQUIRED_COLUMNS: dict[str, set[str]] = {
@@ -128,6 +128,19 @@ PRESENTER_REQUIRED_COLUMNS: dict[str, set[str]] = {
         "export_document_id",
         "created_at",
         "expires_at",
+    },
+    "rtm_presenter_signer_installations": {
+        "id",
+        "operator_id",
+        "operator_device_id",
+        "client_instance_id",
+        "client_binding_sha256",
+        "station_label",
+        "platform",
+        "client_version",
+        "status",
+        "registered_at",
+        "metadata",
     },
     "rtm_presenter_audit_events": {
         "id",
@@ -265,6 +278,19 @@ PRESENTER_REQUIRED_COLUMN_TYPES: dict[str, dict[str, str]] = {
         "created_at": "timestamptz",
         "expires_at": "timestamptz",
     },
+    "rtm_presenter_signer_installations": {
+        "id": "uuid",
+        "operator_id": "uuid",
+        "operator_device_id": "uuid",
+        "client_instance_id": "uuid",
+        "client_binding_sha256": "text",
+        "station_label": "text",
+        "platform": "text",
+        "client_version": "text",
+        "status": "text",
+        "registered_at": "timestamptz",
+        "metadata": "jsonb",
+    },
     "rtm_presenter_audit_events": {
         "id": "uuid",
         "sequence_number": "int8",
@@ -301,6 +327,9 @@ PRESENTER_REQUIRED_INDEXES = {
     "idx_rtm_presenter_handoff_session",
     "idx_rtm_presenter_admin_export_case",
     "idx_rtm_presenter_admin_export_admin",
+    "uq_rtm_presenter_signer_installation_instance",
+    "uq_rtm_presenter_signer_installation_binding",
+    "idx_rtm_presenter_signer_installation_operator",
     "uq_rtm_presenter_audit_sequence",
     "idx_rtm_presenter_audit_case",
     "idx_rtm_presenter_audit_package",
@@ -318,6 +347,8 @@ PRESENTER_REQUIRED_TRIGGERS = {
     "trg_rtm_presenter_handoff_ticket_guard",
     "trg_rtm_presenter_admin_export_scope",
     "trg_rtm_presenter_admin_export_append_only",
+    "trg_rtm_presenter_signer_installation_scope",
+    "trg_rtm_presenter_signer_installation_append_only",
     "trg_rtm_presenter_audit_event_scope",
     "trg_rtm_presenter_audit_event_append_only",
 }
@@ -365,6 +396,12 @@ PRESENTER_REQUIRED_CONSTRAINTS = {
     "ck_rtm_presenter_export_payloads",
     "ck_rtm_presenter_export_reauthentication",
     "ck_rtm_presenter_export_expiry",
+    "ck_rtm_presenter_signer_installation_binding",
+    "ck_rtm_presenter_signer_installation_label",
+    "ck_rtm_presenter_signer_installation_platform",
+    "ck_rtm_presenter_signer_installation_version",
+    "ck_rtm_presenter_signer_installation_status",
+    "ck_rtm_presenter_signer_installation_metadata",
     "ck_rtm_presenter_audit_actor",
     "ck_rtm_presenter_audit_event_type",
     "ck_rtm_presenter_audit_payload",
@@ -403,6 +440,11 @@ PRESENTER_REQUIRED_INDEX_TABLES = {
         "rtm_presenter_admin_exports": {
             "idx_rtm_presenter_admin_export_case",
             "idx_rtm_presenter_admin_export_admin",
+        },
+        "rtm_presenter_signer_installations": {
+            "uq_rtm_presenter_signer_installation_instance",
+            "uq_rtm_presenter_signer_installation_binding",
+            "idx_rtm_presenter_signer_installation_operator",
         },
         "rtm_presenter_audit_events": {
             "uq_rtm_presenter_audit_sequence",
@@ -456,6 +498,14 @@ PRESENTER_REQUIRED_TRIGGER_BINDINGS: dict[str, tuple[str, str]] = {
     ),
     "trg_rtm_presenter_admin_export_append_only": (
         "rtm_presenter_admin_exports",
+        "rtm_presenter_reject_mutation",
+    ),
+    "trg_rtm_presenter_signer_installation_scope": (
+        "rtm_presenter_signer_installations",
+        "rtm_presenter_signer_installation_scope_guard",
+    ),
+    "trg_rtm_presenter_signer_installation_append_only": (
+        "rtm_presenter_signer_installations",
         "rtm_presenter_reject_mutation",
     ),
     "trg_rtm_presenter_audit_event_scope": (
@@ -526,6 +576,14 @@ PRESENTER_REQUIRED_CONSTRAINT_TABLES = {
             "ck_rtm_presenter_export_payloads",
             "ck_rtm_presenter_export_reauthentication",
             "ck_rtm_presenter_export_expiry",
+        },
+        "rtm_presenter_signer_installations": {
+            "ck_rtm_presenter_signer_installation_binding",
+            "ck_rtm_presenter_signer_installation_label",
+            "ck_rtm_presenter_signer_installation_platform",
+            "ck_rtm_presenter_signer_installation_version",
+            "ck_rtm_presenter_signer_installation_status",
+            "ck_rtm_presenter_signer_installation_metadata",
         },
         "rtm_presenter_audit_events": {
             "ck_rtm_presenter_audit_actor",
@@ -1082,6 +1140,89 @@ def _table_ddl() -> list[tuple[str, str]]:
             CREATE INDEX IF NOT EXISTS idx_rtm_presenter_admin_export_admin
             ON rtm_presenter_admin_exports(
                 admin_operator_id, created_at DESC
+            );
+            """,
+        ),
+        (
+            "presenter_signer_installations",
+            """
+            CREATE TABLE IF NOT EXISTS rtm_presenter_signer_installations (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                operator_id UUID NOT NULL
+                    REFERENCES rtm_operators(id) ON DELETE RESTRICT,
+                operator_device_id UUID NOT NULL
+                    REFERENCES rtm_operator_devices(id) ON DELETE RESTRICT,
+                client_instance_id UUID NOT NULL,
+                client_binding_sha256 TEXT NOT NULL,
+                station_label TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                client_version TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'candidate',
+                registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                CONSTRAINT ck_rtm_presenter_signer_installation_binding CHECK (
+                    client_binding_sha256 ~ '^[0-9a-f]{64}$'
+                ),
+                CONSTRAINT ck_rtm_presenter_signer_installation_label CHECK (
+                    char_length(station_label) BETWEEN 3 AND 80
+                    AND station_label = btrim(station_label)
+                    AND station_label !~ '[[:cntrl:]]'
+                ),
+                CONSTRAINT ck_rtm_presenter_signer_installation_platform CHECK (
+                    platform = 'windows'
+                ),
+                CONSTRAINT ck_rtm_presenter_signer_installation_version CHECK (
+                    client_version ~ '^[0-9]+[.][0-9]+[.][0-9]+(?:[-+][A-Za-z0-9.-]+)?$'
+                    AND char_length(client_version) <= 48
+                ),
+                CONSTRAINT ck_rtm_presenter_signer_installation_status CHECK (
+                    status = 'candidate'
+                ),
+                CONSTRAINT ck_rtm_presenter_signer_installation_metadata CHECK (
+                    jsonb_typeof(metadata) = 'object'
+                    AND metadata @> '{
+                        "contract_version": "rtm_presenter_local_station_v1_0",
+                        "synthetic_only": true,
+                        "managed_attestation_verified": false,
+                        "external_effects_allowed": false,
+                        "document_bytes_allowed": false,
+                        "certificate_access_allowed": false,
+                        "portal_open_allowed": false
+                    }'::jsonb
+                    AND NOT metadata ?| ARRAY[
+                        'password', 'secret', 'token', 'cookie',
+                        'certificate', 'private_key', 'b2_bucket', 'b2_key',
+                        'presigned_url', 'portal_session'
+                    ]
+                )
+            );
+            """,
+        ),
+        (
+            "presenter_signer_installation_instance_index",
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                uq_rtm_presenter_signer_installation_instance
+            ON rtm_presenter_signer_installations(
+                operator_id, operator_device_id, client_instance_id
+            );
+            """,
+        ),
+        (
+            "presenter_signer_installation_binding_index",
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                uq_rtm_presenter_signer_installation_binding
+            ON rtm_presenter_signer_installations(client_binding_sha256);
+            """,
+        ),
+        (
+            "presenter_signer_installation_operator_index",
+            """
+            CREATE INDEX IF NOT EXISTS
+                idx_rtm_presenter_signer_installation_operator
+            ON rtm_presenter_signer_installations(
+                operator_id, registered_at DESC
             );
             """,
         ),
@@ -1720,6 +1861,50 @@ def _guard_function_ddl() -> list[tuple[str, str]]:
             """,
         ),
         (
+            "presenter_signer_installation_scope_function",
+            """
+            CREATE OR REPLACE FUNCTION
+                rtm_presenter_signer_installation_scope_guard()
+            RETURNS TRIGGER AS $$
+            DECLARE
+                signer_device_ok BOOLEAN := FALSE;
+            BEGIN
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM rtm_operator_devices d
+                    JOIN rtm_operators o
+                      ON o.id = d.operator_id
+                    JOIN rtm_operator_roles r
+                      ON r.id = o.primary_role_id
+                    WHERE d.id = NEW.operator_device_id
+                      AND d.operator_id = NEW.operator_id
+                      AND d.status IN ('known', 'trusted')
+                      AND o.status = 'active'
+                      AND r.active = TRUE
+                      AND r.code = 'rtm.signer'
+                      AND jsonb_typeof(r.permissions) = 'array'
+                      AND jsonb_array_length(r.permissions) = 3
+                      AND r.permissions @> '[
+                          "ops.view",
+                          "presenter.signing.queue",
+                          "presenter.signing.claim"
+                      ]'::jsonb
+                ) INTO signer_device_ok;
+                IF NOT signer_device_ok THEN
+                    RAISE EXCEPTION
+                        'RTM Presenter signer installation device invalid';
+                END IF;
+                IF NEW.registered_at < NOW() - INTERVAL '5 minutes'
+                   OR NEW.registered_at > NOW() + INTERVAL '1 minute' THEN
+                    RAISE EXCEPTION
+                        'RTM Presenter signer installation time invalid';
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            """,
+        ),
+        (
             "presenter_audit_event_scope_function",
             """
             CREATE OR REPLACE FUNCTION
@@ -1875,6 +2060,26 @@ def _trigger_ddl() -> list[tuple[str, str]]:
             CREATE OR REPLACE TRIGGER
                 trg_rtm_presenter_admin_export_append_only
             BEFORE UPDATE OR DELETE ON rtm_presenter_admin_exports
+            FOR EACH ROW EXECUTE FUNCTION rtm_presenter_reject_mutation();
+            """,
+        ),
+        (
+            "presenter_signer_installation_scope_trigger",
+            """
+            CREATE OR REPLACE TRIGGER
+                trg_rtm_presenter_signer_installation_scope
+            BEFORE INSERT ON rtm_presenter_signer_installations
+            FOR EACH ROW EXECUTE FUNCTION
+                rtm_presenter_signer_installation_scope_guard();
+            """,
+        ),
+        (
+            "presenter_signer_installation_append_trigger",
+            """
+            CREATE OR REPLACE TRIGGER
+                trg_rtm_presenter_signer_installation_append_only
+            BEFORE UPDATE OR DELETE
+            ON rtm_presenter_signer_installations
             FOR EACH ROW EXECUTE FUNCTION rtm_presenter_reject_mutation();
             """,
         ),

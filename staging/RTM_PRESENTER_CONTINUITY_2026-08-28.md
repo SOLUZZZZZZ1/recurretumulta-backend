@@ -4,6 +4,56 @@
 **Estado:** implementación sintética preparada para revisión; no operativa con
 datos reales ni sedes externas.
 
+## Addendum 01/09/2026 · borrador RTM y recuperación tras caducidad de REG
+
+La observación manual del REG obliga a separar dos realidades: la sesión de la
+sede puede caducar por inactividad aproximadamente a los 15–20 minutos y el
+formulario no ofrece un borrador recuperable. Ese intervalo es una observación,
+no un SLA que RTM pueda asumir. El diseño debe soportar una caducidad en
+cualquier momento.
+
+- El borrador durable es la tarea `awaiting_signature` de RTM. Conserva el
+  destino, el origen, el modo de representación, la hoja exacta del trámite,
+  las versiones documentales, sus SHA-256, nombres, campos y orden. REG no se
+  declara ni se trata como almacén del borrador.
+- `rtm_presenter_schema_v1_2` añade únicamente el registro append-only de
+  candidatos Windows. Cada candidato queda ligado a la cuenta `rtm.signer`, a
+  su dispositivo validado y a una huella pública. Su estado solo puede ser
+  `candidate`: no acredita instalación gestionada, atestación ni posesión de un
+  secreto.
+- `rtm_presenter_local_station_v1_0` registra o recupera ese candidato sin
+  contraseña, token, cookie de REG, certificado, clave privada, bytes de
+  documentos ni localizador de B2.
+- `rtm_presenter_signer_workspace_v1_0` conserva en el ledger el ciclo
+  `ready → reg_session_expired → ready`. La reanudación incrementa el número de
+  intento y vuelve a proyectar la misma huella de tarea. Los eventos declaran
+  siempre `rtm_draft_persisted=true`, `reg_draft_persisted=false`,
+  `document_bytes_delivered=false` y `external_effects_executed=false`.
+- La caducidad no se resuelve manteniendo viva una cookie ni copiando una sesión
+  de REG. El firmante debe autenticarse otra vez en REG y el futuro adaptador
+  reconstruirá desde RTM el mismo destino, textos y mapa documental. Este corte
+  solo registra la prueba sintética de ese ciclo; no abre el navegador.
+- El workspace de intento exige una toma RTM activa de la misma cuenta y sesión,
+  el mismo dispositivo, candidato, entrega, claim y huella. Si también caducan
+  la toma o la sesión RTM, el firmante debe tomar de nuevo la entrega; la tarea
+  durable sigue en RTM y permite crear un nuevo intento exacto, sin depender del
+  formulario perdido de REG.
+- La interfaz acepta solo el descriptor local JSON exacto, de hasta 16 KB, lo
+  mantiene en memoria y rechaza campos adicionales u optimistas. **Abrir sede**
+  continúa deshabilitado. Las acciones visibles preparan el borrador RTM y
+  ensayan caducidad/recuperación; no firman ni presentan.
+- El modelo en memoria de la extensión rechaza cookies, tokens, certificado,
+  bytes y URL presignadas. Reanudar exige una reautenticación REG explícita y la
+  misma huella de tarea; cualquier cambio de campos, documentos, orden o hash
+  cierra el flujo.
+- Evidencia local del incremento reconstruido: 45/45 pruebas Node frontend,
+  31/31 de extensión, 16/16 del contrato local Python y build Vite correcto.
+  El conjunto focal Presenter, incluidas las rutas FastAPI, superó 172/172
+  pruebas.
+- Estado: reconstrucción local sobre los heads publicados; no se ha hecho push,
+  aplicado el schema, desplegado, abierto REG, entregado documentos, usado un
+  certificado, firmado ni enviado. `main` permanece fuera de alcance.
+
 ## Addendum 30/08/2026 · puesto local de firma v1
 
 Este addendum fija la primera frontera ejecutable del puesto de Ramón y

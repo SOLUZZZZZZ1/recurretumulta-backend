@@ -17,6 +17,7 @@ EXPECTED_TABLES = {
     "rtm_presenter_handoff_tickets",
     "rtm_presenter_audit_events",
     "rtm_presenter_admin_exports",
+    "rtm_presenter_signer_installations",
 }
 
 
@@ -41,7 +42,7 @@ class RTMPresenterSchemaContractTest(unittest.TestCase):
         self.assertEqual(set(schema.PRESENTER_REQUIRED_COLUMNS), EXPECTED_TABLES)
         self.assertEqual(
             schema.RTM_PRESENTER_SCHEMA_VERSION,
-            "rtm_presenter_schema_v1_1",
+            "rtm_presenter_schema_v1_2",
         )
         self.assertIsInstance(schema.PRESENTER_REQUIRED_INDEXES, set)
         self.assertIsInstance(schema.PRESENTER_REQUIRED_TRIGGERS, set)
@@ -347,6 +348,58 @@ class RTMPresenterSchemaContractTest(unittest.TestCase):
             trigger = " ".join(ddl[name].split())
             self.assertIn("BEFORE UPDATE OR DELETE", trigger)
             self.assertIn("rtm_presenter_reject_mutation", trigger)
+
+    def test_signer_installation_is_candidate_only_device_bound_and_secret_free(self):
+        import rtm_presenter_schema as schema
+
+        columns = schema.PRESENTER_REQUIRED_COLUMNS[
+            "rtm_presenter_signer_installations"
+        ]
+        self.assertEqual(
+            columns,
+            {
+                "id",
+                "operator_id",
+                "operator_device_id",
+                "client_instance_id",
+                "client_binding_sha256",
+                "station_label",
+                "platform",
+                "client_version",
+                "status",
+                "registered_at",
+                "metadata",
+            },
+        )
+        for forbidden in (
+            "token",
+            "secret",
+            "certificate",
+            "private_key",
+            "portal_session",
+            "b2_bucket",
+            "b2_key",
+        ):
+            self.assertNotIn(forbidden, columns)
+
+        ddl = dict(schema.rtm_presenter_schema_ddl())
+        table = ddl["presenter_signer_installations"]
+        guard = ddl["presenter_signer_installation_scope_function"]
+        append = ddl["presenter_signer_installation_append_trigger"]
+        self.assertIn("status = 'candidate'", table)
+        self.assertIn("rtm_presenter_local_station_v1_0", table)
+        self.assertIn("managed_attestation_verified", table)
+        self.assertIn("external_effects_allowed", table)
+        self.assertIn("document_bytes_allowed", table)
+        self.assertIn("certificate_access_allowed", table)
+        self.assertIn("portal_open_allowed", table)
+        self.assertIn("d.id = NEW.operator_device_id", guard)
+        self.assertIn("d.operator_id = NEW.operator_id", guard)
+        self.assertIn("r.code = 'rtm.signer'", guard)
+        self.assertIn("jsonb_array_length(r.permissions) = 3", guard)
+        self.assertIn("NOW() - INTERVAL '5 minutes'", guard)
+        self.assertIn("NOW() + INTERVAL '1 minute'", guard)
+        self.assertIn("BEFORE UPDATE OR DELETE", " ".join(append.split()))
 
     def test_no_public_view_or_storage_locator_is_created(self):
         import rtm_presenter_schema as schema

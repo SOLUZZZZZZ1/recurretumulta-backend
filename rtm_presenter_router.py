@@ -53,6 +53,7 @@ from rtm_presenter_contracts import (
 )
 from rtm_presenter_delivery import PresenterDeliveryService
 from rtm_presenter_directory import default_presenter_directory
+from rtm_presenter_local_station import PresenterLocalStationService
 from rtm_presenter_portal_session import PresenterPortalSessionService
 from rtm_presenter_policy import (
     RTM_PRESENTER_EXTENSION_CLIENT_ID,
@@ -73,7 +74,7 @@ from rtm_presenter_service import (
 from rtm_presenter_signer_station import PresenterSignerStationService
 
 
-RTM_PRESENTER_ROUTER_VERSION = "rtm_presenter_router_v1_6"
+RTM_PRESENTER_ROUTER_VERSION = "rtm_presenter_router_v1_7"
 router = APIRouter(
     prefix="/ops/presenter",
     tags=["ops-presenter"],
@@ -194,11 +195,24 @@ class VerifyPortalReceiptBody(_StrictModel):
     expected_receipt_sha256: str = Field(min_length=64, max_length=64)
 
 
+class RegisterSignerInstallationBody(_StrictModel):
+    client_instance_id: UUID
+    client_binding_sha256: str = Field(min_length=64, max_length=64)
+    station_label: str = Field(min_length=3, max_length=80)
+    platform: Literal["windows"]
+    client_version: str = Field(min_length=5, max_length=48)
+
+
+class SignerWorkspaceBody(_StrictModel):
+    installation_id: UUID
+
+
 @dataclass(frozen=True)
 class PresenterRequestContext:
     connection: Connection
     actor: PresenterActorContext
     request_id: str
+    operator_device_id: str | None = None
     rollback_cleanups: list[Callable[[], None]] = field(default_factory=list)
 
     def register_storage_rollback(self, bucket: str, key: str) -> None:
@@ -376,6 +390,7 @@ def require_presenter_context(
                 connection=conn,
                 actor=actor,
                 request_id=_request_id(x_request_id),
+                operator_device_id=getattr(session, "device_id", None),
                 rollback_cleanups=rollback_cleanups,
             )
     except BaseException:
@@ -450,6 +465,13 @@ def _portal_session_service() -> PresenterPortalSessionService:
 
 def _signer_station_service() -> PresenterSignerStationService:
     return PresenterSignerStationService(
+        repository=SqlPresenterRepository(),
+        runtime=load_presenter_runtime_configuration(require_enabled=True),
+    )
+
+
+def _local_station_service() -> PresenterLocalStationService:
+    return PresenterLocalStationService(
         repository=SqlPresenterRepository(),
         runtime=load_presenter_runtime_configuration(require_enabled=True),
     )
@@ -929,6 +951,218 @@ def presenter_signer_station_release_route(
             "document_bytes_exposed": False,
             "synthetic_only": True,
         },
+    )
+
+
+@router.post("/signer/installations")
+def presenter_signer_installation_register_route(
+    body: RegisterSignerInstallationBody,
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        station = _local_station_service().register_candidate(
+            context.connection,
+            actor=_signer_actor(context),
+            operator_device_id=context.operator_device_id,
+            client_instance_id=str(body.client_instance_id),
+            client_binding_sha256=body.client_binding_sha256,
+            station_label=body.station_label,
+            platform=body.platform,
+            client_version=body.client_version,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "station": station,
+            "storage_references_exposed": False,
+            "document_bytes_exposed": False,
+            "synthetic_only": True,
+        },
+        status_code=201,
+    )
+
+
+@router.get("/signer/installations/{installation_id}")
+def presenter_signer_installation_status_route(
+    installation_id: UUID,
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        station = _local_station_service().installation(
+            context.connection,
+            actor=_signer_actor(context),
+            operator_device_id=context.operator_device_id,
+            installation_id=str(installation_id),
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "station": station,
+            "storage_references_exposed": False,
+            "document_bytes_exposed": False,
+            "synthetic_only": True,
+        },
+    )
+
+
+@router.post(
+    "/signer/tasks/{delivery_id}/claims/{claim_id}/workspaces"
+)
+def presenter_signer_workspace_prepare_route(
+    delivery_id: UUID,
+    claim_id: UUID,
+    body: SignerWorkspaceBody,
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        workspace = _local_station_service().prepare_workspace(
+            context.connection,
+            actor=_signer_actor(context),
+            operator_device_id=context.operator_device_id,
+            installation_id=str(body.installation_id),
+            delivery_id=str(delivery_id),
+            claim_id=str(claim_id),
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "workspace": workspace,
+            "storage_references_exposed": False,
+            "document_bytes_exposed": False,
+            "synthetic_only": True,
+        },
+        status_code=201,
+    )
+
+
+@router.get(
+    "/signer/tasks/{delivery_id}/claims/{claim_id}/workspaces/{workspace_id}"
+)
+def presenter_signer_workspace_status_route(
+    delivery_id: UUID,
+    claim_id: UUID,
+    workspace_id: UUID,
+    installation_id: UUID = Query(...),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        workspace = _local_station_service().current_workspace(
+            context.connection,
+            actor=_signer_actor(context),
+            operator_device_id=context.operator_device_id,
+            installation_id=str(installation_id),
+            delivery_id=str(delivery_id),
+            claim_id=str(claim_id),
+            workspace_id=str(workspace_id),
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "workspace": workspace,
+            "storage_references_exposed": False,
+            "document_bytes_exposed": False,
+            "synthetic_only": True,
+        },
+    )
+
+
+def _transition_signer_workspace(
+    *,
+    context: PresenterRequestContext,
+    delivery_id: UUID,
+    claim_id: UUID,
+    workspace_id: UUID,
+    body: SignerWorkspaceBody,
+    action: str,
+    idempotency_key: str | None,
+) -> JSONResponse:
+    try:
+        workspace = _local_station_service().transition_workspace(
+            context.connection,
+            actor=_signer_actor(context),
+            operator_device_id=context.operator_device_id,
+            installation_id=str(body.installation_id),
+            delivery_id=str(delivery_id),
+            claim_id=str(claim_id),
+            workspace_id=str(workspace_id),
+            action=action,
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "workspace": workspace,
+            "storage_references_exposed": False,
+            "document_bytes_exposed": False,
+            "synthetic_only": True,
+        },
+    )
+
+
+@router.post(
+    "/signer/tasks/{delivery_id}/claims/{claim_id}/workspaces/"
+    "{workspace_id}/portal-session-expired"
+)
+def presenter_signer_workspace_expired_route(
+    delivery_id: UUID,
+    claim_id: UUID,
+    workspace_id: UUID,
+    body: SignerWorkspaceBody,
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    return _transition_signer_workspace(
+        context=context,
+        delivery_id=delivery_id,
+        claim_id=claim_id,
+        workspace_id=workspace_id,
+        body=body,
+        action="portal_session_expired",
+        idempotency_key=idempotency_key,
+    )
+
+
+@router.post(
+    "/signer/tasks/{delivery_id}/claims/{claim_id}/workspaces/"
+    "{workspace_id}/resume"
+)
+def presenter_signer_workspace_resume_route(
+    delivery_id: UUID,
+    claim_id: UUID,
+    workspace_id: UUID,
+    body: SignerWorkspaceBody,
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    return _transition_signer_workspace(
+        context=context,
+        delivery_id=delivery_id,
+        claim_id=claim_id,
+        workspace_id=workspace_id,
+        body=body,
+        action="resume",
+        idempotency_key=idempotency_key,
     )
 
 
