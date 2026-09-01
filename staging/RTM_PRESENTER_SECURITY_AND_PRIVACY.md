@@ -21,7 +21,7 @@ staging. Continúan vigentes la matriz de entorno y la exigencia de fixtures
 sintéticas. Ningún control descrito aquí constituye por sí solo un `GO` de
 producción.
 
-### Estado implementado a 28 de agosto de 2026
+### Estado implementado a 1 de septiembre de 2026
 
 El MVP está cerrado por defecto y, cuando se habilita, solo admite `staging`,
 expedientes sintéticos, sin datos reales, efectos externos ni acceso directo al
@@ -38,6 +38,8 @@ el PIN compartido de OPS no concede acceso a Presenter.
 | Consultar metadatos/versiones del expediente | `presenter.documents.read` | Disponible solo en el MVP sintético; no entrega bytes, preview, URL ni referencia de almacenamiento. |
 | Incorporar un documento externo o una nueva versión | `presenter.documents.ingest` | Disponible solo en el MVP sintético mediante sesión individual. Queda bajo custodia RTM como `review/pending`; sin evidencia real de análisis no es elegible para un paquete. |
 | Congelar un paquete inmutable | `presenter.package.freeze` | Disponible solo en el MVP sintético; congela selección, versiones y hashes. |
+| Administrar el ciclo de vida de operadores | sesión individual `rtm.supervisor`, permiso `ops.supervise`, contraseña no temporal y posesión del dispositivo asociado | Disponible solo en staging sintético. El alta directa crea únicamente `rtm.operator`, no devuelve contraseñas y queda auditada con la sesión supervisora. |
+| Completar la primera entrada de un operador | sesión temporal individual y posesión del dispositivo asociado | Disponible solo en staging sintético. El cambio verifica la contraseña temporal, revoca la sesión inicial y obliga a autenticarse de nuevo; el frontend mantiene los secretos únicamente en memoria. |
 | Descubrir o adoptar un workspace de firma durable | cliente `signer_station`, rol exacto `rtm.signer`, permisos exactos `ops.view`, `presenter.signing.queue` y `presenter.signing.claim`, sesión y dispositivo individuales | Disponible solo en staging sintético. El GET devuelve metadatos del mismo operador, dispositivo e instalación; el POST exige una adopción explícita, idempotente y ligada a la huella exacta. No usa almacenamiento del navegador ni expone bytes, custodia, cookie o certificado. |
 | Entregar documentos a una sede mediante extensión | No concedida al operador actual | **Cerrado**: el router no produce una atestación gestionada y, por tanto, no libera bytes al puente remoto. |
 | Exportación administrativa excepcional | rol exacto `rtm.admin` **y** permiso independiente `ops.documents.export_exceptional` | **Cerrado**: además exige concesión individual, motivo, evento de reautenticación posterior al login y no más antiguo de cinco minutos; el router actual no carga esa concesión ni dispone de motor de marcado. |
@@ -54,6 +56,13 @@ Tampoco debe confundirse el modelo versionado de Presenter con una migración ya
 terminada: la incorporación de todos los documentos legacy del expediente, los
 perfiles de destino verificados y la conciliación del justificante requieren
 integraciones adicionales antes de un flujo completo.
+
+La formación de un operador adicional utiliza una identidad, tenant, caso,
+memberships y asignación sintéticos propios. No se concede acceso compartiendo
+la cuenta de Ramón ni ocupando o transfiriendo un rol activo de su expediente.
+Las contraseñas temporales no se documentan en Git, tickets, informes ni este
+repositorio; se muestran una sola vez en el TTY controlado y deben sustituirse
+en la primera entrada.
 
 ## Decisión de diseño
 

@@ -48,6 +48,19 @@ class OperatorAdminContractTest(unittest.TestCase):
         self.assertIn("session_has_supervisor_permission", router)
         self.assertIn("Permiso de supervisor requerido", router)
 
+    def test_admin_requires_bearer_and_device_possession(self):
+        source = ROUTER.read_text(encoding="utf-8")
+        self.assertIn(
+            "load_operator_session_with_device_possession(",
+            source,
+        )
+        self.assertIn('alias="X-RTM-Device"', source)
+        self.assertIn('alias="rtm_presenter_device"', source)
+        self.assertNotIn(
+            "session = load_operator_session(\n",
+            source,
+        )
+
     def test_router_exposes_observability_and_revocation_only(self):
         source = ROUTER.read_text(encoding="utf-8")
         for route in (
@@ -155,6 +168,9 @@ class OperatorAdminContractTest(unittest.TestCase):
             "RTM_ALLOW_REAL_CUSTOMER_DATA_must_be_false",
         ):
             self.assertIn(blocker, source)
+        self.assertIn("supervisor_without_device_denied", source)
+        self.assertIn("no_device.status_code == 401", source)
+        self.assertIn("operators.status_code == 200", source)
 
 
 if __name__ == "__main__":

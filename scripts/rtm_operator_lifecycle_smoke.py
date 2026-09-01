@@ -104,7 +104,7 @@ async def _run_http_smoke(
 
     async with httpx.AsyncClient(
         transport=transport,
-        base_url="http://rtm-staging.test",
+        base_url="https://rtm-staging.test",
     ) as client:
         lifecycle_status = await client.get(
             "/ops/admin/lifecycle/status"
@@ -131,7 +131,10 @@ async def _run_http_smoke(
         supervisor_body = supervisor_login.json()
         supervisor_token = str(supervisor_body.get("token") or "")
         supervisor_device = str(
-            supervisor_body.get("device_token") or ""
+            client.cookies.get("rtm_presenter_device") or ""
+        )
+        supervisor_session_id = str(
+            supervisor_body.get("session_id") or ""
         )
         supervisor_id = str(
             supervisor_body.get("operator", {}).get("id") or ""
@@ -145,6 +148,26 @@ async def _run_http_smoke(
             "Authorization": f"Bearer {supervisor_token}",
             "X-RTM-Device": supervisor_device,
         }
+
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://rtm-staging.test",
+        ) as no_device_client:
+            no_device = await no_device_client.post(
+                "/ops/admin/operators",
+                json={
+                    "email": target_email,
+                    "display_name": "RTM STAGING TARGET",
+                    "temporary_password": temporary_password,
+                },
+                headers={
+                    **common_headers,
+                    "Authorization": f"Bearer {supervisor_token}",
+                },
+            )
+        report["checks"]["supervisor_without_device_denied"] = (
+            no_device.status_code == 401
+        )
 
         unauthenticated = await client.post(
             "/ops/admin/operators",
@@ -218,7 +241,9 @@ async def _run_http_smoke(
         )
         target_body = target_login.json()
         target_token = str(target_body.get("token") or "")
-        target_device = str(target_body.get("device_token") or "")
+        target_device = str(
+            client.cookies.get("rtm_presenter_device") or ""
+        )
         report["checks"]["temporary_password_login_succeeded"] = (
             target_login.status_code == 200
             and target_body.get("operator", {}).get(
@@ -550,6 +575,22 @@ async def _run_http_smoke(
             "admin.operator_password_rotated",
             "admin.operator_sessions_revoked",
         }.issubset(event_types)
+        created_audit_session_id = connection.execute(
+            __import__("sqlalchemy").text(
+                """
+                SELECT session_id
+                FROM rtm_operator_access_events
+                WHERE operator_id=CAST(:operator_id AS UUID)
+                  AND event_type='admin.operator_created'
+                ORDER BY occurred_at DESC, id DESC
+                LIMIT 1
+                """
+            ),
+            {"operator_id": target_id},
+        ).scalar_one()
+        report["checks"]["lifecycle_audit_links_supervisor_session"] = (
+            str(created_audit_session_id) == supervisor_session_id
+        )
 
         database_state = connection.execute(
             __import__("sqlalchemy").text(

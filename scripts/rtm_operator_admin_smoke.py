@@ -100,7 +100,7 @@ async def _run_http_smoke(
 
     async with httpx.AsyncClient(
         transport=transport,
-        base_url="http://rtm-staging.test",
+        base_url="https://rtm-staging.test",
     ) as client:
         admin_status = await client.get("/ops/admin/status")
         report["checks"]["admin_status_enabled"] = (
@@ -121,7 +121,7 @@ async def _run_http_smoke(
         supervisor_body = supervisor_login.json()
         supervisor_token = str(supervisor_body.get("token") or "")
         supervisor_device_token = str(
-            supervisor_body.get("device_token") or ""
+            client.cookies.get("rtm_presenter_device") or ""
         )
         supervisor_session_id = str(
             supervisor_body.get("session_id") or ""
@@ -132,6 +132,22 @@ async def _run_http_smoke(
         report["checks"]["supervisor_login_succeeded"] = (
             supervisor_login.status_code == 200
             and len(supervisor_token) >= 32
+            and len(supervisor_device_token) >= 24
+        )
+
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://rtm-staging.test",
+        ) as no_device_client:
+            no_device = await no_device_client.get(
+                "/ops/admin/operators",
+                headers={
+                    **common_headers,
+                    "Authorization": f"Bearer {supervisor_token}",
+                },
+            )
+        report["checks"]["supervisor_without_device_denied"] = (
+            no_device.status_code == 401
         )
 
         operator_login = await client.post(
@@ -145,7 +161,7 @@ async def _run_http_smoke(
         operator_body = operator_login.json()
         operator_token = str(operator_body.get("token") or "")
         operator_device_token = str(
-            operator_body.get("device_token") or ""
+            client.cookies.get("rtm_presenter_device") or ""
         )
         operator_session_id = str(
             operator_body.get("session_id") or ""

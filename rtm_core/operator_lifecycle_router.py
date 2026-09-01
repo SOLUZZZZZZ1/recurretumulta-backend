@@ -11,7 +11,15 @@ from dataclasses import asdict, dataclass
 from typing import Any, AsyncIterator, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import (
+    APIRouter,
+    Cookie,
+    Depends,
+    Header,
+    HTTPException,
+    Request,
+    status,
+)
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.engine import Connection
 
@@ -21,9 +29,10 @@ from rtm_core.operator_access_runtime_repository import (
 )
 from rtm_core.operator_auth_request import (
     build_request_fingerprint,
-    extract_bearer_token,
 )
-from rtm_core.operator_auth_service import load_operator_session
+from rtm_core.operator_auth_router import (
+    load_operator_session_with_device_possession,
+)
 from rtm_core.operator_lifecycle_policy import (
     OperatorLifecycleRoutesDisabled,
     OperatorLifecycleRuntimeConfig,
@@ -140,15 +149,22 @@ async def require_lifecycle_operator_context(
         default=None,
         alias="Authorization",
     ),
+    x_rtm_device: str | None = Header(
+        default=None,
+        alias="X-RTM-Device",
+    ),
+    rtm_presenter_device: str | None = Cookie(
+        default=None,
+        alias="rtm_presenter_device",
+    ),
     conn: Connection = Depends(operator_lifecycle_connection),
 ) -> LifecycleOperatorContext:
     config = _runtime_config(require_enabled=True)
-    raw_token = extract_bearer_token(authorization)
-    if not raw_token:
-        raise HTTPException(status_code=401, detail="Sesión no válida")
-    session = load_operator_session(
+    session = load_operator_session_with_device_possession(
         conn,
-        raw_token=raw_token,
+        authorization=authorization,
+        x_rtm_device=x_rtm_device,
+        rtm_presenter_device=rtm_presenter_device,
         touch=True,
     )
     if not session:
@@ -236,7 +252,7 @@ def _audit(
         auth_method="bearer",
         retention_days=config.admin.auth.evidence_retention_days,
         operator_id=target_operator_id,
-        session_id=None,
+        session_id=actor_session_id,
         reason_code=reason_code,
         reason_detail=(
             f"actor={actor_operator_id}; reason={_clean_reason(reason)}"

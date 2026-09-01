@@ -11,7 +11,15 @@ from dataclasses import dataclass
 from typing import Any, AsyncIterator
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import (
+    APIRouter,
+    Cookie,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+)
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.engine import Connection
 
@@ -39,9 +47,10 @@ from rtm_core.operator_admin_repository import (
 )
 from rtm_core.operator_auth_request import (
     build_request_fingerprint,
-    extract_bearer_token,
 )
-from rtm_core.operator_auth_service import load_operator_session
+from rtm_core.operator_auth_router import (
+    load_operator_session_with_device_possession,
+)
 
 
 OPERATOR_ADMIN_ROUTES_VERSION = "rtm_operator_admin_routes_v1_0"
@@ -90,15 +99,22 @@ async def require_supervisor_context(
         default=None,
         alias="Authorization",
     ),
+    x_rtm_device: str | None = Header(
+        default=None,
+        alias="X-RTM-Device",
+    ),
+    rtm_presenter_device: str | None = Cookie(
+        default=None,
+        alias="rtm_presenter_device",
+    ),
     conn: Connection = Depends(operator_admin_connection),
 ) -> SupervisorContext:
     config = _runtime_config(require_enabled=True)
-    raw_token = extract_bearer_token(authorization)
-    if not raw_token:
-        raise HTTPException(status_code=401, detail="Sesión no válida")
-    session = load_operator_session(
+    session = load_operator_session_with_device_possession(
         conn,
-        raw_token=raw_token,
+        authorization=authorization,
+        x_rtm_device=x_rtm_device,
+        rtm_presenter_device=rtm_presenter_device,
         touch=True,
     )
     if not session:

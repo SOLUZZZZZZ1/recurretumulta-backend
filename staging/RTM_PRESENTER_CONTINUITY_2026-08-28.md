@@ -4,6 +4,48 @@
 **Estado:** implementación sintética preparada para revisión; no operativa con
 datos reales ni sedes externas.
 
+## Addendum 01/09/2026 · segundo operador y formación aislada
+
+La activación en Render staging de autenticación, administración y ciclo de
+vida de operadores quedó verificada mediante los preflights oficiales. El smoke
+transaccional `rtm_operator_lifecycle_smoke_v1_0` superó todos sus controles y
+revirtió la base al terminar. No abrió REG, no utilizó datos reales y no produjo
+efectos externos.
+
+Este corte añade el onboarding controlado del segundo operador sintético:
+
+- identidad fija `rtm-staging-operador-02@example.com`, nombre visible
+  `RTM STAGING OPERADOR 02` y rol mínimo `rtm.operator`;
+- alta mediante `scripts/rtm_staging_operator_lifecycle_create.py`, dry-run por
+  defecto, confirmación literal y ejecución exclusiva en un TTY de Render;
+- contraseña supervisora leída con entrada oculta y contraseña temporal
+  generada o introducida sin argv, variables de entorno ni salida JSON;
+- login, inventario, creación auditada y logout a través de las rutas oficiales
+  de la propia aplicación; no existe un bypass SQL de provisión;
+- bearer y posesión del dispositivo asociado obligatorios tanto para las rutas
+  administrativas como para todo el ciclo de vida;
+- el evento de ciclo de vida conserva el identificador de la sesión supervisora
+  que autorizó la acción;
+- primera entrada en Presenter con cambio de contraseña temporal en memoria,
+  revocación de la sesión inicial y nuevo login obligatorio; no se emplean
+  `localStorage`, `sessionStorage` ni parámetros de URL para credenciales.
+
+La formación no reutiliza el caso ni el tenant de Ramón. El script
+`scripts/rtm_staging_presenter_training_fixture.py` crea, solo tras confirmación
+literal, un tenant sintético independiente, el caso estable
+`70b4648d-4e8b-5e1d-8c49-73bc7814e097`, dos documentos hash-only sin bytes ni
+coordenadas B2, sus versiones Presenter, memberships separadas y una asignación
+`responsible` exclusiva del operador 02. La operación es insert-only,
+transaccional, idempotente y falla ante cualquier colisión de identidad o
+scope. El caso y las asignaciones originales se auditan como autoridad fuente,
+pero no se modifican.
+
+Orden operativo vinculante: publicar y desplegar ambos repositorios, ejecutar
+el dry-run del alta, crear la cuenta desde Render Shell, realizar el primer
+cambio de contraseña en el frontend, auditar/aplicar la fixture formativa y
+repetir la auditoría esperando cero inserciones. Hasta completar esa secuencia,
+la cuenta o el caso no deben declararse operativos.
+
 ## Addendum 01/09/2026 · borrador RTM y recuperación tras caducidad de REG
 
 La observación manual del REG obliga a separar dos realidades: la sesión de la

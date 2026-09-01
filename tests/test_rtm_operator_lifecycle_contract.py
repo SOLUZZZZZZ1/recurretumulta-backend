@@ -187,6 +187,19 @@ class OperatorLifecycleContractTest(unittest.TestCase):
             repository,
         )
 
+    def test_all_authenticated_lifecycle_routes_require_device_possession(self):
+        source = ROUTER.read_text(encoding="utf-8")
+        self.assertIn(
+            "load_operator_session_with_device_possession(",
+            source,
+        )
+        self.assertIn('alias="X-RTM-Device"', source)
+        self.assertIn('alias="rtm_presenter_device"', source)
+        self.assertNotIn(
+            "session = load_operator_session(\n",
+            source,
+        )
+
     def test_all_lifecycle_actions_are_audited(self):
         source = ROUTER.read_text(encoding="utf-8")
         for event_type in (
@@ -200,6 +213,8 @@ class OperatorLifecycleContractTest(unittest.TestCase):
         ):
             self.assertIn(event_type, source)
         self.assertIn("record_operator_access_event", source)
+        self.assertIn("session_id=actor_session_id", source)
+        self.assertNotIn("session_id=None", source)
 
     def test_preflight_is_read_only_and_checks_legacy(self):
         source = PREFLIGHT.read_text(encoding="utf-8")
@@ -244,6 +259,13 @@ class OperatorLifecycleContractTest(unittest.TestCase):
             self.assertIn(blocker, source)
         self.assertIn("creation_response_has_no_password", source)
         self.assertIn("rotation_response_has_no_password", source)
+        self.assertIn("supervisor_without_device_denied", source)
+        self.assertIn("no_device.status_code == 401", source)
+        self.assertIn("lifecycle_audit_links_supervisor_session", source)
+        self.assertIn(
+            "str(created_audit_session_id) == supervisor_session_id",
+            source,
+        )
 
 
 if __name__ == "__main__":
