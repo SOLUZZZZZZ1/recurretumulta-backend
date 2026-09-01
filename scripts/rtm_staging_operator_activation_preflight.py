@@ -51,6 +51,29 @@ def _print(report: dict[str, Any], *, compact: bool) -> None:
     )
 
 
+def _load_defined_role_rows(
+    conn: Any,
+    role_definitions: dict[str, Any],
+) -> tuple[list[Any], set[str]]:
+    from sqlalchemy import bindparam, text
+
+    expected_codes = {
+        str(definition.code) for definition in role_definitions.values()
+    }
+    statement = text(
+        """
+        SELECT code, active, system_role, permissions
+        FROM rtm_operator_roles
+        WHERE code IN :role_codes
+        """
+    ).bindparams(bindparam("role_codes", expanding=True))
+    role_rows = conn.execute(
+        statement,
+        {"role_codes": sorted(expected_codes)},
+    ).mappings().fetchall()
+    return role_rows, expected_codes
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     report: dict[str, Any] = {
@@ -72,7 +95,6 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        from sqlalchemy import text
         from database import get_engine
         from rtm_core.environment_contract import assert_environment_ready
         from rtm_core.operator_provisioning import (
@@ -96,19 +118,11 @@ def main(argv: list[str] | None = None) -> int:
         email = normalize_synthetic_operator_email(args.email)
         engine = get_engine()
         with engine.connect() as conn:
-            role_rows = conn.execute(
-                text(
-                    """
-                    SELECT code, active, system_role, permissions
-                    FROM rtm_operator_roles
-                    WHERE code IN ('rtm.operator', 'rtm.supervisor')
-                    """
-                )
-            ).mappings().fetchall()
+            role_rows, expected_codes = _load_defined_role_rows(
+                conn,
+                ROLE_DEFINITIONS,
+            )
             roles = {str(row["code"]): row for row in role_rows}
-            expected_codes = {
-                definition.code for definition in ROLE_DEFINITIONS.values()
-            }
             report["checks"]["minimum_roles_present"] = (
                 set(roles) == expected_codes
             )

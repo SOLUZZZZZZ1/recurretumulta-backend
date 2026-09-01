@@ -384,6 +384,8 @@ class PresenterRepository(Protocol):
     def insert_signer_installation(self, conn: Any, *, installation_id: str, operator_id: str, operator_device_id: str, client_instance_id: str, client_binding_sha256: str, station_label: str, platform: str, client_version: str, registered_at: datetime, metadata: Mapping[str, Any]) -> Mapping[str, Any]: ...
     def lock_signer_workspace(self, conn: Any, *, delivery_id: str, workspace_id: str) -> None: ...
     def list_signer_workspace_events(self, conn: Any, *, case_id: str, package_id: str, delivery_id: str, workspace_id: str) -> Sequence[Mapping[str, Any]]: ...
+    def list_signer_workspace_recovery_events(self, conn: Any, *, operator_id: str, operator_device_id: str, installation_id: str, limit: int) -> Sequence[Mapping[str, Any]]: ...
+    def list_latest_signer_delivery_workspace_events(self, conn: Any, *, operator_id: str, operator_device_id: str, installation_id: str, delivery_id: str) -> Sequence[Mapping[str, Any]]: ...
     def lock_portal_session(self, conn: Any, *, case_id: str, portal_session_id: str) -> None: ...
     def list_portal_session_events(self, conn: Any, *, case_id: str, portal_session_id: str) -> Sequence[Mapping[str, Any]]: ...
     def emit_deadline_tracking_event(self, conn: Any, *, case_id: str, portal_session_id: str, payload: Mapping[str, Any]) -> bool: ...
@@ -1819,7 +1821,8 @@ class SqlPresenterRepository:
                   AND package_id=CAST(:package_id AS UUID)
                   AND event_type IN (
                       'presenter.signer_station.claimed',
-                      'presenter.signer_station.released'
+                      'presenter.signer_station.released',
+                      'presenter.signer_station.superseded'
                   )
                   AND payload->>'delivery_id'=:delivery_id
                 ORDER BY sequence_number ASC
@@ -2052,14 +2055,15 @@ class SqlPresenterRepository:
             text(
                 """
                 SELECT sequence_number, event_type, reason_code, payload,
-                       created_at, actor_operator_id
+                       created_at, actor_operator_id, case_id, package_id
                 FROM rtm_presenter_audit_events
                 WHERE case_id=CAST(:case_id AS UUID)
                   AND package_id=CAST(:package_id AS UUID)
                   AND event_type IN (
                       'presenter.signer_workspace.prepared',
                       'presenter.signer_workspace.portal_session_expired',
-                      'presenter.signer_workspace.resumed'
+                      'presenter.signer_workspace.resumed',
+                      'presenter.signer_workspace.recovered'
                   )
                   AND payload->>'delivery_id'=:delivery_id
                   AND payload->>'workspace_id'=:workspace_id
@@ -2071,6 +2075,150 @@ class SqlPresenterRepository:
                 "package_id": package_id,
                 "delivery_id": delivery_id,
                 "workspace_id": workspace_id,
+            },
+        ).mappings().all()
+
+    def list_signer_workspace_recovery_events(
+        self,
+        conn: Any,
+        *,
+        operator_id: str,
+        operator_device_id: str,
+        installation_id: str,
+        limit: int,
+    ) -> Sequence[Mapping[str, Any]]:
+        """Lista ledgers recientes del mismo actor, dispositivo e instalacion."""
+
+        return conn.execute(
+            text(
+                """
+                WITH workspace_heads AS (
+                    SELECT event.payload->>'workspace_id' AS workspace_id,
+                           event.payload->>'delivery_id' AS delivery_id,
+                           MAX(event.sequence_number) AS latest_sequence
+                    FROM rtm_presenter_audit_events AS event
+                    JOIN cases AS c ON c.id=event.case_id
+                    WHERE event.event_type IN (
+                        'presenter.signer_workspace.prepared',
+                        'presenter.signer_workspace.portal_session_expired',
+                        'presenter.signer_workspace.resumed',
+                        'presenter.signer_workspace.recovered'
+                    )
+                      AND event.actor_operator_id=CAST(:operator_id AS UUID)
+                      AND event.payload->>'signer_operator_id'=:operator_id
+                      AND event.payload->>'operator_device_id'=:operator_device_id
+                      AND event.payload->>'installation_id'=:installation_id
+                      AND COALESCE(c.test_mode,FALSE)=TRUE
+                      AND COALESCE(
+                            (event.payload->>'rtm_draft_persisted')::BOOLEAN,
+                            FALSE
+                          )=TRUE
+                      AND COALESCE(
+                            (event.payload->>'reg_draft_persisted')::BOOLEAN,
+                            TRUE
+                          )=FALSE
+                    GROUP BY event.payload->>'workspace_id',
+                             event.payload->>'delivery_id'
+                ), latest_per_delivery AS (
+                    SELECT DISTINCT ON (delivery_id)
+                           workspace_id, delivery_id, latest_sequence
+                    FROM workspace_heads
+                    ORDER BY delivery_id, latest_sequence DESC
+                ), candidate_workspaces AS (
+                    SELECT workspace_id, latest_sequence
+                    FROM latest_per_delivery
+                    ORDER BY latest_sequence DESC
+                    LIMIT :limit
+                )
+                SELECT event.sequence_number, event.event_type,
+                       event.reason_code, event.payload, event.created_at,
+                       event.actor_operator_id, event.case_id, event.package_id
+                FROM rtm_presenter_audit_events AS event
+                JOIN candidate_workspaces AS candidate
+                  ON candidate.workspace_id=event.payload->>'workspace_id'
+                JOIN cases AS c ON c.id=event.case_id
+                WHERE event.event_type IN (
+                    'presenter.signer_workspace.prepared',
+                    'presenter.signer_workspace.portal_session_expired',
+                    'presenter.signer_workspace.resumed',
+                    'presenter.signer_workspace.recovered'
+                )
+                  AND event.actor_operator_id=CAST(:operator_id AS UUID)
+                  AND event.payload->>'signer_operator_id'=:operator_id
+                  AND event.payload->>'operator_device_id'=:operator_device_id
+                  AND event.payload->>'installation_id'=:installation_id
+                  AND COALESCE(c.test_mode,FALSE)=TRUE
+                ORDER BY event.sequence_number ASC
+                """
+            ),
+            {
+                "operator_id": operator_id,
+                "operator_device_id": operator_device_id,
+                "installation_id": installation_id,
+                "limit": limit,
+            },
+        ).mappings().all()
+
+    def list_latest_signer_delivery_workspace_events(
+        self,
+        conn: Any,
+        *,
+        operator_id: str,
+        operator_device_id: str,
+        installation_id: str,
+        delivery_id: str,
+    ) -> Sequence[Mapping[str, Any]]:
+        """Carga el leaf autoritativo de una entrega para impedir forks."""
+
+        return conn.execute(
+            text(
+                """
+                WITH latest_workspace AS (
+                    SELECT event.payload->>'workspace_id' AS workspace_id
+                    FROM rtm_presenter_audit_events AS event
+                    JOIN cases AS c ON c.id=event.case_id
+                    WHERE event.event_type IN (
+                        'presenter.signer_workspace.prepared',
+                        'presenter.signer_workspace.portal_session_expired',
+                        'presenter.signer_workspace.resumed',
+                        'presenter.signer_workspace.recovered'
+                    )
+                      AND event.actor_operator_id=CAST(:operator_id AS UUID)
+                      AND event.payload->>'signer_operator_id'=:operator_id
+                      AND event.payload->>'operator_device_id'=:operator_device_id
+                      AND event.payload->>'installation_id'=:installation_id
+                      AND event.payload->>'delivery_id'=:delivery_id
+                      AND COALESCE(c.test_mode,FALSE)=TRUE
+                    ORDER BY event.sequence_number DESC
+                    LIMIT 1
+                )
+                SELECT event.sequence_number, event.event_type,
+                       event.reason_code, event.payload, event.created_at,
+                       event.actor_operator_id, event.case_id, event.package_id
+                FROM rtm_presenter_audit_events AS event
+                JOIN latest_workspace AS latest
+                  ON latest.workspace_id=event.payload->>'workspace_id'
+                JOIN cases AS c ON c.id=event.case_id
+                WHERE event.event_type IN (
+                    'presenter.signer_workspace.prepared',
+                    'presenter.signer_workspace.portal_session_expired',
+                    'presenter.signer_workspace.resumed',
+                    'presenter.signer_workspace.recovered'
+                )
+                  AND event.actor_operator_id=CAST(:operator_id AS UUID)
+                  AND event.payload->>'signer_operator_id'=:operator_id
+                  AND event.payload->>'operator_device_id'=:operator_device_id
+                  AND event.payload->>'installation_id'=:installation_id
+                  AND event.payload->>'delivery_id'=:delivery_id
+                  AND COALESCE(c.test_mode,FALSE)=TRUE
+                ORDER BY event.sequence_number ASC
+                """
+            ),
+            {
+                "operator_id": operator_id,
+                "operator_device_id": operator_device_id,
+                "installation_id": installation_id,
+                "delivery_id": delivery_id,
             },
         ).mappings().all()
 

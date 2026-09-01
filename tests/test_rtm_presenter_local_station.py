@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,7 @@ from rtm_presenter_service import (
     PresenterConflict,
     PresenterNotFound,
     PresenterSchemaNotReady,
+    SqlPresenterRepository,
 )
 
 
@@ -44,6 +46,8 @@ SESSION_ID = _id(6)
 DEVICE_ID = _id(7)
 INSTANCE_ID = _id(8)
 OTHER_INSTANCE_ID = _id(9)
+OTHER_SESSION_ID = _id(20)
+THIRD_SESSION_ID = _id(21)
 
 
 def _runtime() -> PresenterRuntimeConfiguration:
@@ -251,11 +255,60 @@ class FakeLocalStationRepository:
             if event["payload"]["workspace_id"] == kwargs["workspace_id"]
         ]
 
+    def list_signer_workspace_recovery_events(self, conn: Any, **kwargs: Any):
+        del conn
+        matching = [
+            event
+            for event in self.workspace_events
+            if event["actor_operator_id"] == kwargs["operator_id"]
+            and event["payload"]["signer_operator_id"] == kwargs["operator_id"]
+            and event["payload"]["operator_device_id"]
+            == kwargs["operator_device_id"]
+            and event["payload"]["installation_id"] == kwargs["installation_id"]
+        ]
+        latest_by_delivery: dict[str, str] = {}
+        for event in matching:
+            latest_by_delivery[event["payload"]["delivery_id"]] = event[
+                "payload"
+            ]["workspace_id"]
+        latest_workspace_ids = list(reversed(latest_by_delivery.values()))
+        allowed = set(latest_workspace_ids[: kwargs["limit"]])
+        return [
+            event
+            for event in matching
+            if event["payload"]["workspace_id"] in allowed
+        ]
+
+    def list_latest_signer_delivery_workspace_events(
+        self, conn: Any, **kwargs: Any
+    ):
+        del conn
+        matching = [
+            event
+            for event in self.workspace_events
+            if event["actor_operator_id"] == kwargs["operator_id"]
+            and event["payload"]["operator_device_id"]
+            == kwargs["operator_device_id"]
+            and event["payload"]["installation_id"] == kwargs["installation_id"]
+            and event["payload"]["delivery_id"] == kwargs["delivery_id"]
+        ]
+        if not matching:
+            return []
+        latest_workspace_id = matching[-1]["payload"]["workspace_id"]
+        return [
+            event
+            for event in matching
+            if event["payload"]["workspace_id"] == latest_workspace_id
+        ]
+
     def append_audit(self, conn: Any, **kwargs: Any) -> None:
         del conn
         event = {
             **kwargs,
             "actor_operator_id": kwargs["actor"].operator_id,
+            "sequence_number": len(self.claim_events)
+            + len(self.workspace_events)
+            + 1,
         }
         if kwargs["event_type"].startswith("presenter.signer_workspace."):
             self.workspace_events.append(event)
@@ -307,6 +360,29 @@ class PresenterLocalStationServiceTest(unittest.TestCase):
             idempotency_key="workspace-prepare-local-0001",
         )
         return station, workspace
+
+    def recover(
+        self,
+        station: Mapping[str, Any],
+        source: Mapping[str, Any],
+        *,
+        session_id: str = OTHER_SESSION_ID,
+        idempotency_key: str = "workspace-recovery-local-0001",
+        expected_fingerprint: str | None = None,
+    ) -> dict[str, Any]:
+        return self.service.recover_workspace(
+            self.conn,
+            actor=_actor(session_id=session_id),
+            operator_device_id=DEVICE_ID,
+            installation_id=station["installation_id"],
+            delivery_id=DELIVERY_ID,
+            source_workspace_id=source["workspace_id"],
+            expected_task_fingerprint_sha256=(
+                expected_fingerprint
+                or source["task"]["task_fingerprint_sha256"]
+            ),
+            idempotency_key=idempotency_key,
+        )
 
     def test_candidate_registration_is_idempotent_and_not_attestation(self):
         first = self.register()
@@ -593,6 +669,390 @@ class PresenterLocalStationServiceTest(unittest.TestCase):
                 claim_id=ready["claim_id"],
                 workspace_id=_id(999),
             )
+
+    def test_discovery_is_metadata_only_and_distinguishes_reload_from_relogin(self):
+        station, ready = self.prepared()
+
+        same_session = self.service.discover_workspaces(
+            self.conn,
+            actor=_actor(),
+            operator_device_id=DEVICE_ID,
+            installation_id=station["installation_id"],
+        )
+        new_session = self.service.discover_workspaces(
+            self.conn,
+            actor=_actor(session_id=OTHER_SESSION_ID),
+            operator_device_id=DEVICE_ID,
+            installation_id=station["installation_id"],
+        )
+
+        self.assertEqual(same_session["items"][0]["recovery_status"], "current_session")
+        self.assertEqual(
+            new_session["items"][0]["recovery_status"],
+            "adoptable_supersession",
+        )
+        self.assertEqual(new_session["items"][0]["workspace_id"], ready["workspace_id"])
+        self.assertTrue(new_session["metadata_only"])
+        self.assertFalse(new_session["browser_storage_required"])
+        self.assertFalse(new_session["document_bytes_available"])
+        serialized = str(new_session).lower()
+        for forbidden in (
+            "portal_preparation",
+            "document_version_id",
+            "cookie_value",
+            "certificate_bytes",
+            "storage_key",
+        ):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_same_session_recovery_reopens_without_new_ledger_event(self):
+        station, ready = self.prepared()
+        before = (len(self.repository.claim_events), len(self.repository.workspace_events))
+
+        reopened = self.recover(station, ready, session_id=SESSION_ID)
+
+        self.assertTrue(reopened["replayed"])
+        self.assertEqual(reopened["workspace_id"], ready["workspace_id"])
+        self.assertIsInstance(reopened["claim_expires_at"], str)
+        json.dumps(reopened)
+        self.assertEqual(
+            before,
+            (len(self.repository.claim_events), len(self.repository.workspace_events)),
+        )
+
+    def test_exact_station_relogin_supersedes_claim_and_adopts_durable_snapshot(self):
+        station, ready = self.prepared()
+
+        recovered = self.recover(station, ready)
+
+        self.assertFalse(recovered["replayed"])
+        self.assertTrue(recovered["recovery_adopted"])
+        self.assertEqual(recovered["attempt_number"], 2)
+        self.assertNotEqual(recovered["claim_id"], ready["claim_id"])
+        self.assertNotEqual(recovered["workspace_id"], ready["workspace_id"])
+        self.assertEqual(
+            recovered["recovered_from"],
+            {
+                "workspace_id": ready["workspace_id"],
+                "claim_id": ready["claim_id"],
+                "attempt_number": 1,
+            },
+        )
+        self.assertIsInstance(recovered["claim_expires_at"], str)
+        self.assertEqual(
+            [event["event_type"] for event in self.repository.claim_events],
+            [
+                "presenter.signer_station.claimed",
+                "presenter.signer_station.superseded",
+                "presenter.signer_station.claimed",
+            ],
+        )
+        self.assertEqual(
+            [event["event_type"] for event in self.repository.workspace_events],
+            [
+                "presenter.signer_workspace.prepared",
+                "presenter.signer_workspace.recovered",
+            ],
+        )
+
+    def test_recovery_retry_is_idempotent_but_stale_source_cannot_fork(self):
+        station, ready = self.prepared()
+        first = self.recover(station, ready)
+        replay = self.recover(station, ready)
+        counts = (len(self.repository.claim_events), len(self.repository.workspace_events))
+
+        self.assertTrue(replay["replayed"])
+        self.assertIsInstance(replay["claim_expires_at"], str)
+        json.dumps(replay)
+        self.assertEqual(replay["workspace_id"], first["workspace_id"])
+        self.assertEqual(replay["claim_id"], first["claim_id"])
+        self.assertEqual(
+            counts,
+            (len(self.repository.claim_events), len(self.repository.workspace_events)),
+        )
+        with self.assertRaises(PresenterConflict) as stale:
+            self.recover(
+                station,
+                ready,
+                idempotency_key="workspace-recovery-local-0002",
+            )
+        self.assertEqual(
+            stale.exception.code,
+            "presenter.signer_workspace_recovery_source_stale",
+        )
+        self.assertEqual(
+            counts,
+            (len(self.repository.claim_events), len(self.repository.workspace_events)),
+        )
+
+    def test_second_session_cannot_race_the_new_active_claim(self):
+        station, ready = self.prepared()
+        self.recover(station, ready)
+        counts = (len(self.repository.claim_events), len(self.repository.workspace_events))
+
+        with self.assertRaises(PresenterConflict) as blocked:
+            self.recover(
+                station,
+                ready,
+                session_id=THIRD_SESSION_ID,
+                idempotency_key="workspace-recovery-local-0003",
+            )
+
+        self.assertEqual(
+            blocked.exception.code,
+            "presenter.signer_workspace_recovery_claim_active",
+        )
+        self.assertEqual(
+            counts,
+            (len(self.repository.claim_events), len(self.repository.workspace_events)),
+        )
+
+    def test_historical_session_cannot_take_back_a_descendant_claim(self):
+        station, ready = self.prepared()
+        descendant = self.recover(station, ready)
+        counts = (len(self.repository.claim_events), len(self.repository.workspace_events))
+
+        with self.assertRaises(PresenterConflict) as rollback:
+            self.recover(
+                station,
+                descendant,
+                session_id=SESSION_ID,
+                idempotency_key="workspace-recovery-rollback-0001",
+            )
+
+        self.assertEqual(
+            rollback.exception.code,
+            "presenter.signer_workspace_recovery_session_rollback",
+        )
+        self.assertEqual(
+            counts,
+            (len(self.repository.claim_events), len(self.repository.workspace_events)),
+        )
+
+    def test_historical_session_remains_blocked_after_descendant_claim_expires(self):
+        station, ready = self.prepared()
+        descendant = self.recover(station, ready)
+        later = NOW + timedelta(minutes=31)
+        self.service.clock = lambda: later
+        self.service.signer.clock = lambda: later
+        counts = (len(self.repository.claim_events), len(self.repository.workspace_events))
+
+        with self.assertRaises(PresenterConflict) as rollback:
+            self.recover(
+                station,
+                descendant,
+                session_id=SESSION_ID,
+                idempotency_key="workspace-recovery-rollback-0002",
+            )
+
+        self.assertEqual(
+            rollback.exception.code,
+            "presenter.signer_workspace_recovery_session_rollback",
+        )
+        self.assertEqual(
+            counts,
+            (len(self.repository.claim_events), len(self.repository.workspace_events)),
+        )
+
+    def test_new_third_session_can_extend_the_monotonic_recovery_chain(self):
+        station, ready = self.prepared()
+        second = self.recover(station, ready)
+
+        third = self.recover(
+            station,
+            second,
+            session_id=THIRD_SESSION_ID,
+            idempotency_key="workspace-recovery-local-0005",
+        )
+
+        self.assertEqual(third["attempt_number"], 3)
+        self.assertEqual(third["recovered_from"]["workspace_id"], second["workspace_id"])
+        discoveries = self.service.discover_workspaces(
+            self.conn,
+            actor=_actor(),
+            operator_device_id=DEVICE_ID,
+            installation_id=station["installation_id"],
+        )
+        self.assertEqual(
+            discoveries["items"][0]["recovery_status"],
+            "blocked_session_rollback",
+        )
+
+    def test_expired_claim_creates_new_attempt_without_supersession(self):
+        station, ready = self.prepared()
+        later = NOW + timedelta(minutes=31)
+        self.service.clock = lambda: later
+        self.service.signer.clock = lambda: later
+
+        recovered = self.recover(station, ready)
+
+        self.assertEqual(recovered["attempt_number"], 2)
+        self.assertEqual(
+            [event["event_type"] for event in self.repository.claim_events],
+            [
+                "presenter.signer_station.claimed",
+                "presenter.signer_station.claimed",
+            ],
+        )
+
+    def test_foreign_active_claim_is_never_superseded(self):
+        station, ready = self.prepared()
+        claim_event = self.repository.claim_events[0]
+        claim_event["payload"]["signer_operator_id"] = PREPARER_ID
+        claim_event["actor_operator_id"] = PREPARER_ID
+        counts = (len(self.repository.claim_events), len(self.repository.workspace_events))
+
+        with self.assertRaises(PresenterConflict) as blocked:
+            self.recover(station, ready)
+
+        self.assertEqual(
+            blocked.exception.code,
+            "presenter.signer_workspace_recovery_claim_active",
+        )
+        self.assertEqual(
+            counts,
+            (len(self.repository.claim_events), len(self.repository.workspace_events)),
+        )
+
+    def test_recovery_rejects_another_device_or_installation_before_audit(self):
+        station, ready = self.prepared()
+        counts = (len(self.repository.claim_events), len(self.repository.workspace_events))
+
+        with self.assertRaises(PresenterNotFound):
+            self.service.recover_workspace(
+                self.conn,
+                actor=_actor(session_id=OTHER_SESSION_ID),
+                operator_device_id=_id(99),
+                installation_id=station["installation_id"],
+                delivery_id=DELIVERY_ID,
+                source_workspace_id=ready["workspace_id"],
+                expected_task_fingerprint_sha256=ready["task"][
+                    "task_fingerprint_sha256"
+                ],
+                idempotency_key="workspace-recovery-local-0004",
+            )
+        other_station = self.register(
+            client_instance_id=OTHER_INSTANCE_ID,
+            client_binding_sha256=hashlib.sha256(b"other-client").hexdigest(),
+        )["installation"]
+        with self.assertRaises(PresenterConflict):
+            self.recover(other_station, ready)
+        self.assertEqual(
+            counts,
+            (len(self.repository.claim_events), len(self.repository.workspace_events)),
+        )
+
+    def test_superseded_claim_cannot_be_released_by_old_session(self):
+        station, ready = self.prepared()
+        self.recover(station, ready)
+        count = len(self.repository.claim_events)
+
+        with self.assertRaises(PresenterConflict) as denied:
+            self.service.signer.release(
+                self.conn,
+                actor=_actor(),
+                delivery_id=DELIVERY_ID,
+                claim_id=ready["claim_id"],
+                idempotency_key="signer-release-superseded-0001",
+            )
+
+        self.assertEqual(
+            denied.exception.code,
+            "presenter.signer_station_claim_not_active",
+        )
+        self.assertEqual(len(self.repository.claim_events), count)
+
+    def test_recovery_lock_order_is_claim_then_source_then_target(self):
+        station, ready = self.prepared()
+        self.repository.locks.clear()
+
+        recovered = self.recover(station, ready)
+
+        self.assertEqual(self.repository.locks[0], ("claim", DELIVERY_ID))
+        self.assertEqual(
+            self.repository.locks[1],
+            ("workspace", ready["workspace_id"]),
+        )
+        self.assertEqual(
+            self.repository.locks[-1],
+            ("workspace", recovered["workspace_id"]),
+        )
+
+    def test_recovery_provenance_rejects_a_cycle(self):
+        station, ready = self.prepared()
+        recovered = self.recover(station, ready)
+        first = self.repository.workspace_events[0]
+        second = self.repository.workspace_events[1]
+        first["event_type"] = "presenter.signer_workspace.recovered"
+        first["payload"].update(
+            {
+                "state": "ready",
+                "attempt_number": 2,
+                "recovery_contract_version": (
+                    "rtm_presenter_workspace_recovery_v1_0"
+                ),
+                "source_workspace_id": recovered["workspace_id"],
+                "source_claim_id": recovered["claim_id"],
+                "source_attempt_number": 1,
+                "expected_task_fingerprint_sha256": ready["task"][
+                    "task_fingerprint_sha256"
+                ],
+                "browser_storage_required": False,
+                "cookie_material_persisted": False,
+                "certificate_material_persisted": False,
+            }
+        )
+        second["payload"]["attempt_number"] = 3
+        second["payload"]["source_attempt_number"] = 2
+
+        with self.assertRaises(PresenterConflict) as invalid:
+            self.service.discover_workspaces(
+                self.conn,
+                actor=_actor(session_id=OTHER_SESSION_ID),
+                operator_device_id=DEVICE_ID,
+                installation_id=station["installation_id"],
+            )
+
+        self.assertEqual(
+            invalid.exception.code,
+            "presenter.signer_workspace_recovery_provenance_invalid",
+        )
+
+    def test_recovery_requires_exact_fingerprint_before_superseding(self):
+        station, ready = self.prepared()
+        counts = (len(self.repository.claim_events), len(self.repository.workspace_events))
+
+        with self.assertRaises(PresenterConflict) as mismatch:
+            self.recover(
+                station,
+                ready,
+                expected_fingerprint=hashlib.sha256(b"different").hexdigest(),
+            )
+
+        self.assertEqual(
+            mismatch.exception.code,
+            "presenter.signer_workspace_fingerprint_mismatch",
+        )
+        self.assertEqual(
+            counts,
+            (len(self.repository.claim_events), len(self.repository.workspace_events)),
+        )
+
+    def test_discovery_uses_ledger_sequence_when_timestamps_are_equal(self):
+        station, ready = self.prepared()
+        recovered = self.recover(station, ready)
+
+        discoveries = self.service.discover_workspaces(
+            self.conn,
+            actor=_actor(session_id=OTHER_SESSION_ID),
+            operator_device_id=DEVICE_ID,
+            installation_id=station["installation_id"],
+        )
+
+        self.assertEqual(discoveries["item_count"], 1)
+        self.assertEqual(discoveries["items"][0]["workspace_id"], recovered["workspace_id"])
+        self.assertEqual(discoveries["items"][0]["attempt_number"], 2)
+        self.assertEqual(discoveries["items"][0]["recovery_status"], "current_session")
         with self.assertRaises(PresenterNotFound):
             self.service.current_workspace(
                 self.conn,
@@ -615,6 +1075,8 @@ class PresenterLocalStationServiceTest(unittest.TestCase):
             '"/signer/tasks/{delivery_id}/claims/{claim_id}/workspaces"',
             '"{workspace_id}/portal-session-expired"',
             '"{workspace_id}/resume"',
+            '"/signer/installations/{installation_id}/workspace-recoveries"',
+            '"/signer/tasks/{delivery_id}/workspace-recovery"',
         ):
             self.assertIn(route, router)
         self.assertIn('operator_device_id=getattr(session, "device_id", None)', router)
@@ -627,6 +1089,76 @@ class PresenterLocalStationServiceTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("rtm-presenter-signer-installation:", repository)
         self.assertIn("rtm-presenter-signer-binding:", repository)
+        self.assertIn("DISTINCT ON (delivery_id)", repository)
+        self.assertIn("list_latest_signer_delivery_workspace_events", repository)
+        self.assertIn("event.payload->>'operator_device_id'=:operator_device_id", repository)
+
+
+class PresenterLocalStationSqlContractTest(unittest.TestCase):
+    class Result:
+        def mappings(self) -> "PresenterLocalStationSqlContractTest.Result":
+            return self
+
+        def all(self) -> list[Mapping[str, Any]]:
+            return []
+
+    class Connection:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, Mapping[str, Any]]] = []
+
+        def execute(self, statement: Any, params: Mapping[str, Any]):
+            self.calls.append((str(statement), params))
+            return PresenterLocalStationSqlContractTest.Result()
+
+    def test_exact_workspace_query_projects_ledger_identity_and_recovered_event(self):
+        conn = self.Connection()
+        SqlPresenterRepository().list_signer_workspace_events(
+            conn,
+            case_id=CASE_ID,
+            package_id=PACKAGE_ID,
+            delivery_id=DELIVERY_ID,
+            workspace_id=_id(30),
+        )
+
+        sql, params = conn.calls[0]
+        self.assertIn("actor_operator_id, case_id, package_id", sql)
+        self.assertIn("'presenter.signer_workspace.recovered'", sql)
+        self.assertEqual(params["delivery_id"], DELIVERY_ID)
+        self.assertEqual(params["workspace_id"], _id(30))
+
+    def test_discovery_and_leaf_queries_repeat_exact_station_scope(self):
+        conn = self.Connection()
+        repository = SqlPresenterRepository()
+        repository.list_signer_workspace_recovery_events(
+            conn,
+            operator_id=SIGNER_ID,
+            operator_device_id=DEVICE_ID,
+            installation_id=_id(31),
+            limit=20,
+        )
+        repository.list_latest_signer_delivery_workspace_events(
+            conn,
+            operator_id=SIGNER_ID,
+            operator_device_id=DEVICE_ID,
+            installation_id=_id(31),
+            delivery_id=DELIVERY_ID,
+        )
+
+        discovery_sql, discovery_params = conn.calls[0]
+        leaf_sql, leaf_params = conn.calls[1]
+        self.assertIn("DISTINCT ON (delivery_id)", discovery_sql)
+        for sql in (discovery_sql, leaf_sql):
+            self.assertGreaterEqual(
+                sql.count("event.payload->>'operator_device_id'=:operator_device_id"),
+                2,
+            )
+            self.assertGreaterEqual(
+                sql.count("event.payload->>'installation_id'=:installation_id"),
+                2,
+            )
+            self.assertIn("event.case_id, event.package_id", sql)
+        self.assertEqual(discovery_params["limit"], 20)
+        self.assertEqual(leaf_params["delivery_id"], DELIVERY_ID)
 
 
 if __name__ == "__main__":

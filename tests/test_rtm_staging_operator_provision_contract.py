@@ -7,6 +7,8 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +65,43 @@ class StagingOperatorProvisionContractTest(unittest.TestCase):
         self.assertIn('"read_only": True', source)
         self.assertIn('"/ops/login" in paths', source)
         self.assertIn("ready_for_activation", source)
+
+    def test_preflight_queries_every_defined_role_including_signer(self):
+        from scripts import rtm_staging_operator_activation_preflight as preflight
+
+        sqlalchemy = ModuleType("sqlalchemy")
+        statement = mock.Mock()
+        statement.bindparams.return_value = statement
+        sqlalchemy.bindparam = mock.Mock(return_value=mock.sentinel.role_codes)
+        sqlalchemy.text = mock.Mock(return_value=statement)
+        role_definitions = {
+            "operator": SimpleNamespace(code="rtm.operator"),
+            "supervisor": SimpleNamespace(code="rtm.supervisor"),
+            "signer": SimpleNamespace(code="rtm.signer"),
+        }
+        conn = mock.Mock()
+        conn.execute.return_value.mappings.return_value.fetchall.return_value = []
+        with mock.patch.dict(sys.modules, {"sqlalchemy": sqlalchemy}):
+            rows, expected_codes = preflight._load_defined_role_rows(
+                conn,
+                role_definitions,
+            )
+
+        self.assertEqual(rows, [])
+        self.assertIn("rtm.signer", expected_codes)
+        conn.execute.assert_called_once_with(
+            statement,
+            {"role_codes": sorted(expected_codes)},
+        )
+        sqlalchemy.bindparam.assert_called_once_with(
+            "role_codes",
+            expanding=True,
+        )
+        self.assertIn(
+            "WHERE code IN :role_codes",
+            sqlalchemy.text.call_args.args[0],
+        )
+        self.assertIn('code="rtm.signer"', CORE.read_text(encoding="utf-8"))
 
     def test_provision_refuses_outside_staging_before_database_access(self):
         env = dict(os.environ)

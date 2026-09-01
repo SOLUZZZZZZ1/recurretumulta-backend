@@ -29,15 +29,33 @@ cualquier momento.
   intento y vuelve a proyectar la misma huella de tarea. Los eventos declaran
   siempre `rtm_draft_persisted=true`, `reg_draft_persisted=false`,
   `document_bytes_delivered=false` y `external_effects_executed=false`.
+- `rtm_presenter_workspace_recovery_v1_0` separa descubrimiento y adopción. El
+  `GET /signer/installations/{installation_id}/workspace-recoveries` devuelve
+  solo metadatos de los últimos intentos del mismo operador, dispositivo e
+  instalación; no adopta, libera ni sustituye ninguna toma. El resultado está
+  limitado a 20 elementos por defecto y a 50 como máximo.
+- La adopción requiere una acción explícita e idempotente mediante
+  `POST /signer/tasks/{delivery_id}/workspace-recovery`, con la instalación, el
+  workspace de origen, la huella SHA-256 esperada de la tarea e
+  `Idempotency-Key`. No existe recuperación automática al recargar o iniciar
+  sesión.
 - La caducidad no se resuelve manteniendo viva una cookie ni copiando una sesión
   de REG. El firmante debe autenticarse otra vez en REG y el futuro adaptador
   reconstruirá desde RTM el mismo destino, textos y mapa documental. Este corte
   solo registra la prueba sintética de ese ciclo; no abre el navegador.
-- El workspace de intento exige una toma RTM activa de la misma cuenta y sesión,
-  el mismo dispositivo, candidato, entrega, claim y huella. Si también caducan
-  la toma o la sesión RTM, el firmante debe tomar de nuevo la entrega; la tarea
-  durable sigue en RTM y permite crear un nuevo intento exacto, sin depender del
-  formulario perdido de REG.
+- Dentro de la misma sesión RTM se reabre el workspace exacto sin añadir otro
+  evento. Tras volver a iniciar sesión, solo la misma cuenta `rtm.signer`, el
+  mismo dispositivo validado y la misma instalación candidata pueden adoptar
+  el último intento de la misma entrega y huella. La adopción crea una toma y
+  workspace nuevos y enlaza el origen mediante eventos append-only; si la toma
+  anterior sigue activa y pertenece a ese origen exacto, primero queda marcada
+  como `superseded`. Una toma activa ajena o distinta bloquea la operación.
+- La procedencia se verifica recursivamente y tiene un límite defensivo de 64
+  saltos. La cadena solo puede avanzar, por ejemplo A→B→C: una sesión
+  histórica A no puede recuperar B para volver a controlar el intento, ni
+  siquiera después de caducar la toma descendiente. Un origen que ya no sea el
+  último, una huella distinta, un ciclo o una procedencia no verificable se
+  rechazan sin crear una bifurcación.
 - La interfaz acepta solo el descriptor local JSON exacto, de hasta 16 KB, lo
   mantiene en memoria y rechaza campos adicionales u optimistas. **Abrir sede**
   continúa deshabilitado. Las acciones visibles preparan el borrador RTM y
@@ -46,10 +64,15 @@ cualquier momento.
   bytes y URL presignadas. Reanudar exige una reautenticación REG explícita y la
   misma huella de tarea; cualquier cambio de campos, documentos, orden o hash
   cierra el flujo.
-- Evidencia local del incremento reconstruido: 45/45 pruebas Node frontend,
-  31/31 de extensión, 16/16 del contrato local Python y build Vite correcto.
-  El conjunto focal Presenter, incluidas las rutas FastAPI, superó 172/172
-  pruebas.
+- Tanto el descubrimiento como la adopción son metadata-only: no exponen ni
+  persisten referencias de almacenamiento, bytes documentales, cookies o
+  credenciales de REG, material de certificado ni claves privadas, y no exigen
+  `localStorage` ni `sessionStorage` del navegador.
+- Evidencia local del incremento reconstruido: 51/51 pruebas Node frontend,
+  31/31 de extensión, 3/3 del cliente local, 16/16 del contrato frontend
+  Python y build Vite correcto con 102 módulos. En backend superaron 163/163
+  pruebas Presenter, 19/19 del script/contrato de schema y 10/10 del contrato
+  de provisión de staging.
 - Estado: reconstrucción local sobre los heads publicados; no se ha hecho push,
   aplicado el schema, desplegado, abierto REG, entregado documentos, usado un
   certificado, firmado ni enviado. `main` permanece fuera de alcance.
@@ -72,9 +95,11 @@ una capacidad de firma.
   La futura cola central de todos los casos pagados exige un enrutador explícito
   y todavía no está implementada.
 - `rtm_presenter_signer_station_v1_0` permite consultar la cola, tomar una tarea,
-  recuperar la toma de la misma sesión y liberarla. La toma dura 30 minutos, se
-  serializa con advisory lock y queda en el ledger append-only. Otra sesión solo
-  ve que la tarea está ocupada; no recibe la identidad del firmante.
+  reabrir su workspace en la misma sesión, adoptar explícitamente el último
+  intento tras un nuevo login desde el puesto exacto y liberar la toma vigente.
+  La toma dura 30 minutos, se serializa con advisory lock y queda en el ledger
+  append-only. Una sesión ajena solo ve que la tarea está ocupada; no recibe la
+  identidad del firmante.
 - La caducidad evita bloqueos permanentes. Una clave idempotente repite la misma
   toma activa, pero no puede resucitar una toma caducada o liberada. Una tarea
   con más de una toma activa se rechaza como historial inválido.

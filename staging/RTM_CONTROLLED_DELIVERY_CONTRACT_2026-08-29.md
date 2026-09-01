@@ -201,10 +201,15 @@ de Ramón:
   y asignación aceptada `responsible`, `reviewer` o `supervisor`;
 - lista únicamente metadatos resumidos antes de tomar una tarea;
 - crea una toma exclusiva de 30 minutos bajo advisory lock y evento inmutable;
-- permite recuperar la toma solo desde la misma cuenta y sesión;
+- permite reabrir el workspace exacto desde la misma cuenta y sesión sin
+  duplicar eventos;
+- permite que una sesión nueva adopte el último intento solo mediante una
+  acción explícita, desde la misma cuenta, dispositivo e instalación y con la
+  misma huella de tarea;
 - permite liberarla de forma idempotente y deja caducar una toma abandonada;
 - no revela a otra sesión quién mantiene una tarea ocupada;
-- rechaza un ledger con dos tomas simultáneas no caducadas.
+- rechaza un ledger con dos tomas simultáneas no caducadas y nunca sustituye
+  una toma activa ajena al origen exacto de la recuperación.
 
 Después de la toma se proyectan la hoja y los documentos sueltos, ligados a
 manifiesto, perfil, versión y huellas. La respuesta sigue siendo metadata-only:
@@ -240,12 +245,42 @@ El contrato recuperable mantiene dos capas separadas:
    solicitar reautenticación. No contiene un borrador de REG ni material de su
    sesión.
 
-Una reanudación válida exige la misma cuenta firmante, dispositivo, candidato,
-toma, entrega y huella de tarea. Si la toma RTM ya no está activa, se crea otro
-intento desde la entrega durable. En todos los casos el firmante vuelve a
-autenticarse humanamente en REG. El cliente gestionado que en el futuro abra y
-rellene la sede, así como la entrega de bytes, permanecen bloqueados en este
-corte.
+`rtm_presenter_workspace_recovery_v1_0` expone dos operaciones distintas:
+
+- `GET /signer/installations/{installation_id}/workspace-recoveries` descubre
+  los últimos intentos por entrega del mismo operador, dispositivo e
+  instalación. Devuelve como máximo 50 elementos, 20 por defecto, y solo
+  metadatos suficientes para distinguir `current_session`, una adopción
+  posible, una toma activa que bloquea o un rollback de sesión bloqueado. El
+  GET no toma, libera, sustituye ni adopta.
+- `POST /signer/tasks/{delivery_id}/workspace-recovery` es la confirmación
+  explícita. Exige `Idempotency-Key`, el `installation_id`, el
+  `source_workspace_id` y el `expected_task_fingerprint_sha256` exactos. En la
+  misma sesión reabre el workspace sin otro evento; tras un nuevo login crea
+  una toma y workspace nuevos desde la instantánea durable.
+
+La adopción entre sesiones solo es posible para la misma cuenta firmante,
+dispositivo validado, instalación candidata, entrega y huella. Si la toma de
+origen exacta continúa activa, se registra primero
+`presenter.signer_station.superseded`; después se conservan la toma nueva y
+`presenter.signer_workspace.recovered`. La sustitución y la procedencia son
+append-only: no se reescribe el intento anterior. Una toma activa de otro actor,
+sesión o claim, un workspace que ya no sea el último o una huella divergente
+bloquean la operación.
+
+La cadena de procedencia se comprueba de forma recursiva, sin ciclos y con un
+límite de 64 saltos. Solo puede avanzar A→B→C: una sesión histórica A no
+puede adoptar un intento descendiente B para producir B→A, aunque la toma de B
+haya caducado. La misma clave idempotente reproduce el resultado ya registrado;
+una clave distinta no puede bifurcar un origen obsoleto.
+
+Descubrimiento y adopción son metadata-only y no dependen de almacenamiento del
+navegador. No exponen ni persisten bytes, bucket, key, URL presignada, cookie o
+credencial de REG, certificado ni clave privada. En todos los casos el firmante
+vuelve a autenticarse humanamente en REG. El cliente gestionado que en el futuro
+abra y rellene la sede, la entrega de bytes, la firma y el submit permanecen
+bloqueados en este corte sintético y ninguna de estas operaciones produce
+efectos externos.
 
 Cuando se incorpore un documento al contenedor, el operador podrá darle un
 nombre reconocible. RTM mantendrá separadamente el tipo documental controlado,

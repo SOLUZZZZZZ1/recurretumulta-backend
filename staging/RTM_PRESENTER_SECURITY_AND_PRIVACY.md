@@ -38,6 +38,7 @@ el PIN compartido de OPS no concede acceso a Presenter.
 | Consultar metadatos/versiones del expediente | `presenter.documents.read` | Disponible solo en el MVP sintético; no entrega bytes, preview, URL ni referencia de almacenamiento. |
 | Incorporar un documento externo o una nueva versión | `presenter.documents.ingest` | Disponible solo en el MVP sintético mediante sesión individual. Queda bajo custodia RTM como `review/pending`; sin evidencia real de análisis no es elegible para un paquete. |
 | Congelar un paquete inmutable | `presenter.package.freeze` | Disponible solo en el MVP sintético; congela selección, versiones y hashes. |
+| Descubrir o adoptar un workspace de firma durable | cliente `signer_station`, rol exacto `rtm.signer`, permisos exactos `ops.view`, `presenter.signing.queue` y `presenter.signing.claim`, sesión y dispositivo individuales | Disponible solo en staging sintético. El GET devuelve metadatos del mismo operador, dispositivo e instalación; el POST exige una adopción explícita, idempotente y ligada a la huella exacta. No usa almacenamiento del navegador ni expone bytes, custodia, cookie o certificado. |
 | Entregar documentos a una sede mediante extensión | No concedida al operador actual | **Cerrado**: el router no produce una atestación gestionada y, por tanto, no libera bytes al puente remoto. |
 | Exportación administrativa excepcional | rol exacto `rtm.admin` **y** permiso independiente `ops.documents.export_exceptional` | **Cerrado**: además exige concesión individual, motivo, evento de reautenticación posterior al login y no más antiguo de cinco minutos; el router actual no carga esa concesión ni dispone de motor de marcado. |
 
@@ -78,6 +79,24 @@ ni material de sesión. La recuperación exige autenticación humana nueva y una
 comparación exacta de la huella de tarea antes de reconstruir campos y mapa
 documental. Nunca se reintenta automáticamente una firma o presentación cuyo
 resultado sea incierto.
+
+La recuperación RTM tampoco se activa automáticamente al recargar o volver a
+iniciar sesión. El GET de descubrimiento solo devuelve metadatos del último
+workspace de cada entrega para la misma cuenta firmante, dispositivo e
+instalación candidata, con 20 resultados por defecto y 50 como máximo. El POST
+de adopción exige una confirmación separada, `Idempotency-Key`, el workspace de
+origen y la huella SHA-256 esperada. La misma sesión reabre el intento exacto;
+una sesión nueva solo puede crear un descendiente para el puesto exacto.
+
+Cada adopción entre sesiones mantiene en el ledger append-only la procedencia,
+la sustitución de la toma anterior cuando corresponda y el workspace nuevo. La
+procedencia se valida de forma recursiva, sin ciclos y hasta 64 saltos. Se
+impide el rollback A→B→A incluso si la toma descendiente caduca, así como las
+bifurcaciones desde un origen obsoleto; una toma activa ajena nunca se
+sustituye. Estas operaciones son metadata-only, no exigen `localStorage` ni
+`sessionStorage` y no exponen o persisten referencias de almacenamiento, bytes,
+cookies, credenciales, certificado o claves privadas. No abren REG, firman,
+presentan ni producen efectos externos.
 
 Un archivo elaborado fuera de RTM entra una sola vez mediante el ingreso
 documental del expediente, con identidad individual, hash calculado por el

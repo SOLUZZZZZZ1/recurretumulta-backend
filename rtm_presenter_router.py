@@ -207,6 +207,12 @@ class SignerWorkspaceBody(_StrictModel):
     installation_id: UUID
 
 
+class RecoverSignerWorkspaceBody(_StrictModel):
+    installation_id: UUID
+    source_workspace_id: UUID
+    expected_task_fingerprint_sha256: str = Field(min_length=64, max_length=64)
+
+
 @dataclass(frozen=True)
 class PresenterRequestContext:
     connection: Connection
@@ -1006,6 +1012,74 @@ def presenter_signer_installation_status_route(
             "document_bytes_exposed": False,
             "synthetic_only": True,
         },
+    )
+
+
+@router.get("/signer/installations/{installation_id}/workspace-recoveries")
+def presenter_signer_workspace_recoveries_route(
+    installation_id: UUID,
+    limit: int = Query(default=20, ge=1, le=50),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        recoveries = _local_station_service().discover_workspaces(
+            context.connection,
+            actor=_signer_actor(context),
+            operator_device_id=context.operator_device_id,
+            installation_id=str(installation_id),
+            limit=limit,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "workspace_recoveries": recoveries,
+            "storage_references_exposed": False,
+            "document_bytes_exposed": False,
+            "cookie_material_exposed": False,
+            "certificate_material_exposed": False,
+            "synthetic_only": True,
+        },
+    )
+
+
+@router.post("/signer/tasks/{delivery_id}/workspace-recovery")
+def presenter_signer_workspace_recovery_route(
+    delivery_id: UUID,
+    body: RecoverSignerWorkspaceBody,
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+    ),
+    context: PresenterRequestContext = Depends(require_presenter_context),
+) -> JSONResponse:
+    try:
+        workspace = _local_station_service().recover_workspace(
+            context.connection,
+            actor=_signer_actor(context),
+            operator_device_id=context.operator_device_id,
+            installation_id=str(body.installation_id),
+            delivery_id=str(delivery_id),
+            source_workspace_id=str(body.source_workspace_id),
+            expected_task_fingerprint_sha256=(
+                body.expected_task_fingerprint_sha256
+            ),
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:
+        raise _as_http_exception(context, exc) from exc
+    return _success(
+        context,
+        {
+            "workspace": workspace,
+            "storage_references_exposed": False,
+            "document_bytes_exposed": False,
+            "cookie_material_exposed": False,
+            "certificate_material_exposed": False,
+            "synthetic_only": True,
+        },
+        status_code=201,
     )
 
 

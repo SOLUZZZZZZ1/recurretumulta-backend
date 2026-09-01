@@ -348,11 +348,15 @@ class PresenterSignerStationService:
             claim_id = _uuid(payload.get("claim_id"), code=code)
             actor_id = _uuid(payload.get("signer_operator_id"), code=code)
             session_id = _uuid(payload.get("signer_session_id"), code=code)
+            delivery_id = _uuid(payload.get("delivery_id"), code=code)
             if str(event.get("actor_operator_id")) != actor_id:
                 raise PresenterConflict(code, "El historial de toma no es verificable")
             if event_type == "presenter.signer_station.claimed":
                 claimed_at = _aware(payload.get("claimed_at"), code=code)
                 expires_at = _aware(payload.get("expires_at"), code=code)
+                task_fingerprint_sha256 = str(
+                    payload.get("task_fingerprint_sha256") or ""
+                ).lower()
                 if (
                     claim_id in claims
                     or expires_at <= claimed_at
@@ -360,10 +364,13 @@ class PresenterSignerStationService:
                     or payload.get("certificate_stored_by_rtm") is not False
                     or payload.get("browser_opened") is not False
                     or payload.get("external_effects_executed") is not False
+                    or not _SHA256_RE.fullmatch(task_fingerprint_sha256)
                 ):
                     raise PresenterConflict(code, "El historial de toma no es verificable")
                 claims[claim_id] = {
                     "claim_id": claim_id,
+                    "delivery_id": delivery_id,
+                    "task_fingerprint_sha256": task_fingerprint_sha256,
                     "signer_operator_id": actor_id,
                     "signer_session_id": session_id,
                     "claimed_at": claimed_at,
@@ -378,6 +385,7 @@ class PresenterSignerStationService:
                     or claim["state"] != "active"
                     or claim["signer_operator_id"] != actor_id
                     or claim["signer_session_id"] != session_id
+                    or claim["delivery_id"] != delivery_id
                     or released_at < claim["claimed_at"]
                     or payload.get("state") != "released"
                 ):
@@ -386,6 +394,52 @@ class PresenterSignerStationService:
                 claim["released_at"] = released_at
                 claim["release_command_id"] = _uuid(
                     payload.get("release_command_id"), code=code
+                )
+            elif event_type == "presenter.signer_station.superseded":
+                claim = claims.get(claim_id)
+                superseded_at = _aware(payload.get("superseded_at"), code=code)
+                superseded_by_session_id = _uuid(
+                    payload.get("superseded_by_session_id"), code=code
+                )
+                source_workspace_id = _uuid(
+                    payload.get("source_workspace_id"), code=code
+                )
+                operator_device_id = _uuid(
+                    payload.get("operator_device_id"), code=code
+                )
+                installation_id = _uuid(
+                    payload.get("installation_id"), code=code
+                )
+                if (
+                    claim is None
+                    or claim["state"] != "active"
+                    or claim["signer_operator_id"] != actor_id
+                    or claim["signer_session_id"] != session_id
+                    or claim["delivery_id"] != delivery_id
+                    or superseded_at < claim["claimed_at"]
+                    or superseded_at > claim["expires_at"]
+                    or payload.get("state") != "superseded"
+                    or payload.get("supersession_reason")
+                    != "exact_station_workspace_recovery"
+                    or superseded_by_session_id == session_id
+                    or not _SHA256_RE.fullmatch(
+                        str(payload.get("task_fingerprint_sha256") or "")
+                    )
+                    or str(payload.get("task_fingerprint_sha256") or "")
+                    != claim["task_fingerprint_sha256"]
+                    or payload.get("certificate_stored_by_rtm") is not False
+                    or payload.get("browser_opened") is not False
+                    or payload.get("external_effects_executed") is not False
+                ):
+                    raise PresenterConflict(code, "El historial de toma no es verificable")
+                claim["state"] = "superseded"
+                claim["superseded_at"] = superseded_at
+                claim["superseded_by_session_id"] = superseded_by_session_id
+                claim["source_workspace_id"] = source_workspace_id
+                claim["operator_device_id"] = operator_device_id
+                claim["installation_id"] = installation_id
+                claim["task_fingerprint_sha256"] = str(
+                    payload["task_fingerprint_sha256"]
                 )
             else:
                 raise PresenterConflict(code, "El historial de toma no es verificable")
@@ -750,6 +804,11 @@ class PresenterSignerStationService:
             raise PresenterConflict(
                 "presenter.signer_station_release_already_recorded",
                 "La toma ya fue liberada",
+            )
+        if claim["state"] != "active":
+            raise PresenterConflict(
+                "presenter.signer_station_claim_not_active",
+                "La toma local ya no esta activa",
             )
         if claim["expires_at"] <= now:
             raise PresenterConflict(
