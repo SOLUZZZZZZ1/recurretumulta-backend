@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 
 import reanalysis as legacy_reanalysis
+from case_authority import verify_signed_case_authority
 from database import get_engine
 from rtm_core.extraction_policy import (
     EXTRACTION_POLICY_VERSION,
@@ -23,6 +24,8 @@ from rtm_core.extraction_policy import (
     last_extraction_route_decision,
     select_deep_extraction_route,
 )
+from rtm_core.ops_case_scope import OpsCaseScope, require_case_in_scope
+from rtm_core.runtime_capabilities import require_http_capability
 
 
 REANALYSIS_EXECUTION_VERSION = "rtm_safe_reanalysis_execution_v1_0"
@@ -78,9 +81,10 @@ def extraction_policy_status() -> dict[str, Any]:
     }
 
 
-def _case_guard(case_id: str) -> Mapping[str, Any]:
+def _case_guard(case_id: str, *, scope: OpsCaseScope) -> Mapping[str, Any]:
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(conn, scope=scope, case_id=case_id)
         row = conn.execute(
             text(
                 """
@@ -118,6 +122,15 @@ def _case_guard(case_id: str) -> Mapping[str, Any]:
             )
         if str(meta["status"]) in _TERMINAL_CASE_STATUSES:
             raise HTTPException(status_code=409, detail="El expediente está finalizado")
+        # ``reanalysis_in_progress`` is a durable single-flight claim.  A
+        # second request must not be allowed to CAS the value to itself after
+        # waiting for the row lock, otherwise two provider runs can publish
+        # against the same case.
+        if str(meta["status"]) == "reanalysis_in_progress":
+            raise HTTPException(
+                status_code=409,
+                detail="Ya existe un reanálisis en curso para el expediente",
+            )
         if str(meta["department"]).strip().lower() != "traffic":
             raise HTTPException(
                 status_code=409,
@@ -182,8 +195,46 @@ def _case_guard(case_id: str) -> Mapping[str, Any]:
                 status_code=409,
                 detail="El expediente no contiene documentos originales analizables",
             )
+        authority = verify_signed_case_authority(conn, case_id)
+        claimed = conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET status='reanalysis_in_progress', updated_at=NOW()
+                WHERE id=:case_id AND status=:prior_status
+                RETURNING id
+                """
+            ),
+            {"case_id": case_id, "prior_status": str(meta["status"])},
+        ).fetchone()
+        if not claimed:
+            raise HTTPException(
+                status_code=409,
+                detail="El expediente cambió antes de iniciar Reanalysis",
+            )
 
-        return dict(meta)
+        return {
+            **dict(meta),
+            "prior_status": str(meta["status"]),
+            "authority_material_sha256": str(
+                authority.get("material_sha256") or ""
+            ),
+        }
+
+
+def _reset_failed_claim(case_id: str, prior_status: str) -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET status=:prior_status, updated_at=NOW()
+                WHERE id=:case_id AND status='reanalysis_in_progress'
+                """
+            ),
+            {"case_id": case_id, "prior_status": prior_status},
+        )
 
 
 def _append_policy_event(
@@ -215,12 +266,22 @@ def _append_policy_event(
         )
 
 
-def run_safe_traffic_reanalysis(case_id: str, *, actor: str) -> dict[str, Any]:
+def run_safe_traffic_reanalysis(
+    case_id: str,
+    *,
+    actor: str,
+    scope: OpsCaseScope,
+) -> dict[str, Any]:
     """Ejecuta Reanalysis; no promueve ni congela hechos automáticamente."""
 
-    _case_guard(case_id)
+    require_http_capability("document_provider")
+    claim = _case_guard(case_id, scope=scope)
     installation = install_safe_extraction_policy()
-    result = legacy_reanalysis.reanalyze_traffic_fine_case(case_id)
+    try:
+        result = legacy_reanalysis.reanalyze_traffic_fine_case(case_id)
+    except BaseException:
+        _reset_failed_claim(case_id, str(claim["prior_status"]))
+        raise
     decision = last_extraction_route_decision()
     _append_policy_event(case_id, actor=actor, decision=decision)
 

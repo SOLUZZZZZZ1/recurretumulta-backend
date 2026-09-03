@@ -24,8 +24,17 @@ class _Result:
 
 
 class _Connection:
-    def __init__(self, interested_canary, ai_payload=None):
+    def __init__(
+        self,
+        interested_canary,
+        ai_payload=None,
+        *,
+        case_type="fine",
+        vehicle_consent=False,
+    ):
         self.interested_canary = interested_canary
+        self.case_type = case_type
+        self.vehicle_consent = vehicle_consent
         self.ai_payload = ai_payload or {
             "tipo_infraccion": "traffic",
             "classifier_result": {
@@ -59,8 +68,10 @@ class _Connection:
             row = (
                 *common,
                 self.interested_canary
-                if "interested_data" in normalized
+                if "as interested_data" in normalized
                 else now,
+                self.case_type,
+                self.vehicle_consent,
             )
             return _Result([row])
 
@@ -111,6 +122,8 @@ class _PagingConnection:
                     now - timedelta(days=2),
                     updated_at,
                     updated_at,
+                    "fine",
+                    False,
                 )
             )
         self.target_case_id = self.rows[-1][0]
@@ -226,7 +239,12 @@ class SmartQueuePrivacyTest(unittest.TestCase):
                 only_action=None,
             )
 
-        self.assertNotIn("interested_data", connection.case_sql.casefold())
+        normalized_sql = connection.case_sql.casefold()
+        self.assertNotIn("as interested_data", normalized_sql)
+        self.assertIn(
+            "vehicle_removal_preparation_consent",
+            normalized_sql,
+        )
         self.assertEqual(response["count"], 1)
         self.assertNotIn("interested_data", response["items"][0])
 
@@ -367,6 +385,14 @@ class SmartQueuePrivacyTest(unittest.TestCase):
                 "ops_case_scope_filter",
                 return_value=("c.test_mode = TRUE", {}),
             ),
+            patch.object(
+                smart_queue,
+                "project_case_authorization_evidence",
+                return_value={
+                    "authorization_evidence_status": "verified",
+                    "signed_authority_verified": True,
+                },
+            ),
         ):
             response = smart_queue.queue_smart(
                 request=SimpleNamespace(state=SimpleNamespace()),
@@ -395,6 +421,56 @@ class SmartQueuePrivacyTest(unittest.TestCase):
         self.assertIn(":cursor_updated_at", second_sql)
         self.assertEqual(second_params["cursor_updated_at"], connection.rows[99][9])
         self.assertEqual(second_params["cursor_case_id"], connection.rows[99][0])
+
+    def test_vehicle_consent_never_becomes_generic_authority(self):
+        connection = _Connection(
+            {},
+            case_type="vehicle_removal",
+            vehicle_consent=True,
+        )
+        with (
+            patch.dict(os.environ, {"OPERATOR_TOKEN": OPERATOR_TOKEN}),
+            patch.object(
+                smart_queue,
+                "get_engine",
+                return_value=_Engine(connection),
+            ),
+            patch.object(
+                smart_queue,
+                "load_ops_case_scope",
+                return_value=SimpleNamespace(
+                    scope_all=False,
+                    individual_session=True,
+                ),
+            ),
+            patch.object(
+                smart_queue,
+                "ops_case_scope_filter",
+                return_value=("TRUE", {}),
+            ),
+            patch.object(
+                smart_queue,
+                "project_case_authorization_evidence",
+            ) as authority_projection,
+        ):
+            response = smart_queue.queue_smart(
+                request=SimpleNamespace(state=SimpleNamespace()),
+                x_operator_token=OPERATOR_TOKEN,
+                limit=10,
+                only_action=None,
+            )
+
+        item = response["items"][0]
+        self.assertEqual(item["case_type"], "vehicle_removal")
+        self.assertTrue(item["vehicle_preparation_consent"])
+        self.assertFalse(item["authorized"])
+        self.assertFalse(item["signed_authority_verified"])
+        self.assertEqual(
+            item["authorization_evidence_status"],
+            "not_applicable",
+        )
+        self.assertEqual(item["next_action"], "FALTA_AUTORIZACION")
+        authority_projection.assert_not_called()
 
     def test_legacy_only_action_preserves_one_bounded_case_query(self):
         connection = _PagingConnection()

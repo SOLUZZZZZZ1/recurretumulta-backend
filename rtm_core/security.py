@@ -24,10 +24,6 @@ def require_operator_token(value: Optional[str]) -> str:
     return _require_secret(value, "OPERATOR_TOKEN", "Unauthorized operator")
 
 
-def require_admin_token(value: Optional[str]) -> str:
-    return _require_secret(value, "ADMIN_TOKEN", "Unauthorized admin")
-
-
 def normalized_actor(value: Optional[str], *, fallback: str = "ops:operator") -> str:
     """Identificador auditable sin guardar tokens ni aceptar texto arbitrario."""
 

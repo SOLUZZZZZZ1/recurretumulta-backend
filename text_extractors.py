@@ -1,9 +1,19 @@
 import io
 import re
+import time
 from typing import Optional
 
 from pypdf import PdfReader
-from docx import Document
+
+from rtm_core.upload_security import (
+    extract_docx_text_bounded,
+    validate_pdf_document,
+)
+
+
+_MAX_PDF_TEXT_PAGES = 50
+_MAX_EXTRACTED_TEXT_CHARS = 250_000
+_PDF_EXTRACTION_DEADLINE_SECONDS = 15.0
 
 
 _ADMIN_LINE_STARTS = [
@@ -98,12 +108,24 @@ def _normalize_text(t: str) -> str:
     return t.strip()
 
 
-def extract_text_from_pdf_bytes(content: bytes) -> str:
+def _extract_text_from_pdf_bytes_local(content: bytes) -> str:
+    validate_pdf_document(content)
     reader = PdfReader(io.BytesIO(content))
     parts = []
-    for page in reader.pages:
+    char_count = 0
+    deadline = time.monotonic() + _PDF_EXTRACTION_DEADLINE_SECONDS
+    for page_index, page in enumerate(reader.pages):
+        if page_index >= _MAX_PDF_TEXT_PAGES:
+            break
+        if time.monotonic() > deadline:
+            break
         t = page.extract_text() or ""
-        parts.append(t)
+        remaining = _MAX_EXTRACTED_TEXT_CHARS - char_count
+        if remaining <= 0:
+            break
+        value = t[:remaining]
+        parts.append(value)
+        char_count += len(value)
 
     raw = "\n".join(parts)
     raw = normalize_ocr_text(raw)
@@ -111,12 +133,67 @@ def extract_text_from_pdf_bytes(content: bytes) -> str:
     return _normalize_text(raw)
 
 
-def extract_text_from_docx_bytes(content: bytes) -> str:
-    doc = Document(io.BytesIO(content))
-    raw = "\n".join(p.text for p in doc.paragraphs)
+def _extract_text_from_docx_bytes_local(content: bytes) -> str:
+    raw, _truncated = extract_docx_text_bounded(
+        content,
+        max_chars=_MAX_EXTRACTED_TEXT_CHARS,
+    )
     raw = normalize_ocr_text(raw)
     raw = strip_admin_noise(raw)
     return _normalize_text(raw)
+
+
+def _isolated_text(operation: str, content: bytes) -> str:
+    from rtm_core.parser_isolation import (
+        ParserRejected,
+        run_parser_isolated,
+    )
+    from rtm_core.upload_security import UploadSecurityError
+
+    try:
+        value = run_parser_isolated(operation, {"data": bytes(content)})
+    except ParserRejected as exc:
+        raise UploadSecurityError(str(exc), status_code=exc.status_code) from exc
+    if not isinstance(value, str) or len(value) > _MAX_EXTRACTED_TEXT_CHARS:
+        from rtm_core.parser_isolation import ParserIsolationError
+
+        raise ParserIsolationError("El extractor aislado devolvió una salida inválida")
+    return value
+
+
+async def _isolated_text_async(operation: str, content: bytes) -> str:
+    from rtm_core.parser_isolation import (
+        ParserIsolationError,
+        ParserRejected,
+        run_parser_isolated_async,
+    )
+    from rtm_core.upload_security import UploadSecurityError
+
+    try:
+        value = await run_parser_isolated_async(operation, {"data": bytes(content)})
+    except ParserRejected as exc:
+        raise UploadSecurityError(str(exc), status_code=exc.status_code) from exc
+    if not isinstance(value, str) or len(value) > _MAX_EXTRACTED_TEXT_CHARS:
+        raise ParserIsolationError("El extractor aislado devolvió una salida inválida")
+    return value
+
+
+def extract_text_from_pdf_bytes(content: bytes) -> str:
+    """Extrae PDF con terminación real si una página deja de responder."""
+
+    return _isolated_text("extract_pdf_text", content)
+
+
+async def extract_text_from_pdf_bytes_isolated_async(content: bytes) -> str:
+    return await _isolated_text_async("extract_pdf_text", content)
+
+
+def extract_text_from_docx_bytes(content: bytes) -> str:
+    return _isolated_text("extract_docx_text", content)
+
+
+async def extract_text_from_docx_bytes_isolated_async(content: bytes) -> str:
+    return await _isolated_text_async("extract_docx_text", content)
 
 
 def has_enough_text(text: Optional[str], min_chars: int = 500) -> bool:

@@ -1,39 +1,69 @@
 import hashlib
+import hmac
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks, Header, Request, Response
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import text
+from starlette.concurrency import run_in_threadpool
 
 from database import get_engine
-from b2_storage import upload_bytes
+from b2_storage import (
+    B2ObjectTooLargeError,
+    delete_object,
+    download_bytes_limited,
+    upload_bytes,
+)
 from email_utils import send_email
+from rtm_core.runtime_capabilities import capability_state, require_http_capability
+from rtm_core.case_state_policy import lock_case_for_public_material_mutation
+from rtm_core.service_catalog import validate_public_intake_classification
+from rtm_core.trusted_origins import trusted_frontend_origin
 from case_authority import (
     AUTHORITY_VERSION,
+    build_authorization_signature_candidate_attestation,
     build_case_authority_payload,
-    build_signed_authority_document_attestation,
+    require_authorization_candidate_digest_unused,
+    require_dgt_fine_authority_scope,
+    require_authority_document_binding,
     verify_active_case_authority,
+    verify_active_authority_document_issue,
+    verify_authorization_signature_candidate,
     verify_signed_case_authority,
 )
 from public_case_access import (
     issue_case_access_token,
     require_case_access_token,
     require_operator_case_access,
+    require_public_case_access_configured,
 )
 
 # Import interno del engine (Modo Dios)
 from ai.expediente_engine import run_expediente_ai
-from authorization_pdf import ensure_authorization_pdf, get_request_ip, _get_case_snapshot, _authorization_payload_from_case, generate_authorization_pdf
+from authorization_pdf import ensure_authorization_pdf, get_request_ip
 from pdf_builder import build_pdf
 from analyze import analyze_existing_case_document
+from rtm_core.upload_security import (
+    PDF,
+    SAFE_DOCUMENT_MIMES,
+    SAFE_IMAGE_OR_PDF_MIMES,
+    UploadSecurityError,
+    ValidatedUpload,
+    read_upload_limited,
+    validate_document_bytes,
+)
 
 router = APIRouter(prefix="/cases", tags=["cases"])
 
 MAX_APPEND_FILES = 5
+MAX_IDENTITY_FILE_BYTES = 8 * 1024 * 1024
+MAX_APPEND_FILE_BYTES = 8 * 1024 * 1024
+MAX_APPEND_TOTAL_BYTES = 20 * 1024 * 1024
 MAX_PUBLIC_PDF_BYTES = 10 * 1024 * 1024
 PUBLIC_SERVICE_FAMILY_CODES = {
     "trafico",
@@ -54,8 +84,6 @@ PRIVATE_DOCUMENT_HEADERS = {
     "Vary": "X-RTM-Case-Token",
     "X-Content-Type-Options": "nosniff",
 }
-
-
 def _document_projection(
     document_id: str,
     document_sha256: str,
@@ -77,12 +105,16 @@ def _env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
 def _case_link(case_id: str) -> str:
-    base = _env("FRONTEND_BASE_URL", "https://www.recurretumulta.eu").rstrip("/")
+    base = trusted_frontend_origin()
     token = issue_case_access_token(case_id)
-    return f"{base}/#/resumen?case={case_id}&access_token={token}"
+    # The route and case identifier must reach the hosting layer so its
+    # no-store/noindex policy applies.  The bearer capability stays in the
+    # fragment, which browsers do not send in HTTP requests or referrers; the
+    # frontend consumes it once and immediately scrubs it from history.
+    return f"{base}/resumen?case={case_id}#access_token={token}"
 
 def _send_email(to_email: str, subject: str, body: str) -> None:
-    if not to_email:
+    if not to_email or not capability_state("outbound_email").enabled:
         return
     try:
         send_email(to_email=to_email, subject=subject, body=body)
@@ -127,19 +159,23 @@ def _email_ready(case_id: str, name: str, email: str) -> None:
 # =========================
 # MODELOS
 # =========================
-class CaseDetailsIn(BaseModel):
-    full_name: str = Field(...)
-    dni_nie: str = Field(...)
-    matricula: Optional[str] = None
-    domicilio_notif: str = Field(...)
-    email: EmailStr
-    telefono: Optional[str] = None
+class _StrictPublicInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class CaseDetailsIn(_StrictPublicInput):
+    full_name: str = Field(min_length=1, max_length=160)
+    dni_nie: str = Field(min_length=3, max_length=32)
+    matricula: Optional[str] = Field(default=None, max_length=20)
+    domicilio_notif: str = Field(min_length=3, max_length=500)
+    email: EmailStr = Field(max_length=254)
+    telefono: Optional[str] = Field(default=None, max_length=40)
     autorizo_gestion: Optional[bool] = None
     acepto_responsabilidad: Optional[bool] = None
 
-class CaseContactIn(BaseModel):
-    name: str = Field(...)
-    email: EmailStr
+class CaseContactIn(_StrictPublicInput):
+    name: str = Field(min_length=1, max_length=160)
+    email: EmailStr = Field(max_length=254)
 
 
 class AuthorizationConsentIn(BaseModel):
@@ -177,6 +213,10 @@ def _case_exists(conn, case_id: str) -> Dict[str, Any]:
         "override_deadlines": bool(row[8]),
     }
 
+
+def _lock_case_for_material_mutation(conn, case_id: str) -> None:
+    lock_case_for_public_material_mutation(conn, case_id)
+
 def _event(case_id: str, typ: str, payload: Dict[str, Any]) -> None:
     engine = get_engine()
     with engine.begin() as conn:
@@ -203,16 +243,134 @@ def _event_on_conn(conn, case_id: str, typ: str, payload: Dict[str, Any]) -> Non
     )
 
 
-def _validate_public_pdf(data: bytes, content_type: str | None) -> str:
-    if not data:
-        raise HTTPException(status_code=400, detail="Archivo vacío")
-    if len(data) > MAX_PUBLIC_PDF_BYTES:
-        raise HTTPException(status_code=413, detail="PDF demasiado grande")
-    if (content_type or "").split(";", 1)[0].strip().lower() != "application/pdf":
-        raise HTTPException(status_code=415, detail="Solo se admite application/pdf")
-    if not data.startswith(b"%PDF-"):
-        raise HTTPException(status_code=422, detail="El contenido no es un PDF válido")
-    return hashlib.sha256(data).hexdigest()
+def _mark_authorization_evidence_stale(conn, case_id: str) -> None:
+    """Preserve prior evidence while making it ineligible for every gate."""
+
+    conn.execute(
+        text(
+            """
+            UPDATE documents
+            SET kind = CASE kind
+                WHEN 'authorization_signed_candidate'
+                    THEN 'authorization_signed_candidate_stale'
+                WHEN 'authorization_signed'
+                    THEN 'authorization_signed_stale'
+                WHEN 'authorization_signed_rejected'
+                    THEN 'authorization_signed_rejected_stale'
+                ELSE kind
+            END
+            WHERE case_id=:case_id
+              AND kind IN (
+                  'authorization_signed_candidate',
+                  'authorization_signed',
+                  'authorization_signed_rejected'
+              )
+            """
+        ),
+        {"case_id": case_id},
+    )
+
+
+def _claim_contact_notification(conn, case_id: str, *, changed: bool) -> bool:
+    """Reserva como máximo un correo de contacto cada quince minutos.
+
+    El bloqueo transaccional evita que dos peticiones simultáneas superen el
+    cooldown. La marca no contiene nombre, correo ni otro dato personal.
+    """
+
+    if not changed:
+        return False
+    conn.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"rtm:contact-email:{case_id}"},
+    )
+    recent = conn.execute(
+        text(
+            """
+            SELECT 1
+            FROM events
+            WHERE case_id = :id
+              AND type = 'contact_notification_queued'
+              AND created_at >= NOW() - INTERVAL '15 minutes'
+            LIMIT 1
+            """
+        ),
+        {"id": case_id},
+    ).fetchone()
+    if recent:
+        return False
+    _event_on_conn(conn, case_id, "contact_notification_queued", {})
+    return True
+
+
+def _upload_http_error(exc: UploadSecurityError) -> HTTPException:
+    safe_detail = {
+        400: "Archivo vacío o no recibido",
+        413: "Archivo demasiado grande",
+        415: "Formato de archivo no permitido",
+        422: "El archivo no ha superado la validación de seguridad",
+        503: "Validación de archivos no disponible",
+    }.get(exc.status_code, "El archivo no ha superado la validación de seguridad")
+    return HTTPException(status_code=exc.status_code, detail=safe_detail)
+
+
+async def _read_validated_upload(
+    file: UploadFile,
+    *,
+    max_bytes: int,
+    allowed_mimes,
+) -> tuple[bytes, ValidatedUpload]:
+    try:
+        data = await read_upload_limited(file, max_bytes=max_bytes)
+        validated = await run_in_threadpool(
+            validate_document_bytes,
+            filename=file.filename,
+            declared_mime=file.content_type,
+            data=data,
+            max_bytes=max_bytes,
+            allowed_mimes=allowed_mimes,
+        )
+    except UploadSecurityError as exc:
+        raise _upload_http_error(exc) from exc
+    return data, validated
+
+
+def _validate_public_pdf(
+    data: bytes,
+    content_type: str | None,
+    filename: str | None = "documento.pdf",
+) -> str:
+    try:
+        validated = validate_document_bytes(
+            filename=filename or "documento.pdf",
+            declared_mime=content_type,
+            data=data,
+            max_bytes=MAX_PUBLIC_PDF_BYTES,
+            allowed_mimes={PDF},
+        )
+    except UploadSecurityError as exc:
+        raise _upload_http_error(exc) from exc
+    return validated.sha256
+
+
+def _bounded_form_text(
+    value: str | None,
+    *,
+    field: str,
+    max_length: int,
+    required: bool = True,
+    multiline: bool = False,
+) -> str:
+    raw_value = str(value or "")
+    if len(raw_value) > max_length:
+        raise HTTPException(status_code=422, detail=f"El campo {field} es demasiado largo")
+    normalized = raw_value.strip()
+    if required and not normalized:
+        raise HTTPException(status_code=400, detail=f"El campo {field} es obligatorio")
+    allowed_controls = {"\r", "\n", "\t"} if multiline else set()
+    if any((ord(ch) < 32 or ord(ch) == 127) and ch not in allowed_controls for ch in normalized):
+        raise HTTPException(status_code=422, detail=f"El campo {field} contiene caracteres no válidos")
+    return normalized
 
 
 def _require_receipt_upload_state(conn, case_id: str) -> Dict[str, Any]:
@@ -306,107 +464,100 @@ def _rtm_auth_scope(department: str) -> str:
     return "realizar las gestiones extrajudiciales y administrativas necesarias para este expediente."
 
 
-async def _rtm_store_file(case_id: str, file: UploadFile, kind: str, folder: str):
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail=f"El archivo {kind} está vacío")
-    filename = (file.filename or kind).replace("/", "_").replace("\\", "_")[:140]
-    mime = file.content_type or "application/octet-stream"
-    ext = ".bin"
-    if "." in filename:
-        candidate = "." + filename.rsplit(".", 1)[-1].lower()
-        if 2 <= len(candidate) <= 10:
-            ext = candidate
-    document_sha256 = hashlib.sha256(content).hexdigest()
-    bucket, key = upload_bytes(case_id, folder, content, ext, mime)
+def _rtm_store_validated_file(
+    case_id: str,
+    *,
+    content: bytes,
+    validated: ValidatedUpload,
+    kind: str,
+    folder: str,
+):
+    try:
+        bucket, key = upload_bytes(
+            case_id,
+            folder,
+            content,
+            validated.extension,
+            validated.mime,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="No se pudo custodiar el documento",
+        ) from exc
     engine = get_engine()
-    with engine.begin() as conn:
-        document_row = conn.execute(text("""
-            INSERT INTO documents(
-                case_id, kind, b2_bucket, b2_key, mime, size_bytes, sha256, created_at
-            )
-            VALUES (
-                :case_id, :kind, :bucket, :key, :mime, :size_bytes, :sha256, NOW()
-            )
-            RETURNING id
-        """), {
-            "case_id": case_id, "kind": kind, "bucket": bucket, "key": key,
-            "mime": mime, "size_bytes": len(content), "sha256": document_sha256,
-        }).fetchone()
-    if not document_row:
-        raise HTTPException(status_code=409, detail="No se registró el documento")
+    try:
+        with engine.begin() as conn:
+            document_row = conn.execute(text("""
+                INSERT INTO documents(
+                    case_id, kind, b2_bucket, b2_key, mime, size_bytes, sha256, created_at
+                )
+                VALUES (
+                    :case_id, :kind, :bucket, :key, :mime, :size_bytes, :sha256, NOW()
+                )
+                RETURNING id
+            """), {
+                "case_id": case_id, "kind": kind, "bucket": bucket, "key": key,
+                "mime": validated.mime, "size_bytes": len(content), "sha256": validated.sha256,
+            }).fetchone()
+            if not document_row:
+                raise RuntimeError("El documento no fue registrado")
+    except Exception as exc:
+        _cleanup_b2_objects([(bucket, key)])
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo registrar el documento custodiado",
+        ) from exc
     return {
         "kind": kind,
         **_document_projection(
-            str(document_row[0]), document_sha256, mime, len(content)
+            str(document_row[0]), validated.sha256, validated.mime, len(content)
         ),
     }
 
 
-@router.post("/intake-draft")
-async def create_rtm_intake_draft(
-    department: str = Form(...),
-    case_type: str = Form(...),
-    source_module: str = Form("rtm_web"),
-    public_service_family: str = Form(""),
-    full_name: str = Form(...),
-    dni_nie: str = Form(...),
-    domicilio_notif: str = Form(...),
-    street: str = Form(...),
-    street_number: str = Form(...),
-    floor: str = Form(""),
-    door: str = Form(""),
-    postal_code: str = Form(...),
-    city: str = Form(...),
-    province: str = Form(...),
-    email: EmailStr = Form(...),
-    telefono: str = Form(...),
-    preferred_contact: str = Form("email"),
-    customer_comment: str = Form(...),
-    representation_confirmed: bool = Form(...),
-    prejudicial_counsel_requested: bool = Form(False),
-    privacy_accepted: bool = Form(...),
-    dni_front: UploadFile = File(...),
-    dni_back: UploadFile = File(...),
+async def _rtm_store_file(
+    case_id: str,
+    file: UploadFile,
+    kind: str,
+    folder: str,
+    *,
+    max_bytes: int = MAX_IDENTITY_FILE_BYTES,
+    allowed_mimes=SAFE_IMAGE_OR_PDF_MIMES,
 ):
-    department = (department or "").strip().lower()
-    case_type = (case_type or "").strip().lower()
-    public_service_family = (public_service_family or "").strip().lower()
-    if department not in {"traffic", "debt", "administration", "claims", "other"}:
-        raise HTTPException(status_code=400, detail="Departamento RTM no válido")
-    if public_service_family and public_service_family not in PUBLIC_SERVICE_FAMILY_CODES:
-        raise HTTPException(status_code=400, detail="Familia pública RTM no válida")
-    if not representation_confirmed or not privacy_accepted:
-        raise HTTPException(status_code=400, detail="Faltan consentimientos obligatorios")
+    content, validated = await _read_validated_upload(
+        file,
+        max_bytes=max_bytes,
+        allowed_mimes=allowed_mimes,
+    )
+    return _rtm_store_validated_file(
+        case_id,
+        content=content,
+        validated=validated,
+        kind=kind,
+        folder=folder,
+    )
 
-    case_id = str(uuid.uuid4())
-    case_access_token = issue_case_access_token(case_id)
-    interested = {
-        "full_name": full_name.strip(),
-        "dni_nie": dni_nie.strip().upper(),
-        "dni": dni_nie.strip().upper(),
-        "domicilio_notif": domicilio_notif.strip(),
-        "domicilio": domicilio_notif.strip(),
-        "address": {
-            "street": street.strip(), "street_number": street_number.strip(),
-            "floor": floor.strip(), "door": door.strip(),
-            "postal_code": postal_code.strip(), "city": city.strip(), "province": province.strip()
-        },
-        "email": str(email).strip(),
-        "telefono": telefono.strip(),
-        "preferred_contact": preferred_contact.strip().lower(),
-        "customer_comment": customer_comment.strip(),
-        "department": department,
-        "case_type": case_type,
-        "source_module": (source_module or "rtm_web").strip().lower(),
-        # Es una solicitud informativa, no consentimiento ni apoderamiento.
-        "prejudicial_counsel_requested": bool(
-            prejudicial_counsel_requested
-        ),
-    }
-    if public_service_family:
-        interested["public_service_family"] = public_service_family
 
+def _cleanup_b2_objects(coordinates: List[tuple[str, str]]) -> None:
+    """Compensación best-effort; nunca oculta la causa original del fallo."""
+
+    for bucket, key in reversed(coordinates):
+        try:
+            delete_object(bucket, key)
+        except Exception:
+            pass
+
+
+def _persist_rtm_intake_draft(
+    case_id: str,
+    case_record: Dict[str, Any],
+    stored_identity: List[tuple[str, str, bytes, ValidatedUpload, str]],
+    intake_event: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Publica caso, documentos y eventos en una sola transacción SQL."""
+
+    docs: List[Dict[str, Any]] = []
     engine = get_engine()
     with engine.begin() as conn:
         conn.execute(text("""
@@ -419,34 +570,253 @@ async def create_rtm_intake_draft(
                 CAST(:interested AS JSONB), :department, :case_type, :comment, :source,
                 :category, NOW(), NOW()
             )
-        """), {
-            "id": case_id, "email": str(email).strip(), "name": full_name.strip(),
-            "interested": json.dumps(interested, ensure_ascii=False),
-            "department": department, "case_type": case_type,
-            "comment": customer_comment.strip(),
-            "source": (source_module or "rtm_web").strip().lower(),
-            "category": department,
-        })
-        conn.execute(text("""
-            INSERT INTO events(case_id, type, payload, created_at)
-            VALUES (CAST(:id AS UUID), 'rtm_intake_created', CAST(:payload AS JSONB), NOW())
-        """), {
-            "id": case_id,
-            "payload": json.dumps({
-                "department": department,
-                "case_type": case_type,
-                "public_service_family": public_service_family or None,
-                "prejudicial_counsel_requested": bool(
-                    prejudicial_counsel_requested
+        """), {"id": case_id, **case_record})
+        for bucket, key, content, validated, kind in stored_identity:
+            document_row = conn.execute(text("""
+                INSERT INTO documents(
+                    case_id, kind, b2_bucket, b2_key, mime,
+                    size_bytes, sha256, created_at
+                ) VALUES (
+                    CAST(:case_id AS UUID), :kind, :bucket, :key, :mime,
+                    :size_bytes, :sha256, NOW()
+                )
+                RETURNING id
+            """), {
+                "case_id": case_id,
+                "kind": kind,
+                "bucket": bucket,
+                "key": key,
+                "mime": validated.mime,
+                "size_bytes": len(content),
+                "sha256": validated.sha256,
+            }).fetchone()
+            if not document_row:
+                raise RuntimeError("No se registró el documento de identidad")
+            docs.append({
+                "kind": kind,
+                **_document_projection(
+                    str(document_row[0]),
+                    validated.sha256,
+                    validated.mime,
+                    len(content),
                 ),
-            }),
-        })
+            })
+        _event_on_conn(conn, case_id, "rtm_intake_created", intake_event)
+        _event_on_conn(
+            conn,
+            case_id,
+            "rtm_identity_documents_saved",
+            {"documents": docs},
+        )
+    return docs
 
-    docs = [
-        await _rtm_store_file(case_id, dni_front, "identity_front", "identity"),
-        await _rtm_store_file(case_id, dni_back, "identity_back", "identity"),
+
+@router.post("/intake-draft")
+async def create_rtm_intake_draft(
+    department: str = Form(..., max_length=32),
+    case_type: str = Form(..., max_length=64),
+    source_module: str = Form("rtm_web", max_length=64),
+    public_service_family: str = Form(""),
+    full_name: str = Form(..., max_length=160),
+    dni_nie: str = Form(..., max_length=32),
+    domicilio_notif: str = Form(..., max_length=500),
+    street: str = Form(..., max_length=200),
+    street_number: str = Form(..., max_length=20),
+    floor: str = Form("", max_length=20),
+    door: str = Form("", max_length=20),
+    postal_code: str = Form(..., max_length=20),
+    city: str = Form(..., max_length=120),
+    province: str = Form(..., max_length=120),
+    email: EmailStr = Form(..., max_length=254),
+    telefono: str = Form(..., max_length=40),
+    preferred_contact: str = Form("email", max_length=20),
+    customer_comment: str = Form(..., max_length=5000),
+    representation_confirmed: bool = Form(...),
+    prejudicial_counsel_requested: bool = Form(False),
+    privacy_accepted: bool = Form(...),
+    dni_front: UploadFile = File(...),
+    dni_back: UploadFile = File(...),
+):
+    department = _bounded_form_text(
+        department, field="department", max_length=32
+    ).lower()
+    case_type = _bounded_form_text(
+        case_type, field="case_type", max_length=64
+    ).lower()
+    source_module = _bounded_form_text(
+        source_module or "rtm_web", field="source_module", max_length=64
+    ).lower()
+    public_service_family = _bounded_form_text(
+        public_service_family,
+        field="public_service_family",
+        max_length=32,
+        required=False,
+    ).lower()
+    full_name = _bounded_form_text(full_name, field="full_name", max_length=160)
+    dni_nie = _bounded_form_text(dni_nie, field="dni_nie", max_length=32).upper()
+    domicilio_notif = _bounded_form_text(
+        domicilio_notif, field="domicilio_notif", max_length=500
+    )
+    street = _bounded_form_text(street, field="street", max_length=200)
+    street_number = _bounded_form_text(
+        street_number, field="street_number", max_length=20
+    )
+    floor = _bounded_form_text(
+        floor, field="floor", max_length=20, required=False
+    )
+    door = _bounded_form_text(
+        door, field="door", max_length=20, required=False
+    )
+    postal_code = _bounded_form_text(
+        postal_code, field="postal_code", max_length=20
+    )
+    city = _bounded_form_text(city, field="city", max_length=120)
+    province = _bounded_form_text(province, field="province", max_length=120)
+    email_text = _bounded_form_text(str(email), field="email", max_length=254)
+    telefono = _bounded_form_text(telefono, field="telefono", max_length=40)
+    preferred_contact = _bounded_form_text(
+        preferred_contact, field="preferred_contact", max_length=20
+    ).lower()
+    customer_comment = _bounded_form_text(
+        customer_comment,
+        field="customer_comment",
+        max_length=5000,
+        required=False,
+        multiline=True,
+    )
+    if department not in {"traffic", "debt", "administration", "claims", "other"}:
+        raise HTTPException(status_code=400, detail="Departamento RTM no válido")
+    if public_service_family and public_service_family not in PUBLIC_SERVICE_FAMILY_CODES:
+        raise HTTPException(status_code=400, detail="Familia pública RTM no válida")
+    try:
+        department, case_type = validate_public_intake_classification(
+            department,
+            case_type,
+            public_service_family,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="La clasificación del servicio no es válida",
+        ) from exc
+    if preferred_contact not in {"email", "phone", "whatsapp"}:
+        raise HTTPException(status_code=400, detail="Preferencia de contacto no válida")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", source_module):
+        raise HTTPException(status_code=400, detail="Módulo de origen no válido")
+    # Este valor legacy expresa como máximo intención de continuar: no se
+    # persiste ni se usa como apoderamiento. La representación DGT solo nace en
+    # /authorize y queda ligada a su PDF/candidato/revisión firmada. Otros
+    # servicios no deben verse obligados a afirmar una representación DGT.
+    del representation_confirmed
+    if not privacy_accepted:
+        raise HTTPException(status_code=400, detail="Falta aceptar la privacidad")
+
+    # Las capacidades de custodia y token se comprueban antes de materializar
+    # uploads o abrir una transacción. Una configuración incompleta no puede
+    # dejar PII ni filas huérfanas.
+    require_public_case_access_configured()
+    require_http_capability("b2")
+
+    # Ambos documentos se validan antes de crear el caso o escribir en B2.
+    prepared_identity = [
+        await _read_validated_upload(
+            dni_front,
+            max_bytes=MAX_IDENTITY_FILE_BYTES,
+            allowed_mimes=SAFE_IMAGE_OR_PDF_MIMES,
+        ),
+        await _read_validated_upload(
+            dni_back,
+            max_bytes=MAX_IDENTITY_FILE_BYTES,
+            allowed_mimes=SAFE_IMAGE_OR_PDF_MIMES,
+        ),
     ]
-    _event(case_id, "rtm_identity_documents_saved", {"documents": docs})
+
+    case_id = str(uuid.uuid4())
+    case_access_token = issue_case_access_token(case_id)
+    interested = {
+        "full_name": full_name,
+        "dni_nie": dni_nie,
+        "dni": dni_nie,
+        "domicilio_notif": domicilio_notif,
+        "domicilio": domicilio_notif,
+        "address": {
+            "street": street, "street_number": street_number,
+            "floor": floor, "door": door,
+            "postal_code": postal_code, "city": city, "province": province
+        },
+        "email": email_text,
+        "telefono": telefono,
+        "preferred_contact": preferred_contact,
+        "customer_comment": customer_comment,
+        "department": department,
+        "case_type": case_type,
+        "source_module": source_module,
+        # Es una solicitud informativa, no consentimiento ni apoderamiento.
+        "prejudicial_counsel_requested": bool(
+            prejudicial_counsel_requested
+        ),
+    }
+    if public_service_family:
+        interested["public_service_family"] = public_service_family
+
+    stored_identity: List[tuple[str, str, bytes, ValidatedUpload, str]] = []
+    stored_coordinates: List[tuple[str, str]] = []
+    try:
+        for (content, validated), kind in zip(
+            prepared_identity,
+            ("identity_front", "identity_back"),
+        ):
+            bucket, key = await run_in_threadpool(
+                upload_bytes,
+                case_id,
+                "identity",
+                content,
+                validated.extension,
+                validated.mime,
+            )
+            stored_coordinates.append((bucket, key))
+            stored_identity.append((bucket, key, content, validated, kind))
+    except Exception as exc:
+        await run_in_threadpool(_cleanup_b2_objects, stored_coordinates)
+        raise HTTPException(
+            status_code=502,
+            detail="No se pudieron custodiar los documentos de identidad",
+        ) from exc
+
+    case_record = {
+        "email": email_text,
+        "name": full_name,
+        "interested": json.dumps(interested, ensure_ascii=False),
+        "department": department,
+        "case_type": case_type,
+        "comment": customer_comment,
+        "source": source_module,
+        "category": department,
+    }
+    intake_event = {
+        "department": department,
+        "case_type": case_type,
+        "public_service_family": public_service_family or None,
+        "prejudicial_counsel_requested": bool(
+            prejudicial_counsel_requested
+        ),
+    }
+    try:
+        # Caso, documentos y eventos forman una sola unidad de persistencia. B2
+        # se ha preparado antes; cualquier rollback de BD retira esos objetos.
+        await run_in_threadpool(
+            _persist_rtm_intake_draft,
+            case_id,
+            case_record,
+            stored_identity,
+            intake_event,
+        )
+    except Exception as exc:
+        await run_in_threadpool(_cleanup_b2_objects, stored_coordinates)
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo registrar el expediente de forma segura",
+        ) from exc
 
     return {
         "ok": True,
@@ -538,20 +908,28 @@ def save_case_contact(
     x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
 ):
     case_id = require_case_access_token(case_id, x_case_token)
+    name = data.name.strip()
+    email = str(data.email).strip().lower()
     engine = get_engine()
+    notify = False
     with engine.begin() as conn:
-        _case_exists(conn, case_id)
+        _lock_case_for_material_mutation(conn, case_id)
+        meta = _case_exists(conn, case_id)
+        changed = (
+            str(meta.get("contact_name") or "").strip() != name
+            or str(meta.get("contact_email") or "").strip().lower() != email
+        )
         conn.execute(
             text(
                 "UPDATE cases SET contact_name=:n, contact_email=:e, updated_at=NOW() WHERE id=:id"
             ),
-            {"id": case_id, "n": data.name.strip(), "e": str(data.email).strip()},
+            {"id": case_id, "n": name, "e": email},
         )
+        _event_on_conn(conn, case_id, "contact_saved", {"changed": changed})
+        notify = _claim_contact_notification(conn, case_id, changed=changed)
 
-    background_tasks.add_task(
-        _email_contact_saved, case_id, data.name.strip(), str(data.email)
-    )
-    _event(case_id, "contact_saved", {})
+    if notify:
+        background_tasks.add_task(_email_contact_saved, case_id, name, email)
     return {"ok": True}
 
 
@@ -572,6 +950,7 @@ def save_case_details(
     engine = get_engine()
 
     with engine.begin() as conn:
+        _lock_case_for_material_mutation(conn, case_id)
         meta = _case_exists(conn, case_id)
         interested = dict(meta.get("interested_data") or {})
         previous_identity = {
@@ -579,6 +958,8 @@ def save_case_details(
             "dni_nie": str(interested.get("dni_nie") or "").strip().upper(),
             "domicilio_notif": str(interested.get("domicilio_notif") or "").strip(),
             "email": str(interested.get("email") or "").strip().lower(),
+            "telefono": str(interested.get("telefono") or "").strip(),
+            "matricula": str(interested.get("matricula") or "").strip().upper(),
         }
 
         interested.update(
@@ -603,6 +984,8 @@ def save_case_details(
             "dni_nie": str(interested.get("dni_nie") or "").strip().upper(),
             "domicilio_notif": str(interested.get("domicilio_notif") or "").strip(),
             "email": str(interested.get("email") or "").strip().lower(),
+            "telefono": str(interested.get("telefono") or "").strip(),
+            "matricula": str(interested.get("matricula") or "").strip().upper(),
         }
         authority_invalidated = bool(meta.get("authorized")) and previous_identity != current_identity
 
@@ -639,12 +1022,22 @@ def save_case_details(
                 "id": case_id,
                 "payload": json.dumps(
                     {
-                        "full_name": interested.get("full_name"),
-                        "dni_nie": interested.get("dni_nie"),
-                        "matricula": interested.get("matricula"),
-                        "email": interested.get("email"),
-                        "telefono": interested.get("telefono"),
-                        "authorization_checks": interested.get("authorization_checks"),
+                        "fields_present": sorted(
+                            key
+                            for key in (
+                                "full_name",
+                                "dni_nie",
+                                "matricula",
+                                "domicilio_notif",
+                                "email",
+                                "telefono",
+                            )
+                            if interested.get(key)
+                        ),
+                        "authorization_checks_recorded": bool(
+                            interested.get("authorization_checks")
+                        ),
+                        "authority_invalidated": authority_invalidated,
                     },
                     ensure_ascii=False,
                 ),
@@ -652,6 +1045,7 @@ def save_case_details(
         )
 
         if authority_invalidated:
+            _mark_authorization_evidence_stale(conn, case_id)
             _event_on_conn(
                 conn,
                 case_id,
@@ -668,7 +1062,6 @@ def save_case_details(
 # =========================
 # AÑADIR DOCUMENTOS
 # =========================
-@router.post("/{case_id}/append-documents")
 async def append_documents(
     case_id: str,
     files: List[UploadFile] = File(...),
@@ -698,6 +1091,24 @@ async def append_documents(
         and case_type in {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
     )
 
+    prepared_files: list[tuple[bytes, ValidatedUpload]] = []
+    total_bytes = 0
+    for upload in files:
+        data, validated = await _read_validated_upload(
+            upload,
+            max_bytes=MAX_APPEND_FILE_BYTES,
+            allowed_mimes=SAFE_DOCUMENT_MIMES,
+        )
+        total_bytes += len(data)
+        if total_bytes > MAX_APPEND_TOTAL_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="La subida supera el límite total permitido",
+            )
+        prepared_files.append((data, validated))
+
+    # No se produce ningún evento, escritura en B2 o INSERT hasta que todo el lote
+    # ha superado los límites y la validación por contenido/estructura.
     _event(case_id, "append_documents_case_type_detected", {
         "department": department,
         "case_type": case_type,
@@ -706,23 +1117,24 @@ async def append_documents(
 
     uploaded_docs = []
     analyzed_docs = []
-    for uf in files:
-        data = await uf.read()
-        if not data:
-            continue
-
-        filename = (uf.filename or "documento").replace("/", "_").replace("\\", "_")[:140]
-        ext = ".bin"
-        if "." in filename:
-            candidate = "." + filename.rsplit(".", 1)[-1].lower()
-            if 2 <= len(candidate) <= 10:
-                ext = candidate
-        mime = uf.content_type or "application/octet-stream"
-
-        b2_bucket, b2_key = upload_bytes(case_id, "original", data, ext, mime)
+    for data, validated in prepared_files:
+        filename = validated.filename
+        mime = validated.mime
+        try:
+            b2_bucket, b2_key = upload_bytes(
+                case_id,
+                "original",
+                data,
+                validated.extension,
+                mime,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="No se pudo custodiar el documento",
+            ) from exc
 
         with engine.begin() as conn:
-            document_sha256 = hashlib.sha256(data).hexdigest()
             document_row = conn.execute(
                 text(
                     "INSERT INTO documents("
@@ -736,14 +1148,14 @@ async def append_documents(
                     "k": b2_key,
                     "m": mime,
                     "s": len(data),
-                    "sha256": document_sha256,
+                    "sha256": validated.sha256,
                 },
             ).fetchone()
         if not document_row:
             raise HTTPException(status_code=409, detail="No se registró el documento")
         uploaded_docs.append(
             _document_projection(
-                str(document_row[0]), document_sha256, mime, len(data)
+                str(document_row[0]), validated.sha256, mime, len(data)
             )
         )
 
@@ -751,7 +1163,8 @@ async def append_documents(
         # El mismo case_id recibe la extraction que luego consume generate.py.
         if is_traffic_fine:
             try:
-                analysis_result = analyze_existing_case_document(
+                analysis_result = await run_in_threadpool(
+                    analyze_existing_case_document,
                     case_id=case_id,
                     content=data,
                     filename=filename,
@@ -771,12 +1184,12 @@ async def append_documents(
             except Exception as exc:
                 _event(case_id, "traffic_fine_analysis_failed", {
                     "filename": filename,
-                    "error": f"{type(exc).__name__}: {exc}",
+                    "error_type": type(exc).__name__,
                 })
                 raise HTTPException(
                     status_code=500,
-                    detail=f"No se pudo analizar la multa {filename}: {type(exc).__name__}: {exc}",
-                )
+                    detail="No se pudo analizar el documento",
+                ) from exc
 
     with engine.begin() as conn:
         conn.execute(
@@ -797,7 +1210,6 @@ async def append_documents(
 # =========================
 # REVIEW
 # =========================
-@router.post("/{case_id}/review")
 def review_case(
     case_id: str,
     background_tasks: BackgroundTasks,
@@ -844,7 +1256,6 @@ def review_case(
 # =========================
 # ESTADO PÚBLICO
 # =========================
-@router.get("/{case_id}/public-status")
 def public_status(
     case_id: str,
     x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
@@ -887,6 +1298,37 @@ def public_status(
             {"id": case_id},
         ).fetchone()
 
+        candidate_row = conn.execute(
+            text(
+                """
+                SELECT id FROM documents
+                WHERE case_id=:id
+                  AND kind='authorization_signed_candidate'
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """
+            ),
+            {"id": case_id},
+        ).fetchone()
+        pending_signature_candidate = False
+        signed_authority_verified = False
+        if bool(row[2]):
+            try:
+                verify_signed_case_authority(conn, case_id)
+                signed_authority_verified = True
+            except HTTPException as exc:
+                if exc.status_code != 409:
+                    raise
+            if not signed_authority_verified and candidate_row:
+                try:
+                    verify_authorization_signature_candidate(
+                        conn, case_id, str(candidate_row[0])
+                    )
+                    pending_signature_candidate = True
+                except HTTPException as exc:
+                    if exc.status_code != 409:
+                        raise
+
     status = row[0] or "uploaded"
     payment_status = row[1] or ""
     authorized = bool(row[2])
@@ -908,8 +1350,12 @@ def public_status(
 
     if payment_status == "paid":
         msg = "Gestión iniciada correctamente."
+    elif signed_authority_verified:
+        msg = "Tu autorización firmada ha sido verificada."
+    elif pending_signature_candidate:
+        msg = "Tu autorización firmada está pendiente de revisión humana."
     elif authorized:
-        msg = "Ya tenemos tu autorización. Puedes continuar para iniciar la gestión."
+        msg = "La autorización digital está registrada; falta revisar la firma."
     else:
         msg = "Hemos analizado tu multa. Para continuar, necesitamos tus datos y autorización."
 
@@ -919,6 +1365,14 @@ def public_status(
         "status": status,
         "payment_status": payment_status,
         "authorized": authorized,
+        "signed_authority_verified": signed_authority_verified,
+        "authorization_evidence_status": (
+            "verified"
+            if signed_authority_verified
+            else "pending_review"
+            if pending_signature_candidate
+            else "not_submitted"
+        ),
         "message": msg,
         "contact_name": contact_name,
         "contact_email": contact_email,
@@ -932,6 +1386,100 @@ def public_status(
 # =========================
 # AUTORIZACION DEL EXPEDIENTE + PDF
 # =========================
+def _authorize_case_transaction(
+    engine,
+    *,
+    case_id: str,
+    request: Request,
+    authority_version: str,
+) -> Dict[str, Any]:
+    """Genera y registra autoridad como una unidad SQL con compensación B2."""
+
+    uploaded_coordinates: List[tuple[str, str]] = []
+    try:
+        with engine.begin() as conn:
+            _lock_case_for_material_mutation(conn, case_id)
+            row = conn.execute(
+                text(
+                    """
+                    SELECT COALESCE(interested_data, '{}'::jsonb),
+                           COALESCE(department, ''), COALESCE(case_type, ''),
+                           COALESCE(status, '')
+                    FROM cases
+                    WHERE id = :id
+                    FOR UPDATE
+                    """
+                ),
+                {"id": case_id},
+            ).fetchone()
+
+            if not row:
+                raise HTTPException(status_code=404, detail="Expediente no encontrado")
+
+            require_dgt_fine_authority_scope(row[1], row[2])
+            interested = row[0] if isinstance(row[0], dict) else {}
+            missing = [
+                field
+                for field in ("full_name", "dni_nie", "domicilio_notif", "email")
+                if not interested.get(field)
+            ]
+            if missing:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": "Faltan datos del interesado para generar la autorización",
+                        "missing_fields": missing,
+                    },
+                )
+
+            ip = get_request_ip(request)
+            accepted_at = datetime.now(timezone.utc).isoformat()
+            authority_payload = build_case_authority_payload(
+                case_id=case_id,
+                interested=interested,
+                accepted_at=accepted_at,
+                request_ip=ip,
+            )
+            authority_material = authority_payload["material"]
+            _mark_authorization_evidence_stale(conn, case_id)
+            auth_doc = ensure_authorization_pdf(
+                conn,
+                case_id=case_id,
+                request=request,
+                version=authority_version,
+                authority_payload=authority_payload,
+                uploaded_coordinates=uploaded_coordinates,
+            )
+            conn.execute(
+                text(
+                    """
+                    UPDATE cases
+                    SET authorized = TRUE,
+                        authorized_at = CAST(:accepted_at AS TIMESTAMPTZ),
+                        updated_at = NOW()
+                    WHERE id = :id
+                    """
+                ),
+                {"id": case_id, "accepted_at": accepted_at},
+            )
+            _event_on_conn(conn, case_id, "case_authorized", authority_payload)
+    except HTTPException:
+        _cleanup_b2_objects(uploaded_coordinates)
+        raise
+    except Exception as exc:
+        _cleanup_b2_objects(uploaded_coordinates)
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo generar el PDF de autorización",
+        ) from exc
+
+    return {
+        "authority_payload": authority_payload,
+        "authority_material": authority_material,
+        "auth_doc": auth_doc,
+    }
+
+
 @router.post("/{case_id}/authorize")
 async def authorize_case(
     case_id: str,
@@ -941,79 +1489,18 @@ async def authorize_case(
 ):
     case_id = require_case_access_token(case_id, x_case_token)
     engine = get_engine()
-
-    with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                """
-                SELECT COALESCE(interested_data, '{}'::jsonb)
-                FROM cases
-                WHERE id = :id
-                """
-            ),
-            {"id": case_id},
-        ).fetchone()
-
-        if not row:
-            raise HTTPException(status_code=404, detail="Expediente no encontrado")
-
-        interested = row[0] if isinstance(row[0], dict) else {}
-
-        missing = []
-        if not interested.get("full_name"):
-            missing.append("full_name")
-        if not interested.get("dni_nie"):
-            missing.append("dni_nie")
-        if not interested.get("domicilio_notif"):
-            missing.append("domicilio_notif")
-        if not interested.get("email"):
-            missing.append("email")
-
-        if missing:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "message": "Faltan datos del interesado para generar la autorización",
-                    "missing_fields": missing,
-                },
-            )
-
-        ip = get_request_ip(request)
-        accepted_at = datetime.now(timezone.utc).isoformat()
-        authority_payload = build_case_authority_payload(
-            case_id=case_id,
-            interested=interested,
-            accepted_at=accepted_at,
-            request_ip=ip,
-        )
-        authority_material = authority_payload["material"]
-
-        try:
-            auth_doc = ensure_authorization_pdf(
-                conn,
-                case_id=case_id,
-                request=request,
-                version=consent.authority_version,
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error generando PDF de autorización: {type(e).__name__}: {e}",
-            )
-
-        conn.execute(
-            text(
-                """
-                UPDATE cases
-                SET authorized = TRUE,
-                    authorized_at = CAST(:accepted_at AS TIMESTAMPTZ),
-                    updated_at = NOW()
-                WHERE id = :id
-                """
-            ),
-            {"id": case_id, "accepted_at": accepted_at},
-        )
-        _event_on_conn(conn, case_id, "case_authorized", authority_payload)
+    result = await run_in_threadpool(
+        _authorize_case_transaction,
+        engine,
+        case_id=case_id,
+        request=request,
+        authority_version=consent.authority_version,
+    )
+    authority_payload = result["authority_payload"]
+    authority_material = result["authority_material"]
+    auth_doc = result["auth_doc"]
+    issuance = auth_doc["issuance"]
+    issuance_material = issuance["material"]
 
     return {
         "ok": True,
@@ -1023,30 +1510,70 @@ async def authorize_case(
         "authority_version": authority_material["authority_version"],
         "authority_material_sha256": authority_payload["material_sha256"],
         "authorization_pdf": auth_doc.get("document"),
+        "authorization_document_binding": {
+            "authority_material_sha256": authority_payload["material_sha256"],
+            "generated_document_id": issuance_material["document_id"],
+            "generated_document_sha256": issuance_material["document_sha256"],
+            "generated_document_version": issuance_material["document_version"],
+            "document_nonce": issuance_material["document_nonce"],
+            "issuance_attestation_sha256": issuance["material_sha256"],
+        },
     }
 
 @router.get("/{case_id}/authorization-pdf")
-def download_authorization_pdf(
+async def download_authorization_pdf(
     case_id: str,
     request: Request,
     x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
 ):
-    """
-    Devuelve el PDF de autorización ya relleno para descargar y firmar.
-    """
+    """Devuelve exactamente el PDF emitido y ligado a la autoridad activa."""
     case_id = require_case_access_token(case_id, x_case_token)
     engine = get_engine()
     with engine.begin() as conn:
-        _case_exists(conn, case_id)
-        ip = get_request_ip(request)
-        case_meta = _get_case_snapshot(conn, case_id)
-        payload = _authorization_payload_from_case(case_meta, ip=ip, version=AUTHORITY_VERSION)
-
-        payload["representante_nombre"] = "LA TALAMANQUINA, S.L."
-        payload["representante_nif"] = "B75440115"
-        payload["representante_domicilio"] = "Calle Velázquez, 15 – 28001 Madrid (España)"
-
-        pdf_bytes = generate_authorization_pdf(payload)
+        authority = verify_active_case_authority(conn, case_id)
+        issuance = verify_active_authority_document_issue(
+            conn, case_id, authority=authority
+        )
+        issued = issuance["material"]
+        row = conn.execute(
+            text(
+                """
+                SELECT b2_bucket, b2_key, sha256, size_bytes, mime
+                FROM documents
+                WHERE case_id=:case_id
+                  AND id=CAST(:document_id AS UUID)
+                  AND kind='authorization_pdf'
+                LIMIT 1
+                """
+            ),
+            {"case_id": case_id, "document_id": issued["document_id"]},
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=409, detail="PDF de autorización no disponible")
+    try:
+        pdf_bytes = await run_in_threadpool(
+            download_bytes_limited,
+            str(row[0]),
+            str(row[1]),
+            max_bytes=MAX_PUBLIC_PDF_BYTES,
+            case_id=case_id,
+        )
+    except B2ObjectTooLargeError as exc:
+        raise HTTPException(status_code=409, detail="PDF de autorización no verificable") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="No se pudo recuperar el PDF de autorización") from exc
+    if (
+        str(row[4] or "") != "application/pdf"
+        or len(pdf_bytes) != int(row[3] or 0)
+        or not hmac.compare_digest(
+            hashlib.sha256(pdf_bytes).hexdigest(), str(row[2] or "").lower()
+        )
+        or not hmac.compare_digest(
+            hashlib.sha256(pdf_bytes).hexdigest(),
+            str(issued.get("document_sha256") or "").lower(),
+        )
+    ):
+        raise HTTPException(status_code=409, detail="PDF de autorización no verificable")
 
     headers = {
         **PRIVATE_DOCUMENT_HEADERS,
@@ -1063,81 +1590,167 @@ async def _store_authorization_signed(
     case_id: str,
     file: UploadFile,
     x_case_token: Optional[str],
+    *,
+    authority_material_sha256: str,
+    generated_document_id: str,
+    generated_document_sha256: str,
+    generated_document_version: str,
+    document_nonce: str,
+    issuance_attestation_sha256: str,
 ):
-    """Adjunta el PDF firmado a una autorización digital ya verificable."""
+    """Custodia un candidato; nunca convierte una subida pública en firma válida."""
     case_id = require_case_access_token(case_id, x_case_token)
     engine = get_engine()
 
     with engine.begin() as conn:
-        verify_active_case_authority(conn, case_id)
-
-    data = await file.read()
-    content_type = file.content_type or ""
-    document_sha256 = _validate_public_pdf(data, content_type)
+        _lock_case_for_material_mutation(conn, case_id)
+        authority_payload = verify_active_case_authority(conn, case_id)
+        issuance_payload = verify_active_authority_document_issue(
+            conn, case_id, authority=authority_payload
+        )
+        require_authority_document_binding(
+            issuance_payload,
+            authority_material_sha256=authority_material_sha256,
+            generated_document_id=generated_document_id,
+            generated_document_sha256=generated_document_sha256,
+            generated_document_version=generated_document_version,
+            document_nonce=document_nonce,
+            issuance_attestation_sha256=issuance_attestation_sha256,
+        )
 
     try:
-        b2_bucket, b2_key = upload_bytes(
-            case_id, "authorization_signed", data, ".pdf", "application/pdf"
+        data = await read_upload_limited(file, max_bytes=MAX_PUBLIC_PDF_BYTES)
+    except UploadSecurityError as exc:
+        raise _upload_http_error(exc) from exc
+    content_type = file.content_type or ""
+    document_sha256 = await run_in_threadpool(
+        _validate_public_pdf, data, content_type, file.filename
+    )
+
+    with engine.begin() as conn:
+        _lock_case_for_material_mutation(conn, case_id)
+        authority_payload = verify_active_case_authority(conn, case_id)
+        issuance_payload = verify_active_authority_document_issue(
+            conn, case_id, authority=authority_payload
+        )
+        require_authority_document_binding(
+            issuance_payload,
+            authority_material_sha256=authority_material_sha256,
+            generated_document_id=generated_document_id,
+            generated_document_sha256=generated_document_sha256,
+            generated_document_version=generated_document_version,
+            document_nonce=document_nonce,
+            issuance_attestation_sha256=issuance_attestation_sha256,
+        )
+        require_authorization_candidate_digest_unused(
+            conn,
+            case_id,
+            authority_payload=authority_payload,
+            issuance_payload=issuance_payload,
+            candidate_document_sha256=document_sha256,
+        )
+
+    try:
+        b2_bucket, b2_key = await run_in_threadpool(
+            upload_bytes,
+            case_id,
+            "authorization_signature_candidate",
+            data,
+            ".pdf",
+            "application/pdf",
         )
     except Exception as e:
         raise HTTPException(
             status_code=502,
-            detail=f"No se pudo custodiar el PDF firmado: {type(e).__name__}",
+            detail="No se pudo custodiar el PDF firmado",
         ) from e
 
-    with engine.begin() as conn:
-        conn.execute(
-            text("SELECT id FROM cases WHERE id=:id FOR UPDATE"),
-            {"id": case_id},
-        )
-        authority_payload = verify_active_case_authority(conn, case_id)
-        document_row = conn.execute(
-            text(
-                """
-                INSERT INTO documents(
-                    case_id, kind, b2_bucket, b2_key, mime, size_bytes, sha256, created_at
-                )
-                VALUES (
-                    :id, 'authorization_signed', :b, :k, 'application/pdf', :s, :sha256, NOW()
-                )
-                RETURNING id
-                """
-            ),
-            {
-                "id": case_id,
-                "b": b2_bucket,
-                "k": b2_key,
-                "s": len(data),
-                "sha256": document_sha256,
-            },
-        ).fetchone()
-        if not document_row:
-            raise HTTPException(status_code=409, detail="No se registró el PDF firmado")
-        uploaded_at = datetime.now(timezone.utc).isoformat()
-        signed_attestation = build_signed_authority_document_attestation(
-            case_id=case_id,
-            authority_payload=authority_payload,
-            document_id=str(document_row[0]),
-            document_sha256=document_sha256,
-            size_bytes=len(data),
-            storage_bucket=b2_bucket,
-            storage_key=b2_key,
-            uploaded_at=uploaded_at,
-        )
-        _event_on_conn(
-            conn,
-            case_id,
-            "authorization_signed_uploaded",
-            signed_attestation,
-        )
+    try:
+        with engine.begin() as conn:
+            _lock_case_for_material_mutation(conn, case_id)
+            authority_payload = verify_active_case_authority(conn, case_id)
+            issuance_payload = verify_active_authority_document_issue(
+                conn, case_id, authority=authority_payload
+            )
+            require_authority_document_binding(
+                issuance_payload,
+                authority_material_sha256=authority_material_sha256,
+                generated_document_id=generated_document_id,
+                generated_document_sha256=generated_document_sha256,
+                generated_document_version=generated_document_version,
+                document_nonce=document_nonce,
+                issuance_attestation_sha256=issuance_attestation_sha256,
+            )
+            require_authorization_candidate_digest_unused(
+                conn,
+                case_id,
+                authority_payload=authority_payload,
+                issuance_payload=issuance_payload,
+                candidate_document_sha256=document_sha256,
+            )
+            document_row = conn.execute(
+                text(
+                    """
+                    INSERT INTO documents(
+                        case_id, kind, b2_bucket, b2_key, mime, size_bytes, sha256, created_at
+                    )
+                    VALUES (
+                        :id, 'authorization_signed_candidate', :b, :k,
+                        'application/pdf', :s, :sha256, NOW()
+                    )
+                    RETURNING id
+                    """
+                ),
+                {
+                    "id": case_id,
+                    "b": b2_bucket,
+                    "k": b2_key,
+                    "s": len(data),
+                    "sha256": document_sha256,
+                },
+            ).fetchone()
+            if not document_row:
+                raise HTTPException(status_code=409, detail="No se registró el candidato")
+            uploaded_at = datetime.now(timezone.utc).isoformat()
+            candidate_attestation = build_authorization_signature_candidate_attestation(
+                case_id=case_id,
+                authority_payload=authority_payload,
+                issuance_payload=issuance_payload,
+                document_id=str(document_row[0]),
+                document_sha256=document_sha256,
+                size_bytes=len(data),
+                uploaded_at=uploaded_at,
+            )
+            _event_on_conn(
+                conn,
+                case_id,
+                "authorization_signature_candidate_uploaded",
+                candidate_attestation,
+            )
+    except HTTPException:
+        await run_in_threadpool(_cleanup_b2_objects, [(b2_bucket, b2_key)])
+        raise
+    except Exception as exc:
+        await run_in_threadpool(_cleanup_b2_objects, [(b2_bucket, b2_key)])
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo registrar el PDF firmado",
+        ) from exc
 
     return {
         "ok": True,
         "case_id": case_id,
         "authorized": True,
-        "document": _document_projection(
-            str(document_row[0]), document_sha256, "application/pdf", len(data)
-        ),
+        "signed_authority_verified": False,
+        "authorization_evidence": {
+            "status": "pending_review",
+            "candidate_document": _document_projection(
+                str(document_row[0]), document_sha256, "application/pdf", len(data)
+            ),
+            "candidate_attestation_sha256": candidate_attestation[
+                "material_sha256"
+            ],
+        },
     }
 
 
@@ -1145,18 +1758,50 @@ async def _store_authorization_signed(
 async def upload_authorization_signed_legacy(
     case_id: str,
     file: UploadFile = File(...),
+    authority_material_sha256: str = Form(..., min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
+    generated_document_id: str = Form(..., min_length=36, max_length=36, pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
+    generated_document_sha256: str = Form(..., min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
+    generated_document_version: Literal["v1_dgt_homologado"] = Form(...),
+    document_nonce: str = Form(..., min_length=36, max_length=36, pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
+    issuance_attestation_sha256: str = Form(..., min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
     x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
 ):
-    return await _store_authorization_signed(case_id, file, x_case_token)
+    return await _store_authorization_signed(
+        case_id,
+        file,
+        x_case_token,
+        authority_material_sha256=authority_material_sha256,
+        generated_document_id=generated_document_id,
+        generated_document_sha256=generated_document_sha256,
+        generated_document_version=generated_document_version,
+        document_nonce=document_nonce,
+        issuance_attestation_sha256=issuance_attestation_sha256,
+    )
 
 
 @router.post("/{case_id}/authorization-signed")
 async def upload_authorization_signed(
     case_id: str,
     file: UploadFile = File(...),
+    authority_material_sha256: str = Form(..., min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
+    generated_document_id: str = Form(..., min_length=36, max_length=36, pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
+    generated_document_sha256: str = Form(..., min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
+    generated_document_version: Literal["v1_dgt_homologado"] = Form(...),
+    document_nonce: str = Form(..., min_length=36, max_length=36, pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
+    issuance_attestation_sha256: str = Form(..., min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"),
     x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
 ):
-    return await _store_authorization_signed(case_id, file, x_case_token)
+    return await _store_authorization_signed(
+        case_id,
+        file,
+        x_case_token,
+        authority_material_sha256=authority_material_sha256,
+        generated_document_id=generated_document_id,
+        generated_document_sha256=generated_document_sha256,
+        generated_document_version=generated_document_version,
+        document_nonce=document_nonce,
+        issuance_attestation_sha256=issuance_attestation_sha256,
+    )
 
 
 @router.post("/{case_id}/upload-receipt")
@@ -1168,73 +1813,99 @@ async def upload_receipt(
     case_id = require_operator_case_access(case_id, x_operator_token)
     engine = get_engine()
 
-    data = await file.read()
-    receipt_sha256 = _validate_public_pdf(data, file.content_type or "")
+    try:
+        data = await read_upload_limited(file, max_bytes=MAX_PUBLIC_PDF_BYTES)
+    except UploadSecurityError as exc:
+        raise _upload_http_error(exc) from exc
+    receipt_sha256 = await run_in_threadpool(
+        _validate_public_pdf,
+        data,
+        file.content_type or "",
+        file.filename,
+    )
 
     with engine.begin() as conn:
         _require_receipt_upload_state(conn, case_id)
 
     try:
-        b2_bucket, b2_key = upload_bytes(
-            case_id, "receipt", data, ".pdf", "application/pdf"
+        b2_bucket, b2_key = await run_in_threadpool(
+            upload_bytes,
+            case_id,
+            "receipt",
+            data,
+            ".pdf",
+            "application/pdf",
         )
     except Exception as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"No se pudo custodiar el justificante: {type(exc).__name__}",
+            detail="No se pudo custodiar el justificante",
         ) from exc
 
-    with engine.begin() as conn:
-        state_evidence = _require_receipt_upload_state(conn, case_id)
+    try:
+        with engine.begin() as conn:
+            state_evidence = _require_receipt_upload_state(conn, case_id)
 
-        conn.execute(
-            text(
-                """
-                INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime, size_bytes, created_at)
-                VALUES (:id, 'submission_receipt', :b, :k, :m, :s, NOW())
-                """
-            ),
-            {
-                "id": case_id,
-                "b": b2_bucket,
-                "k": b2_key,
-                "m": "application/pdf",
-                "s": len(data),
-            },
-        )
-
-        updated = conn.execute(
-            text(
-                """
-                UPDATE cases
-                SET status='submitted', updated_at=NOW()
-                WHERE id=:id AND status='submission_receipt_pending'
-                RETURNING id
-                """
-            ),
-            {"id": case_id},
-        ).fetchone()
-        if not updated:
-            raise HTTPException(status_code=409, detail="Transición de presentación en conflicto")
-
-        _event_on_conn(
-            conn,
-            case_id,
-            "submission_receipt_uploaded",
-            {
-                "evidence_kind": "submission_receipt",
-                "receipt_sha256": receipt_sha256,
-                "size_bytes": len(data),
-                "registro": state_evidence["submission"].get("registro"),
-                "csv": state_evidence["submission"].get("csv"),
-                "resource_id": state_evidence["submission"].get("resource_id"),
-                "authority_material_sha256": state_evidence["authority"]["material_sha256"],
-                "transition": {
-                    "from": "submission_receipt_pending",
-                    "to": "submitted",
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO documents(
+                        case_id, kind, b2_bucket, b2_key, mime, size_bytes, sha256, created_at
+                    )
+                    VALUES (:id, 'submission_receipt', :b, :k, :m, :s, :sha256, NOW())
+                    """
+                ),
+                {
+                    "id": case_id,
+                    "b": b2_bucket,
+                    "k": b2_key,
+                    "m": "application/pdf",
+                    "s": len(data),
+                    "sha256": receipt_sha256,
                 },
-            },
-        )
+            )
+
+            updated = conn.execute(
+                text(
+                    """
+                    UPDATE cases
+                    SET status='submitted', updated_at=NOW()
+                    WHERE id=:id AND status='submission_receipt_pending'
+                    RETURNING id
+                    """
+                ),
+                {"id": case_id},
+            ).fetchone()
+            if not updated:
+                raise HTTPException(status_code=409, detail="Transición de presentación en conflicto")
+
+            _event_on_conn(
+                conn,
+                case_id,
+                "submission_receipt_uploaded",
+                {
+                    "evidence_kind": "submission_receipt",
+                    "receipt_sha256": receipt_sha256,
+                    "size_bytes": len(data),
+                    "registro": state_evidence["submission"].get("registro"),
+                    "csv": state_evidence["submission"].get("csv"),
+                    "resource_id": state_evidence["submission"].get("resource_id"),
+                    "authority_material_sha256": state_evidence["authority"]["material_sha256"],
+                    "transition": {
+                        "from": "submission_receipt_pending",
+                        "to": "submitted",
+                    },
+                },
+            )
+    except HTTPException:
+        await run_in_threadpool(_cleanup_b2_objects, [(b2_bucket, b2_key)])
+        raise
+    except Exception as exc:
+        await run_in_threadpool(_cleanup_b2_objects, [(b2_bucket, b2_key)])
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo registrar el justificante",
+        ) from exc
 
     return {
         "ok": True,

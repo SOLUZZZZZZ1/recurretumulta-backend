@@ -82,28 +82,31 @@ class StagingPublicCaseAccessBoundaryTest(TestCase):
         )[1].split("@router.", maxsplit=1)[0]
 
         access_check = route.index("require_operator_case_access(")
-        self.assertLess(access_check, route.index("await file.read()"))
-        self.assertLess(access_check, route.index("upload_bytes("))
+        self.assertLess(access_check, route.index("read_upload_limited("))
+        self.assertLess(access_check, route.index("upload_bytes,"))
+        self.assertIn("run_in_threadpool(", route)
 
-    def test_production_keeps_shared_operator_compatibility(self):
+    def test_production_rejects_shared_operator_compatibility(self):
         case_id = str(uuid4())
         with mock.patch.dict(
             os.environ,
             self._environment("production"),
             clear=True,
         ):
-            billing_case_id = public_case_access.require_case_or_operator_access(
-                case_id,
-                None,
-                self.OPERATOR_TOKEN,
-            )
-            receipt_case_id = public_case_access.require_operator_case_access(
-                case_id,
-                self.OPERATOR_TOKEN,
-            )
+            with self.assertRaises(HTTPException) as billing_denied:
+                public_case_access.require_case_or_operator_access(
+                    case_id,
+                    None,
+                    self.OPERATOR_TOKEN,
+                )
+            with self.assertRaises(HTTPException) as receipt_denied:
+                public_case_access.require_operator_case_access(
+                    case_id,
+                    self.OPERATOR_TOKEN,
+                )
 
-        self.assertEqual(billing_case_id, case_id)
-        self.assertEqual(receipt_case_id, case_id)
+        self.assertEqual(billing_denied.exception.status_code, 401)
+        self.assertEqual(receipt_denied.exception.status_code, 503)
 
     def test_unconfigured_environment_keeps_existing_legacy_contract(self):
         case_id = str(uuid4())

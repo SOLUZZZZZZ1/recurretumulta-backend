@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
 
+from rtm_core.ai_security import (
+    ModelCallBudgetExceeded,
+    model_call_budget,
+)
 from rtm_core.contracts import (
     FactStatus,
     ResolutionStatus,
@@ -18,6 +22,7 @@ from rtm_core.document_extraction import (
     SourceDocument,
 )
 from rtm_core.document_provider_retry import (
+    MAX_DOCUMENT_PROVIDER_ATTEMPTS,
     RetryingOpenAIResponsesDocumentProvider,
 )
 from rtm_core.family_dispatch import resolve_family
@@ -110,10 +115,8 @@ class DocumentProviderRetryTest(unittest.TestCase):
             status_code=502,
             detail={
                 "message": "provider error",
-                "status_code": 429,
-                "provider_detail": (
-                    "Rate limit reached. Please try again in 3.971s."
-                ),
+                "code": "document_provider_rate_limited",
+                "retry_after_seconds": 3.971,
             },
         )
         success = (
@@ -129,16 +132,17 @@ class DocumentProviderRetryTest(unittest.TestCase):
             sleeper=waits.append,
         )
 
-        with patch.object(
-            OpenAIResponsesDocumentProvider,
-            "extract_document",
-            side_effect=[rate_limit, success],
-        ) as mocked:
-            result, mode, warnings = provider.extract_document(
-                service="claims",
-                document=_document(),
-                content=b"synthetic",
-            )
+        with model_call_budget(2):
+            with patch.object(
+                OpenAIResponsesDocumentProvider,
+                "extract_document",
+                side_effect=[rate_limit, success],
+            ) as mocked:
+                result, mode, warnings = provider.extract_document(
+                    service="claims",
+                    document=_document(),
+                    content=b"synthetic",
+                )
 
         self.assertIsInstance(result, ProviderDocumentResult)
         self.assertEqual(mode, "document_text")
@@ -153,8 +157,7 @@ class DocumentProviderRetryTest(unittest.TestCase):
             status_code=502,
             detail={
                 "message": "provider error",
-                "status_code": 403,
-                "provider_detail": "model_not_found",
+                "code": "document_provider_rejected",
             },
         )
         provider = RetryingOpenAIResponsesDocumentProvider(
@@ -164,19 +167,91 @@ class DocumentProviderRetryTest(unittest.TestCase):
             sleeper=waits.append,
         )
 
+        with model_call_budget(1):
+            with patch.object(
+                OpenAIResponsesDocumentProvider,
+                "extract_document",
+                side_effect=forbidden,
+            ) as mocked:
+                with self.assertRaises(HTTPException):
+                    provider.extract_document(
+                        service="claims",
+                        document=_document(),
+                        content=b"synthetic",
+                    )
+
+        self.assertEqual(mocked.call_count, 1)
+        self.assertFalse(waits)
+
+    def test_retry_provider_requires_an_active_budget(self):
+        provider = RetryingOpenAIResponsesDocumentProvider(
+            api_key="synthetic-test-key",
+            model="gpt-4o",
+            max_attempts=1,
+            sleeper=lambda _seconds: None,
+        )
         with patch.object(
             OpenAIResponsesDocumentProvider,
             "extract_document",
-            side_effect=forbidden,
         ) as mocked:
-            with self.assertRaises(HTTPException):
+            with self.assertRaises(ModelCallBudgetExceeded):
+                provider.extract_document(
+                    service="claims",
+                    document=_document(),
+                    content=b"synthetic",
+                )
+        mocked.assert_not_called()
+
+    def test_retry_attempts_have_an_absolute_cap(self):
+        for value in (0, MAX_DOCUMENT_PROVIDER_ATTEMPTS + 1, 10_000):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    RetryingOpenAIResponsesDocumentProvider(
+                        api_key="synthetic-test-key",
+                        model="gpt-4o",
+                        max_attempts=value,
+                    )
+
+        with patch.dict(
+            "os.environ",
+            {"OPENAI_DOCUMENT_MAX_ATTEMPTS": "10000"},
+        ):
+            with self.assertRaises(RuntimeError):
+                RetryingOpenAIResponsesDocumentProvider(
+                    api_key="synthetic-test-key",
+                    model="gpt-4o",
+                )
+
+    def test_exhausted_budget_blocks_retry_before_sleep_and_second_request(self):
+        waits = []
+        provider = RetryingOpenAIResponsesDocumentProvider(
+            api_key="synthetic-test-key",
+            model="gpt-4o",
+            max_attempts=MAX_DOCUMENT_PROVIDER_ATTEMPTS,
+            retry_margin_seconds=0.0,
+            sleeper=waits.append,
+        )
+        response = Mock(
+            ok=False,
+            status_code=429,
+            headers={"Retry-After": "0.1"},
+        )
+        with (
+            model_call_budget(1),
+            patch("rtm_core.document_extraction.require_http_capability"),
+            patch(
+                "rtm_core.document_extraction.requests.post",
+                return_value=response,
+            ) as post,
+        ):
+            with self.assertRaises(ModelCallBudgetExceeded):
                 provider.extract_document(
                     service="claims",
                     document=_document(),
                     content=b"synthetic",
                 )
 
-        self.assertEqual(mocked.call_count, 1)
+        self.assertEqual(post.call_count, 1)
         self.assertFalse(waits)
 
 

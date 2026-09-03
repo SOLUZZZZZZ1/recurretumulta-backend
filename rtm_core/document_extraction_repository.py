@@ -120,7 +120,7 @@ def _row_to_record(row: Any) -> DocumentExtractionRecord:
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Paquete documental almacenado no válido: {exc}",
+            detail="Paquete documental almacenado no válido",
         ) from exc
 
     digest = str(mapping["packet_sha256"] or "")

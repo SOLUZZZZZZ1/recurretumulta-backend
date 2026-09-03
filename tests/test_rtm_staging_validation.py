@@ -9,6 +9,10 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
+from rtm_core.ai_security import (
+    consume_model_call_budget,
+    require_model_call_budget,
+)
 from rtm_core.document_extraction import (
     ProviderDocumentResult,
     ProviderObservation,
@@ -241,6 +245,23 @@ class SyntheticStagingValidationTest(unittest.TestCase):
                 self.assertEqual(result.direction_maturity, "orientation_only")
                 self.assertFalse(result.generation_allowed)
                 self.assertFalse(result.conflicted_fields)
+
+    def test_each_synthetic_scenario_installs_a_model_budget(self):
+        class _BudgetAwareProvider(_SyntheticFixtureProvider):
+            def extract_document(self, *, service, document, content):
+                require_model_call_budget()
+                consume_model_call_budget()
+                return super().extract_document(
+                    service=service,
+                    document=document,
+                    content=content,
+                )
+
+        result = run_synthetic_scenario(
+            staging_scenarios(["debt"])[0],
+            provider=_BudgetAwareProvider(),
+        )
+        self.assertTrue(result.passed, result.errors)
 
     def test_report_never_contains_fixture_text_or_evidence(self):
         report = run_synthetic_staging_suite(

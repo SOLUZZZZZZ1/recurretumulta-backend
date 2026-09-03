@@ -11,12 +11,18 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from sqlalchemy import text
 
-from b2_storage import download_bytes, upload_bytes
+from b2_storage import (
+    delete_object,
+    download_bytes_limited,
+    get_b2_bucket,
+    upload_bytes,
+)
 from case_authority import verify_signed_case_authority
 from database import get_engine
 from dgt_client import DGTNotConfigured, submit_pdf
@@ -25,6 +31,54 @@ from rtm_core.runtime_capabilities import require_http_capability
 
 AUTOMATION_VERSION = "rtm_submission_automation_v1_1_fail_closed"
 MAX_AUTOMATION_PDF_BYTES = 20 * 1024 * 1024
+MAX_PROVIDER_REFERENCE_CHARS = 256
+
+
+def _cleanup_uploaded_receipt(coordinates: tuple[str, str]) -> None:
+    try:
+        delete_object(*coordinates)
+    except Exception:
+        pass
+
+
+@contextmanager
+def _b2_backed_transaction(engine, coordinates: tuple[str, str]):
+    """Compensa B2 si cualquier sentencia o el commit SQL falla."""
+
+    try:
+        with engine.begin() as conn:
+            yield conn
+    except Exception:
+        _cleanup_uploaded_receipt(coordinates)
+        raise
+
+
+def _failure_payload(error_code: str, *, resource_id: str) -> Dict[str, str]:
+    """Build an allowlisted diagnostic payload without exception text."""
+
+    safe_code = str(error_code or "automation_failed")[:80]
+    safe_resource_id = str(resource_id or "")[:128]
+    return {
+        "error_code": safe_code,
+        "resource_id": safe_resource_id,
+    }
+
+
+def _provider_reference(value: Any, *, field: str) -> Optional[str]:
+    """Accept only small, printable identifiers from the external provider."""
+
+    if value is None:
+        return None
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        raise ValueError(f"invalid_{field}")
+    candidate = str(value).strip()
+    if not candidate:
+        return None
+    if len(candidate) > MAX_PROVIDER_REFERENCE_CHARS:
+        raise ValueError(f"invalid_{field}")
+    if any(ord(character) < 32 or ord(character) == 127 for character in candidate):
+        raise ValueError(f"invalid_{field}")
+    return candidate
 
 
 def _require_external_submission_capability() -> None:
@@ -36,12 +90,7 @@ def _require_external_submission_capability() -> None:
     ):
         raise HTTPException(
             status_code=503,
-            detail={
-                "message": "La presentación externa exige habilitación explícita.",
-                "required_flag": state.env_var,
-                "environment": state.environment,
-                "reason": state.reason,
-            },
+            detail={"code": "external_submission_unavailable"},
         )
 
 
@@ -120,6 +169,7 @@ def _approved_core_pdf(conn, case_id: str) -> Optional[Dict[str, Any]]:
                 d.kind,
                 d.b2_bucket,
                 d.b2_key,
+                d.sha256 AS pdf_sha256,
                 d.mime,
                 d.size_bytes,
                 d.created_at
@@ -148,6 +198,13 @@ def _approved_core_pdf(conn, case_id: str) -> Optional[Dict[str, Any]]:
     if not row:
         return None
     mapping = row._mapping
+    pdf_sha256 = str(mapping["pdf_sha256"] or "").strip().lower()
+    if len(pdf_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in pdf_sha256
+    ):
+        # Los recursos legacy sin una huella de los bytes PDF no son aptos para
+        # una presentación externa. No se reutiliza la huella del texto.
+        return None
     return {
         "resource_id": str(mapping["resource_id"]),
         "preview_id": str(mapping["legal_preview_id"]),
@@ -160,6 +217,7 @@ def _approved_core_pdf(conn, case_id: str) -> Optional[Dict[str, Any]]:
         "kind": str(mapping["kind"]),
         "bucket": str(mapping["b2_bucket"]),
         "key": str(mapping["b2_key"]),
+        "pdf_sha256": pdf_sha256,
         "mime": str(mapping["mime"]),
         "size_bytes": int(mapping["size_bytes"] or 0),
         "created_at": str(mapping["created_at"]),
@@ -233,7 +291,43 @@ def _reset_claim(case_id: str, event_type: str, payload: Dict[str, Any]) -> None
             ),
             {
                 "case_id": case_id,
-                "error": str(payload.get("error") or payload.get("reason") or ""),
+                "error": str(payload.get("error_code") or "automation_failed")[:80],
+            },
+        )
+        _event(conn, case_id, event_type, payload)
+
+
+def _block_unavailable_submission(
+    case_id: str,
+    *,
+    event_type: str,
+    payload: Dict[str, Any],
+) -> None:
+    """Make a non-operational provider visible and stop automatic retries."""
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET status='submission_blocked', updated_at=NOW()
+                WHERE id=:case_id AND status='submitting'
+                """
+            ),
+            {"case_id": case_id},
+        )
+        conn.execute(
+            text(
+                """
+                UPDATE submissions
+                SET status='blocked', last_error=:error, updated_at=NOW()
+                WHERE case_id=:case_id AND channel='DGT_CORE'
+                """
+            ),
+            {
+                "case_id": case_id,
+                "error": str(payload.get("error_code") or "provider_unavailable")[:80],
             },
         )
         _event(conn, case_id, event_type, payload)
@@ -272,7 +366,7 @@ def _hold_claim_for_reconciliation(
             {
                 "case_id": case_id,
                 "status": submission_status,
-                "error": str(payload.get("error") or payload.get("reason") or ""),
+                "error": str(payload.get("error_code") or "automation_failed")[:80],
             },
         )
         _event(conn, case_id, event_type, payload)
@@ -323,7 +417,7 @@ def _claim_case(case_id: str) -> Dict[str, Any]:
         if status != "ready_to_submit":
             raise HTTPException(
                 status_code=409,
-                detail=f"El expediente no está listo para presentar: {status}",
+                detail={"code": "case_not_ready_for_submission"},
             )
 
         pdf = _approved_core_pdf(conn, case_id)
@@ -332,6 +426,24 @@ def _claim_case(case_id: str) -> Dict[str, Any]:
                 status_code=409,
                 detail="No existe un PDF CORE aprobado para presentación",
             )
+        expected_key_prefix = f"cases/{case_id}/"
+        if (
+            pdf["bucket"] != get_b2_bucket()
+            or not pdf["key"].startswith(expected_key_prefix)
+            or ".." in pdf["key"].split("/")
+            or "\\" in pdf["key"]
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="El PDF aprobado está fuera de la custodia del expediente",
+            )
+
+        signed_attestation_sha256 = str(
+            authority.get("signed_document_attestation", {}).get(
+                "material_sha256"
+            )
+            or ""
+        )
 
         claimed = conn.execute(
             text(
@@ -357,7 +469,10 @@ def _claim_case(case_id: str) -> Dict[str, Any]:
                 "preview_id": pdf["preview_id"],
                 "pdf_document_id": pdf["document_id"],
                 "content_sha256": pdf["content_sha256"],
+                "rendered_content_sha256": pdf["content_sha256"],
+                "pdf_sha256": pdf["pdf_sha256"],
                 "authority_material_sha256": authority["material_sha256"],
+                "signed_document_attestation_sha256": signed_attestation_sha256,
                 "automation_version": AUTOMATION_VERSION,
             },
         )
@@ -366,7 +481,70 @@ def _claim_case(case_id: str) -> Dict[str, Any]:
             "already_submitted": False,
             "pdf": pdf,
             "authority_material_sha256": authority["material_sha256"],
+            "signed_document_attestation_sha256": signed_attestation_sha256,
         }
+
+
+def _revalidate_claim(case_id: str, claim: Dict[str, Any]) -> None:
+    """Recheck every claimed immutable identifier immediately before egress."""
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT status, payment_status, COALESCE(authorized, FALSE)
+                FROM cases
+                WHERE id=:case_id
+                FOR UPDATE
+                """
+            ),
+            {"case_id": case_id},
+        ).fetchone()
+        if (
+            not row
+            or str(row[0] or "") != "submitting"
+            or str(row[1] or "") != "paid"
+            or not bool(row[2])
+        ):
+            raise HTTPException(status_code=409, detail="La reclamación de envío caducó")
+        authority = verify_signed_case_authority(conn, case_id)
+        current_pdf = _approved_core_pdf(conn, case_id)
+        expected_pdf = claim["pdf"]
+        if not current_pdf:
+            raise HTTPException(status_code=409, detail="El PDF aprobado dejó de ser válido")
+        authority_digest = str(authority.get("material_sha256") or "")
+        signed_digest = str(
+            authority.get("signed_document_attestation", {}).get(
+                "material_sha256"
+            )
+            or ""
+        )
+        if (
+            not hmac.compare_digest(
+                authority_digest,
+                str(claim.get("authority_material_sha256") or ""),
+            )
+            or not hmac.compare_digest(
+                signed_digest,
+                str(claim.get("signed_document_attestation_sha256") or ""),
+            )
+            or any(
+                str(current_pdf.get(key) or "")
+                != str(expected_pdf.get(key) or "")
+                for key in (
+                    "resource_id",
+                    "preview_id",
+                    "document_id",
+                    "content_sha256",
+                    "pdf_sha256",
+                    "bucket",
+                    "key",
+                    "size_bytes",
+                )
+            )
+        ):
+            raise HTTPException(status_code=409, detail="La evidencia de envío cambió")
 
 
 def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
@@ -386,7 +564,12 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
     pdf = claim["pdf"]
     external_call_started = False
     try:
-        pdf_bytes = download_bytes(pdf["bucket"], pdf["key"])
+        pdf_bytes = download_bytes_limited(
+            pdf["bucket"],
+            pdf["key"],
+            max_bytes=MAX_AUTOMATION_PDF_BYTES,
+            case_id=case_id,
+        )
         if not pdf_bytes:
             raise RuntimeError("El PDF aprobado está vacío")
         if not isinstance(pdf_bytes, (bytes, bytearray)):
@@ -398,9 +581,11 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
             raise RuntimeError("El documento aprobado no es un PDF válido")
         if pdf["size_bytes"] and len(pdf_bytes) != pdf["size_bytes"]:
             raise RuntimeError("El tamaño del PDF no coincide con el documento registrado")
-        actual_content_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
-        if not hmac.compare_digest(actual_content_sha256, pdf["content_sha256"]):
+        actual_pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
+        if not hmac.compare_digest(actual_pdf_sha256, pdf["pdf_sha256"]):
             raise RuntimeError("El hash del PDF no coincide con el recurso CORE aprobado")
+
+        _revalidate_claim(case_id, claim)
 
         external_call_started = True
         response = submit_pdf(
@@ -410,39 +595,45 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
                 "resource_id": pdf["resource_id"],
                 "preview_id": pdf["preview_id"],
                 "document_id": pdf["document_id"],
-                "content_sha256": actual_content_sha256,
+                "rendered_content_sha256": pdf["content_sha256"],
+                "pdf_sha256": actual_pdf_sha256,
                 "generator_version": pdf["generator_version"],
                 "automation_version": AUTOMATION_VERSION,
             },
         )
     except DGTNotConfigured as exc:
-        _reset_claim(
+        _block_unavailable_submission(
             case_id,
-            "dgt_not_configured_skip",
-            {"error": str(exc), "resource_id": pdf["resource_id"]},
+            event_type="dgt_submission_unavailable",
+            payload=_failure_payload(
+                "dgt_not_configured",
+                resource_id=pdf["resource_id"],
+            ),
         )
-        return {
-            "ok": True,
-            "case_id": case_id,
-            "status": "ready_to_submit",
-            "skipped": True,
-            "reason": "dgt_not_configured",
-        }
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "external_submission_unavailable"},
+        ) from exc
     except NotImplementedError as exc:
-        _reset_claim(
+        _block_unavailable_submission(
             case_id,
-            "dgt_not_implemented_skip",
-            {"error": str(exc), "resource_id": pdf["resource_id"]},
+            event_type="dgt_submission_unavailable",
+            payload=_failure_payload(
+                "dgt_not_implemented",
+                resource_id=pdf["resource_id"],
+            ),
         )
-        return {
-            "ok": True,
-            "case_id": case_id,
-            "status": "ready_to_submit",
-            "skipped": True,
-            "reason": "dgt_not_implemented",
-        }
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "external_submission_unavailable"},
+        ) from exc
     except Exception as exc:
-        payload = {"error": str(exc), "resource_id": pdf["resource_id"]}
+        error_code = (
+            "external_submission_outcome_unknown"
+            if external_call_started
+            else "document_preflight_failed"
+        )
+        payload = _failure_payload(error_code, resource_id=pdf["resource_id"])
         if external_call_started:
             _hold_claim_for_reconciliation(
                 case_id,
@@ -453,7 +644,10 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
             )
         else:
             _reset_claim(case_id, "dgt_submit_failed_preflight", payload)
-        raise HTTPException(status_code=502, detail=f"Fallo al presentar en DGT: {exc}")
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "external_submission_failed"},
+        ) from exc
 
     if not isinstance(response, dict):
         _hold_claim_for_reconciliation(
@@ -461,15 +655,35 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
             case_status="submission_outcome_unknown",
             submission_status="reconciliation_required",
             event_type="dgt_submission_response_invalid",
-            payload={
-                "error": "DGT devolvió una respuesta no estructurada",
-                "resource_id": pdf["resource_id"],
-            },
+            payload=_failure_payload(
+                "invalid_provider_response",
+                resource_id=pdf["resource_id"],
+            ),
         )
-        raise HTTPException(status_code=502, detail="Respuesta DGT no verificable")
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "invalid_external_submission_response"},
+        )
 
-    registro = str(response.get("registro") or "").strip()
-    csv = str(response.get("csv") or "").strip() or None
+    try:
+        registro = _provider_reference(response.get("registro"), field="registro")
+        csv = _provider_reference(response.get("csv"), field="csv")
+    except ValueError as exc:
+        _hold_claim_for_reconciliation(
+            case_id,
+            case_status="submission_outcome_unknown",
+            submission_status="reconciliation_required",
+            event_type="dgt_submission_response_invalid",
+            payload=_failure_payload(
+                "invalid_provider_reference",
+                resource_id=pdf["resource_id"],
+            ),
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "invalid_external_submission_response"},
+        ) from exc
+    registro = registro or ""
     justificante_pdf = response.get("justificante_pdf") or b""
     if not justificante_pdf or not isinstance(justificante_pdf, (bytes, bytearray)):
         has_registration = bool(registro or csv)
@@ -487,7 +701,7 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
                 else "dgt_submit_without_receipt"
             ),
             payload={
-                "error": "DGT no devolvió justificante PDF",
+                "error_code": "provider_receipt_missing",
                 "diagnostic": "dgt_submit_without_receipt",
                 "resource_id": pdf["resource_id"],
                 "registro": registro,
@@ -495,7 +709,10 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
                 "authority_material_sha256": claim["authority_material_sha256"],
             },
         )
-        raise HTTPException(status_code=502, detail="DGT no devolvió justificante_pdf")
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "external_submission_receipt_unavailable"},
+        )
     justificante_pdf = bytes(justificante_pdf)
     if len(justificante_pdf) > MAX_AUTOMATION_PDF_BYTES:
         has_registration = bool(registro or csv)
@@ -509,7 +726,7 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
                 else "dgt_submit_invalid_receipt"
             ),
             payload={
-                "error": "Justificante demasiado grande",
+                "error_code": "provider_receipt_too_large",
                 "diagnostic": "dgt_submit_invalid_receipt",
                 "resource_id": pdf["resource_id"],
                 "registro": registro,
@@ -517,7 +734,10 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
                 "authority_material_sha256": claim["authority_material_sha256"],
             },
         )
-        raise HTTPException(status_code=502, detail="DGT devolvió un justificante demasiado grande")
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "invalid_external_submission_receipt"},
+        )
     if not justificante_pdf.startswith(b"%PDF-"):
         has_registration = bool(registro or csv)
         _hold_claim_for_reconciliation(
@@ -530,7 +750,7 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
                 else "dgt_submit_invalid_receipt"
             ),
             payload={
-                "error": "El justificante no es PDF",
+                "error_code": "provider_receipt_invalid",
                 "diagnostic": "dgt_submit_invalid_receipt",
                 "resource_id": pdf["resource_id"],
                 "registro": registro,
@@ -538,7 +758,10 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
                 "authority_material_sha256": claim["authority_material_sha256"],
             },
         )
-        raise HTTPException(status_code=502, detail="DGT devolvió un justificante no válido")
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "invalid_external_submission_receipt"},
+        )
     receipt_sha256 = hashlib.sha256(justificante_pdf).hexdigest()
     if not registro and not csv:
         _hold_claim_for_reconciliation(
@@ -547,12 +770,15 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
             submission_status="reconciliation_required",
             event_type="dgt_submit_without_registration",
             payload={
-                "error": "DGT no devolvió registro ni CSV",
+                "error_code": "provider_reference_missing",
                 "resource_id": pdf["resource_id"],
                 "receipt_sha256": receipt_sha256,
             },
         )
-        raise HTTPException(status_code=502, detail="DGT no devolvió registro ni CSV")
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "invalid_external_submission_response"},
+        )
 
     engine = get_engine()
     with engine.begin() as conn:
@@ -614,14 +840,14 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
                     WHERE case_id=:case_id AND channel='DGT_CORE'
                     """
                 ),
-                {"case_id": case_id, "error": str(exc)},
+                {"case_id": case_id, "error": "receipt_storage_failed"},
             )
             _event(
                 conn,
                 case_id,
                 "dgt_receipt_storage_failed",
                 {
-                    "error": str(exc),
+                    "error_code": "receipt_storage_failed",
                     "resource_id": pdf["resource_id"],
                     "registro": registro,
                     "csv": csv,
@@ -631,10 +857,10 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
             )
         raise HTTPException(
             status_code=502,
-            detail="La presentación fue aceptada, pero no pudo guardarse el justificante",
-        )
+            detail={"code": "external_submission_receipt_storage_failed"},
+        ) from exc
 
-    with engine.begin() as conn:
+    with _b2_backed_transaction(engine, (bucket, key)) as conn:
         submitted_transition = conn.execute(
             text(
                 "UPDATE cases SET status='submitted', updated_at=NOW() "
@@ -654,6 +880,9 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
             if current_status == "submitted" and _verified_submission_evidence(
                 conn, case_id
             ):
+                # Este reintento no necesita el objeto recién creado: la
+                # evidencia autoritativa ya estaba persistida.
+                _cleanup_uploaded_receipt((bucket, key))
                 return {
                     "ok": True,
                     "case_id": case_id,
@@ -708,7 +937,8 @@ def submit_case_fully_automatic(case_id: str) -> Dict[str, Any]:
                 "resource_id": pdf["resource_id"],
                 "preview_id": pdf["preview_id"],
                 "pdf_document_id": pdf["document_id"],
-                "content_sha256": actual_content_sha256,
+                "rendered_content_sha256": pdf["content_sha256"],
+                "pdf_sha256": actual_pdf_sha256,
                 "registro": registro,
                 "csv": csv,
                 "justificante": {"bucket": bucket, "key": key},
@@ -739,19 +969,18 @@ def tick(limit: int = 25) -> Dict[str, Any]:
     """Procesa casos con recurso CORE aprobado; jamás genera documentos."""
 
     _require_external_submission_capability()
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_automation_limit"},
+        )
     engine = get_engine()
     with engine.begin() as conn:
         if not _core_schema_ready(conn):
-            return {
-                "ok": True,
-                "picked": 0,
-                "processed": 0,
-                "failed": 0,
-                "skipped": True,
-                "reason": "core_schema_not_migrated",
-                "automation_version": AUTOMATION_VERSION,
-                "results": [],
-            }
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "core_schema_unavailable"},
+            )
 
         rows = conn.execute(
             text(
@@ -782,21 +1011,34 @@ def tick(limit: int = 25) -> Dict[str, Any]:
 
     processed = 0
     failed = 0
+    skipped = 0
     results: list[dict[str, Any]] = []
     for case_id in picked:
         try:
             result = submit_case_fully_automatic(case_id)
-            processed += 1
+            if result.get("ok") is not True:
+                raise RuntimeError("automation_result_not_successful")
+            if result.get("skipped"):
+                skipped += 1
+            else:
+                processed += 1
             results.append({"case_id": case_id, "ok": True, "result": result})
-        except Exception as exc:
+        except Exception:
             failed += 1
-            results.append({"case_id": case_id, "ok": False, "error": str(exc)})
+            results.append(
+                {
+                    "case_id": case_id,
+                    "ok": False,
+                    "error_code": "automation_case_failed",
+                }
+            )
 
     return {
-        "ok": True,
+        "ok": failed == 0,
         "picked": len(picked),
         "processed": processed,
         "failed": failed,
+        "skipped": skipped,
         "automation_version": AUTOMATION_VERSION,
         "results": results,
     }

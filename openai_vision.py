@@ -1,16 +1,65 @@
 import base64
 import json
 import os
-import io
 from typing import Any, Dict, Optional
 
 import requests
 
-try:
-    from PIL import Image, ImageEnhance
-except Exception:
-    Image = None
-    ImageEnhance = None
+from rtm_core.ai_security import (
+    consume_model_call_budget,
+    protect_responses_payload,
+    require_model_call_budget,
+)
+from rtm_core.runtime_capabilities import require_capability
+from rtm_core.parser_isolation import run_image_parser_isolated
+_MAIN_OUTPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "organismo": {"type": ["string", "null"]},
+        "expediente_ref": {"type": ["string", "null"]},
+        "importe": {"type": ["number", "null"]},
+        "fecha_notificacion": {"type": ["string", "null"]},
+        "fecha_documento": {"type": ["string", "null"]},
+        "tipo_sancion": {"type": ["string", "null"]},
+        "pone_fin_via_administrativa": {"type": ["boolean", "null"]},
+        "plazo_recurso_sugerido": {"type": ["string", "null"]},
+        "observaciones": {"type": "string", "maxLength": 1000},
+        "vision_raw_text": {"type": "string", "maxLength": 4000},
+    },
+    "required": [
+        "organismo",
+        "expediente_ref",
+        "importe",
+        "fecha_notificacion",
+        "fecha_documento",
+        "tipo_sancion",
+        "pone_fin_via_administrativa",
+        "plazo_recurso_sugerido",
+        "observaciones",
+        "vision_raw_text",
+    ],
+}
+_FOCUS_OUTPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "hecho_denunciado_focus": {"type": ["string", "null"], "maxLength": 1000},
+        "hecho_denunciado_focus_es": {"type": ["string", "null"], "maxLength": 1000},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "ocr_quality": {"type": "string", "enum": ["good", "medium", "bad"]},
+        "needs_operator_review": {"type": "boolean"},
+        "notes": {"type": "string", "maxLength": 1000},
+    },
+    "required": [
+        "hecho_denunciado_focus",
+        "hecho_denunciado_focus_es",
+        "confidence",
+        "ocr_quality",
+        "needs_operator_review",
+        "notes",
+    ],
+}
 
 
 def _env(name: str) -> str:
@@ -35,45 +84,17 @@ def _crop_transit_fet_denunciat_bytes(content: bytes, mime: str) -> tuple[bytes,
     Recorta visualmente la zona del campo 9. FET DENUNCIAT en boletines Trànsit.
     Si no puede recortar, devuelve la imagen original.
     """
-    if not _is_image_mime(mime) or Image is None:
+    if not _is_image_mime(mime):
         return content, mime
-
-    try:
-        img = Image.open(io.BytesIO(content)).convert("RGB")
-        w, h = img.size
-        if w <= 0 or h <= 0:
-            return content, mime
-
-        if w >= h:
-            left = int(w * 0.28)
-            top = int(h * 0.34)
-            right = int(w * 0.73)
-            bottom = int(h * 0.57)
-        else:
-            left = int(w * 0.10)
-            top = int(h * 0.26)
-            right = int(w * 0.78)
-            bottom = int(h * 0.58)
-
-        left = max(0, min(left, w - 1))
-        top = max(0, min(top, h - 1))
-        right = max(left + 10, min(right, w))
-        bottom = max(top + 10, min(bottom, h))
-
-        crop = img.crop((left, top, right, bottom))
-
-        try:
-            crop = ImageEnhance.Contrast(crop).enhance(1.45)
-            crop = ImageEnhance.Sharpness(crop).enhance(1.25)
-        except Exception:
-            pass
-
-        buf = io.BytesIO()
-        crop.save(buf, format="JPEG", quality=92)
-        return buf.getvalue(), "image/jpeg"
-
-    except Exception:
-        return content, mime
+    # Nunca se abre la estructura original en el proceso web. Si Pillow se
+    # bloquea o excede CPU/RAM, el supervisor mata el worker y no se envía el
+    # documento completo como degradación silenciosa.
+    cropped, cropped_mime, _metadata = run_image_parser_isolated(
+        "crop_fet_image",
+        content,
+        mime,
+    )
+    return cropped, cropped_mime
 
 
 
@@ -88,6 +109,8 @@ def extract_from_image_bytes(
     Devuelve un JSON estructurado + un OCR textual completo en 'vision_raw_text',
     para que el motor pueda extraer velocidades (123/90) incluso en PDFs escaneados.
     """
+    require_capability("document_provider")
+    require_model_call_budget()
     api_key = _env("OPENAI_API_KEY")
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
 
@@ -120,7 +143,7 @@ def extract_from_image_bytes(
         "- NO inventes texto que no se vea. Si hay zonas ilegibles, usa '[ILEGIBLE]'.\n"
     )
 
-    payload = {
+    payload = protect_responses_payload({
         "model": model,
         "input": [
             {
@@ -135,18 +158,28 @@ def extract_from_image_bytes(
                 ],
             },
         ],
-        "text": {"format": {"type": "json_object"}},
-    }
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "rtm_traffic_document_ocr",
+                "strict": True,
+                "schema": _MAIN_OUTPUT_SCHEMA,
+            }
+        },
+        "max_output_tokens": 2048,
+    })
 
+    consume_model_call_budget()
     r = requests.post(
         "https://api.openai.com/v1/responses",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json=payload,
         timeout=90,
+        allow_redirects=False,
     )
 
     if not r.ok:
-        raise RuntimeError(f"OpenAI error {r.status_code}: {r.text[:500]}")
+        raise RuntimeError(f"El proveedor OCR devolvió HTTP {r.status_code}")
 
     data = r.json()
 
@@ -163,13 +196,27 @@ def extract_from_image_bytes(
     try:
         obj = json.loads(output_text)
     except Exception as e:
-        raise RuntimeError(f"JSON inválido devuelto por OpenAI: {e}. Texto: {output_text[:400]}")
+        raise RuntimeError(f"JSON inválido devuelto por el proveedor OCR: {type(e).__name__}")
 
     # Garantía: que siempre exista la clave
-    if isinstance(obj, dict) and "vision_raw_text" not in obj:
-        obj["vision_raw_text"] = ""
-
-    return obj
+    if not isinstance(obj, dict):
+        raise RuntimeError("El proveedor OCR no devolvió un objeto JSON")
+    allowed = {
+        "organismo",
+        "expediente_ref",
+        "importe",
+        "fecha_notificacion",
+        "fecha_documento",
+        "tipo_sancion",
+        "pone_fin_via_administrativa",
+        "plazo_recurso_sugerido",
+        "observaciones",
+        "vision_raw_text",
+    }
+    result = {key: obj.get(key) for key in allowed}
+    result["vision_raw_text"] = str(result.get("vision_raw_text") or "")[:4000]
+    result["observaciones"] = str(result.get("observaciones") or "")[:1000]
+    return result
 
 
 def extract_fet_denunciat_focus(
@@ -181,6 +228,8 @@ def extract_fet_denunciat_focus(
     Segunda pasada OCR focalizada para boletines del Servei Català de Trànsit.
     Lee únicamente el campo 'FET DENUNCIAT' y devuelve confianza.
     """
+    require_capability("document_provider")
+    require_model_call_budget()
     api_key = _env("OPENAI_API_KEY")
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
     focused_content, focused_mime = _crop_transit_fet_denunciat_bytes(content, mime)
@@ -215,7 +264,7 @@ def extract_fet_denunciat_focus(
         "7) No clasifiques como semáforo salvo que se lea claramente semàfor/llum vermella/fase roja.\n"
     )
 
-    payload = {
+    payload = protect_responses_payload({
         "model": model,
         "input": [
             {"role": "system", "content": [{"type": "input_text", "text": system_text}]},
@@ -227,18 +276,28 @@ def extract_fet_denunciat_focus(
                 ],
             },
         ],
-        "text": {"format": {"type": "json_object"}},
-    }
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "rtm_fet_denunciat_focus",
+                "strict": True,
+                "schema": _FOCUS_OUTPUT_SCHEMA,
+            }
+        },
+        "max_output_tokens": 1024,
+    })
 
+    consume_model_call_budget()
     r = requests.post(
         "https://api.openai.com/v1/responses",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json=payload,
         timeout=90,
+        allow_redirects=False,
     )
 
     if not r.ok:
-        raise RuntimeError(f"OpenAI focus OCR error {r.status_code}: {r.text[:500]}")
+        raise RuntimeError(f"El proveedor OCR focal devolvió HTTP {r.status_code}")
 
     data = r.json()
     output_text = ""
@@ -254,7 +313,9 @@ def extract_fet_denunciat_focus(
     try:
         obj = json.loads(output_text)
     except Exception as e:
-        raise RuntimeError(f"JSON inválido devuelto por OpenAI focus OCR: {e}. Texto: {output_text[:400]}")
+        raise RuntimeError(
+            f"JSON inválido devuelto por el proveedor OCR focal: {type(e).__name__}"
+        )
 
     if not isinstance(obj, dict):
         obj = {}
@@ -271,8 +332,22 @@ def extract_fet_denunciat_focus(
         quality = "good" if conf >= 0.78 else "medium" if conf >= 0.55 else "bad"
     obj["ocr_quality"] = quality
 
-    obj.setdefault("needs_operator_review", bool(conf < 0.75 or quality == "bad"))
-    obj.setdefault("hecho_denunciado_focus", None)
-    obj.setdefault("hecho_denunciado_focus_es", None)
-    obj.setdefault("notes", "")
-    return obj
+    needs_review = obj.get("needs_operator_review") is not False
+    if conf < 0.75 or quality == "bad":
+        needs_review = True
+    return {
+        "hecho_denunciado_focus": (
+            str(obj.get("hecho_denunciado_focus"))[:1000]
+            if obj.get("hecho_denunciado_focus") is not None
+            else None
+        ),
+        "hecho_denunciado_focus_es": (
+            str(obj.get("hecho_denunciado_focus_es"))[:1000]
+            if obj.get("hecho_denunciado_focus_es") is not None
+            else None
+        ),
+        "confidence": conf,
+        "ocr_quality": quality,
+        "needs_operator_review": needs_review,
+        "notes": str(obj.get("notes") or "")[:1000],
+    }

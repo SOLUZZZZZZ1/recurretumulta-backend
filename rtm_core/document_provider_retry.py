@@ -7,13 +7,14 @@ proveedor se respeta con un pequeño margen y nunca se imprimen secretos.
 
 from __future__ import annotations
 
+import math
 import os
-import re
 import time
 from typing import Callable, Optional
 
 from fastapi import HTTPException
 
+from rtm_core.ai_security import require_model_call_budget
 from rtm_core.document_extraction import (
     OpenAIResponsesDocumentProvider,
     ProviderDocumentResult,
@@ -22,39 +23,59 @@ from rtm_core.document_extraction import (
 
 
 DOCUMENT_PROVIDER_RETRY_VERSION = "rtm_document_provider_retry_v1_0"
+MAX_DOCUMENT_PROVIDER_ATTEMPTS = 3
+MAX_DOCUMENT_PROVIDER_RETRY_MARGIN_SECONDS = 5.0
 
 
-def _positive_int(name: str, default: int) -> int:
+def _bounded_attempts_from_env(name: str, default: int) -> int:
     raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
     try:
         value = int(raw)
-    except (TypeError, ValueError):
-        return default
-    return value if value > 0 else default
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"Configuración inválida para {name}") from exc
+    if not 1 <= value <= MAX_DOCUMENT_PROVIDER_ATTEMPTS:
+        raise RuntimeError(
+            f"{name} debe estar entre 1 y {MAX_DOCUMENT_PROVIDER_ATTEMPTS}"
+        )
+    return value
 
 
-def _positive_float(name: str, default: float) -> float:
+def _bounded_margin_from_env(name: str, default: float) -> float:
     raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
     try:
         value = float(raw)
-    except (TypeError, ValueError):
-        return default
-    return value if value > 0 else default
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"Configuración inválida para {name}") from exc
+    if (
+        not math.isfinite(value)
+        or value < 0.0
+        or value > MAX_DOCUMENT_PROVIDER_RETRY_MARGIN_SECONDS
+    ):
+        raise RuntimeError(
+            f"{name} debe estar entre 0 y "
+            f"{MAX_DOCUMENT_PROVIDER_RETRY_MARGIN_SECONDS}"
+        )
+    return value
 
 
 def _rate_limit_delay(exc: HTTPException, attempt: int) -> Optional[float]:
     detail = exc.detail
-    if not isinstance(detail, dict) or detail.get("status_code") != 429:
+    if (
+        not isinstance(detail, dict)
+        or detail.get("code") != "document_provider_rate_limited"
+    ):
         return None
 
-    provider_detail = str(detail.get("provider_detail") or "")
-    match = re.search(
-        r"try\s+again\s+in\s+([0-9]+(?:\.[0-9]+)?)s",
-        provider_detail,
-        flags=re.IGNORECASE,
-    )
-    if match:
-        return float(match.group(1))
+    try:
+        retry_after = float(detail.get("retry_after_seconds") or 0)
+    except (TypeError, ValueError):
+        retry_after = 0.0
+    if 0.0 < retry_after <= 60.0:
+        return retry_after
 
     return min(2.0 ** max(0, attempt - 1), 8.0)
 
@@ -79,19 +100,43 @@ class RetryingOpenAIResponsesDocumentProvider(
             model=model,
             timeout_seconds=timeout_seconds,
         )
-        self.max_attempts = (
-            int(max_attempts)
+        if max_attempts is not None and (
+            isinstance(max_attempts, bool) or not isinstance(max_attempts, int)
+        ):
+            raise ValueError("max_attempts debe ser un entero")
+        requested_attempts = (
+            max_attempts
             if max_attempts is not None
-            else _positive_int("OPENAI_DOCUMENT_MAX_ATTEMPTS", 3)
+            else _bounded_attempts_from_env(
+                "OPENAI_DOCUMENT_MAX_ATTEMPTS",
+                MAX_DOCUMENT_PROVIDER_ATTEMPTS,
+            )
         )
-        self.retry_margin_seconds = (
+        if not 1 <= requested_attempts <= MAX_DOCUMENT_PROVIDER_ATTEMPTS:
+            raise ValueError(
+                "max_attempts fuera del rango seguro "
+                f"1..{MAX_DOCUMENT_PROVIDER_ATTEMPTS}"
+            )
+        self.max_attempts = requested_attempts
+
+        requested_margin = (
             float(retry_margin_seconds)
             if retry_margin_seconds is not None
-            else _positive_float(
+            else _bounded_margin_from_env(
                 "OPENAI_DOCUMENT_RETRY_MARGIN_SECONDS",
                 0.75,
             )
         )
+        if (
+            not math.isfinite(requested_margin)
+            or requested_margin < 0.0
+            or requested_margin > MAX_DOCUMENT_PROVIDER_RETRY_MARGIN_SECONDS
+        ):
+            raise ValueError(
+                "retry_margin_seconds fuera del rango seguro 0.."
+                f"{MAX_DOCUMENT_PROVIDER_RETRY_MARGIN_SECONDS}"
+            )
+        self.retry_margin_seconds = requested_margin
         self._sleeper = sleeper
 
     def extract_document(
@@ -101,9 +146,13 @@ class RetryingOpenAIResponsesDocumentProvider(
         document: SourceDocument,
         content: bytes,
     ) -> tuple[ProviderDocumentResult, str, list[str]]:
+        # Este adaptador nunca puede convertir la ausencia de presupuesto en
+        # llamadas ilimitadas. Los entrypoints live deben instalar uno antes.
+        require_model_call_budget()
         retry_warnings: list[str] = []
 
         for attempt in range(1, self.max_attempts + 1):
+            require_model_call_budget()
             try:
                 result, mode, warnings = super().extract_document(
                     service=service,
@@ -119,6 +168,9 @@ class RetryingOpenAIResponsesDocumentProvider(
                 delay = _rate_limit_delay(exc, attempt)
                 if delay is None or attempt >= self.max_attempts:
                     raise
+                # No duerme si el siguiente intento ya estaría bloqueado por
+                # el presupuesto exterior.
+                require_model_call_budget()
                 wait_seconds = max(
                     0.1,
                     delay + self.retry_margin_seconds,

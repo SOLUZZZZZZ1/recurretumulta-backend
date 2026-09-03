@@ -57,6 +57,7 @@ class PublicServiceFamilyTest(unittest.TestCase):
         source = (ROOT / "cases.py").read_text(encoding="utf-8")
         self.assertIn('public_service_family: str = Form("")', source)
         self.assertIn("public_service_family not in PUBLIC_SERVICE_FAMILY_CODES", source)
+        self.assertIn("validate_public_intake_classification(", source)
         self.assertIn('interested["public_service_family"] = public_service_family', source)
         self.assertIn('"public_service_family": public_service_family or None', source)
 

@@ -4,7 +4,9 @@ import asyncio
 import importlib.util
 import inspect
 import io
+import json
 import sys
+import threading
 import types
 import unittest
 import zipfile
@@ -14,6 +16,8 @@ from unittest import mock
 from uuid import UUID
 
 from fastapi import HTTPException
+from PIL import Image
+from pypdf import PdfWriter
 
 import ops
 from rtm_presenter_contracts import RTM_PRESENTER_MAX_FILE_BYTES, PresenterClientKind
@@ -43,7 +47,17 @@ DOCUMENT_VERSION_ID = "00000000-0000-4000-8000-000000000004"
 PREDECESSOR_ID = "00000000-0000-4000-8000-000000000005"
 OPERATOR_ID = "00000000-0000-4000-8000-000000000006"
 SESSION_ID = "00000000-0000-4000-8000-000000000007"
-PDF = b"%PDF-1.7\nSynthetic external evidence\n%%EOF"
+
+
+def _pdf() -> bytes:
+    buffer = io.BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+PDF = _pdf()
 
 
 def _runtime() -> PresenterRuntimeConfiguration:
@@ -68,7 +82,16 @@ def _actor(*, permission: bool = True) -> PresenterActorContext:
     )
 
 
-def _docx() -> bytes:
+def _docx(
+    *,
+    document_xml: bytes | None = None,
+    relationship_xml: bytes | None = None,
+    macro: bool = False,
+    document_content_type: str = (
+        "application/vnd.openxmlformats-officedocument."
+        "wordprocessingml.document.main+xml"
+    ),
+) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(
@@ -76,27 +99,28 @@ def _docx() -> bytes:
             (
                 '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
                 '<Override PartName="/word/document.xml" '
-                'ContentType="application/vnd.openxmlformats-officedocument.'
-                'wordprocessingml.document.main+xml"/></Types>'
+                f'ContentType="{document_content_type}"/></Types>'
             ),
         )
         archive.writestr(
             "word/document.xml",
-            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>',
+            document_xml
+            or b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>',
         )
+        if relationship_xml is not None:
+            archive.writestr("word/_rels/document.xml.rels", relationship_xml)
+        if macro:
+            archive.writestr("word/vbaProject.bin", b"synthetic macro")
     return buffer.getvalue()
 
 
-def _png() -> bytes:
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + b"\x00\x00\x00\rIHDR"
-        + (1).to_bytes(4, "big")
-        + (1).to_bytes(4, "big")
-        + b"\x08\x02\x00\x00\x00"
-        + b"\x00\x00\x00\x00"
-        + b"\x00\x00\x00\x00IEND\xaeB`\x82"
+def _image(image_format: str) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (2, 2), color=(255, 255, 255)).save(
+        buffer,
+        format=image_format,
     )
+    return buffer.getvalue()
 
 
 class _IngestRepository:
@@ -147,12 +171,8 @@ class ExternalDocumentValidationTest(unittest.TestCase):
         fixtures = (
             (PDF, "resource.pdf", "application/pdf"),
             (_docx(), "resource.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-            (
-                b"\xff\xd8\xff\xe0synthetic\xff\xc0frame\xff\xdascan\xff\xd9",
-                "evidence.jpeg",
-                "image/jpeg",
-            ),
-            (_png(), "evidence.png", "image/png"),
+            (_image("JPEG"), "evidence.jpeg", "image/jpeg"),
+            (_image("PNG"), "evidence.png", "image/png"),
         )
         for content, filename, media_type in fixtures:
             with self.subTest(media_type=media_type):
@@ -205,6 +225,60 @@ class ExternalDocumentValidationTest(unittest.TestCase):
             raised.exception.code,
             "presenter.external_document_too_large",
         )
+
+    def test_docx_macro_external_relationship_and_zip_bomb_are_rejected(self):
+        hostile_documents = (
+            _docx(macro=True),
+            _docx(
+                relationship_xml=(
+                    b'<Relationships><Relationship TargetMode="External" '
+                    b'Target="https://attacker.invalid/payload"/></Relationships>'
+                )
+            ),
+            _docx(
+                document_xml=(
+                    b'<w:document xmlns:w="urn:synthetic"><w:t>'
+                    + (b"A" * (1024 * 1024))
+                    + b"</w:t></w:document>"
+                )
+            ),
+            _docx(document_content_type="application/octet-stream"),
+        )
+        for content in hostile_documents:
+            with self.subTest(size=len(content)):
+                with self.assertRaises(PresenterConflict) as raised:
+                    validate_external_document_upload(
+                        content=content,
+                        original_filename="revision.docx",
+                        declared_mime=(
+                            "application/vnd.openxmlformats-officedocument."
+                            "wordprocessingml.document"
+                        ),
+                        purpose="supporting_evidence",
+                    )
+                self.assertEqual(
+                    raised.exception.code,
+                    "presenter.external_document_structure_invalid",
+                )
+
+    def test_parser_failures_are_fail_closed_and_opaque(self):
+        canary = "parser-secret-canary"
+        with mock.patch(
+            "rtm_presenter_service.validate_document_bytes",
+            side_effect=RuntimeError(canary),
+        ):
+            with self.assertRaises(PresenterConflict) as raised:
+                validate_external_document_upload(
+                    content=PDF,
+                    original_filename="revision.pdf",
+                    declared_mime="application/pdf",
+                    purpose="supporting_evidence",
+                )
+        self.assertEqual(
+            raised.exception.code,
+            "presenter.external_document_structure_invalid",
+        )
+        self.assertNotIn(canary, str(raised.exception))
 
 
 class ExternalDocumentServiceTest(unittest.TestCase):
@@ -690,6 +764,95 @@ class PresenterRouterIngressContractTest(unittest.TestCase):
         self.assertEqual(len(deleted), 1)
         self.assertEqual(deleted[0][0], "internal-bucket")
         self.assertTrue(deleted[0][1].startswith(f"cases/{CASE_ID}/presenter_external/"))
+
+    def test_parser_storage_and_service_work_run_off_the_event_loop(self):
+        module = _load_router_module()
+        loop_thread_id = threading.get_ident()
+        worker_thread_ids: list[int] = []
+
+        def assert_worker_thread() -> None:
+            worker_thread_ids.append(threading.get_ident())
+            with self.assertRaises(RuntimeError):
+                asyncio.get_running_loop()
+
+        class Upload:
+            filename = "resource.pdf"
+            content_type = "application/pdf"
+            size = len(PDF)
+
+            def __init__(self) -> None:
+                self.closed = False
+
+            async def read(self, size: int) -> bytes:
+                self.asserted_size = size
+                return PDF
+
+            async def close(self) -> None:
+                self.closed = True
+
+        class Service:
+            @staticmethod
+            def ingest_external_document(conn, **kwargs):
+                del conn
+                assert_worker_thread()
+                prepared = validate_external_document_upload(
+                    content=kwargs["content"],
+                    original_filename=kwargs["original_filename"],
+                    declared_mime=kwargs["declared_mime"],
+                    purpose=kwargs["purpose"],
+                )
+                kwargs["storage_writer"](
+                    prepared,
+                    kwargs["register_rollback_cleanup"],
+                )
+                return types.SimpleNamespace(
+                    sanitized=lambda: {
+                        "document_version_id": DOCUMENT_VERSION_ID,
+                        "state": "review",
+                        "scan_status": "pending",
+                    }
+                )
+
+        class Client:
+            @staticmethod
+            def put_object(**kwargs):
+                del kwargs
+                assert_worker_thread()
+
+        upload = Upload()
+        context = module.PresenterRequestContext(
+            connection=object(),
+            actor=_actor(),
+            request_id="request-id",
+        )
+        with (
+            mock.patch.object(module, "_service", return_value=Service()),
+            mock.patch.object(module, "get_b2_bucket", return_value="internal-bucket"),
+            mock.patch.object(module, "get_s3_client", return_value=Client()),
+        ):
+            response = asyncio.run(
+                module.ingest_external_document_route(
+                    case_id=UUID(CASE_ID),
+                    request=types.SimpleNamespace(headers={}),
+                    file=upload,
+                    purpose="main_filing",
+                    synthetic_confirmed=True,
+                    supersedes_document_version_id=None,
+                    context=context,
+                )
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(upload.closed)
+        self.assertGreaterEqual(len(worker_thread_ids), 2)
+        self.assertTrue(all(value != loop_thread_id for value in worker_thread_ids))
+        payload = json.loads(response.body)
+        self.assertEqual(
+            payload["document"]["security_disposition"],
+            "pending_security_scan",
+        )
+        self.assertFalse(payload["document"]["eligible_for_package"])
+        self.assertTrue(payload["synthetic_only"])
 
 
 if __name__ == "__main__":

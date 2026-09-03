@@ -8,12 +8,12 @@ se liga por UUID y SHA-256 a un fixture documental ya persistido.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterator, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.engine import Connection
@@ -23,7 +23,9 @@ from rtm_connect import human_filing_contracts as a1s_contracts
 from rtm_connect import human_filing_policy as a1s_policy
 from rtm_connect import human_filing_service as service
 from rtm_core.operator_auth_request import extract_bearer_token
-from rtm_core.operator_auth_service import load_operator_session
+from rtm_core.operator_auth_router import (
+    load_operator_session_with_device_possession,
+)
 
 
 RTM_CONNECT_A1S_ROUTES_VERSION = "rtm_connect_a1s_human_filing_routes_v1_0"
@@ -112,14 +114,16 @@ class ManualReviewBody(_StrictModel):
 
 @dataclass(frozen=True)
 class HumanFilingGate:
-    config: a1s_policy.HumanFilingRuntimeConfiguration
-    raw_token: str
+    config: a1s_policy.HumanFilingRuntimeConfiguration = field(repr=False)
+    authorization: str = field(repr=False)
+    x_rtm_device: str | None = field(repr=False)
+    rtm_presenter_device: str | None = field(repr=False)
 
 
 @dataclass(frozen=True)
 class HumanFilingContext:
-    connection: Connection
-    session: Any
+    connection: Connection = field(repr=False)
+    session: Any = field(repr=False)
     request_id: str
 
 
@@ -180,16 +184,29 @@ def _runtime_configuration(
 
 def require_human_filing_gate(
     authorization: str | None = Header(default=None, alias="Authorization"),
+    x_rtm_device: str | None = Header(
+        default=None,
+        alias="X-RTM-Device",
+    ),
+    rtm_presenter_device: str | None = Cookie(
+        default=None,
+        alias="__Host-rtm_presenter_device",
+    ),
 ) -> HumanFilingGate:
     config = _runtime_configuration(require_enabled=True)
     raw_token = extract_bearer_token(authorization)
-    if not raw_token:
+    if not raw_token or not (x_rtm_device or rtm_presenter_device):
         raise _http_error(
             401,
             "human_filing.session_required",
-            "Sesion individual Bearer no valida",
+            "Sesion individual y dispositivo no validos",
         )
-    return HumanFilingGate(config=config, raw_token=raw_token)
+    return HumanFilingGate(
+        config=config,
+        authorization=str(authorization),
+        x_rtm_device=x_rtm_device,
+        rtm_presenter_device=rtm_presenter_device,
+    )
 
 
 def human_filing_connection(
@@ -223,7 +240,13 @@ def require_human_filing_context(
     gate: HumanFilingGate = Depends(require_human_filing_gate),
     conn: Connection = Depends(human_filing_connection),
 ) -> HumanFilingContext:
-    session = load_operator_session(conn, raw_token=gate.raw_token, touch=False)
+    session = load_operator_session_with_device_possession(
+        conn,
+        authorization=gate.authorization,
+        x_rtm_device=gate.x_rtm_device,
+        rtm_presenter_device=gate.rtm_presenter_device,
+        touch=False,
+    )
     if not session:
         raise _http_error(
             401,

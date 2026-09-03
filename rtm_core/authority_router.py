@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from database import get_engine
 from rtm_core.authority_repository import (
+    DocumentReviewAttestation,
     create_family_resolution,
     create_validated_facts,
     freeze_validated_facts,
@@ -23,6 +24,7 @@ from rtm_core.authority_repository import (
     lock_family_resolution,
 )
 from rtm_core.contracts import FamilyResolution, ValidatedFacts
+from rtm_core.ops_case_scope import load_ops_case_scope, require_case_in_scope
 from rtm_core.security import normalized_actor, require_operator_token
 
 
@@ -62,11 +64,15 @@ def _serialized(record):
 @router.get("/{case_id}/validated-facts")
 def get_case_validated_facts(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     _operator(x_operator_token, None)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         records = list_validated_facts(conn, case_id)
     return {
         "ok": True,
@@ -79,11 +85,15 @@ def get_case_validated_facts(
 @router.get("/{case_id}/validated-facts/latest")
 def get_latest_case_validated_facts(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     _operator(x_operator_token, None)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = latest_validated_facts(conn, case_id)
     return {
         "ok": True,
@@ -96,11 +106,15 @@ def get_latest_case_validated_facts(
 def get_case_validated_facts_version(
     case_id: str,
     facts_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     _operator(x_operator_token, None)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = get_validated_facts(conn, case_id, facts_id)
     return {"ok": True, "facts": _serialized(record)}
 
@@ -109,12 +123,16 @@ def get_case_validated_facts_version(
 def create_case_validated_facts(
     case_id: str,
     body: CreateValidatedFactsBody,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     x_operator_actor: Optional[str] = Header(default=None, alias="X-Operator-Actor"),
 ):
     actor = _operator(x_operator_token, x_operator_actor)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = create_validated_facts(
             conn,
             case_id=case_id,
@@ -129,13 +147,24 @@ def create_case_validated_facts(
 def freeze_case_validated_facts(
     case_id: str,
     facts_id: str,
+    request: Request,
+    body: Optional[DocumentReviewAttestation] = None,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     x_operator_actor: Optional[str] = Header(default=None, alias="X-Operator-Actor"),
 ):
     actor = _operator(x_operator_token, x_operator_actor)
     engine = get_engine()
     with engine.begin() as conn:
-        record = freeze_validated_facts(conn, case_id, facts_id, actor)
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
+        record = freeze_validated_facts(
+            conn,
+            case_id,
+            facts_id,
+            actor,
+            document_review_attestation=body,
+        )
     return {"ok": True, "facts": _serialized(record)}
 
 
@@ -144,12 +173,16 @@ def invalidate_case_validated_facts(
     case_id: str,
     facts_id: str,
     body: AuthorityReasonBody,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     x_operator_actor: Optional[str] = Header(default=None, alias="X-Operator-Actor"),
 ):
     actor = _operator(x_operator_token, x_operator_actor)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = invalidate_validated_facts(
             conn,
             case_id,
@@ -163,11 +196,15 @@ def invalidate_case_validated_facts(
 @router.get("/{case_id}/family-resolutions")
 def get_case_family_resolutions(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     _operator(x_operator_token, None)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         records = list_family_resolutions(conn, case_id)
     return {
         "ok": True,
@@ -180,11 +217,15 @@ def get_case_family_resolutions(
 @router.get("/{case_id}/family-resolutions/latest")
 def get_latest_case_family_resolution(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     _operator(x_operator_token, None)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = latest_family_resolution(conn, case_id)
     return {
         "ok": True,
@@ -197,11 +238,15 @@ def get_latest_case_family_resolution(
 def get_case_family_resolution(
     case_id: str,
     resolution_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     _operator(x_operator_token, None)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = get_family_resolution(conn, case_id, resolution_id)
     return {"ok": True, "resolution": _serialized(record)}
 
@@ -210,12 +255,16 @@ def get_case_family_resolution(
 def create_case_family_resolution(
     case_id: str,
     body: CreateFamilyResolutionBody,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     x_operator_actor: Optional[str] = Header(default=None, alias="X-Operator-Actor"),
 ):
     actor = _operator(x_operator_token, x_operator_actor)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = create_family_resolution(
             conn,
             case_id=case_id,
@@ -231,12 +280,16 @@ def create_case_family_resolution(
 def lock_case_family_resolution(
     case_id: str,
     resolution_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     x_operator_actor: Optional[str] = Header(default=None, alias="X-Operator-Actor"),
 ):
     actor = _operator(x_operator_token, x_operator_actor)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = lock_family_resolution(conn, case_id, resolution_id, actor)
     return {"ok": True, "resolution": _serialized(record)}
 
@@ -246,12 +299,16 @@ def invalidate_case_family_resolution(
     case_id: str,
     resolution_id: str,
     body: AuthorityReasonBody,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     x_operator_actor: Optional[str] = Header(default=None, alias="X-Operator-Actor"),
 ):
     actor = _operator(x_operator_token, x_operator_actor)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = invalidate_family_resolution(
             conn,
             case_id,

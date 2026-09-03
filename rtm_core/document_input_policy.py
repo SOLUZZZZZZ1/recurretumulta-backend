@@ -17,11 +17,25 @@ import re
 from dataclasses import dataclass
 from typing import Mapping, Optional
 
+from rtm_core.environment_contract import runtime_requires_environment_preflight
 
-DOCUMENT_INPUT_POLICY_VERSION = "rtm_document_input_policy_v1_0"
 
-_DOCUMENT_EXTRACTION_RUN_PATH = re.compile(
-    r"^/ops/core/cases/[^/]+/document-extractions/run/?$"
+DOCUMENT_INPUT_POLICY_VERSION = "rtm_document_input_policy_v1_2"
+
+_PROTECTED_DOCUMENT_PATHS = (
+    re.compile(r"^/ops/core/cases/[^/]+/document-extractions/run/?$"),
+    re.compile(r"^/ops/core/cases/[^/]+/reanalysis/run/?$"),
+    re.compile(r"^/analyze/?$"),
+    re.compile(r"^/analyze/expediente/?$"),
+    re.compile(r"^/vehicle-removal/verify-registration/?$"),
+    re.compile(r"^/cases/intake-draft/?$"),
+    re.compile(r"^/cases/[^/]+/append-documents/?$"),
+    re.compile(
+        r"^/cases/[^/]+/(?:upload-authorization-signed|authorization-signed|upload-receipt)/?$"
+    ),
+    re.compile(r"^/partner/cases/?$"),
+    re.compile(r"^/ops/cases/[^/]+/upload-justificante/?$"),
+    re.compile(r"^/ops/cases/[^/]+/register-manual-submission/?$"),
 )
 
 
@@ -49,12 +63,28 @@ def document_input_policy_block(
 
     if str(method or "").upper() != "POST":
         return None
-    if not _DOCUMENT_EXTRACTION_RUN_PATH.fullmatch(str(path or "")):
+    if not any(
+        pattern.fullmatch(str(path or ""))
+        for pattern in _PROTECTED_DOCUMENT_PATHS
+    ):
         return None
 
     source: Mapping[str, str] = environ if environ is not None else os.environ
     environment = _value(source, "RTM_ENV").lower()
     policy = _value(source, "RTM_DOCUMENT_INPUT_POLICY").lower()
+
+    if (
+        runtime_requires_environment_preflight(source)
+        and environment not in {"staging", "production"}
+    ):
+        return DocumentInputPolicyBlock(
+            status_code=503,
+            detail={
+                "message": "La entrada documental está bloqueada por un entorno ambiguo.",
+                "environment": environment or "unconfigured",
+                "policy_version": DOCUMENT_INPUT_POLICY_VERSION,
+            },
+        )
 
     if environment == "staging":
         if policy != "synthetic_only":

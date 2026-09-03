@@ -546,6 +546,7 @@ def main(argv: list[str] | None = None) -> int:
             freeze_validated_facts,
             lock_family_resolution,
         )
+        from rtm_core.ai_security import model_call_budget
         from rtm_core.document_extraction import (
             extract_service_documents,
         )
@@ -557,6 +558,7 @@ def main(argv: list[str] | None = None) -> int:
             normalize_document_packet,
         )
         from rtm_core.document_provider_retry import (
+            MAX_DOCUMENT_PROVIDER_ATTEMPTS,
             RetryingOpenAIResponsesDocumentProvider,
         )
         from rtm_core.family_dispatch import resolve_family
@@ -613,13 +615,14 @@ def main(argv: list[str] | None = None) -> int:
             requested_document_ids=[source_document_id],
         )
         provider = RetryingOpenAIResponsesDocumentProvider()
-        extraction_result = extract_service_documents(
-            case_id=case_id,
-            service=service,
-            documents=documents,
-            provider=provider,
-            byte_loader=download_bytes,
-        )
+        with model_call_budget(MAX_DOCUMENT_PROVIDER_ATTEMPTS):
+            extraction_result = extract_service_documents(
+                case_id=case_id,
+                service=service,
+                documents=documents,
+                provider=provider,
+                byte_loader=download_bytes,
+            )
         extraction_record = persist_document_extraction(
             connection,
             case_id=case_id,

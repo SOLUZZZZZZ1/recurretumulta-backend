@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from database import get_engine
 from rtm_core.authority_repository import (
@@ -17,6 +17,7 @@ from rtm_core.family_dispatch import (
     resolve_family,
     resolver_version_for,
 )
+from rtm_core.ops_case_scope import load_ops_case_scope, require_case_in_scope
 from rtm_core.security import normalized_actor, require_operator_token
 
 
@@ -31,6 +32,7 @@ def _operator(token: Optional[str], actor: Optional[str]) -> str:
 @router.post("/{case_id}/resolve-family")
 def resolve_case_family(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     x_operator_actor: Optional[str] = Header(default=None, alias="X-Operator-Actor"),
 ):
@@ -38,6 +40,9 @@ def resolve_case_family(
     engine = get_engine()
 
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         facts_record = latest_validated_facts(
             conn,
             case_id,

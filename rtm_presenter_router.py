@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
+from starlette.concurrency import run_in_threadpool
 
 from b2_storage import get_b2_bucket, get_s3_client
 from database import get_engine
@@ -275,7 +276,7 @@ def require_presenter_context(
     x_rtm_device: str | None = Header(default=None, alias="X-RTM-Device"),
     rtm_presenter_device: str | None = Cookie(
         default=None,
-        alias="rtm_presenter_device",
+        alias="__Host-rtm_presenter_device",
     ),
     x_request_id: str | None = Header(default=None, alias="X-Request-ID"),
 ) -> Iterator[PresenterRequestContext]:
@@ -579,48 +580,53 @@ async def ingest_external_document_route(
                 "El documento supera el limite Presenter",
             )
 
-        def storage_writer(
-            upload: PresenterExternalDocumentUpload,
-            register_rollback_cleanup: Callable[[str, str], None],
-        ) -> tuple[str, str]:
-            bucket = get_b2_bucket()
-            key = (
-                f"cases/{case_id}/presenter_external/"
-                f"{uuid4().hex}{upload.extension}"
-            )
-            # La key se conoce y queda programada para borrado antes del PUT.
-            # Asi tambien cubrimos respuesta B2 perdida tras persistir bytes.
-            register_rollback_cleanup(bucket, key)
-            get_s3_client().put_object(
-                Bucket=bucket,
-                Key=key,
-                Body=upload.content,
-                ContentType=upload.media_type,
-            )
-            return bucket, key
+        def ingest_blocking() -> Any:
+            def storage_writer(
+                upload: PresenterExternalDocumentUpload,
+                register_rollback_cleanup: Callable[[str, str], None],
+            ) -> tuple[str, str]:
+                bucket = get_b2_bucket()
+                key = (
+                    f"cases/{case_id}/presenter_external/"
+                    f"{uuid4().hex}{upload.extension}"
+                )
+                # La key se conoce y queda programada para borrado antes del PUT.
+                # Asi tambien cubrimos respuesta B2 perdida tras persistir bytes.
+                register_rollback_cleanup(bucket, key)
+                get_s3_client().put_object(
+                    Bucket=bucket,
+                    Key=key,
+                    Body=upload.content,
+                    ContentType=upload.media_type,
+                )
+                return bucket, key
 
-        document = _service().ingest_external_document(
-            context.connection,
-            actor=context.actor,
-            case_id=str(case_id),
-            content=content,
-            original_filename=str(file.filename or ""),
-            declared_mime=str(file.content_type or ""),
-            purpose=purpose,
-            source_original_filename=(
-                source_original_filename
-                if isinstance(source_original_filename, str)
-                else str(file.filename or "")
-            ),
-            synthetic_confirmed=synthetic_confirmed,
-            supersedes_document_version_id=(
-                str(supersedes_document_version_id)
-                if supersedes_document_version_id is not None
-                else None
-            ),
-            storage_writer=storage_writer,
-            register_rollback_cleanup=context.register_storage_rollback,
-        )
+            # Validadores (PDF/DOCX/imagen), B2 y SQL son síncronos y no deben
+            # ejecutarse en el hilo del event loop del endpoint async.
+            return _service().ingest_external_document(
+                context.connection,
+                actor=context.actor,
+                case_id=str(case_id),
+                content=content,
+                original_filename=str(file.filename or ""),
+                declared_mime=str(file.content_type or ""),
+                purpose=purpose,
+                source_original_filename=(
+                    source_original_filename
+                    if isinstance(source_original_filename, str)
+                    else str(file.filename or "")
+                ),
+                synthetic_confirmed=synthetic_confirmed,
+                supersedes_document_version_id=(
+                    str(supersedes_document_version_id)
+                    if supersedes_document_version_id is not None
+                    else None
+                ),
+                storage_writer=storage_writer,
+                register_rollback_cleanup=context.register_storage_rollback,
+            )
+
+        document = await run_in_threadpool(ingest_blocking)
     except Exception as exc:
         raise _as_http_exception(context, exc) from exc
     finally:
@@ -1572,24 +1578,30 @@ async def capture_presenter_receipt_pending_route(
             )
             return bucket, key
 
-        capture = PresenterPortalSessionService(
-            repository=SqlPresenterRepository(), runtime=runtime
-        ).capture_receipt_pending(
-            context.connection,
-            actor=actor,
-            case_id=str(case_id),
-            portal_session_id=str(portal_session_id),
-            request_origin=exact_origin,
-            capture_source=source,
-            attachment_manifest_sha256=exact_manifest_sha,
-            content=content,
-            original_filename=exact_filename,
-            declared_mime=exact_media_type,
-            synthetic_confirmed=True,
-            idempotency_key=exact_idempotency_key,
-            storage_writer=storage_writer,
-            register_rollback_cleanup=context.register_storage_rollback,
-        )
+        def capture_blocking() -> Any:
+            # El validador aislado, B2 y SQL son síncronos. Mantener toda esta
+            # unidad fuera del event loop evita que un parser no confiable
+            # paralice las demás peticiones mientras el supervisor lo termina.
+            return PresenterPortalSessionService(
+                repository=SqlPresenterRepository(), runtime=runtime
+            ).capture_receipt_pending(
+                context.connection,
+                actor=actor,
+                case_id=str(case_id),
+                portal_session_id=str(portal_session_id),
+                request_origin=exact_origin,
+                capture_source=source,
+                attachment_manifest_sha256=exact_manifest_sha,
+                content=content,
+                original_filename=exact_filename,
+                declared_mime=exact_media_type,
+                synthetic_confirmed=True,
+                idempotency_key=exact_idempotency_key,
+                storage_writer=storage_writer,
+                register_rollback_cleanup=context.register_storage_rollback,
+            )
+
+        capture = await run_in_threadpool(capture_blocking)
     except Exception as exc:
         raise _as_http_exception(context, exc) from exc
     finally:

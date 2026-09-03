@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
 
 import b2_storage
 import billing
 import email_utils
+import rtm_core.document_extraction_router as document_extraction_router
+from rtm_core.ai_security import consume_model_call_budget
 from rtm_core.document_extraction_router import (
     RunDocumentExtractionBody,
     run_document_extraction,
@@ -59,11 +61,9 @@ class ExternalCapabilityGuardsTest(unittest.TestCase):
         }
         with patch.dict(os.environ, environment, clear=False):
             with patch.object(submitter, "sign_xml") as signer:
-                with patch("submitter_dgt.requests.post") as post:
-                    with self.assertRaises(CapabilityDisabledError):
-                        submitter.submit("synthetic-case", b"%PDF synthetic")
+                with self.assertRaises(CapabilityDisabledError):
+                    submitter.submit("synthetic-case", b"%PDF synthetic")
         signer.assert_not_called()
-        post.assert_not_called()
 
     def test_registry_guard_runs_before_provider_url_or_network(self):
         submitter = RegistroSubmitter()
@@ -74,13 +74,11 @@ class ExternalCapabilityGuardsTest(unittest.TestCase):
             "REG_PROVIDER_TOKEN": "synthetic-placeholder-token",
         }
         with patch.dict(os.environ, environment, clear=False):
-            with patch("submitters.registro.urllib.request.urlopen") as urlopen:
-                with self.assertRaises(CapabilityDisabledError):
-                    submitter.submit(
-                        case_id="synthetic-case",
-                        pdf_bytes=b"%PDF synthetic",
-                    )
-        urlopen.assert_not_called()
+            with self.assertRaises(CapabilityDisabledError):
+                submitter.submit(
+                    case_id="synthetic-case",
+                    pdf_bytes=b"%PDF synthetic",
+                )
 
     def test_checkout_guard_runs_before_database_and_stripe(self):
         request = billing.CheckoutRequest(
@@ -94,11 +92,45 @@ class ExternalCapabilityGuardsTest(unittest.TestCase):
             "STRIPE_SECRET_KEY": "synthetic-placeholder-stripe-key",
         }
         with patch.dict(os.environ, environment, clear=False):
-            with patch("billing.get_engine") as get_engine:
-                with patch("billing.stripe.checkout.Session.create") as create_session:
-                    with self.assertRaises(HTTPException) as context:
-                        billing.create_checkout(request)
+            with patch.object(
+                billing,
+                "require_case_access_token",
+                return_value="synthetic-case",
+            ):
+                with patch("billing.get_engine") as get_engine:
+                    with patch("billing.stripe.checkout.Session.create") as create_session:
+                        with self.assertRaises(HTTPException) as context:
+                            billing.create_checkout(request)
         self.assertEqual(context.exception.status_code, 503)
+        get_engine.assert_not_called()
+        create_session.assert_not_called()
+
+    def test_legacy_final_checkout_is_retired_before_database_or_stripe(self):
+        request = billing.CheckoutRequest(
+            case_id="synthetic-case",
+            product="vehicle",
+            email="synthetic@example.com",
+            payment_stage="final",
+        )
+        with (
+            patch.object(
+                billing,
+                "require_case_access_token",
+                return_value="synthetic-case",
+            ),
+            patch.object(billing, "require_http_capability") as capability,
+            patch("billing.get_engine") as get_engine,
+            patch("billing.stripe.checkout.Session.create") as create_session,
+            self.assertRaises(HTTPException) as context,
+        ):
+            billing.create_checkout(request)
+
+        self.assertEqual(context.exception.status_code, 409)
+        self.assertIn("presupuesto aprobado", str(context.exception.detail))
+        self.assertEqual(
+            [call.args[0] for call in capability.call_args_list],
+            ["stripe", "final_payments"],
+        )
         get_engine.assert_not_called()
         create_session.assert_not_called()
 
@@ -123,11 +155,47 @@ class ExternalCapabilityGuardsTest(unittest.TestCase):
                             run_document_extraction(
                                 "synthetic-case",
                                 RunDocumentExtractionBody(document_ids=[]),
+                                object(),
                                 x_operator_token="synthetic-token",
                                 x_operator_actor="ops:test",
                             )
         self.assertEqual(context.exception.status_code, 503)
         get_engine.assert_not_called()
+        extract.assert_not_called()
+
+    def test_document_extraction_requires_versioned_service_authority(self):
+        engine = MagicMock()
+
+        with (
+            patch.object(document_extraction_router, "_operator", return_value="ops:test"),
+            patch.object(document_extraction_router, "require_http_capability"),
+            patch.object(document_extraction_router, "get_engine", return_value=engine),
+            patch.object(
+                document_extraction_router,
+                "prepare_document_extraction",
+                return_value=("debt", [object()]),
+            ),
+            patch.object(
+                document_extraction_router,
+                "extract_service_documents",
+            ) as extract,
+            patch.object(document_extraction_router, "normalize_document_packet") as normalize,
+            patch.object(document_extraction_router, "persist_document_extraction") as persist,
+        ):
+            with self.assertRaises(HTTPException) as context:
+                run_document_extraction(
+                    "synthetic-case",
+                    RunDocumentExtractionBody(document_ids=[]),
+                    object(),
+                    x_operator_token="synthetic-token",
+                    x_operator_actor="ops:test",
+                )
+
+        self.assertEqual(context.exception.status_code, 503)
+        self.assertIn("autorización firmada", str(context.exception.detail).lower())
+        engine.begin.assert_not_called()
+        normalize.assert_not_called()
+        persist.assert_not_called()
         extract.assert_not_called()
 
 

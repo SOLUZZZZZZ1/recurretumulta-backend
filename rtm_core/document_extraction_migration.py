@@ -1,24 +1,14 @@
-"""Migración idempotente del extractor documental RTM.
+"""Definición DDL offline del extractor documental RTM.
 
 La migración es aditiva y requiere que la capa de autoridad CORE ya exista. No
-borra datos legacy ni modifica el contenido de expedientes existentes.
+borra datos legacy ni modifica el contenido de expedientes existentes. La
+ejecución pertenece exclusivamente a ``scripts/rtm_staging_core_schema.py``;
+este módulo no publica ni conserva un router HTTP administrativo.
 """
 
 from __future__ import annotations
 
-import json
-from typing import Optional
-
-from fastapi import APIRouter, Header, HTTPException
-from sqlalchemy import text
-
-from database import get_engine
-from rtm_core.security import require_admin_token
-
-
 DOCUMENT_EXTRACTION_SCHEMA_VERSION = "rtm_document_extraction_schema_v1_0"
-
-router = APIRouter(prefix="/admin/migrate", tags=["admin", "rtm-core"])
 
 
 def document_extraction_ddl() -> list[tuple[str, str]]:
@@ -103,65 +93,3 @@ def document_extraction_ddl() -> list[tuple[str, str]]:
             """,
         ),
     ]
-
-
-@router.post("/rtm_document_extraction_v1")
-def migrate_rtm_document_extraction_v1(
-    x_admin_token: Optional[str] = Header(
-        default=None,
-        alias="x-admin-token",
-    ),
-):
-    require_admin_token(x_admin_token)
-    engine = get_engine()
-    applied: list[str] = []
-
-    with engine.begin() as conn:
-        authority_table = conn.execute(
-            text("SELECT to_regclass('public.rtm_validated_facts')")
-        ).scalar_one()
-        migrations_table = conn.execute(
-            text("SELECT to_regclass('public.rtm_core_schema_migrations')")
-        ).scalar_one()
-        if not authority_table or not migrations_table:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Debe aplicarse primero la migración de autoridad RTM CORE."
-                ),
-            )
-
-        for name, statement in document_extraction_ddl():
-            conn.execute(text(statement))
-            applied.append(name)
-
-        conn.execute(
-            text(
-                """
-                INSERT INTO rtm_core_schema_migrations(name, metadata, applied_at)
-                VALUES (:name, CAST(:metadata AS JSONB), NOW())
-                ON CONFLICT (name)
-                DO UPDATE SET metadata=EXCLUDED.metadata, applied_at=NOW()
-                """
-            ),
-            {
-                "name": DOCUMENT_EXTRACTION_SCHEMA_VERSION,
-                "metadata": json.dumps(
-                    {
-                        "tables": ["rtm_document_extractions"],
-                        "authority_links": [
-                            "validated_facts.source_extraction_id",
-                        ],
-                        "single_active_extraction_per_case": True,
-                        "destructive": False,
-                    }
-                ),
-            },
-        )
-
-    return {
-        "ok": True,
-        "version": DOCUMENT_EXTRACTION_SCHEMA_VERSION,
-        "destructive": False,
-        "applied": applied,
-    }

@@ -1,9 +1,5 @@
-import os
-import subprocess
-import tempfile
 from typing import Any, Dict
-
-import requests
+from xml.sax.saxutils import escape
 
 from rtm_core.runtime_capabilities import require_capability
 
@@ -16,8 +12,8 @@ class DGTSubmitter:
     name = "dgt"
 
     def build_xml(self, case_data: Dict[str, Any]) -> str:
-        dni = case_data.get("dni_nie", "")
-        case_id = case_data.get("case_id", "AUTO")
+        dni = escape(str(case_data.get("dni_nie", ""))[:32])
+        case_id = escape(str(case_data.get("case_id", "AUTO"))[:80])
 
         xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Peticion xmlns="http://www.dgt.es/nostra/esquemas/consultaDEV/peticion">
@@ -61,55 +57,26 @@ class DGTSubmitter:
         return xml
 
     def sign_xml(self, xml: str) -> str:
-        with tempfile.TemporaryDirectory() as tmp:
-            input_path = os.path.join(tmp, "input.xml")
-            output_path = os.path.join(tmp, "signed.xml")
-
-            with open(input_path, "w", encoding="utf-8") as f:
-                f.write(xml)
-
-            # 🔥 LLAMADA A TU JAVA
-            subprocess.run(
-                ["java", "XmlSignerReal", input_path, output_path],
-                check=True,
-            )
-
-            with open(output_path, "r", encoding="utf-8") as f:
-                return f.read()
+        del xml
+        raise NotImplementedError(
+            "Firmador DGT legacy retirado; use exclusivamente dgt_client homologado"
+        )
 
     def send_to_dgt(self, signed_xml: str) -> Dict[str, Any]:
         # Incluso una llamada directa a este método queda bloqueada si el
         # entorno no autoriza presentaciones externas.
         require_capability("external_submission")
 
-        headers = {
-            "Content-Type": "application/xml",
-        }
-
-        resp = requests.post(
-            DGT_ENDPOINT,
-            data=signed_xml.encode("utf-8"),
-            headers=headers,
-            timeout=20,
+        del signed_xml
+        raise NotImplementedError(
+            "Transporte DGT legacy retirado; use exclusivamente dgt_client homologado"
         )
-
-        return {
-            "status_code": resp.status_code,
-            "response": resp.text,
-        }
 
     def submit(self, case_id: str, pdf_bytes: bytes) -> Dict[str, Any]:
         # El guard se ejecuta antes de firmar, preparar un envío o abrir red.
         require_capability("external_submission")
 
-        # 🔥 aquí podrías meter datos reales del caso
-        case_data = {
-            "case_id": case_id,
-            "dni_nie": "00000000X",  # ⚠️ sustituir por real
-        }
-
-        xml = self.build_xml(case_data)
-        signed_xml = self.sign_xml(xml)
-        result = self.send_to_dgt(signed_xml)
-
-        return result
+        del case_id, pdf_bytes
+        raise NotImplementedError(
+            "Submitter DGT legacy retirado; use exclusivamente dgt_client homologado"
+        )

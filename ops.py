@@ -1,16 +1,18 @@
 # ops.py — Panel Operador (PIN + cola + docs + logs + presentado + justificante + descarga segura)
-import hashlib
 import hmac
 import json
 import os
 import unicodedata
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File, Form, Query, Request
 from sqlalchemy import text
+from starlette.concurrency import run_in_threadpool
 
 from database import get_engine
+from b2_storage import delete_object
 from case_authority import verify_signed_case_authority
 from rtm_core.ops_case_scope import (
     load_ops_case_scope,
@@ -19,6 +21,13 @@ from rtm_core.ops_case_scope import (
     require_current_case_scope,
 )
 from rtm_staging_guards import require_isolated_synthetic_staging
+from rtm_core.upload_security import (
+    SAFE_DOCUMENT_MIMES,
+    UploadSecurityError,
+    ValidatedUpload,
+    read_upload_limited,
+    validate_document_bytes,
+)
 
 router = APIRouter(prefix="/ops", tags=["ops"])
 
@@ -185,6 +194,13 @@ _INTERNAL_EVENT_KEYS = {
     "token",
     "secret",
 }
+MAX_OPS_DOCUMENT_BYTES = 8 * 1024 * 1024
+MAX_ORGANISMO_LENGTH = 160
+MAX_REGISTRO_LENGTH = 160
+MAX_CSV_LENGTH = 256
+MAX_CHANNEL_LENGTH = 64
+MAX_NOTE_LENGTH = 4_000
+MAX_SUBMITTED_AT_LENGTH = 64
 
 # La timeline de una sesión individual no necesita identidad civil,
 # telemetría, evidencia cruda ni credenciales. Las claves se comparan sin
@@ -423,15 +439,43 @@ def _upload_bytes(
     return upload_bytes(case_id, kind_folder, content, ext, mime)
 
 
+def _cleanup_uploaded_object(coordinates: Optional[tuple[str, str]]) -> None:
+    """Compensa una subida cuya transacción SQL no llegó a confirmarse."""
+
+    if not coordinates:
+        return
+    try:
+        delete_object(*coordinates)
+    except Exception:
+        pass
+
+
+@contextmanager
+def _storage_backed_transaction(
+    engine,
+    uploaded_coordinates: List[tuple[str, str]],
+):
+    """Revierte el objeto externo si la transacción SQL no se confirma."""
+
+    try:
+        with engine.begin() as conn:
+            yield conn
+    except Exception:
+        if uploaded_coordinates:
+            _cleanup_uploaded_object(uploaded_coordinates[-1])
+        raise
+
+
 
 @router.post("/login")
 def ops_login(pin: str = Form(...)) -> Dict[str, Any]:
-    expected = (os.getenv("OPERATOR_PIN") or "").strip()
-    if not expected:
-        raise HTTPException(status_code=500, detail="OPERATOR_PIN no configurado")
-    if not hmac.compare_digest(pin.strip(), expected):
-        raise HTTPException(status_code=401, detail="PIN incorrecto")
-    return {"ok": True, "token": _env("OPERATOR_TOKEN")}
+    """Endpoint heredado retirado; nunca entrega credenciales compartidas."""
+
+    del pin
+    raise HTTPException(
+        status_code=410,
+        detail="Acceso compartido retirado; utilice autenticación individual",
+    )
 
 
 @router.get("/queue")
@@ -815,24 +859,69 @@ def _clean_kind(kind: str) -> str:
         "multa_presentada",
         "autorizacion_presentada",
     }
-    k = (kind or "documento_externo").strip().lower().replace(" ", "_")
-    return k if k in allowed else "documento_externo"
+    raw = str(kind or "")
+    if len(raw) > 64:
+        raise HTTPException(status_code=422, detail="Tipo documental no permitido")
+    k = (raw or "documento_externo").strip().lower().replace(" ", "_")
+    if k not in allowed:
+        raise HTTPException(status_code=422, detail="Tipo documental no permitido")
+    return k
 
 
-def _guess_ext_from_filename(filename: str, content_type: str = "") -> str:
-    _, ext = os.path.splitext((filename or "").lower())
-    if ext and 2 <= len(ext) <= 10:
-        return ext
-    ct = (content_type or "").lower().strip()
-    if ct == "application/pdf":
-        return ".pdf"
-    if ct in ("image/jpeg", "image/jpg"):
-        return ".jpg"
-    if ct == "image/png":
-        return ".png"
-    if ct == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        return ".docx"
-    return ".bin"
+def _bounded_form_value(
+    value: Optional[str],
+    *,
+    field: str,
+    max_length: int,
+    required: bool = False,
+    min_length: int = 0,
+) -> str:
+    raw = str(value or "")
+    if len(raw) > max_length:
+        raise HTTPException(status_code=422, detail=f"{field} supera el límite permitido")
+    clean = raw.strip()
+    if required and not clean:
+        raise HTTPException(status_code=400, detail=f"{field} requerido")
+    if clean and len(clean) < min_length:
+        raise HTTPException(status_code=400, detail=f"{field} no es verificable")
+    return clean
+
+
+def _upload_security_http_error(exc: UploadSecurityError) -> HTTPException:
+    status_code = exc.status_code if exc.status_code in {400, 413, 415, 422, 503} else 415
+    if status_code == 413:
+        code = "document_too_large"
+    elif status_code == 503:
+        code = "document_validation_unavailable"
+    else:
+        code = "invalid_document"
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "code": code,
+            "message": "El documento no cumple la política de seguridad",
+        },
+    )
+
+
+async def _prepare_ops_document(
+    upload: UploadFile,
+    *,
+    fallback_filename: str,
+) -> tuple[bytes, ValidatedUpload]:
+    try:
+        data = await read_upload_limited(upload, max_bytes=MAX_OPS_DOCUMENT_BYTES)
+        metadata = await run_in_threadpool(
+            validate_document_bytes,
+            filename=upload.filename or fallback_filename,
+            declared_mime=upload.content_type,
+            data=data,
+            max_bytes=MAX_OPS_DOCUMENT_BYTES,
+            allowed_mimes=SAFE_DOCUMENT_MIMES,
+        )
+    except UploadSecurityError as exc:
+        raise _upload_security_http_error(exc) from exc
+    return data, metadata
 
 
 def _now_iso() -> str:
@@ -840,7 +929,10 @@ def _now_iso() -> str:
 
 
 def _validated_submitted_at(value: str) -> str:
-    raw = (value or "").strip()
+    original = str(value or "")
+    if len(original) > MAX_SUBMITTED_AT_LENGTH:
+        raise HTTPException(status_code=422, detail="submitted_at supera el límite permitido")
+    raw = original.strip()
     if not raw:
         return _now_iso()
     for candidate in (raw, raw.replace(" ", "T"), raw.replace("/", "-")):
@@ -857,6 +949,99 @@ def _validated_submitted_at(value: str) -> str:
     raise HTTPException(status_code=400, detail="submitted_at no tiene formato ISO válido")
 
 
+def _persist_ops_justificante(
+    engine,
+    *,
+    case_id: str,
+    request: Request,
+    kind: str,
+    data: bytes,
+    upload: ValidatedUpload,
+) -> Dict[str, Any]:
+    uploaded_coordinates: Optional[tuple[str, str]] = None
+    try:
+        with engine.begin() as conn:
+            scope = load_ops_case_scope(request)
+            require_case_in_scope(conn, scope=scope, case_id=case_id)
+            _require_paid_and_authorized(conn, case_id)
+            try:
+                b2_bucket, b2_key = _upload_bytes(
+                    case_id,
+                    "justificantes",
+                    data,
+                    upload.extension,
+                    upload.mime,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail={"code": "document_storage_unavailable"},
+                ) from exc
+            uploaded_coordinates = (b2_bucket, b2_key)
+
+            document_row = conn.execute(
+                text(
+                    """
+                    INSERT INTO documents(
+                        case_id, kind, b2_bucket, b2_key, sha256,
+                        mime, size_bytes, created_at
+                    ) VALUES (
+                        :case_id, :kind, :b2_bucket, :b2_key, :sha256,
+                        :mime, :size_bytes, NOW()
+                    )
+                    RETURNING id
+                    """
+                ),
+                {
+                    "case_id": case_id,
+                    "kind": kind,
+                    "b2_bucket": b2_bucket,
+                    "b2_key": b2_key,
+                    "sha256": upload.sha256,
+                    "mime": upload.mime,
+                    "size_bytes": len(data),
+                },
+            ).fetchone()
+            if not document_row:
+                raise RuntimeError("El justificante no fue registrado")
+            document_id = str(document_row[0])
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO events(case_id, type, payload, created_at)
+                    VALUES (:case_id, 'justificante_uploaded', CAST(:payload AS JSONB), NOW())
+                    """
+                ),
+                {
+                    "case_id": case_id,
+                    "payload": json.dumps(
+                        {
+                            "document_id": document_id,
+                            "kind": kind,
+                            "filename": upload.filename,
+                            "sha256": upload.sha256,
+                            "mime": upload.mime,
+                            "size_bytes": len(data),
+                        }
+                    ),
+                },
+            )
+    except Exception:
+        _cleanup_uploaded_object(uploaded_coordinates)
+        raise
+
+    return {
+        "ok": True,
+        "case_id": case_id,
+        "document_id": document_id,
+        "kind": kind,
+        "sha256": upload.sha256,
+        "mime": upload.mime,
+        "size_bytes": len(data),
+        "custody": "rtm_internal_only",
+    }
+
+
 @router.post(
     "/cases/{case_id}/mark-submitted",
     dependencies=[Depends(require_current_case_scope)],
@@ -870,10 +1055,24 @@ def mark_submitted(
     note: Optional[str] = Form(default=None),
 ) -> Dict[str, Any]:
     _require_operator(x_operator_token)
-    registro_clean = (registro or "").strip()
-    channel_clean = (channel or "").strip().lower().replace(" ", "_")
-    if len(registro_clean) < 3:
-        raise HTTPException(status_code=400, detail="Número de registro verificable requerido")
+    registro_clean = _bounded_form_value(
+        registro,
+        field="registro",
+        max_length=MAX_REGISTRO_LENGTH,
+        required=True,
+        min_length=3,
+    )
+    channel_clean = _bounded_form_value(
+        channel,
+        field="channel",
+        max_length=MAX_CHANNEL_LENGTH,
+        required=True,
+    ).lower().replace(" ", "_")
+    note_clean = _bounded_form_value(
+        note,
+        field="note",
+        max_length=MAX_NOTE_LENGTH,
+    )
     if channel_clean not in MANUAL_SUBMISSION_CHANNELS:
         raise HTTPException(status_code=400, detail="Canal de presentación no reconocido")
 
@@ -945,7 +1144,7 @@ def mark_submitted(
                 "submitted_at": _now_iso(),
                 "authority_material_sha256": authority.get("material_sha256"),
                 "synthetic": bool(authority.get("synthetic")),
-                "note": note or "",
+                "note": note_clean,
             },
         )
 
@@ -970,85 +1169,21 @@ async def upload_justificante(
     kind: str = Form("justificante_presentacion"),
 ) -> Dict[str, Any]:
     _require_operator(x_operator_token)
-
-    filename = (file.filename or "").strip()
-    if not filename:
-        raise HTTPException(status_code=400, detail="Filename requerido")
-
-    content_type = (file.content_type or "application/octet-stream").strip()
-    data = await file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="Archivo vacío")
-    document_sha256 = hashlib.sha256(data).hexdigest()
-
+    kind_clean = _clean_kind(kind)
+    data, upload = await _prepare_ops_document(
+        file,
+        fallback_filename="justificante_presentacion.pdf",
+    )
     engine = get_engine()
-    with engine.begin() as conn:
-        scope = load_ops_case_scope(request)
-        require_case_in_scope(conn, scope=scope, case_id=case_id)
-        _require_paid_and_authorized(conn, case_id)
-
-        _, ext = os.path.splitext(filename.lower())
-        ext = ext or ".bin"
-
-        b2_bucket, b2_key = _upload_bytes(case_id, "justificantes", data, ext, content_type)
-
-        document_row = conn.execute(
-            text(
-                """
-                INSERT INTO documents(
-                    case_id, kind, b2_bucket, b2_key, sha256,
-                    mime, size_bytes, created_at
-                ) VALUES (
-                    :case_id, :kind, :b2_bucket, :b2_key, :sha256,
-                    :mime, :size_bytes, NOW()
-                )
-                RETURNING id
-                """
-            ),
-            {
-                "case_id": case_id,
-                "kind": kind,
-                "b2_bucket": b2_bucket,
-                "b2_key": b2_key,
-                "sha256": document_sha256,
-                "mime": content_type,
-                "size_bytes": len(data),
-            },
-        ).fetchone()
-        document_id = str(document_row[0])
-
-        conn.execute(
-            text(
-                """
-                INSERT INTO events(case_id, type, payload, created_at)
-                VALUES (:case_id, 'justificante_uploaded', CAST(:payload AS JSONB), NOW())
-                """
-            ),
-            {
-                "case_id": case_id,
-                "payload": json.dumps(
-                    {
-                        "document_id": document_id,
-                        "kind": kind,
-                        "filename": filename,
-                        "sha256": document_sha256,
-                        "mime": content_type,
-                        "size_bytes": len(data),
-                    }
-                ),
-            },
-        )
-
-    return {
-        "ok": True,
-        "case_id": case_id,
-        "document_id": document_id,
-        "kind": kind,
-        "sha256": document_sha256,
-        "mime": content_type,
-        "size_bytes": len(data),
-        "custody": "rtm_internal_only",
-    }
+    return await run_in_threadpool(
+        _persist_ops_justificante,
+        engine,
+        case_id=case_id,
+        request=request,
+        kind=kind_clean,
+        data=data,
+        upload=upload,
+    )
 
 @router.post(
     "/cases/{case_id}/upload-external-document",
@@ -1100,23 +1235,50 @@ async def register_manual_submission(
     """
     _require_operator(x_operator_token)
 
-    organismo_clean = (organismo or "").strip()
-    registro_clean = (registro or "").strip()
-    csv_clean = (csv or "").strip()
-    channel_clean = (channel or "ayuntamiento_manual").strip().lower().replace(" ", "_")
+    organismo_clean = _bounded_form_value(
+        organismo,
+        field="organismo",
+        max_length=MAX_ORGANISMO_LENGTH,
+        required=True,
+    )
+    registro_clean = _bounded_form_value(
+        registro,
+        field="registro",
+        max_length=MAX_REGISTRO_LENGTH,
+        required=True,
+        min_length=3,
+    )
+    csv_clean = _bounded_form_value(
+        csv,
+        field="csv",
+        max_length=MAX_CSV_LENGTH,
+    )
+    channel_clean = _bounded_form_value(
+        channel or "ayuntamiento_manual",
+        field="channel",
+        max_length=MAX_CHANNEL_LENGTH,
+        required=True,
+    ).lower().replace(" ", "_")
+    note_clean = _bounded_form_value(
+        note,
+        field="note",
+        max_length=MAX_NOTE_LENGTH,
+    )
     submitted_at_clean = _validated_submitted_at(submitted_at or "")
-
-    if not organismo_clean:
-        raise HTTPException(status_code=400, detail="Organismo requerido")
-    if len(registro_clean) < 3:
-        raise HTTPException(status_code=400, detail="Número de registro requerido")
     if channel_clean not in MANUAL_SUBMISSION_CHANNELS:
         raise HTTPException(status_code=400, detail="Canal de presentación no reconocido")
 
     document_info: Optional[Dict[str, Any]] = None
+    prepared_document: Optional[tuple[bytes, ValidatedUpload]] = None
+    if file is not None and (file.filename or "").strip():
+        prepared_document = await _prepare_ops_document(
+            file,
+            fallback_filename="justificante_presentacion.pdf",
+        )
 
     engine = get_engine()
-    with engine.begin() as conn:
+    uploaded_coordinates: List[tuple[str, str]] = []
+    with _storage_backed_transaction(engine, uploaded_coordinates) as conn:
         scope = load_ops_case_scope(request)
         require_case_in_scope(conn, scope=scope, case_id=case_id)
         authority = _require_paid_and_authorized(conn, case_id)
@@ -1159,18 +1321,25 @@ async def register_manual_submission(
                 detail=f"No se puede registrar presentación desde status={previous_status}",
             )
 
-        if file is not None and (file.filename or "").strip():
-            filename = (file.filename or "justificante_presentacion").strip()
-            content_type = (file.content_type or "application/octet-stream").strip()
-            data = await file.read()
-            if not data:
-                raise HTTPException(status_code=400, detail="Justificante vacío")
-
-            ext = _guess_ext_from_filename(filename, content_type)
-            document_sha256 = hashlib.sha256(data).hexdigest()
-            b2_bucket, b2_key = _upload_bytes(
-                case_id, "manual_submission", data, ext, content_type
-            )
+        if prepared_document is not None:
+            data, upload = prepared_document
+            filename = upload.filename
+            content_type = upload.mime
+            document_sha256 = upload.sha256
+            try:
+                b2_bucket, b2_key = _upload_bytes(
+                    case_id,
+                    "manual_submission",
+                    data,
+                    upload.extension,
+                    content_type,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail={"code": "document_storage_unavailable"},
+                ) from exc
+            uploaded_coordinates.append((b2_bucket, b2_key))
 
             document_row = conn.execute(
                 text(
@@ -1232,7 +1401,7 @@ async def register_manual_submission(
                 "evidence_kind": "manual_registration",
                 "authority_material_sha256": authority.get("material_sha256"),
                 "synthetic": bool(authority.get("synthetic")),
-                "note": note or "",
+                "note": note_clean,
                 "document": document_info,
                 "at": _now_iso(),
             },

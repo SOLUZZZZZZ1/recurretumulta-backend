@@ -86,7 +86,7 @@ class GlobalFollowupsTest(unittest.TestCase):
         engine = _Engine([self.row])
         with patch.dict(
             os.environ,
-            {"OPERATOR_TOKEN": "operator-test", "RTM_ENV": "production"},
+            {"OPERATOR_TOKEN": "operator-test", "RTM_ENV": "development"},
         ), patch(
             "ops.get_engine", return_value=engine
         ):
@@ -117,7 +117,7 @@ class GlobalFollowupsTest(unittest.TestCase):
         engine = _Engine([self.row])
         with patch.dict(
             os.environ,
-            {"OPERATOR_TOKEN": "operator-test", "RTM_ENV": "production"},
+            {"OPERATOR_TOKEN": "operator-test", "RTM_ENV": "development"},
         ), patch(
             "ops.get_engine", return_value=engine
         ):
@@ -134,7 +134,7 @@ class GlobalFollowupsTest(unittest.TestCase):
     def test_invalid_status_is_rejected_before_database_access(self):
         with patch.dict(
             os.environ,
-            {"OPERATOR_TOKEN": "operator-test", "RTM_ENV": "production"},
+            {"OPERATOR_TOKEN": "operator-test", "RTM_ENV": "development"},
         ):
             with self.assertRaises(HTTPException) as ctx:
                 ops.list_all_followups(

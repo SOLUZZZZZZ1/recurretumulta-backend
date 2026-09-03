@@ -3,10 +3,14 @@ name: RTM CORE CI
 on:
   push:
     branches:
+      - main
       - "rtm-core-consolidation-*"
+      - "rtm-ai-security-hardening-*"
   pull_request:
     branches:
       - main
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -17,7 +21,7 @@ concurrency:
 
 jobs:
   backend-core:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     services:
@@ -37,26 +41,42 @@ jobs:
 
     env:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/rtm_core_test
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_NO_INPUT: "1"
+      PIP_ONLY_BINARY: ":all:"
       RTM_CORE_INTEGRATION_DB: "1"
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
 
       - name: Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
 
+      - name: Scan repository files for accidental secrets
+        run: python scripts/rtm_secret_scan.py --history
+
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip==26.2.1
+          python -m pip install -r requirements.txt
+          python -m pip check
 
-      - name: Compile changed backend surface
+      - name: Audit Python dependencies
         run: |
-          python -m compileall -q app.py billing.py ops_automation.py rtm_core scripts tests
+          python -m pip install pip-audit==2.10.1
+          python -m pip_audit --strict --progress-spinner off -r requirements.txt
+          python -m pip check
+
+      - name: Compile complete backend surface
+        run: |
+          python -m compileall -q .
 
       - name: Import complete application graph
         run: |

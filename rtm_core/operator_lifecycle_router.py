@@ -7,7 +7,7 @@ se devuelve una contraseña en una respuesta.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, AsyncIterator, Literal
 from uuid import UUID
 
@@ -33,6 +33,7 @@ from rtm_core.operator_auth_request import (
 from rtm_core.operator_auth_router import (
     load_operator_session_with_device_possession,
 )
+from rtm_core.operator_auth_service import has_recent_reauthentication
 from rtm_core.operator_lifecycle_policy import (
     OperatorLifecycleRoutesDisabled,
     OperatorLifecycleRuntimeConfig,
@@ -111,14 +112,14 @@ class ChangeOwnPasswordRequest(_StrictModel):
 
 @dataclass(frozen=True)
 class LifecycleSupervisorContext:
-    session: Any
-    config: OperatorLifecycleRuntimeConfig
+    session: Any = field(repr=False)
+    config: OperatorLifecycleRuntimeConfig = field(repr=False)
 
 
 @dataclass(frozen=True)
 class LifecycleOperatorContext:
-    session: Any
-    config: OperatorLifecycleRuntimeConfig
+    session: Any = field(repr=False)
+    config: OperatorLifecycleRuntimeConfig = field(repr=False)
 
 
 async def operator_lifecycle_connection() -> AsyncIterator[Connection]:
@@ -155,7 +156,7 @@ async def require_lifecycle_operator_context(
     ),
     rtm_presenter_device: str | None = Cookie(
         default=None,
-        alias="rtm_presenter_device",
+        alias="__Host-rtm_presenter_device",
     ),
     conn: Connection = Depends(operator_lifecycle_connection),
 ) -> LifecycleOperatorContext:
@@ -190,10 +191,35 @@ async def require_lifecycle_supervisor_context(
                 "operadores"
             ),
         )
+    if bool(operator_context.session.mfa_required):
+        raise HTTPException(
+            status_code=409,
+            detail="La cuenta requiere completar una fase de seguridad adicional",
+        )
     return LifecycleSupervisorContext(
         session=operator_context.session,
         config=operator_context.config,
     )
+
+
+async def require_recent_lifecycle_supervisor_context(
+    context: LifecycleSupervisorContext = Depends(
+        require_lifecycle_supervisor_context
+    ),
+) -> LifecycleSupervisorContext:
+    """Exige un step-up persistido y vigente para cada mutación crítica."""
+
+    if not has_recent_reauthentication(
+        context.session,
+        max_age_seconds=(
+            context.config.admin.auth.reauthentication_max_age_seconds
+        ),
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Reautenticación reciente requerida",
+        )
+    return context
 
 
 def _fingerprint(request: Request, config):
@@ -203,6 +229,7 @@ def _fingerprint(request: Request, config):
         client_host=client_host,
         hmac_key=config.admin.auth.hmac_key,
         trust_proxy_headers=config.admin.auth.trust_proxy_headers,
+        trusted_proxy_cidrs=config.admin.auth.trusted_proxy_cidrs,
     )
 
 
@@ -303,7 +330,7 @@ async def lifecycle_create_operator(
     payload: CreateOperatorRequest,
     request: Request,
     context: LifecycleSupervisorContext = Depends(
-        require_lifecycle_supervisor_context
+        require_recent_lifecycle_supervisor_context
     ),
     conn: Connection = Depends(operator_lifecycle_connection),
 ):
@@ -344,7 +371,7 @@ async def lifecycle_suspend_operator(
     payload: ReasonRequest,
     request: Request,
     context: LifecycleSupervisorContext = Depends(
-        require_lifecycle_supervisor_context
+        require_recent_lifecycle_supervisor_context
     ),
     conn: Connection = Depends(operator_lifecycle_connection),
 ):
@@ -382,7 +409,7 @@ async def lifecycle_reactivate_operator(
     payload: ReasonRequest,
     request: Request,
     context: LifecycleSupervisorContext = Depends(
-        require_lifecycle_supervisor_context
+        require_recent_lifecycle_supervisor_context
     ),
     conn: Connection = Depends(operator_lifecycle_connection),
 ):
@@ -420,7 +447,7 @@ async def lifecycle_assign_role(
     payload: AssignRoleRequest,
     request: Request,
     context: LifecycleSupervisorContext = Depends(
-        require_lifecycle_supervisor_context
+        require_recent_lifecycle_supervisor_context
     ),
     conn: Connection = Depends(operator_lifecycle_connection),
 ):
@@ -459,7 +486,7 @@ async def lifecycle_rotate_password(
     payload: RotatePasswordRequest,
     request: Request,
     context: LifecycleSupervisorContext = Depends(
-        require_lifecycle_supervisor_context
+        require_recent_lifecycle_supervisor_context
     ),
     conn: Connection = Depends(operator_lifecycle_connection),
 ):
@@ -501,7 +528,7 @@ async def lifecycle_revoke_all_sessions(
     payload: ReasonRequest,
     request: Request,
     context: LifecycleSupervisorContext = Depends(
-        require_lifecycle_supervisor_context
+        require_recent_lifecycle_supervisor_context
     ),
     conn: Connection = Depends(operator_lifecycle_connection),
 ):
@@ -587,5 +614,6 @@ __all__ = [
     "operator_lifecycle_connection",
     "require_lifecycle_operator_context",
     "require_lifecycle_supervisor_context",
+    "require_recent_lifecycle_supervisor_context",
     "router",
 ]

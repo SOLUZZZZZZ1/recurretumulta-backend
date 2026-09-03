@@ -131,7 +131,7 @@ async def _run_http_smoke(
         supervisor_body = supervisor_login.json()
         supervisor_token = str(supervisor_body.get("token") or "")
         supervisor_device = str(
-            client.cookies.get("rtm_presenter_device") or ""
+            client.cookies.get("__Host-rtm_presenter_device") or ""
         )
         supervisor_session_id = str(
             supervisor_body.get("session_id") or ""
@@ -148,6 +148,16 @@ async def _run_http_smoke(
             "Authorization": f"Bearer {supervisor_token}",
             "X-RTM-Device": supervisor_device,
         }
+
+        supervisor_reauth = await client.post(
+            "/ops/auth/reauthenticate",
+            json={"password": supervisor_password},
+            headers=supervisor_headers,
+        )
+        report["checks"]["supervisor_reauthenticated"] = (
+            supervisor_reauth.status_code == 200
+            and supervisor_reauth.json().get("status") == "reauthenticated"
+        )
 
         async with httpx.AsyncClient(
             transport=transport,
@@ -242,7 +252,7 @@ async def _run_http_smoke(
         target_body = target_login.json()
         target_token = str(target_body.get("token") or "")
         target_device = str(
-            client.cookies.get("rtm_presenter_device") or ""
+            client.cookies.get("__Host-rtm_presenter_device") or ""
         )
         report["checks"]["temporary_password_login_succeeded"] = (
             target_login.status_code == 200
@@ -668,6 +678,7 @@ def main() -> int:
         "RTM_ENABLE_OPERATOR_LIFECYCLE_V1",
         "RTM_OPERATOR_ACCESS_HMAC_KEY",
         "RTM_TRUST_PROXY_HEADERS",
+        "RTM_TRUSTED_PROXY_CIDRS",
         "RTM_OPERATOR_ACCESS_RETENTION_DAYS",
     )
     old_env = {name: os.environ.get(name) for name in env_names}
@@ -676,6 +687,7 @@ def main() -> int:
     os.environ["RTM_ENABLE_OPERATOR_LIFECYCLE_V1"] = "1"
     os.environ["RTM_OPERATOR_ACCESS_HMAC_KEY"] = "L" * 64
     os.environ["RTM_TRUST_PROXY_HEADERS"] = "1"
+    os.environ["RTM_TRUSTED_PROXY_CIDRS"] = "127.0.0.1/32"
     os.environ["RTM_OPERATOR_ACCESS_RETENTION_DAYS"] = "180"
 
     try:

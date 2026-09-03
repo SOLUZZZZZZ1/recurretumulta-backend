@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from database import get_engine
@@ -20,6 +20,7 @@ from rtm_core.preview_repository import (
     request_changes,
     submit_for_review,
 )
+from rtm_core.ops_case_scope import load_ops_case_scope, require_case_in_scope
 from rtm_core.security import normalized_actor, require_operator_token
 
 
@@ -51,11 +52,15 @@ def _serialized(record):
 @router.get("/{case_id}/legal-previews")
 def get_case_legal_previews(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     _operator(x_operator_token, None)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         records = list_previews(conn, case_id)
     return {
         "ok": True,
@@ -68,11 +73,15 @@ def get_case_legal_previews(
 @router.get("/{case_id}/legal-previews/latest")
 def get_latest_case_legal_preview(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     _operator(x_operator_token, None)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = latest_preview(conn, case_id)
     return {
         "ok": True,
@@ -85,11 +94,15 @@ def get_latest_case_legal_preview(
 def get_case_legal_preview(
     case_id: str,
     preview_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     _operator(x_operator_token, None)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = get_preview(conn, case_id, preview_id)
     return {"ok": True, "preview": _serialized(record)}
 
@@ -98,12 +111,16 @@ def get_case_legal_preview(
 def create_case_legal_preview(
     case_id: str,
     body: CreateLegalPreviewBody,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     x_operator_actor: Optional[str] = Header(default=None, alias="X-Operator-Actor"),
 ):
     actor = _operator(x_operator_token, x_operator_actor)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = create_preview(
             conn,
             case_id=case_id,
@@ -118,12 +135,16 @@ def create_case_legal_preview(
 def submit_case_legal_preview_for_review(
     case_id: str,
     preview_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     x_operator_actor: Optional[str] = Header(default=None, alias="X-Operator-Actor"),
 ):
     actor = _operator(x_operator_token, x_operator_actor)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = submit_for_review(conn, case_id, preview_id, actor)
     return {"ok": True, "preview": _serialized(record)}
 
@@ -133,12 +154,16 @@ def request_case_legal_preview_changes(
     case_id: str,
     preview_id: str,
     body: PreviewReasonBody,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     x_operator_actor: Optional[str] = Header(default=None, alias="X-Operator-Actor"),
 ):
     actor = _operator(x_operator_token, x_operator_actor)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = request_changes(conn, case_id, preview_id, actor, body.reason)
     return {"ok": True, "preview": _serialized(record)}
 
@@ -147,12 +172,16 @@ def request_case_legal_preview_changes(
 def approve_case_legal_preview(
     case_id: str,
     preview_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     x_operator_actor: Optional[str] = Header(default=None, alias="X-Operator-Actor"),
 ):
     actor = _operator(x_operator_token, x_operator_actor)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = approve_preview(conn, case_id, preview_id, actor)
     return {"ok": True, "preview": _serialized(record)}
 
@@ -161,12 +190,16 @@ def approve_case_legal_preview(
 def freeze_case_legal_preview(
     case_id: str,
     preview_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     x_operator_actor: Optional[str] = Header(default=None, alias="X-Operator-Actor"),
 ):
     actor = _operator(x_operator_token, x_operator_actor)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = freeze_preview(conn, case_id, preview_id, actor)
     return {"ok": True, "preview": _serialized(record)}
 
@@ -176,11 +209,15 @@ def invalidate_case_legal_preview(
     case_id: str,
     preview_id: str,
     body: PreviewReasonBody,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     x_operator_actor: Optional[str] = Header(default=None, alias="X-Operator-Actor"),
 ):
     actor = _operator(x_operator_token, x_operator_actor)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = invalidate_preview(conn, case_id, preview_id, actor, body.reason)
     return {"ok": True, "preview": _serialized(record)}

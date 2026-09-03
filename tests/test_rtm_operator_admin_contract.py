@@ -55,11 +55,14 @@ class OperatorAdminContractTest(unittest.TestCase):
             source,
         )
         self.assertIn('alias="X-RTM-Device"', source)
-        self.assertIn('alias="rtm_presenter_device"', source)
+        self.assertIn('alias="__Host-rtm_presenter_device"', source)
         self.assertNotIn(
             "session = load_operator_session(\n",
             source,
         )
+        self.assertIn("session.must_change_password", source)
+        self.assertIn("session.mfa_required", source)
+        self.assertGreaterEqual(source.count("field(repr=False)"), 2)
 
     def test_router_exposes_observability_and_revocation_only(self):
         source = ROUTER.read_text(encoding="utf-8")
@@ -116,6 +119,14 @@ class OperatorAdminContractTest(unittest.TestCase):
         self.assertIn('"admin.session_revoked"', source)
         self.assertIn('"admin.device_revoked"', source)
         self.assertIn('"supervisor_action"', source)
+
+    def test_admin_mutations_require_recent_persisted_reauthentication(self):
+        source = ROUTER.read_text(encoding="utf-8")
+        self.assertIn("has_recent_reauthentication", source)
+        self.assertEqual(
+            source.count("Depends(require_recent_supervisor_context)"),
+            2,
+        )
 
     def test_payload_and_pagination_are_bounded(self):
         source = ROUTER.read_text(encoding="utf-8")

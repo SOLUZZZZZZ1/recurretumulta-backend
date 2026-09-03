@@ -552,6 +552,7 @@ def main(argv: list[str] | None = None) -> int:
         "RTM_ENABLE_CONNECT_SUPERVISOR_V1",
         "RTM_OPERATOR_ACCESS_HMAC_KEY",
         "RTM_TRUST_PROXY_HEADERS",
+        "RTM_TRUSTED_PROXY_CIDRS",
         "RTM_OPERATOR_ACCESS_RETENTION_DAYS",
     )
     old_env = {name: os.environ.get(name) for name in env_names}
@@ -559,6 +560,7 @@ def main(argv: list[str] | None = None) -> int:
     os.environ["RTM_ENABLE_CONNECT_SUPERVISOR_V1"] = "1"
     os.environ["RTM_OPERATOR_ACCESS_HMAC_KEY"] = "C" * 64
     os.environ["RTM_TRUST_PROXY_HEADERS"] = "1"
+    os.environ["RTM_TRUSTED_PROXY_CIDRS"] = "127.0.0.1/32"
     os.environ["RTM_OPERATOR_ACCESS_RETENTION_DAYS"] = "180"
 
     engine = None

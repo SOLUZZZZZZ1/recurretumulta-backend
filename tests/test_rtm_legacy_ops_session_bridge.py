@@ -5,11 +5,13 @@ import json
 import os
 import unittest
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import app as backend_app
@@ -87,6 +89,7 @@ def _session(
     mfa_required: bool = False,
     role_code: str = "rtm.operator",
 ):
+    now = datetime.now(timezone.utc)
     return SimpleNamespace(
         operator_id=OPERATOR_ID,
         session_id=SESSION_ID,
@@ -94,6 +97,8 @@ def _session(
         permissions=permissions,
         must_change_password=must_change_password,
         mfa_required=mfa_required,
+        login_at=now - timedelta(hours=1),
+        last_verified_at=now - timedelta(seconds=30),
     )
 
 
@@ -326,7 +331,7 @@ class LegacyOpsSessionBridgeTest(unittest.TestCase):
             session=_session("ops.view"),
             headers={
                 "Authorization": f"Bearer {BEARER}",
-                "Cookie": f"rtm_presenter_device={DEVICE}",
+                "Cookie": f"__Host-rtm_presenter_device={DEVICE}",
             },
         )
 
@@ -603,7 +608,7 @@ class LegacyOpsSessionBridgeTest(unittest.TestCase):
         loader.assert_not_called()
         config.assert_not_called()
 
-    def test_vehicle_mark_paid_410_is_staging_only(self):
+    def test_vehicle_mark_paid_production_is_fail_closed(self):
         response, forwarded, loader, config, _ = self._execute(
             f"/ops/vehicle-removal/{CASE_ID}/mark-paid",
             method="POST",
@@ -611,8 +616,8 @@ class LegacyOpsSessionBridgeTest(unittest.TestCase):
             headers={"X-Operator-Token": "existing-production-token"},
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(forwarded["called"])
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(forwarded)
         loader.assert_not_called()
         config.assert_not_called()
 
@@ -654,18 +659,48 @@ class LegacyOpsSessionBridgeTest(unittest.TestCase):
                 loader.assert_not_called()
                 config.assert_not_called()
 
-    def test_non_staging_environment_preserves_existing_contract(self):
+    def test_production_never_preserves_shared_token_contract(self):
         response, forwarded, loader, config, _ = self._execute(
             "/ops/queue",
             environment="production",
             headers={"X-Operator-Token": "existing-production-token"},
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            forwarded["operator_token"],
-            "existing-production-token",
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(forwarded)
+        loader.assert_not_called()
+        config.assert_not_called()
+
+    def test_legacy_ai_is_retired_even_in_non_staging_legacy_mode(self):
+        response, forwarded, loader, config, _ = self._execute(
+            "/ai/expediente/run",
+            method="POST",
+            environment="production",
         )
+
+        self.assertEqual(response.status_code, 410)
+        self.assertEqual(
+            _response_body(response),
+            {"detail": "Análisis legacy retirado; utilice el flujo RTM CORE"},
+        )
+        self.assertFalse(forwarded)
+        loader.assert_not_called()
+        config.assert_not_called()
+
+    def test_emergency_switch_blocks_non_staging_legacy_surface(self):
+        response, forwarded, loader, config, _ = self._execute(
+            "/ops/queue",
+            environment="production",
+            headers={"X-Operator-Token": "existing-production-token"},
+            extra_environment={"RTM_BLOCK_LEGACY_OPERATOR_AUTH": "1"},
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            _response_body(response),
+            {"detail": "Autenticación individual no disponible"},
+        )
+        self.assertFalse(forwarded)
         loader.assert_not_called()
         config.assert_not_called()
 
@@ -703,7 +738,7 @@ class LegacyOpsSessionBridgeTest(unittest.TestCase):
 
 
 class RestaurantAdminIndividualSessionTest(unittest.TestCase):
-    _BODY = {"display_name": "Restaurante Seguro", "pin": "2468"}
+    _BODY = {"display_name": "Restaurante Seguro", "pin": "24682468"}
 
     def _bridge_patches(self, *, environment: str, session):
         loader = Mock(return_value=session)
@@ -723,6 +758,8 @@ class RestaurantAdminIndividualSessionTest(unittest.TestCase):
         restaurant_engine = Mock()
         with (
             patch.dict(os.environ, environment, clear=True),
+            patch.object(backend_app, "assert_environment_ready"),
+            patch.object(backend_app, "extraction_limits"),
             patch.object(
                 bridge,
                 "load_operator_auth_runtime_config",
@@ -761,6 +798,8 @@ class RestaurantAdminIndividualSessionTest(unittest.TestCase):
         restaurant_engine = Mock()
         with (
             patch.dict(os.environ, environment, clear=True),
+            patch.object(backend_app, "assert_environment_ready"),
+            patch.object(backend_app, "extraction_limits"),
             patch.object(
                 bridge,
                 "load_operator_auth_runtime_config",
@@ -811,6 +850,8 @@ class RestaurantAdminIndividualSessionTest(unittest.TestCase):
         restaurant_connection = _RestaurantConnection()
         with (
             patch.dict(os.environ, environment, clear=True),
+            patch.object(backend_app, "assert_environment_ready"),
+            patch.object(backend_app, "extraction_limits"),
             patch.object(
                 bridge,
                 "load_operator_auth_runtime_config",
@@ -845,7 +886,7 @@ class RestaurantAdminIndividualSessionTest(unittest.TestCase):
         shared_gate.assert_not_called()
         self.assertEqual(len(restaurant_connection.statements), 2)
 
-    def test_non_staging_preserves_shared_admin_token_contract(self):
+    def test_production_rejects_shared_admin_token_contract(self):
         loader, config, environment = self._bridge_patches(
             environment="production",
             session=None,
@@ -853,6 +894,8 @@ class RestaurantAdminIndividualSessionTest(unittest.TestCase):
         restaurant_connection = _RestaurantConnection()
         with (
             patch.dict(os.environ, environment, clear=True),
+            patch.object(backend_app, "assert_environment_ready"),
+            patch.object(backend_app, "extraction_limits"),
             patch.object(
                 bridge,
                 "load_operator_auth_runtime_config",
@@ -882,12 +925,63 @@ class RestaurantAdminIndividualSessionTest(unittest.TestCase):
                 json=self._BODY,
             )
 
-        self.assertEqual(accepted.status_code, 200)
-        self.assertEqual(accepted.json()["id"], "rest_008")
-        self.assertEqual(rejected.status_code, 401)
-        self.assertEqual(rejected.json(), {"detail": "Unauthorized"})
+        self.assertEqual(accepted.status_code, 503)
+        self.assertEqual(rejected.status_code, 503)
+        self.assertFalse(restaurant_connection.statements)
         loader.assert_not_called()
         config.assert_not_called()
+
+    def test_handler_itself_rejects_shared_token_in_production(self):
+        request = _request("/ops/admin/restaurants/create", method="POST")
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "RTM_ENV": "production",
+                    "ADMIN_TOKEN": SHARED_ADMIN_TOKEN,
+                },
+                clear=True,
+            ),
+            patch.object(restaurant_routes, "_need_admin") as shared_gate,
+            patch.object(
+                restaurant_routes,
+                "_need_verified_individual_supervisor",
+            ) as individual_gate,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                restaurant_routes._need_restaurant_admin(
+                    request,
+                    SHARED_ADMIN_TOKEN,
+                )
+
+        self.assertEqual(raised.exception.status_code, 503)
+        shared_gate.assert_not_called()
+        individual_gate.assert_not_called()
+
+    def test_handler_keeps_shared_token_only_in_explicit_local_mode(self):
+        request = _request("/ops/admin/restaurants/create", method="POST")
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "RTM_ENV": "development",
+                    "ADMIN_TOKEN": SHARED_ADMIN_TOKEN,
+                },
+                clear=True,
+            ),
+            patch.object(restaurant_routes, "_need_admin") as shared_gate,
+            patch.object(
+                restaurant_routes,
+                "_need_verified_individual_supervisor",
+            ) as individual_gate,
+        ):
+            restaurant_routes._need_restaurant_admin(
+                request,
+                SHARED_ADMIN_TOKEN,
+            )
+
+        shared_gate.assert_called_once_with(SHARED_ADMIN_TOKEN)
+        individual_gate.assert_not_called()
 
 
 class LegacyOpsBridgeWiringContractTest(unittest.TestCase):
@@ -925,6 +1019,8 @@ class LegacyOpsBridgeWiringContractTest(unittest.TestCase):
         }
         with (
             patch.dict(os.environ, environment, clear=True),
+            patch.object(backend_app, "assert_environment_ready"),
+            patch.object(backend_app, "extraction_limits"),
             patch.object(
                 bridge,
                 "load_operator_auth_runtime_config",
@@ -963,9 +1059,10 @@ class LegacyOpsBridgeWiringContractTest(unittest.TestCase):
             shared.json(),
             {"detail": "Autenticación individual requerida"},
         )
-        self.assertEqual(
+        # Sin ALLOWED_ORIGINS explícito, CORS falla cerrado incluso en una
+        # denegación generada por el bridge.
+        self.assertIsNone(
             shared.headers.get("access-control-allow-origin"),
-            "*",
         )
         self.assertEqual(retired_ai.status_code, 410)
         self.assertEqual(

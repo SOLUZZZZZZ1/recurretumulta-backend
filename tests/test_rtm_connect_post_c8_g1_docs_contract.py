@@ -156,6 +156,31 @@ class ConnectPostC8G1DocsContractTest(unittest.TestCase):
                     "fd089d1cce4f65ebe6fb84b380dd13eba8a98ba4a16049515f4f513c27eeb7ea",
                 )
                 continue
+            if name == "submitter_dgt.py":
+                # La instantánea G1 conserva su hash histórico. El runtime
+                # actual recibió después hardening y retiro del transporte legacy.
+                self.assertEqual(
+                    expected_hash,
+                    "f41dd781d6390c8d4989cf00622ce2402995fc3f2e52a455d5eb86b069f331a3",
+                )
+                self.assertEqual(
+                    canonical_text_sha256(ROOT / name),
+                    "83ba4e8eee6d306d7b16434e29ac43a7ef92c8a5e4d03cd385b06e5bd6225e4d",
+                )
+                continue
+            if name == "submitters/registro.py":
+                # Igual que el adaptador DGT, este candidato histórico sigue
+                # rechazado y su evidencia no se reescribe; el archivo actual
+                # retira el transporte configurable hasta homologar proveedor.
+                self.assertEqual(
+                    expected_hash,
+                    "aca2b5baa63a85765d421639d646d59488627e2b06a0838130fae9041ddf0697",
+                )
+                self.assertEqual(
+                    canonical_text_sha256(ROOT / name),
+                    "270f82c57be45ef6111fe8a082eea1b24710e417312ea609e7bb0434df2adc96",
+                )
+                continue
             self.assertEqual(canonical_text_sha256(ROOT / name), expected_hash, name)
         app_text = (ROOT / "app.py").read_text(encoding="utf-8")
         init_text = (ROOT / "rtm_connect/__init__.py").read_text(encoding="utf-8")

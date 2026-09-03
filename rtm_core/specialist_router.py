@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from database import get_engine
 from rtm_core.authority_repository import (
@@ -12,6 +12,7 @@ from rtm_core.authority_repository import (
     latest_family_resolution,
 )
 from rtm_core.preview_repository import create_preview, latest_preview
+from rtm_core.ops_case_scope import load_ops_case_scope, require_case_in_scope
 from rtm_core.security import normalized_actor, require_operator_token
 from rtm_core.specialist_dispatch import (
     SPECIALIST_REGISTRY_VERSION,
@@ -30,6 +31,7 @@ def _operator(token: Optional[str], actor: Optional[str]) -> str:
 @router.post("/{case_id}/build-legal-preview")
 def build_case_legal_preview(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     x_operator_actor: Optional[str] = Header(default=None, alias="X-Operator-Actor"),
 ):
@@ -37,6 +39,9 @@ def build_case_legal_preview(
     engine = get_engine()
 
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         family_record = latest_family_resolution(
             conn,
             case_id,

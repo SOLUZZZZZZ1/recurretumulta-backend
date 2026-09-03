@@ -16,14 +16,14 @@ class LegacyRouteGuardTest(unittest.TestCase):
             encoding="utf-8"
         )
 
-    def test_guard_is_mounted_before_legacy_routers(self):
+    def test_guard_is_mounted_and_public_generate_is_not_mounted(self):
         guard = self.app_source.index("app.include_router(rtm_core_legacy_guard_router)")
-        generate = self.app_source.index("app.include_router(generate_router)")
         operator = self.app_source.index("app.include_router(ops_operator_router)")
         ops = self.app_source.index("app.include_router(ops_router)")
-        self.assertLess(guard, generate)
         self.assertLess(guard, operator)
         self.assertLess(guard, ops)
+        self.assertNotIn("from generate import router", self.app_source)
+        self.assertNotIn("include_router(generate_router)", self.app_source)
 
     def test_debug_and_force_override_routers_are_not_mounted(self):
         self.assertNotIn("debug_generate_preview_router", self.app_source)

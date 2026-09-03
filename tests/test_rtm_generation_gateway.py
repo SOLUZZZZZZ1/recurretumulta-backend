@@ -1,7 +1,11 @@
 from pathlib import Path
+import hashlib
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from rtm_core.contracts import LegalArgument, LegalPreview
+from rtm_core import generation_gateway
 from rtm_core.generation_gateway import (
     GENERATION_GATEWAY_VERSION,
     render_legal_preview,
@@ -74,6 +78,118 @@ class GenerationGatewayTest(unittest.TestCase):
         app_source = Path("app.py").read_text(encoding="utf-8")
         self.assertIn("rtm_core.generation_router", app_source)
         self.assertIn("app.include_router(rtm_core_generation_router)", app_source)
+
+    def test_document_registration_persists_exact_digest(self):
+        connection = mock.MagicMock()
+        connection.execute.return_value.fetchone.return_value = ("document-id",)
+        digest = hashlib.sha256(b"exact-document-bytes").hexdigest()
+
+        document_id = generation_gateway._insert_document(
+            connection,
+            "case-id",
+            "rtm_generated_pdf",
+            "bucket",
+            "cases/case-id/generated.pdf",
+            "application/pdf",
+            20,
+            digest,
+        )
+
+        self.assertEqual(document_id, "document-id")
+        statement, parameters = connection.execute.call_args.args
+        self.assertIn("sha256", str(statement))
+        self.assertEqual(parameters["sha256"], digest)
+
+    def test_generation_keeps_rendered_text_and_pdf_digests_distinct(self):
+        rendered = "contenido juridico renderizado"
+        docx_bytes = b"DOCX-exact-bytes"
+        pdf_bytes = b"%PDF-1.4\nexact-pdf-bytes\n%%EOF"
+        expected_text_hash = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+        expected_docx_hash = hashlib.sha256(docx_bytes).hexdigest()
+        expected_pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
+        self.assertNotEqual(expected_text_hash, expected_pdf_hash)
+
+        preview_record = SimpleNamespace(
+            preview=_preview(),
+            payload_sha256="p" * 64,
+        )
+        facts_record = SimpleNamespace(id="facts-id")
+        family_record = SimpleNamespace(id="family-id")
+        case = {
+            "_active_case_authority": {
+                "material": {
+                    "authority_id": "authority-id",
+                    "authority_version": "authority-version",
+                },
+                "material_sha256": "a" * 64,
+            }
+        }
+
+        connection = mock.MagicMock()
+        connection.execute.return_value.fetchone.side_effect = [
+            None,
+            (1,),
+            ("resource-id",),
+            None,
+            None,
+        ]
+        result = SimpleNamespace(id="resource-id")
+
+        with (
+            mock.patch.object(generation_gateway, "_case_meta", return_value=case),
+            mock.patch.object(
+                generation_gateway,
+                "_authority_chain",
+                return_value=(preview_record, facts_record, family_record),
+            ),
+            mock.patch.object(
+                generation_gateway,
+                "render_legal_preview",
+                return_value=rendered,
+            ),
+            mock.patch.object(generation_gateway, "build_docx", return_value=docx_bytes),
+            mock.patch.object(generation_gateway, "build_pdf", return_value=pdf_bytes),
+            mock.patch.object(
+                generation_gateway,
+                "upload_bytes",
+                side_effect=[("bucket", "document.docx"), ("bucket", "document.pdf")],
+            ),
+            mock.patch.object(
+                generation_gateway,
+                "_insert_document",
+                side_effect=["docx-id", "pdf-id"],
+            ) as insert_document,
+            mock.patch.object(
+                generation_gateway,
+                "get_generated_resource",
+                return_value=result,
+            ),
+        ):
+            generated = generation_gateway.generate_from_frozen_preview(
+                connection,
+                case_id="case-id",
+                preview_id="preview-id",
+                generated_by="operator-id",
+            )
+
+        self.assertIs(generated, result)
+        self.assertEqual(insert_document.call_args_list[0].args[-1], expected_docx_hash)
+        self.assertEqual(insert_document.call_args_list[1].args[-1], expected_pdf_hash)
+
+        resource_insert = next(
+            call
+            for call in connection.execute.call_args_list
+            if "INSERT INTO rtm_generated_resources" in str(call.args[0])
+        )
+        self.assertEqual(resource_insert.args[1]["content_hash"], expected_text_hash)
+        event_insert = next(
+            call
+            for call in connection.execute.call_args_list
+            if "INSERT INTO events" in str(call.args[0])
+        )
+        event_payload = event_insert.args[1]["payload"]
+        self.assertIn(expected_text_hash, event_payload)
+        self.assertIn(expected_pdf_hash, event_payload)
 
 
 if __name__ == "__main__":

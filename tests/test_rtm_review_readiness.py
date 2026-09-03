@@ -66,6 +66,27 @@ class ReviewReadinessTest(unittest.TestCase):
         codes = {issue.code for issue in result.blocking_issues}
         self.assertIn("authorization_signed", codes)
 
+    def test_unreviewed_signature_candidate_cannot_enable_checkout(self):
+        result = evaluate_review_readiness(
+            case_id="case-candidate",
+            interested_data=BASE_DATA,
+            authorized=True,
+            document_kinds=[
+                "identity_front",
+                "identity_back",
+                "authorization_signed_candidate",
+                "original",
+            ],
+            department="traffic",
+            case_type="fine",
+            source_module="rtm_web",
+        )
+        self.assertFalse(result.ready)
+        self.assertIn(
+            "authorization_signed",
+            {issue.code for issue in result.blocking_issues},
+        )
+
     def test_missing_main_document_is_blocked(self):
         result = evaluate_review_readiness(
             case_id="case-4",

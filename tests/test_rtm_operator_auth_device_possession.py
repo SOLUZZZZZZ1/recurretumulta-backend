@@ -209,6 +209,49 @@ class OperatorDevicePossessionTest(unittest.TestCase):
 
 
 class OperatorAuthAppHardeningTest(unittest.TestCase):
+    @staticmethod
+    def _set_cookie_headers(response: Response) -> list[str]:
+        return [
+            value.decode("latin-1")
+            for name, value in response.raw_headers
+            if name.lower() == b"set-cookie"
+        ]
+
+    def test_logout_requires_the_device_bound_to_the_bearer(self):
+        response = Response()
+        connection = Mock()
+        request = _request("/ops/auth/logout")
+        with (
+            patch.object(auth_router, "_runtime_config", return_value=object()),
+            patch.object(
+                auth_router,
+                "load_operator_session_with_device_possession",
+                return_value=None,
+            ) as load_bound_session,
+            patch.object(auth_router, "logout_operator") as logout,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                asyncio.run(
+                    auth_router.operator_logout(
+                        request,
+                        response,
+                        "Bearer " + ("t" * 48),
+                        None,
+                        None,
+                        connection,
+                    )
+                )
+
+        self.assertEqual(raised.exception.status_code, 401)
+        load_bound_session.assert_called_once_with(
+            connection,
+            authorization="Bearer " + ("t" * 48),
+            x_rtm_device=None,
+            rtm_presenter_device=None,
+            touch=False,
+        )
+        logout.assert_not_called()
+
     def test_auth_status_declares_the_authoritative_rollout_boundary(self):
         response = Response()
         config = SimpleNamespace(available=True, hmac_key="H" * 32)
@@ -274,9 +317,112 @@ class OperatorAuthAppHardeningTest(unittest.TestCase):
             payload["non_staging_legacy_login_unchanged"], True
         )
 
+    def test_login_issues_host_only_device_cookie_and_purges_legacy_name(self):
+        decision = SimpleNamespace(
+            ok=True,
+            device_token="D" * 32,
+            token="T" * 48,
+            session_id="44444444-4444-4444-8444-444444444444",
+            expires_at=self._future_time(),
+            absolute_expires_at=self._future_time(),
+            device_id="55555555-5555-4555-8555-555555555555",
+            operator={"email": "operator@example.test"},
+        )
+        response = Response()
+        with (
+            patch.object(auth_router, "_runtime_config", return_value=object()),
+            patch.object(
+                auth_router,
+                "_fingerprint",
+                return_value=SimpleNamespace(request_id="request-cookie"),
+            ),
+            patch.object(auth_router, "login_operator", return_value=decision),
+        ):
+            asyncio.run(
+                auth_router.operator_login(
+                    auth_router.OperatorLoginRequest(
+                        email="operator@example.test",
+                        password="synthetic-password",
+                    ),
+                    _request("/ops/auth/login"),
+                    response,
+                    None,
+                    None,
+                    Mock(),
+                )
+            )
+
+        cookies = self._set_cookie_headers(response)
+        host_cookie = next(
+            value
+            for value in cookies
+            if value.startswith("__Host-rtm_presenter_device=")
+        )
+        self.assertIn("HttpOnly", host_cookie)
+        self.assertIn("Path=/", host_cookie)
+        self.assertIn("SameSite=strict", host_cookie)
+        self.assertIn("Secure", host_cookie)
+        self.assertNotIn("Domain=", host_cookie)
+        legacy_delete = next(
+            value
+            for value in cookies
+            if value.startswith("rtm_presenter_device=")
+        )
+        self.assertIn("Max-Age=0", legacy_delete)
+
+    def test_successful_logout_clears_host_and_legacy_device_cookies(self):
+        response = Response()
+        connection = Mock()
+        with (
+            patch.object(auth_router, "_runtime_config", return_value=object()),
+            patch.object(
+                auth_router,
+                "load_operator_session_with_device_possession",
+                return_value=self._active_session(),
+            ),
+            patch.object(
+                auth_router,
+                "_fingerprint",
+                return_value=SimpleNamespace(request_id="request-logout"),
+            ),
+            patch.object(auth_router, "logout_operator", return_value=True),
+        ):
+            payload = asyncio.run(
+                auth_router.operator_logout(
+                    _request("/ops/auth/logout"),
+                    response,
+                    "Bearer " + ("t" * 48),
+                    "D" * 32,
+                    None,
+                    connection,
+                )
+            )
+
+        self.assertEqual(payload["status"], "closed")
+        cookies = self._set_cookie_headers(response)
+        for name in (
+            "__Host-rtm_presenter_device",
+            "rtm_presenter_device",
+        ):
+            cookie = next(
+                value for value in cookies if value.startswith(name + "=")
+            )
+            self.assertIn("HttpOnly", cookie)
+            self.assertIn("Max-Age=0", cookie)
+            self.assertIn("Path=/", cookie)
+            self.assertIn("SameSite=strict", cookie)
+            self.assertIn("Secure", cookie)
+            self.assertNotIn("Domain=", cookie)
+
     @staticmethod
     def _future_time():
         return datetime(2026, 9, 3, 23, 0, tzinfo=timezone.utc)
+
+    @staticmethod
+    def _active_session():
+        return SimpleNamespace(
+            session_id="44444444-4444-4444-8444-444444444444",
+        )
 
     def test_auth_validation_error_never_reflects_password_or_input(self):
         secret = "validation-password-canary"
@@ -293,7 +439,7 @@ class OperatorAuthAppHardeningTest(unittest.TestCase):
         )
 
         response = asyncio.run(
-            backend_app.redact_operator_auth_validation_error(
+            backend_app.redact_request_validation_error(
                 _request("/ops/auth/login"),
                 error,
             )
@@ -305,10 +451,18 @@ class OperatorAuthAppHardeningTest(unittest.TestCase):
         self.assertNotIn(secret, response.body.decode("utf-8"))
         self.assertEqual(
             json.loads(response.body),
-            {"detail": "Solicitud no válida"},
+            {
+                "detail": "Solicitud no válida",
+                "issues": [
+                    {
+                        "location": "body.password",
+                        "type": "string_too_long",
+                    }
+                ],
+            },
         )
 
-    def test_validation_errors_outside_auth_use_fastapi_default(self):
+    def test_validation_errors_outside_auth_are_also_redacted(self):
         canary = "ordinary-input-canary"
         error = RequestValidationError(
             [
@@ -322,14 +476,15 @@ class OperatorAuthAppHardeningTest(unittest.TestCase):
         )
 
         response = asyncio.run(
-            backend_app.redact_operator_auth_validation_error(
+            backend_app.redact_request_validation_error(
                 _request("/public/other"),
                 error,
             )
         )
 
-        self.assertIn(canary, response.body.decode("utf-8"))
-        self.assertNotIn("cache-control", response.headers)
+        self.assertNotIn(canary, response.body.decode("utf-8"))
+        self.assertEqual(response.headers["cache-control"], "no-store, max-age=0")
+        self.assertEqual(response.headers["pragma"], "no-cache")
 
     def test_private_ops_no_store_preserves_existing_vary(self):
         async def call_next(_request):
@@ -357,6 +512,7 @@ class OperatorAuthAppHardeningTest(unittest.TestCase):
                 "cookie",
                 "x-operator-token",
                 "x-rtm-device",
+                "x-csrf-token",
             },
         )
 

@@ -49,7 +49,14 @@ _NO_STORE_HEADERS = {
     "Cache-Control": "no-store, max-age=0",
     "Pragma": "no-cache",
 }
-_DEVICE_COOKIE = "rtm_presenter_device"
+_DEVICE_COOKIE = "__Host-rtm_presenter_device"
+_LEGACY_DEVICE_COOKIE = "rtm_presenter_device"
+_DEVICE_COOKIE_ATTRIBUTES = {
+    "path": "/",
+    "secure": True,
+    "httponly": True,
+    "samesite": "strict",
+}
 
 
 class _StrictModel(BaseModel):
@@ -63,6 +70,23 @@ class OperatorLoginRequest(_StrictModel):
 
 class OperatorReauthenticationRequest(_StrictModel):
     password: str = Field(min_length=1, max_length=256, repr=False)
+
+
+def _purge_legacy_device_cookie(response: Response) -> None:
+    """Retira la cookie anterior; nunca se acepta como prueba de posesión."""
+
+    response.delete_cookie(
+        key=_LEGACY_DEVICE_COOKIE,
+        **_DEVICE_COOKIE_ATTRIBUTES,
+    )
+
+
+def _clear_operator_device_cookies(response: Response) -> None:
+    response.delete_cookie(
+        key=_DEVICE_COOKIE,
+        **_DEVICE_COOKIE_ATTRIBUTES,
+    )
+    _purge_legacy_device_cookie(response)
 
 
 async def operator_auth_connection() -> AsyncIterator[Connection]:
@@ -101,6 +125,7 @@ def _fingerprint(request: Request, config):
         client_host=client_host,
         hmac_key=config.hmac_key,
         trust_proxy_headers=config.trust_proxy_headers,
+        trusted_proxy_cidrs=config.trusted_proxy_cidrs,
     )
 
 
@@ -268,7 +293,7 @@ async def operator_login(
         headers = dict(_NO_STORE_HEADERS)
         if decision.retry_after:
             headers["Retry-After"] = str(decision.retry_after)
-        return JSONResponse(
+        failure = JSONResponse(
             status_code=decision.status_code,
             content={
                 "ok": False,
@@ -277,15 +302,15 @@ async def operator_login(
             },
             headers=headers,
         )
+        _purge_legacy_device_cookie(failure)
+        return failure
+    _purge_legacy_device_cookie(response)
     if decision.device_token:
         response.set_cookie(
             key=_DEVICE_COOKIE,
             value=decision.device_token,
             max_age=60 * 60 * 24 * 180,
-            httponly=True,
-            secure=True,
-            samesite="strict",
-            path="/",
+            **_DEVICE_COOKIE_ATTRIBUTES,
         )
     return {
         "ok": True,
@@ -484,12 +509,33 @@ async def operator_logout(
         default=None,
         alias="Authorization",
     ),
+    x_rtm_device: str | None = Header(
+        default=None,
+        alias="X-RTM-Device",
+    ),
+    rtm_presenter_device: str | None = Cookie(
+        default=None,
+        alias=_DEVICE_COOKIE,
+    ),
     conn: Connection = Depends(operator_auth_connection),
 ):
     response.headers.update(_NO_STORE_HEADERS)
     config = _runtime_config()
     raw_token = extract_bearer_token(authorization)
     if not raw_token:
+        raise HTTPException(
+            status_code=401,
+            detail="Sesión no válida",
+            headers=_NO_STORE_HEADERS,
+        )
+    session = load_operator_session_with_device_possession(
+        conn,
+        authorization=authorization,
+        x_rtm_device=x_rtm_device,
+        rtm_presenter_device=rtm_presenter_device,
+        touch=False,
+    )
+    if not session:
         raise HTTPException(
             status_code=401,
             detail="Sesión no válida",
@@ -508,6 +554,7 @@ async def operator_logout(
             detail="Sesión no válida",
             headers=_NO_STORE_HEADERS,
         )
+    _clear_operator_device_cookies(response)
     return {
         "ok": True,
         "status": "closed",

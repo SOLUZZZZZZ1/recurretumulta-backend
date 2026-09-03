@@ -10,6 +10,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = ROOT / "rtm_connect" / "supervisor_policy.py"
+SECRET_A = "A7mQ2vN9kR4xT8pL3sW6cD1hJ5uZ0bY"
+SECRET_B = "F9rK3xV7nM2qP8dT4zH6wC1jL5sG0aU"
+SECRET_C = "Z6pD1yW8kQ4mR9vB2tN7cH5xJ3fL0sE"
 
 
 @dataclass(frozen=True)
@@ -90,9 +93,10 @@ def _safe_env() -> dict[str, str]:
         ),
         "FRONTEND_URL": "https://staging.recurretumulta.eu",
         "ALLOWED_ORIGINS": "https://staging.recurretumulta.eu",
-        "OPERATOR_TOKEN": "op_" + ("x" * 48),
-        "RTM_PUBLIC_CASE_ACCESS_SECRET": "case_" + ("c" * 48),
-        "RTM_AUTHORITY_SIGNING_SECRET": "authority_" + ("a" * 48),
+        "RTM_ALLOWED_HOSTS": "backend-staging.invalid",
+        "OPERATOR_TOKEN": "op_" + SECRET_A,
+        "RTM_PUBLIC_CASE_ACCESS_SECRET": "case_" + SECRET_B,
+        "RTM_AUTHORITY_SIGNING_SECRET": "authority_" + SECRET_C,
         "RTM_EXPECTED_BRANCH": "rtm-core-consolidation-2026-08-08",
         "RENDER_GIT_BRANCH": "rtm-core-consolidation-2026-08-08",
         "RENDER_SERVICE_NAME": "rtm-staging-backend",

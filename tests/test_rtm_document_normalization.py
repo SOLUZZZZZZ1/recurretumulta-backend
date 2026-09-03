@@ -411,6 +411,25 @@ class DocumentNormalizationTest(unittest.TestCase):
             FactStatus.VALIDATED,
         )
 
+    def test_suspected_instruction_content_never_auto_validates(self):
+        automatic = normalize_document_packet(
+            packet(
+                "administration",
+                [
+                    obs(
+                        "expediente_ref",
+                        "ADM-OVERRIDE-1",
+                        evidence="Referencia ADM-OVERRIDE-1",
+                        confidence=1.0,
+                    )
+                ],
+                quality=["untrusted_instruction_pattern_detected"],
+            )
+        )
+        fact = automatic.facts.facts["expediente_ref"]
+        self.assertEqual(fact.status, FactStatus.UNRESOLVED)
+        self.assertIsNone(fact.value)
+
     def test_single_value_conflict_is_null_and_narrative_set_is_merged(self):
         conflict = normalize_document_packet(
             packet(

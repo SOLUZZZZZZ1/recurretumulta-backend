@@ -160,7 +160,17 @@ def _calls_in_transaction(relative: str, function_name: str) -> set[str]:
             if isinstance(item.context_expr, ast.Call)
         ]
         if not any(
-            isinstance(call.func, ast.Attribute) and call.func.attr == "begin"
+            (
+                isinstance(call.func, ast.Attribute)
+                and call.func.attr == "begin"
+            )
+            or (
+                isinstance(call.func, ast.Name)
+                and call.func.id in {
+                    "_storage_backed_transaction",
+                    "_final_resource_transaction",
+                }
+            )
             for call in contexts
         ):
             continue
@@ -172,6 +182,29 @@ def _calls_in_transaction(relative: str, function_name: str) -> set[str]:
             elif isinstance(child.func, ast.Attribute):
                 calls.add(child.func.attr)
     return calls
+
+
+def _case_route_functions(relative: str) -> tuple[str, ...]:
+    """Return every top-level HTTP handler whose declared path owns case_id."""
+
+    source = _source(relative)
+    tree = ast.parse(source)
+    names: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call) or not decorator.args:
+                continue
+            path = decorator.args[0]
+            if (
+                isinstance(path, ast.Constant)
+                and isinstance(path.value, str)
+                and "{case_id}" in path.value
+            ):
+                names.append(node.name)
+                break
+    return tuple(names)
 
 
 class OpsCaseScopePolicyTest(unittest.TestCase):
@@ -439,7 +472,10 @@ class OpsCaseScopePolicyTest(unittest.TestCase):
         self.assertEqual(connection.calls, [])
 
     def test_legacy_filter_has_no_management_schema_reference_or_params(self):
-        with patch.dict(os.environ, {"RTM_ENV": "production"}, clear=True):
+        # El passthrough heredado solo existe en perfiles locales explícitos.
+        # Producción debe permanecer cerrada si la autenticación individual no
+        # está disponible.
+        with patch.dict(os.environ, {"RTM_ENV": "development"}, clear=True):
             scope = ops_case_scope.load_ops_case_scope(
                 SimpleNamespace(state=SimpleNamespace())
             )
@@ -519,7 +555,7 @@ class OpsCaseScopePolicyTest(unittest.TestCase):
     def test_legacy_dependency_never_opens_database(self):
         request = SimpleNamespace(state=SimpleNamespace())
         with (
-            patch.dict(os.environ, {"RTM_ENV": "production"}, clear=True),
+            patch.dict(os.environ, {"RTM_ENV": "development"}, clear=True),
             patch.object(ops_case_scope, "get_engine") as get_engine,
         ):
             scope = ops_case_scope.require_current_case_scope(
@@ -618,6 +654,55 @@ class OpsCaseScopeWiringContractTest(unittest.TestCase):
             _source("ops_operator_router.py"),
         )
 
+    def test_every_operator_case_route_has_transactional_scope_or_is_410(self):
+        relative = "ops_operator_router.py"
+        routes = set(_case_route_functions(relative))
+        expected = {
+            "reanalyze_case",
+            "get_final_resource",
+            "save_final_resource_draft",
+            "finalize_resource",
+            "send_complete_case_file",
+            "get_case_detail",
+            "get_ai_overrides",
+            "save_ai_overrides",
+            "view_authorization_signature_candidate",
+            "review_authorization_signature",
+            "approve_case",
+            "send_to_manual_review",
+            "add_operator_note",
+            "override_family",
+            "override_family_and_regenerate",
+            "rewrite_hecho_and_regenerate",
+            "submit_to_dgt",
+        }
+        self.assertEqual(routes, expected)
+
+        for function_name in sorted(routes - {"submit_to_dgt"}):
+            with self.subTest(function=function_name):
+                source = _function_source(relative, function_name)
+                calls = _calls_in_transaction(relative, function_name)
+                self.assertIn("request: Request", source)
+                self.assertIn("load_ops_case_scope", calls)
+                self.assertIn("require_case_in_scope", calls)
+                self.assertLess(
+                    source.index("require_operator_token"),
+                    source.index("get_engine"),
+                )
+
+        for function_name in (
+            "override_family_and_regenerate",
+            "rewrite_hecho_and_regenerate",
+        ):
+            source = _function_source(relative, function_name)
+            self.assertEqual(source.count("with engine.begin() as conn:"), 2)
+            self.assertEqual(source.count("load_ops_case_scope(request)"), 2)
+            self.assertEqual(source.count("require_case_in_scope("), 2)
+
+        retired = _function_source(relative, "submit_to_dgt")
+        self.assertIn("status_code=410", retired)
+        self.assertNotIn("get_engine", retired)
+
     def test_workspace_and_payment_reads_scope_inside_read_transaction(self):
         relative = os.path.join("rtm_core", "workspace_router.py")
         for function_name in ("get_case_workspace", "get_case_payment_status"):
@@ -647,6 +732,7 @@ class OpsCaseScopeWiringContractTest(unittest.TestCase):
             ("ops.py", "list_events", "_require_operator"),
             ("ops.py", "list_case_followups", "_require_operator"),
             ("ops_operator_router.py", "get_case_detail", "require_operator_token"),
+            ("ops_operator_router.py", "get_final_resource", "require_operator_token"),
             ("ops_operator_router.py", "get_ai_overrides", "require_operator_token"),
             (
                 "ops_vehicle_removal_router.py",
@@ -672,6 +758,60 @@ class OpsCaseScopeWiringContractTest(unittest.TestCase):
                 source = _function_source(relative, function_name)
                 self.assertLess(source.index(auth_call), source.index("get_engine"))
 
+    def test_every_mounted_core_case_route_has_same_transaction_scope(self):
+        """Cross-case matrix: no CORE route may reach its repository first.
+
+        ``require_case_in_scope`` returns the same opaque 404 for an absent case
+        and for a case assigned to another operator (covered above).  This
+        matrix makes that negative boundary mandatory for every mounted CORE
+        case handler and keeps the check under the handler's DB transaction.
+        """
+
+        relatives = (
+            os.path.join("rtm_core", "router.py"),
+            os.path.join("rtm_core", "workspace_router.py"),
+            os.path.join("rtm_core", "document_facts_router.py"),
+            os.path.join("rtm_core", "document_extraction_router.py"),
+            os.path.join("rtm_core", "reanalysis_router.py"),
+            os.path.join("rtm_core", "authority_router.py"),
+            os.path.join("rtm_core", "family_router.py"),
+            os.path.join("rtm_core", "specialist_router.py"),
+            os.path.join("rtm_core", "preview_router.py"),
+            os.path.join("rtm_core", "generation_router.py"),
+        )
+        matrix: list[tuple[str, str]] = []
+        for relative in relatives:
+            functions = _case_route_functions(relative)
+            self.assertTrue(functions, relative)
+            matrix.extend((relative, function_name) for function_name in functions)
+
+        # This explicit size prevents a newly unmounted or accidentally
+        # undecorated family from making the matrix pass vacuously.
+        self.assertEqual(len(matrix), 40, matrix)
+        for relative, function_name in matrix:
+            with self.subTest(relative=relative, function=function_name):
+                source = _function_source(relative, function_name)
+                self.assertIn("request: Request", source)
+                calls = _calls_in_transaction(relative, function_name)
+                self.assertIn("load_ops_case_scope", calls)
+                self.assertIn("require_case_in_scope", calls)
+
+    def test_reanalysis_run_passes_scope_into_transactional_claim(self):
+        router_source = _function_source(
+            os.path.join("rtm_core", "reanalysis_execution_router.py"),
+            "run_case_reanalysis_core",
+        )
+        guard_calls = _calls_in_transaction(
+            os.path.join("rtm_core", "reanalysis_execution.py"),
+            "_case_guard",
+        )
+        self.assertIn("scope=load_ops_case_scope(request)", router_source)
+        self.assertIn("require_case_in_scope", guard_calls)
+        self.assertIn("UPDATE cases", _function_source(
+            os.path.join("rtm_core", "reanalysis_execution.py"),
+            "_case_guard",
+        ))
+
     def test_permitted_mutations_recheck_scope_inside_write_transaction(self):
         targets = (
             ("ops.py", "upload_justificante"),
@@ -682,14 +822,19 @@ class OpsCaseScopeWiringContractTest(unittest.TestCase):
             ("ops.py", "rebuild_followups"),
             ("ops_operator_router.py", "send_to_manual_review"),
             ("ops_operator_router.py", "add_operator_note"),
-            ("ops_vehicle_removal_router.py", "mark_vehicle_paid"),
             ("ops_vehicle_removal_router.py", "assign_vehicle_removal"),
             ("ops_vehicle_removal_router.py", "complete_vehicle_removal"),
             ("ops_vehicle_removal_router.py", "add_vehicle_removal_note"),
         )
+        delegated_transaction_functions = {
+            ("ops.py", "upload_justificante"): "_persist_ops_justificante",
+        }
         for relative, function_name in targets:
             with self.subTest(relative=relative, function=function_name):
-                calls = _calls_in_transaction(relative, function_name)
+                inspected_function = delegated_transaction_functions.get(
+                    (relative, function_name), function_name
+                )
+                calls = _calls_in_transaction(relative, inspected_function)
                 self.assertIn("load_ops_case_scope", calls)
                 self.assertIn("require_case_in_scope", calls)
 

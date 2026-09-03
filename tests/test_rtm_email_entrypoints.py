@@ -51,7 +51,7 @@ class EmailEntryPointsTest(unittest.TestCase):
         self.assertEqual(context.exception.status_code, 500)
         self.assertEqual(
             context.exception.detail,
-            "Falta configuración SMTP en el servidor.",
+            "No se pudo enviar la consulta. Inténtelo de nuevo más tarde.",
         )
 
     def test_partner_signup_uses_info_mailbox_and_central_transport(self):
@@ -69,7 +69,11 @@ class EmailEntryPointsTest(unittest.TestCase):
         self.assertEqual(send.call_args.kwargs["reply_to"], "synthetic@example.com")
 
     def test_case_notification_uses_central_transport(self):
-        with patch("cases.send_email", return_value=True) as send:
+        with patch.dict(
+            os.environ,
+            self.environment,
+            clear=False,
+        ), patch("cases.send_email", return_value=True) as send:
             cases._send_email(
                 "synthetic@example.com",
                 "Aviso sintético",
@@ -81,6 +85,15 @@ class EmailEntryPointsTest(unittest.TestCase):
             subject="Aviso sintético",
             body="Contenido sintético.",
         )
+
+    def test_case_notification_is_silent_when_capability_is_disabled(self):
+        with patch.dict(
+            os.environ,
+            {**self.environment, "RTM_ENABLE_OUTBOUND_EMAIL": "0"},
+            clear=False,
+        ), patch("cases.send_email") as send:
+            cases._send_email("synthetic@example.com", "Aviso", "Contenido")
+        send.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -112,7 +112,7 @@ class ReanalysisAdapterTest(unittest.TestCase):
         self.assertIn("tipo_infraccion", result.ignored_fields)
         self.assertEqual(
             result.facts.facts["hecho_denunciado_literal"].status,
-            FactStatus.VALIDATED,
+            FactStatus.UNRESOLVED,
         )
         self.assertEqual(
             result.facts.facts["velocidad_medida_kmh"].status,
@@ -124,8 +124,39 @@ class ReanalysisAdapterTest(unittest.TestCase):
         )
 
         resolution = resolve_family(result.facts)
-        self.assertEqual(resolution.family, "temeraria")
+        self.assertIsNone(resolution.family)
         self.assertNotEqual(resolution.family, "velocidad")
+
+    def test_model_confidence_one_and_self_reported_evidence_stay_unresolved(self):
+        event = _event()
+        for confidence_key in (
+            "handwritten_precision_confidence",
+            "traffic_generic_facts_confidence",
+        ):
+            event[confidence_key] = {
+                key: 1.0 for key in event[confidence_key]
+            }
+
+        result = build_validated_facts_from_reanalysis(
+            case_id=CASE_ID,
+            wrapper=_wrapper(),
+            event_payload=event,
+        )
+
+        for key in (
+            "hecho_denunciado_literal",
+            "organismo",
+            "expediente_ref",
+            "sancion_importe_eur",
+        ):
+            fact = result.facts.facts[key]
+            self.assertEqual(fact.status, FactStatus.UNRESOLVED)
+            self.assertIsNone(fact.value)
+            self.assertEqual(
+                fact.sources[0].source_type,
+                "model_document_observation",
+            )
+        self.assertFalse(result.accepted_fields)
 
     def test_low_legibility_handwriting_stays_unresolved(self):
         result = build_validated_facts_from_reanalysis(
@@ -193,16 +224,31 @@ class ReanalysisAdapterTest(unittest.TestCase):
         )
         self.assertEqual(
             result.facts.facts["norma_hint"].status,
-            FactStatus.VALIDATED,
+            FactStatus.UNRESOLVED,
         )
-        self.assertEqual(
-            result.facts.facts["articulo_infringido_num"].value,
-            "3.1",
-        )
+        self.assertIsNone(result.facts.facts["articulo_infringido_num"].value)
         self.assertEqual(
             result.facts.facts["articulo_infringido_num"].sources[0].document_id,
             DOC_ID,
         )
+
+    def test_verifiable_deterministic_candidate_can_still_validate(self):
+        event = _event()
+        event["critical_fields_detected"] = {"matricula": "1234 ABC"}
+        event["critical_fields_detected_confidence"] = {"matricula": 1.0}
+        event["critical_fields_detected_evidence"] = {"matricula": "1234 ABC"}
+        event["critical_fields_detected_version"] = "traffic_text_parser_v1"
+
+        result = build_validated_facts_from_reanalysis(
+            case_id=CASE_ID,
+            wrapper=_wrapper(),
+            event_payload=event,
+        )
+
+        fact = result.facts.facts["matricula"]
+        self.assertEqual(fact.status, FactStatus.VALIDATED)
+        self.assertEqual(fact.value, "1234 ABC")
+        self.assertEqual(fact.sources[0].source_type, "deterministic_document")
 
 
 if __name__ == "__main__":

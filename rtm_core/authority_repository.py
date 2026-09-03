@@ -10,10 +10,10 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import Any, Mapping, Optional, TypeVar
+from typing import Any, Literal, Mapping, Optional, TypeVar
 
 from fastapi import HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import text
 
 from rtm_core.contracts import (
@@ -28,6 +28,21 @@ from rtm_core.service_catalog import canonical_department
 
 
 AUTHORITY_STORE_VERSION = "rtm_authority_store_v1_0"
+DOCUMENT_REVIEW_ATTESTATION_VERSION = "rtm_document_review_attestation_v1_0"
+_REANALYSIS_ADAPTER_MARKER = "rtm_reanalysis_to_validated_facts_"
+_REANALYSIS_MODEL_METHODS = frozenset(
+    {
+        "handwritten_precision",
+        "semaforo_precision",
+        "traffic_generic_facts",
+        "semaforo_secondary_facts",
+        "velocity_secondary_facts",
+        "critical_zoom",
+        "critical_vision",
+        "reanalysis_core",
+    }
+)
+_OPERATOR_DOCUMENT_REVIEW_METHODS = frozenset({"ops_document_review_v1"})
 _FORBIDDEN_FAMILIES = {
     "",
     "generic",
@@ -48,8 +63,46 @@ _TERMINAL_CASE_STATUSES = {
     "presentado_auto_dgt",
     "presentado_auto_registro",
 }
+_PROTECTED_PROCESSING_STATUSES = {
+    "submitting",
+    "reanalysis_in_progress",
+    "document_extraction_in_progress",
+}
+_NON_MUTABLE_CASE_STATUSES = (
+    _TERMINAL_CASE_STATUSES | _PROTECTED_PROCESSING_STATUSES
+)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+class DocumentReviewAttestation(BaseModel):
+    """Confirmación OPS ligada a una versión exacta de hechos y documentos."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: Literal["rtm_document_review_attestation_v1_0"] = (
+        DOCUMENT_REVIEW_ATTESTATION_VERSION
+    )
+    documents_reviewed: Literal[True]
+    facts_reviewed: Literal[True]
+    source_document_ids: list[str] = Field(min_length=1, max_length=100)
+    facts_payload_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    review_notes: str = Field(min_length=3, max_length=2000)
+
+    @model_validator(mode="after")
+    def validate_document_ids(self) -> "DocumentReviewAttestation":
+        canonical = [str(value).strip() for value in self.source_document_ids]
+        if canonical != self.source_document_ids or any(
+            not value for value in canonical
+        ):
+            raise ValueError(
+                "source_document_ids debe usar identificadores canónicos no vacíos"
+            )
+        if len(set(canonical)) != len(canonical):
+            raise ValueError("source_document_ids no puede contener duplicados")
+        if len(self.review_notes.strip()) < 3:
+            raise ValueError("review_notes debe describir la revisión realizada")
+        return self
 
 
 def utcnow() -> datetime:
@@ -67,6 +120,133 @@ def canonical_model_json(model: BaseModel) -> str:
 
 def model_digest(model: BaseModel) -> str:
     return hashlib.sha256(canonical_model_json(model).encode("utf-8")).hexdigest()
+
+
+def _source_method_root(method: str) -> str:
+    return str(method or "").strip().lower().split(":", 1)[0]
+
+
+def _is_reanalysis_model_source(source: Any) -> bool:
+    return (
+        str(source.source_type or "").strip().lower()
+        == "model_document_observation"
+        or _source_method_root(source.extraction_method) in _REANALYSIS_MODEL_METHODS
+    )
+
+
+def _is_operator_document_review_source(source: Any) -> bool:
+    return (
+        str(source.source_type or "").strip().lower()
+        == "operator_document_review"
+        and _source_method_root(source.extraction_method)
+        in _OPERATOR_DOCUMENT_REVIEW_METHODS
+    )
+
+
+def _reanalysis_model_fields(facts: ValidatedFacts) -> set[str]:
+    return {
+        fact_key
+        for fact_key, fact in facts.facts.items()
+        if any(_is_reanalysis_model_source(source) for source in fact.sources)
+    }
+
+
+def _requires_document_review_attestation(facts: ValidatedFacts) -> bool:
+    return (
+        _REANALYSIS_ADAPTER_MARKER in facts.extractor_version.lower()
+        or bool(_reanalysis_model_fields(facts))
+    )
+
+
+def _validate_model_fact_authority(facts: ValidatedFacts) -> None:
+    unsafe_fields: list[str] = []
+    for fact_key, fact in facts.facts.items():
+        if fact.status is not FactStatus.VALIDATED:
+            continue
+        model_sources = [
+            source for source in fact.sources if _is_reanalysis_model_source(source)
+        ]
+        if not model_sources:
+            continue
+        operator_sources = [
+            source
+            for source in fact.sources
+            if _is_operator_document_review_source(source)
+        ]
+        if all(
+            any(
+                reviewed.document_id == model_source.document_id
+                and reviewed.page_index == model_source.page_index
+                for reviewed in operator_sources
+            )
+            for model_source in model_sources
+        ):
+            continue
+        unsafe_fields.append(fact_key)
+
+    if unsafe_fields:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    "Una salida de modelo de Reanalysis no puede adquirir estado "
+                    "VALIDATED sin una fuente de revisión documental del operador"
+                ),
+                "fields": sorted(unsafe_fields),
+            },
+        )
+
+
+def _validate_document_review_attestation(
+    facts: ValidatedFacts,
+    attestation: Optional[DocumentReviewAttestation | Mapping[str, Any]],
+) -> Optional[DocumentReviewAttestation]:
+    if not _requires_document_review_attestation(facts):
+        return None
+    if attestation is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    "La congelación de hechos derivados de Reanalysis exige una "
+                    "atestación explícita de revisión documental"
+                ),
+                "code": "document_review_attestation_required",
+            },
+        )
+    try:
+        raw_attestation = (
+            attestation.model_dump(mode="python")
+            if isinstance(attestation, BaseModel)
+            else attestation
+        )
+        parsed = DocumentReviewAttestation.model_validate(raw_attestation)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "La atestación de revisión documental no es válida",
+                "code": "document_review_attestation_invalid",
+            },
+        ) from exc
+
+    if parsed.source_document_ids != facts.source_document_ids:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "La atestación no cubre exactamente los documentos de origen",
+                "code": "document_review_attestation_document_mismatch",
+            },
+        )
+    if parsed.facts_payload_sha256 != model_digest(facts):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "La atestación no corresponde a esta versión exacta de hechos",
+                "code": "document_review_attestation_digest_mismatch",
+            },
+        )
+    return parsed
 
 
 def validated_model_copy(model: ModelT, **updates: Any) -> ModelT:
@@ -123,7 +303,10 @@ def _json_payload(value: Any, label: str) -> dict[str, Any]:
         try:
             parsed = json.loads(value)
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"{label} inválido: {exc}")
+            raise HTTPException(
+                status_code=500,
+                detail="Registro de autoridad almacenado no válido",
+            ) from exc
         if isinstance(parsed, dict):
             return parsed
     raise HTTPException(status_code=500, detail=f"{label} inválido")
@@ -157,8 +340,8 @@ def _facts_row_to_record(row: Any) -> ValidatedFactsRecord:
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Versión de hechos almacenada no válida: {exc}",
-        )
+            detail="Versión de hechos almacenada no válida",
+        ) from exc
 
     stored_hash = str(mapping["payload_sha256"] or "")
     if not stored_hash or stored_hash != model_digest(facts):
@@ -176,6 +359,9 @@ def _facts_row_to_record(row: Any) -> ValidatedFactsRecord:
         raise HTTPException(status_code=409, detail="Extractor inconsistente en hechos")
     if bool(mapping["frozen"]) != bool(facts.frozen):
         raise HTTPException(status_code=409, detail="Estado frozen inconsistente en hechos")
+    # Los registros legacy ya congelados tampoco pueden reintroducir autoridad
+    # basada exclusivamente en salidas de modelo.
+    _validate_model_fact_authority(facts)
 
     return ValidatedFactsRecord(
         id=str(mapping["id"]),
@@ -209,8 +395,8 @@ def _family_row_to_record(row: Any) -> FamilyResolutionRecord:
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Resolución de familia almacenada no válida: {exc}",
-        )
+            detail="Resolución de familia almacenada no válida",
+        ) from exc
 
     stored_hash = str(mapping["payload_sha256"] or "")
     if not stored_hash or stored_hash != model_digest(resolution):
@@ -301,11 +487,23 @@ def _require_authority_work_allowed(meta: Mapping[str, Any]) -> None:
         )
     if not bool(meta["authorized"]):
         raise HTTPException(status_code=409, detail="Falta autorización del cliente")
-    if str(meta["status"]) in _TERMINAL_CASE_STATUSES:
+    if str(meta["status"]) in _NON_MUTABLE_CASE_STATUSES:
         raise HTTPException(
             status_code=409,
-            detail="El expediente está en un estado final",
+            detail="El expediente no admite cambios en su estado actual",
         )
+
+
+def _lock_case_for_invalidation(conn, case_id: str) -> Mapping[str, Any]:
+    """Serialize invalidation with external processing and immutable states."""
+
+    meta = _case_authority_meta(conn, case_id, for_update=True)
+    if str(meta["status"]) in _NON_MUTABLE_CASE_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail="El expediente no admite invalidaciones en su estado actual",
+        )
+    return meta
 
 
 def _case_service(meta: Mapping[str, Any]) -> str:
@@ -384,9 +582,13 @@ def validate_facts_for_freeze(
     facts: ValidatedFacts,
     *,
     available_document_ids: Optional[set[str]] = None,
-) -> None:
+    document_review_attestation: Optional[
+        DocumentReviewAttestation | Mapping[str, Any]
+    ] = None,
+) -> Optional[DocumentReviewAttestation]:
+    _validate_model_fact_authority(facts)
     if facts.frozen:
-        return
+        return None
     if not facts.facts:
         raise HTTPException(
             status_code=409,
@@ -436,6 +638,10 @@ def validate_facts_for_freeze(
             status_code=409,
             detail="Los hechos validados no conservan fuentes documentales",
         )
+    return _validate_document_review_attestation(
+        facts,
+        document_review_attestation,
+    )
 
 
 def _available_document_ids(conn, case_id: str) -> set[str]:
@@ -463,6 +669,7 @@ def create_validated_facts(
             status_code=409,
             detail="Una nueva versión de hechos debe nacer sin congelar",
         )
+    _validate_model_fact_authority(facts)
     _validate_service(meta, facts.service)
 
     active = latest_validated_facts(
@@ -559,6 +766,10 @@ def freeze_validated_facts(
     case_id: str,
     facts_id: str,
     operator: str,
+    *,
+    document_review_attestation: Optional[
+        DocumentReviewAttestation | Mapping[str, Any]
+    ] = None,
 ) -> ValidatedFactsRecord:
     record = get_validated_facts(conn, case_id, facts_id, for_update=True)
     if record.invalidated_at is not None:
@@ -566,9 +777,10 @@ def freeze_validated_facts(
     if record.frozen:
         return record
 
-    validate_facts_for_freeze(
+    validated_attestation = validate_facts_for_freeze(
         record.facts,
         available_document_ids=_available_document_ids(conn, case_id),
+        document_review_attestation=document_review_attestation,
     )
     now = utcnow()
     frozen_facts = validated_model_copy(record.facts, frozen=True)
@@ -596,16 +808,28 @@ def freeze_validated_facts(
         text("UPDATE cases SET status='facts_frozen', updated_at=NOW() WHERE id=:case_id"),
         {"case_id": case_id},
     )
+    event_payload: dict[str, Any] = {
+        "facts_id": facts_id,
+        "operator": operator,
+        "frozen_at": now.isoformat(),
+        "payload_sha256": digest,
+    }
+    if validated_attestation is not None:
+        event_payload["document_review_attestation"] = {
+            "version": validated_attestation.version,
+            "documents_reviewed": validated_attestation.documents_reviewed,
+            "facts_reviewed": validated_attestation.facts_reviewed,
+            "source_document_ids": validated_attestation.source_document_ids,
+            "facts_payload_sha256": validated_attestation.facts_payload_sha256,
+            "attestation_sha256": hashlib.sha256(
+                canonical_model_json(validated_attestation).encode("utf-8")
+            ).hexdigest(),
+        }
     _append_event(
         conn,
         case_id,
         "rtm_validated_facts_frozen",
-        {
-            "facts_id": facts_id,
-            "operator": operator,
-            "frozen_at": now.isoformat(),
-            "payload_sha256": digest,
-        },
+        event_payload,
     )
     return get_validated_facts(conn, case_id, facts_id)
 
@@ -1035,6 +1259,7 @@ def invalidate_family_resolution(
     operator: str,
     reason: str,
 ) -> FamilyResolutionRecord:
+    _lock_case_for_invalidation(conn, case_id)
     record = get_family_resolution(
         conn,
         case_id,
@@ -1096,6 +1321,7 @@ def invalidate_validated_facts(
     operator: str,
     reason: str,
 ) -> ValidatedFactsRecord:
+    _lock_case_for_invalidation(conn, case_id)
     record = get_validated_facts(conn, case_id, facts_id, for_update=True)
     if record.invalidated_at is not None:
         return record

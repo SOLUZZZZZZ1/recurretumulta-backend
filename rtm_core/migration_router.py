@@ -1,22 +1,12 @@
-"""Migración idempotente de la capa de autoridad RTM CORE.
+"""Definición DDL offline de la capa de autoridad RTM CORE.
 
 No borra ni transforma datos legacy. Crea tablas nuevas, añade columnas
-compatibles y conserva un registro explícito de la versión aplicada.
+compatibles y conserva un registro explícito de la versión aplicada. La
+ejecución pertenece exclusivamente a ``scripts/rtm_staging_core_schema.py``;
+este módulo no publica ni conserva un router HTTP administrativo.
 """
 
 from __future__ import annotations
-
-import json
-from typing import Optional
-
-from fastapi import APIRouter, Header
-from sqlalchemy import text
-
-from database import get_engine
-from rtm_core.security import require_admin_token
-
-
-router = APIRouter(prefix="/admin/migrate", tags=["admin", "rtm-core"])
 
 RTM_CORE_AUTHORITY_SCHEMA_VERSION = "rtm_core_authority_schema_v1_2"
 
@@ -401,59 +391,3 @@ def authority_v1_ddl() -> list[tuple[str, str]]:
             "ON cases(department, status);",
         ),
     ]
-
-
-@router.post("/rtm_core_authority_v1")
-def migrate_rtm_core_authority_v1(
-    x_admin_token: Optional[str] = Header(default=None, alias="x-admin-token"),
-):
-    require_admin_token(x_admin_token)
-    engine = get_engine()
-    applied: list[str] = []
-
-    with engine.begin() as conn:
-        for name, statement in authority_v1_ddl():
-            conn.execute(text(statement))
-            applied.append(name)
-
-        conn.execute(
-            text(
-                """
-                INSERT INTO rtm_core_schema_migrations(name, metadata, applied_at)
-                VALUES (:name, CAST(:metadata AS JSONB), NOW())
-                ON CONFLICT (name)
-                DO UPDATE SET metadata=EXCLUDED.metadata, applied_at=NOW()
-                """
-            ),
-            {
-                "name": RTM_CORE_AUTHORITY_SCHEMA_VERSION,
-                "metadata": json.dumps(
-                    {
-                        "tables": [
-                            "rtm_validated_facts",
-                            "rtm_family_resolutions",
-                            "rtm_legal_previews",
-                            "rtm_generated_resources",
-                        ],
-                        "authority_links": [
-                            "family_resolutions.validated_facts_id",
-                            "legal_previews.validated_facts_id",
-                            "legal_previews.family_resolution_id",
-                            "generated_resources.legal_preview_id",
-                        ],
-                        "generation_control": [
-                            "generated_resources.approved_by",
-                            "generated_resources.approved_at",
-                        ],
-                        "destructive": False,
-                    }
-                ),
-            },
-        )
-
-    return {
-        "ok": True,
-        "version": RTM_CORE_AUTHORITY_SCHEMA_VERSION,
-        "destructive": False,
-        "applied": applied,
-    }

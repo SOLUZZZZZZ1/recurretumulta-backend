@@ -1,16 +1,22 @@
 # ops_queue_smart.py — cola inteligente para operador
+import json
 import os
 import re
+import hmac
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
 
 from fastapi import APIRouter, HTTPException, Header, Query, Request
 from sqlalchemy import text
 
+from case_authority import project_case_authorization_evidence
 from database import get_engine
 from rtm_core.ops_case_scope import (
     load_ops_case_scope,
     ops_case_scope_filter,
+)
+from rtm_core.vehicle_removal_contract import (
+    build_vehicle_removal_preparation_consent,
 )
 
 router = APIRouter(prefix="/ops", tags=["ops-smart-queue"])
@@ -49,7 +55,7 @@ def _env(name: str) -> str:
 def _require_operator(x_operator_token: Optional[str]):
     token = (x_operator_token or "").strip()
     expected = _env("OPERATOR_TOKEN")
-    if not token or token != expected:
+    if not token or not hmac.compare_digest(token, expected):
         raise HTTPException(status_code=401, detail="Unauthorized operator")
 
 
@@ -344,11 +350,40 @@ def _queue_item_from_row(
     has_authorization_pdf = _bool_has_kind(documents, ["autorizacion_cliente_pdf", "autorizacion"])
     has_generation_error = any(e.get("type") == "resource_generation_failed" for e in events)
 
+    case_type = str(row[10] or "").strip().casefold()
+    operational_status = str(row[1] or "").strip().casefold()
+    vehicle_removal = (
+        case_type == "vehicle_removal"
+        or operational_status.startswith("vehicle_removal_")
+    )
+    vehicle_preparation_consent = bool(row[11]) if vehicle_removal else False
+    if vehicle_removal:
+        authority_projection = {
+            "authorization_evidence_status": "not_applicable",
+            "signed_authority_verified": False,
+        }
+    else:
+        try:
+            authority_projection = project_case_authorization_evidence(
+                conn,
+                case_id,
+                authorized=bool(row[3]),
+                document_kinds=[item["kind"] for item in documents],
+            )
+        except HTTPException:
+            authority_projection = {
+                "authorization_evidence_status": "not_submitted",
+                "signed_authority_verified": False,
+            }
+    signed_authority_verified = bool(
+        authority_projection.get("signed_authority_verified") is True
+    )
+
     deadline_value = _extract_deadline(events, ai_payload, row[6])
     days_to_deadline = _days_until(deadline_value)
 
     next_action = _human_next_action(
-        authorized=bool(row[3]),
+        authorized=signed_authority_verified,
         payment_status=(row[2] or ""),
         confidence=confidence,
         has_generated_pdf=has_generated_pdf,
@@ -369,7 +404,14 @@ def _queue_item_from_row(
         "case_id": case_id,
         "status": row[1] or "uploaded",
         "payment_status": row[2] or "",
-        "authorized": bool(row[3]),
+        "authorized": signed_authority_verified,
+        "case_type": case_type,
+        "authorization_evidence_status": str(
+            authority_projection.get("authorization_evidence_status")
+            or "not_submitted"
+        ),
+        "signed_authority_verified": signed_authority_verified,
+        "vehicle_preparation_consent": vehicle_preparation_consent,
         "contact_email": row[4],
         "expediente_ref": row[5],
         "deadline_main": row[6],
@@ -433,14 +475,26 @@ def queue_smart(
                         deadline_main,
                         created_at,
                         updated_at,
-                        COALESCE(interested_data, '{}'::jsonb) AS interested_data
+                        COALESCE(interested_data, '{}'::jsonb) AS interested_data,
+                        COALESCE(case_type, '') AS case_type,
+                        COALESCE(
+                            interested_data->'vehicle_removal_preparation_consent'
+                                = CAST(:vehicle_preparation_consent AS JSONB),
+                            FALSE
+                        ) AS vehicle_preparation_consent
                     FROM cases
                     WHERE status NOT IN ('closed', 'archived')
                     ORDER BY updated_at DESC
                     LIMIT :limit
                     '''
                 ),
-                {"limit": limit},
+                {
+                    "limit": limit,
+                    "vehicle_preparation_consent": json.dumps(
+                        build_vehicle_removal_preparation_consent(),
+                        ensure_ascii=False,
+                    ),
+                },
             ).fetchall()
             for row in rows:
                 items.append(
@@ -494,7 +548,13 @@ def queue_smart(
                     c.deadline_main,
                     c.created_at,
                     c.updated_at,
-                    COALESCE(c.updated_at, c.created_at, TIMESTAMPTZ 'epoch') AS queue_sort_at
+                    COALESCE(c.updated_at, c.created_at, TIMESTAMPTZ 'epoch') AS queue_sort_at,
+                    COALESCE(c.case_type, '') AS case_type,
+                    COALESCE(
+                        c.interested_data->'vehicle_removal_preparation_consent'
+                            = CAST(:vehicle_preparation_consent AS JSONB),
+                        FALSE
+                    ) AS vehicle_preparation_consent
                 FROM cases c
                 WHERE c.status NOT IN ('closed', 'archived')
                   AND """
@@ -507,7 +567,13 @@ def queue_smart(
                 LIMIT :limit
                 """
                     ),
-                    query_params,
+                    {
+                        **query_params,
+                        "vehicle_preparation_consent": json.dumps(
+                            build_vehicle_removal_preparation_consent(),
+                            ensure_ascii=False,
+                        ),
+                    },
                 ).fetchall()
 
                 if not rows:

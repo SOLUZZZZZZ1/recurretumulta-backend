@@ -189,7 +189,11 @@ def login_operator(
 
     locked_until = operator["locked_until"]
     if locked_until is not None and locked_until > current:
-        retry_after = max(1, int((locked_until - current).total_seconds()))
+        # La cuenta inexistente y la bloqueada recorren un coste Argon2
+        # comparable y devuelven el mismo contrato público. Un 429 o un camino
+        # rápido exclusivo de la cuenta bloqueada permitiría enumerar emails
+        # reales después de provocar el umbral de bloqueo.
+        verify_operator_password(_dummy_password_hash(), password)
         record_operator_access_event(
             conn,
             context=context,
@@ -203,11 +207,7 @@ def login_operator(
             risk_flags=("operator_locked",),
             now=current,
         )
-        return _failure(
-            status_code=429,
-            detail="Acceso temporalmente bloqueado",
-            retry_after=retry_after,
-        )
+        return _failure()
 
     verification = verify_operator_password(password_hash, password)
     if not verification.valid:
@@ -417,6 +417,27 @@ def has_explicit_reauthentication(session: ActiveOperatorSession) -> bool:
         return session.last_verified_at > session.login_at
     except TypeError:
         return False
+
+
+def has_recent_reauthentication(
+    session: ActiveOperatorSession,
+    *,
+    max_age_seconds: int,
+    now: datetime | None = None,
+) -> bool:
+    """Valida un step-up persistido, explícito y dentro de su ventana."""
+
+    if not has_explicit_reauthentication(session):
+        return False
+    verified_at = session.last_verified_at
+    current = now or _now()
+    if verified_at is None:
+        return False
+    try:
+        age_seconds = (current - verified_at).total_seconds()
+    except TypeError:
+        return False
+    return 0 <= age_seconds <= int(max_age_seconds)
 
 
 def record_reauthentication_denial(
@@ -666,6 +687,7 @@ __all__ = [
     "OPERATOR_AUTH_SERVICE_VERSION",
     "ReauthenticationDecision",
     "has_explicit_reauthentication",
+    "has_recent_reauthentication",
     "load_operator_session",
     "login_operator",
     "logout_operator",

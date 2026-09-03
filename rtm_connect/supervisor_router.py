@@ -7,12 +7,13 @@ de acceso append-only, pero nunca modifica el dominio RTM CONNECT.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterator
 from uuid import UUID
 
 from fastapi import (
     APIRouter,
+    Cookie,
     Depends,
     Header,
     HTTPException,
@@ -58,7 +59,9 @@ from rtm_core.operator_auth_request import (
     build_request_fingerprint,
     extract_bearer_token,
 )
-from rtm_core.operator_auth_service import load_operator_session
+from rtm_core.operator_auth_router import (
+    load_operator_session_with_device_possession,
+)
 
 
 RTM_CONNECT_C5_SUPERVISOR_ROUTES_VERSION = (
@@ -92,16 +95,18 @@ _NO_STORE_HEADERS = {
 
 @dataclass(frozen=True)
 class ConnectSupervisorContext:
-    session: Any
-    device_id: str | None
-    config: ConnectSupervisorRuntimeConfig
-    connection: Connection
+    session: Any = field(repr=False)
+    device_id: str | None = field(repr=False)
+    config: ConnectSupervisorRuntimeConfig = field(repr=False)
+    connection: Connection = field(repr=False)
 
 
 @dataclass(frozen=True)
 class ConnectSupervisorGate:
-    config: ConnectSupervisorRuntimeConfig
-    raw_token: str
+    config: ConnectSupervisorRuntimeConfig = field(repr=False)
+    authorization: str = field(repr=False)
+    x_rtm_device: str | None = field(repr=False)
+    rtm_presenter_device: str | None = field(repr=False)
 
 
 def require_connect_supervisor_gate(
@@ -109,16 +114,29 @@ def require_connect_supervisor_gate(
         default=None,
         alias="Authorization",
     ),
+    x_rtm_device: str | None = Header(
+        default=None,
+        alias="X-RTM-Device",
+    ),
+    rtm_presenter_device: str | None = Cookie(
+        default=None,
+        alias="__Host-rtm_presenter_device",
+    ),
 ) -> ConnectSupervisorGate:
     config = _runtime_config(require_enabled=True)
     raw_token = extract_bearer_token(authorization)
-    if not raw_token:
+    if not raw_token or not (x_rtm_device or rtm_presenter_device):
         raise HTTPException(
             status_code=401,
             detail="Sesion no valida",
             headers=_NO_STORE_HEADERS,
         )
-    return ConnectSupervisorGate(config=config, raw_token=raw_token)
+    return ConnectSupervisorGate(
+        config=config,
+        authorization=str(authorization),
+        x_rtm_device=x_rtm_device,
+        rtm_presenter_device=rtm_presenter_device,
+    )
 
 
 def connect_supervisor_connection(
@@ -166,15 +184,23 @@ def require_connect_supervisor_context(
     gate: ConnectSupervisorGate = Depends(require_connect_supervisor_gate),
     conn: Connection = Depends(connect_supervisor_connection),
 ) -> ConnectSupervisorContext:
-    session = load_operator_session(
+    session = load_operator_session_with_device_possession(
         conn,
-        raw_token=gate.raw_token,
+        authorization=gate.authorization,
+        x_rtm_device=gate.x_rtm_device,
+        rtm_presenter_device=gate.rtm_presenter_device,
         touch=False,
     )
     if not session:
         raise HTTPException(
             status_code=401,
             detail="Sesion no valida",
+            headers=_NO_STORE_HEADERS,
+        )
+    if bool(session.must_change_password) or bool(session.mfa_required):
+        raise HTTPException(
+            status_code=403,
+            detail="La sesion individual no puede operar el panel supervisor",
             headers=_NO_STORE_HEADERS,
         )
     if not session_has_connect_supervisor_permission(session):

@@ -1,6 +1,6 @@
 # RTM · Matriz vinculante de entornos
 
-Versión lógica: `rtm_environment_contract_v1_1`
+Versión lógica: `rtm_environment_contract_v1_2`
 
 Este documento define cómo debe separarse un servicio de **staging real** de la
 instancia de producción. No contiene credenciales ni autoriza un despliegue. La
@@ -53,6 +53,7 @@ RTM_INSTANCE_ID=rtm-staging
 RTM_DATA_NAMESPACE=rtm-staging
 RTM_SIDE_EFFECT_POLICY=isolated
 RTM_ALLOW_REAL_CUSTOMER_DATA=0
+RTM_ALLOWED_HOSTS=<hostname exacto del backend verificado>
 RTM_PUBLIC_CASE_ACCESS_SECRET=<secreto exclusivo de al menos 32 caracteres>
 RTM_AUTHORITY_SIGNING_SECRET=<otro secreto exclusivo de al menos 32 caracteres>
 RTM_EXPECTED_BRANCH=rtm-core-consolidation-2026-08-08
@@ -83,6 +84,7 @@ Reglas:
 | PostgreSQL | Base dedicada con `staging` en el nombre | Base real | La base de staging sin marcador queda bloqueada |
 | Frontend | Host propio con marcador de staging | `recurretumulta.eu` | Staging no puede usar el host exacto de producción |
 | CORS | Orígenes explícitos de staging | Orígenes explícitos reales | `*` queda bloqueado |
+| Host HTTP | `RTM_ALLOWED_HOSTS` exacto | `RTM_ALLOWED_HOSTS` exacto | Sin valor, esquema, puerto o comodín queda bloqueado |
 | OPS | Token exclusivo de staging | Token exclusivo real | Mínimo de seguridad y sin valores de ejemplo |
 | Acceso público | Secreto HMAC exclusivo | Secreto HMAC exclusivo real | Mínimo 32 caracteres |
 | Autoridad firmada | Secreto HMAC distinto | Secreto HMAC distinto real | No puede coincidir con acceso público |
@@ -173,6 +175,7 @@ Ejemplo de host diferenciado:
 ```text
 FRONTEND_URL=https://staging.recurretumulta.eu
 ALLOWED_ORIGINS=https://staging.recurretumulta.eu
+RTM_ALLOWED_HOSTS=<hostname exacto del backend verificado>
 ```
 
 Reglas:
@@ -184,6 +187,22 @@ Reglas:
   `www.recurretumulta.eu` como hosts exactos;
 - los hosts reales adicionales pueden declararse, para su exclusión, en
   `RTM_PRODUCTION_FRONTEND_HOSTS`.
+
+`RTM_ALLOWED_HOSTS` no es una URL: contiene exclusivamente uno o varios
+hostnames separados por comas, sin `https://`, puerto, ruta ni comodines. Debe
+tomarse del dominio real verificado del servicio; este documento no lo adivina.
+En `development` y `test` solo se aceptan `localhost`, `127.0.0.1`, `::1` y
+`testserver`.
+
+Las mutaciones administrativas con autenticación individual exigen además un
+step-up persistido reciente. La ventana predeterminada es de 300 segundos y
+solo puede configurarse entre 60 y 900 segundos:
+
+```text
+RTM_OPERATOR_REAUTH_MAX_AGE_SECONDS=300
+```
+
+Un timestamp enviado por el cliente no satisface este control.
 
 ## 8. B2
 
@@ -222,8 +241,15 @@ STRIPE_PRICE_ID_ADMIN=price_...
 Una clave `sk_live_`, `RTM_STRIPE_MODE=live` o
 `RTM_ALLOW_REAL_PAYMENTS=1` bloquea staging.
 
-`RTM_ENABLE_FINAL_PAYMENTS=1` exige además los Price ID finales existentes y no
-puede activarse si Stripe está desactivado.
+Para habilitar también el checkout final de retirada de vehículo en modo test:
+
+```text
+RTM_ENABLE_FINAL_PAYMENTS=1
+STRIPE_PRICE_ID_ELIMINAR_COCHE=price_...
+```
+
+`RTM_ENABLE_FINAL_PAYMENTS=1` exige exactamente el Price ID consumido por el
+router de retirada y no puede activarse si Stripe está desactivado.
 
 ## 10. Proveedor documental
 

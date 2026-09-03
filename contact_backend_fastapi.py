@@ -1,7 +1,7 @@
 import os
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from email_utils import send_email
 from rtm_core.runtime_capabilities import require_http_capability
@@ -11,9 +11,19 @@ router = APIRouter()
 
 
 class ContactRequest(BaseModel):
-    tipo_consulta: str = Field(..., min_length=3, max_length=120)
-    nombre: str = Field(..., min_length=2, max_length=120)
-    email: EmailStr
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    tipo_consulta: str = Field(
+        min_length=3,
+        max_length=120,
+        pattern=r"^[^\x00-\x1f\x7f]+$",
+    )
+    nombre: str = Field(
+        min_length=2,
+        max_length=120,
+        pattern=r"^[^\x00-\x1f\x7f]+$",
+    )
+    email: EmailStr = Field(max_length=254)
     mensaje: str = Field(..., min_length=10, max_length=5000)
 
 
@@ -47,7 +57,7 @@ def send_contact_email(payload: ContactRequest):
     if not sent:
         raise HTTPException(
             status_code=500,
-            detail="Falta configuración SMTP en el servidor.",
+            detail="No se pudo enviar la consulta. Inténtelo de nuevo más tarde.",
         )
 
     return {"ok": True, "message": "Consulta enviada correctamente."}

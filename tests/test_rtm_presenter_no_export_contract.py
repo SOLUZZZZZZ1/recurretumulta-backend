@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
 import sys
 import types
 import unittest
@@ -11,7 +12,8 @@ from pathlib import Path
 from unittest import mock
 from uuid import uuid4
 
-from fastapi import HTTPException, Response
+from fastapi import HTTPException, Request, Response
+from pydantic import ValidationError
 
 import ops
 
@@ -175,6 +177,9 @@ def _load_files_module():
 
     storage = types.ModuleType("b2_storage")
     storage.get_s3_client = get_s3_client
+    storage.validate_b2_object_coordinate = (
+        lambda bucket, key, **_kwargs: (bucket, key)
+    )
     database = types.ModuleType("database")
     database.get_engine = get_engine
     case_access = types.ModuleType("public_case_access")
@@ -204,6 +209,7 @@ def _load_authorization_pdf_module():
         "internal-bucket",
         "internal/case/authorization.pdf",
     )
+    storage.delete_object = lambda *args, **kwargs: None
 
     module_name = f"authorization_pdf_no_export_contract_{uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, ROOT / "authorization_pdf.py")
@@ -271,7 +277,16 @@ def _load_ops_operator_router_module():
     database = types.ModuleType("database")
     database.get_engine = lambda: None
     case_authority = types.ModuleType("case_authority")
+    case_authority.build_authorization_signature_view_attestation = (
+        lambda *args, **kwargs: None
+    )
     case_authority.verify_signed_case_authority = lambda *args, **kwargs: None
+    case_authority.verify_authorization_signature_candidate = lambda *args, **kwargs: None
+    case_authority.verify_authorization_signature_view_attestation = (
+        lambda *args, **kwargs: None
+    )
+    case_authority.build_reviewed_signed_authority_attestation = lambda *args, **kwargs: None
+    case_authority.build_rejected_authorization_signature_attestation = lambda *args, **kwargs: None
 
     generate = types.ModuleType("generate")
 
@@ -283,7 +298,11 @@ def _load_ops_operator_router_module():
     generate.generate_dgt = lambda *args, **kwargs: None
 
     storage = types.ModuleType("b2_storage")
+    storage.B2ObjectTooLargeError = ValueError
     storage.upload_bytes = lambda *args, **kwargs: ("", "")
+    storage.delete_object = lambda *args, **kwargs: None
+    storage.download_bytes_limited = lambda *args, **kwargs: b"%PDF-synthetic"
+    storage.get_b2_bucket = lambda: "internal-bucket"
     docx_builder = types.ModuleType("docx_builder")
     docx_builder.build_docx = lambda *args, **kwargs: b""
     pdf_builder = types.ModuleType("pdf_builder")
@@ -359,6 +378,12 @@ class RtmPresenterBackendNoExportContractTest(unittest.TestCase):
 
     def test_finalized_resource_response_and_event_keep_storage_internal(self):
         ops_operator_router = _load_ops_operator_router_module()
+        with self.assertRaises(ValidationError):
+            ops_operator_router.FinalResourceBody(
+                content="Recurso final",
+                created_by="operator:attacker",
+            )
+
         class Result:
             def __init__(self, row=None):
                 self.row = row
@@ -399,8 +424,26 @@ class RtmPresenterBackendNoExportContractTest(unittest.TestCase):
             upload_number += 1
             return "internal-bucket", f"internal-key-{upload_number}"
 
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/ops/cases/finalize-resource",
+                "headers": [],
+            }
+        )
+        request.state.rtm_operator_context = types.SimpleNamespace(
+            actor="operator:verified-user"
+        )
+
         with (
             mock.patch.object(ops_operator_router, "require_operator_token"),
+            mock.patch.object(
+                ops_operator_router, "load_ops_case_scope", return_value=object()
+            ),
+            mock.patch.object(
+                ops_operator_router, "require_case_in_scope", side_effect=lambda _conn, **kwargs: kwargs["case_id"]
+            ),
             mock.patch.object(
                 ops_operator_router,
                 "get_engine",
@@ -432,11 +475,14 @@ class RtmPresenterBackendNoExportContractTest(unittest.TestCase):
             payload = ops_operator_router.finalize_resource(
                 case_id="22222222-2222-4222-8222-222222222222",
                 body=ops_operator_router.FinalResourceBody(content="Recurso final"),
+                request=request,
                 x_operator_token="synthetic-token",
             )
 
         self.assertEqual(len(payload["documents"]), 3)
         self.assertEqual(len(event_payloads), 1)
+        self.assertEqual(payload["resource"]["created_by"], "operator:verified-user")
+        self.assertEqual(event_payloads[0]["created_by"], "operator:verified-user")
         for projection in (*payload["documents"], *event_payloads[0]["documents"]):
             self.assertEqual(
                 set(_mapping_keys(projection)) & FORBIDDEN_DOCUMENT_KEYS,
@@ -579,6 +625,8 @@ class RtmPresenterBackendNoExportContractTest(unittest.TestCase):
             {
                 "Bucket": "internal-bucket",
                 "Key": "internal/case/document.pdf",
+                "ResponseContentDisposition": 'attachment; filename="document.pdf"',
+                "ResponseContentType": "application/octet-stream",
             },
         )
         self.assertIn("no-store", response.headers["Cache-Control"])
@@ -647,16 +695,30 @@ class RtmPresenterBackendNoExportContractTest(unittest.TestCase):
         )
         pdf_bytes = b"%PDF-1.4\nsynthetic authorization\n%%EOF"
 
-        with mock.patch.object(
-            module,
-            "generate_authorization_pdf",
-            return_value=pdf_bytes,
+        with (
+            mock.patch.object(
+                module,
+                "generate_authorization_pdf",
+                return_value=pdf_bytes,
+            ),
+            mock.patch.dict(
+                os.environ,
+                {"RTM_AUTHORITY_SIGNING_SECRET": "a" * 48},
+                clear=False,
+            ),
         ):
             payload = module.ensure_authorization_pdf(
                 connection,
                 case_id,
                 request,
                 version="v1_dgt_homologado",
+                authority_payload={
+                    "material": {
+                        "authority_id": "11111111-1111-4111-8111-111111111111",
+                        "authority_version": "v1_dgt_homologado",
+                    },
+                    "material_sha256": "a" * 64,
+                },
             )
 
         expected_keys = {"id", "sha256", "mime", "size_bytes", "custody"}

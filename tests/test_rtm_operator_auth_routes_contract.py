@@ -123,11 +123,11 @@ class OperatorAuthRoutesContractTest(unittest.TestCase):
             ROOT / "scripts" / "rtm_operator_auth_routes_smoke.py"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            'login.cookies.get("rtm_presenter_device")',
+            'login.cookies.get("__Host-rtm_presenter_device")',
             source,
         )
         self.assertIn(
-            'client.cookies.get("rtm_presenter_device")',
+            'client.cookies.get("__Host-rtm_presenter_device")',
             source,
         )
         self.assertIn('"device_token" not in body', source)
@@ -161,10 +161,10 @@ class OperatorAuthRoutesContractTest(unittest.TestCase):
     def test_auth_validation_errors_are_generic_and_no_store(self):
         source = (ROOT / "app.py").read_text(encoding="utf-8")
         self.assertIn("@app.exception_handler(RequestValidationError)", source)
-        self.assertIn("_has_sensitive_operator_validation_input", source)
-        self.assertIn('normalized.startswith("/ops/auth/")', source)
-        self.assertIn('content={"detail": "Solicitud no válida"}', source)
-        self.assertIn("request_validation_exception_handler", source)
+        self.assertIn("redact_request_validation_error", source)
+        self.assertIn("for error in exc.errors()[:20]", source)
+        self.assertIn('"detail": "Solicitud no válida"', source)
+        self.assertNotIn('"input": error', source)
 
     def test_route_smoke_reuses_full_staging_safety_barriers(self):
         source = (

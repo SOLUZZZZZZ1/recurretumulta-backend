@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Header, HTTPException, Query, Response
 from sqlalchemy import text
 
-from b2_storage import get_s3_client
+from b2_storage import get_s3_client, validate_b2_object_coordinate
 from database import get_engine
 from public_case_access import require_case_access_token
 
@@ -91,16 +91,30 @@ def presign(
                     status_code=409,
                     detail="El documento no tiene custodia disponible.",
                 )
+            bucket, key = validate_b2_object_coordinate(
+                bucket,
+                key,
+                case_id=case_id,
+            )
 
             # Bloquear descargas de documentos generados si no está pagado.
             if kind.startswith("generated_") and payment_status != "paid":
                 raise HTTPException(status_code=402, detail="Pago requerido para descargar el recurso.")
 
         # La URL es efímera y nunca expone las coordenadas en la petición pública.
+        filename = "".join(
+            ch if ch.isalnum() or ch in "._-" else "_"
+            for ch in str(key).rsplit("/", 1)[-1]
+        ).strip("._")[:120] or "documento.bin"
         s3 = get_s3_client()
         url = s3.generate_presigned_url(
             ClientMethod="get_object",
-            Params={"Bucket": bucket, "Key": key},
+            Params={
+                "Bucket": bucket,
+                "Key": key,
+                "ResponseContentDisposition": f'attachment; filename="{filename}"',
+                "ResponseContentType": "application/octet-stream",
+            },
             ExpiresIn=int(expires),
         )
         return {"ok": True, "url": url}

@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from typing import Mapping
 from urllib.parse import unquote
 
+from rtm_core.environment_contract import runtime_requires_environment_preflight
+from rtm_core.http_security import resolve_forwarded_client_ip
 from rtm_core.operator_auth_crypto import hmac_identifier
 
 
@@ -23,6 +25,11 @@ OPERATOR_AUTH_REQUEST_VERSION = "rtm_operator_auth_request_v1_0"
 OPERATOR_AUTH_MODE_INDIVIDUAL = "individual"
 OPERATOR_AUTH_MODE_LEGACY = "legacy"
 OPERATOR_AUTH_MODE_FAIL_CLOSED = "fail_closed"
+LEGACY_OPERATOR_AUTH_BLOCK_ENV = "RTM_BLOCK_LEGACY_OPERATOR_AUTH"
+OPERATOR_REAUTH_MAX_AGE_ENV = "RTM_OPERATOR_REAUTH_MAX_AGE_SECONDS"
+DEFAULT_OPERATOR_REAUTH_MAX_AGE_SECONDS = 300
+MIN_OPERATOR_REAUTH_MAX_AGE_SECONDS = 60
+MAX_OPERATOR_REAUTH_MAX_AGE_SECONDS = 900
 _DEVICE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{24,200}$")
 _TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 _FALSE_VALUES = {"0", "false", "no", "off", "disabled", ""}
@@ -48,6 +55,10 @@ class OperatorAuthRuntimeConfig:
     trust_proxy_headers: bool
     hmac_key: str
     evidence_retention_days: int
+    trusted_proxy_cidrs: tuple[str, ...] = ()
+    reauthentication_max_age_seconds: int = (
+        DEFAULT_OPERATOR_REAUTH_MAX_AGE_SECONDS
+    )
 
     @property
     def available(self) -> bool:
@@ -96,10 +107,10 @@ def operator_auth_environment_mode(
     """Clasifica la frontera legacy sin confiar solo en ``RTM_ENV``.
 
     El despliegue inicial de sesiones individuales pertenece exclusivamente a
-    staging. Si el flag las solicita fuera de staging, tiene un valor inválido
-    o cualquier identidad técnica sigue marcando staging, la única respuesta
-    segura es cerrar el acceso. El passthrough legacy queda reservado a un
-    entorno no marcado en el que la función no se ha solicitado.
+    staging. Producción queda cerrada hasta que el flujo individual se publique
+    allí de forma explícita: nunca vuelve al PIN/token compartido. El passthrough
+    legacy se reserva a perfiles locales de desarrollo/prueba (y a una ejecución
+    local totalmente sin configurar), nunca a un perfil desplegado o ambiguo.
     """
 
     source = environ if environ is not None else os.environ
@@ -107,6 +118,10 @@ def operator_auth_environment_mode(
     raw_feature = source.get("RTM_ENABLE_OPERATOR_AUTH_V1")
     try:
         feature_enabled = _strict_flag(raw_feature, default=False)
+        legacy_auth_blocked = _strict_flag(
+            source.get(LEGACY_OPERATOR_AUTH_BLOCK_ENV),
+            default=False,
+        )
     except ValueError:
         return OPERATOR_AUTH_MODE_FAIL_CLOSED
 
@@ -116,9 +131,18 @@ def operator_auth_environment_mode(
     )
     if environment == "staging":
         return OPERATOR_AUTH_MODE_INDIVIDUAL
-    if feature_enabled or staging_identity_present:
+    if environment == "production":
         return OPERATOR_AUTH_MODE_FAIL_CLOSED
-    return OPERATOR_AUTH_MODE_LEGACY
+    if runtime_requires_environment_preflight(source):
+        return OPERATOR_AUTH_MODE_FAIL_CLOSED
+    if feature_enabled or staging_identity_present or legacy_auth_blocked:
+        return OPERATOR_AUTH_MODE_FAIL_CLOSED
+    if environment in {"development", "test"}:
+        return OPERATOR_AUTH_MODE_LEGACY
+    # Compatibilidad únicamente con una ejecución local realmente vacía.
+    if not environment:
+        return OPERATOR_AUTH_MODE_LEGACY
+    return OPERATOR_AUTH_MODE_FAIL_CLOSED
 
 
 def load_operator_auth_runtime_config(
@@ -154,13 +178,54 @@ def load_operator_auth_runtime_config(
             "RTM_OPERATOR_ACCESS_RETENTION_DAYS debe estar entre 30 y 365"
         )
 
+    raw_reauth_age = str(
+        source.get(OPERATOR_REAUTH_MAX_AGE_ENV)
+        or DEFAULT_OPERATOR_REAUTH_MAX_AGE_SECONDS
+    ).strip()
+    try:
+        reauthentication_max_age_seconds = int(raw_reauth_age)
+    except ValueError as exc:
+        raise OperatorAuthRuntimeMisconfigured(
+            f"{OPERATOR_REAUTH_MAX_AGE_ENV} no es un entero"
+        ) from exc
+    if not (
+        MIN_OPERATOR_REAUTH_MAX_AGE_SECONDS
+        <= reauthentication_max_age_seconds
+        <= MAX_OPERATOR_REAUTH_MAX_AGE_SECONDS
+    ):
+        raise OperatorAuthRuntimeMisconfigured(
+            f"{OPERATOR_REAUTH_MAX_AGE_ENV} debe estar entre "
+            f"{MIN_OPERATOR_REAUTH_MAX_AGE_SECONDS} y "
+            f"{MAX_OPERATOR_REAUTH_MAX_AGE_SECONDS}"
+        )
+
     hmac_key = str(source.get("RTM_OPERATOR_ACCESS_HMAC_KEY") or "").strip()
+    raw_proxy_cidrs = str(source.get("RTM_TRUSTED_PROXY_CIDRS") or "")
+    trusted_proxy_cidrs: list[str] = []
+    for raw_cidr in raw_proxy_cidrs.split(","):
+        candidate = raw_cidr.strip()
+        if not candidate:
+            continue
+        try:
+            trusted_proxy_cidrs.append(
+                str(ipaddress.ip_network(candidate, strict=False))
+            )
+        except ValueError as exc:
+            raise OperatorAuthRuntimeMisconfigured(
+                "RTM_TRUSTED_PROXY_CIDRS contiene una red inválida"
+            ) from exc
+    if trust_proxy and not trusted_proxy_cidrs:
+        raise OperatorAuthRuntimeMisconfigured(
+            "RTM_TRUST_PROXY_HEADERS exige RTM_TRUSTED_PROXY_CIDRS"
+        )
     config = OperatorAuthRuntimeConfig(
         environment=environment,
         enabled=enabled,
         trust_proxy_headers=trust_proxy,
+        trusted_proxy_cidrs=tuple(trusted_proxy_cidrs),
         hmac_key=hmac_key,
         evidence_retention_days=retention_days,
+        reauthentication_max_age_seconds=reauthentication_max_age_seconds,
     )
     if require_enabled and not enabled:
         raise OperatorAuthRoutesDisabled("Autenticación individual desactivada")
@@ -226,6 +291,16 @@ def mask_ip(value: str | None) -> str | None:
 
 
 def _header(headers: Mapping[str, str], name: str) -> str:
+    # Starlette conserva cabeceras repetidas y expone ``getlist``. Para datos
+    # de proxy/auditoría no debemos elegir silenciosamente una de varias
+    # instancias, porque ingress y aplicación podrían interpretar identidades
+    # distintas. Una cabecera ambigua se trata como ausente.
+    getlist = getattr(headers, "getlist", None)
+    if callable(getlist):
+        values = getlist(name)
+        if len(values) != 1:
+            return ""
+        return str(values[0] or "").strip()
     if hasattr(headers, "get"):
         return str(headers.get(name) or headers.get(name.lower()) or "").strip()
     return ""
@@ -317,6 +392,7 @@ def build_request_fingerprint(
     client_host: str | None,
     hmac_key: str,
     trust_proxy_headers: bool,
+    trusted_proxy_cidrs: tuple[str, ...] = (),
 ) -> RequestFingerprint:
     request_id = _safe_text(_header(headers, "x-request-id"), max_length=120)
     request_id = request_id or uuid.uuid4().hex
@@ -326,13 +402,32 @@ def build_request_fingerprint(
     ip_source = "unknown"
     ip_trusted = False
     source_header: str | None = None
-    if trust_proxy_headers:
+    direct_ip = _first_valid_ip(client_host)
+    proxy_peer_trusted = False
+    if trust_proxy_headers and direct_ip:
+        direct_address = ipaddress.ip_address(direct_ip)
+        try:
+            proxy_peer_trusted = any(
+                direct_address in ipaddress.ip_network(cidr, strict=False)
+                for cidr in trusted_proxy_cidrs
+            )
+        except ValueError:
+            proxy_peer_trusted = False
+
+    if proxy_peer_trusted:
         for header_name, source_name in (
             ("x-vercel-forwarded-for", "x_vercel_forwarded_for"),
             ("x-forwarded-for", "x_forwarded_for"),
             ("x-real-ip", "x_real_ip"),
         ):
-            candidate = _first_valid_ip(_header(headers, header_name))
+            raw_forwarded = _header(headers, header_name)
+            if not raw_forwarded:
+                continue
+            candidate = resolve_forwarded_client_ip(
+                direct=direct_ip,
+                forwarded=raw_forwarded,
+                trusted_proxy_cidrs=trusted_proxy_cidrs,
+            )
             if candidate:
                 ip_value = candidate
                 ip_source = source_name
@@ -349,9 +444,11 @@ def build_request_fingerprint(
             )
         ):
             risk_flags.append("proxy_headers_ignored")
+        if trust_proxy_headers and not proxy_peer_trusted:
+            risk_flags.append("untrusted_proxy_peer")
 
     if not ip_value:
-        ip_value = _first_valid_ip(client_host)
+        ip_value = direct_ip
         if ip_value:
             ip_source = "direct"
             ip_trusted = True
@@ -382,7 +479,7 @@ def build_request_fingerprint(
         trusted_headers[source_header] = _header(headers, source_header)[:512]
 
     country = region = city = timezone = location_source = None
-    if trust_proxy_headers:
+    if proxy_peer_trusted:
         geo_headers = {
             "x-vercel-ip-country": 2,
             "x-vercel-ip-country-region": 120,
@@ -428,6 +525,7 @@ def build_request_fingerprint(
 
 
 __all__ = [
+    "LEGACY_OPERATOR_AUTH_BLOCK_ENV",
     "OPERATOR_AUTH_REQUEST_VERSION",
     "OperatorAuthRoutesDisabled",
     "OperatorAuthRuntimeConfig",

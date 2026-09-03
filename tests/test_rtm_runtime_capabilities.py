@@ -17,18 +17,29 @@ from rtm_core.runtime_capabilities import (
 
 
 class RuntimeCapabilitiesTest(unittest.TestCase):
-    def test_version_aliases_and_legacy_compatibility_are_explicit(self):
+    def test_version_aliases_and_unconfigured_runtime_fail_closed(self):
         self.assertEqual(
             RUNTIME_CAPABILITIES_VERSION,
-            "rtm_runtime_capabilities_v1_0",
+            "rtm_runtime_capabilities_v1_2",
         )
         self.assertEqual(canonical_capability("payments"), "stripe")
         self.assertEqual(canonical_capability("mail"), "outbound_email")
 
         state = capability_state("stripe", {})
-        self.assertTrue(state.enabled)
-        self.assertFalse(state.enforced)
-        self.assertEqual(state.reason, "legacy_unconfigured_compatibility")
+        self.assertFalse(state.enabled)
+        self.assertTrue(state.enforced)
+        self.assertEqual(state.reason, "required_flag_missing")
+
+        ambiguous = capability_state("stripe", {"RTM_ENABLE_STRIPE": "1"})
+        self.assertFalse(ambiguous.enabled)
+        self.assertEqual(ambiguous.reason, "environment_not_safe")
+
+        typo = capability_state(
+            "stripe",
+            {"RTM_ENV": "stagin", "RTM_ENABLE_STRIPE": "1"},
+        )
+        self.assertFalse(typo.enabled)
+        self.assertEqual(typo.reason, "environment_not_safe")
 
     def test_staging_and_production_require_explicit_true(self):
         for environment in ("staging", "production"):
@@ -48,10 +59,10 @@ class RuntimeCapabilitiesTest(unittest.TestCase):
                 self.assertTrue(enabled.enabled)
                 self.assertEqual(enabled.reason, "explicitly_enabled")
 
-    def test_explicit_false_blocks_even_in_legacy_mode(self):
+    def test_explicit_false_blocks_even_without_environment_name(self):
         environment = {"RTM_ENABLE_OUTBOUND_EMAIL": "0"}
         state = capability_state("outbound_email", environment)
-        self.assertFalse(state.enforced)
+        self.assertTrue(state.enforced)
         self.assertFalse(state.enabled)
         with self.assertRaises(CapabilityDisabledError):
             require_capability("outbound_email", environment)
@@ -68,10 +79,10 @@ class RuntimeCapabilitiesTest(unittest.TestCase):
         self.assertFalse(state.enabled)
         self.assertEqual(state.reason, "invalid_boolean_flag")
 
-    def test_force_flag_can_enable_enforcement_in_tests(self):
+    def test_legacy_force_flag_cannot_disable_enforcement(self):
         state = capability_state(
             "external_submission",
-            {"RTM_ENFORCE_CAPABILITY_FLAGS": "1"},
+            {"RTM_ENFORCE_CAPABILITY_FLAGS": "0"},
         )
         self.assertTrue(state.enforced)
         self.assertFalse(state.enabled)
@@ -86,7 +97,12 @@ class RuntimeCapabilitiesTest(unittest.TestCase):
             require_http_capability("stripe", environment)
         self.assertEqual(context.exception.status_code, 503)
         rendered = json.dumps(context.exception.detail, ensure_ascii=False)
-        self.assertIn("RTM_ENABLE_STRIPE", rendered)
+        self.assertEqual(
+            context.exception.detail,
+            {"code": "external_capability_unavailable"},
+        )
+        self.assertNotIn("RTM_ENABLE_STRIPE", rendered)
+        self.assertNotIn("staging", rendered)
         self.assertNotIn(environment["STRIPE_SECRET_KEY"], rendered)
 
     def test_snapshot_contains_only_registered_safe_states(self):

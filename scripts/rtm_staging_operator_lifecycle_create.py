@@ -38,7 +38,7 @@ DEFAULT_SUPERVISOR_EMAIL = "rtm-staging-supervisor@example.com"
 DEFAULT_OPERATOR_EMAIL = "rtm-staging-operador-02@example.com"
 DEFAULT_OPERATOR_DISPLAY_NAME = "RTM STAGING OPERADOR 02"
 ROLE_CODE = "rtm.operator"
-_DEVICE_COOKIE = "rtm_presenter_device"
+_DEVICE_COOKIE = "__Host-rtm_presenter_device"
 _TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 _FALSE_VALUES = {"", "0", "false", "no", "off", "disabled"}
 
@@ -178,6 +178,7 @@ def _base_report(args: argparse.Namespace) -> dict[str, Any]:
         "public_network_used": False,
         "official_routes": [
             "/ops/auth/login",
+            "/ops/auth/reauthenticate",
             "/ops/admin/operators",
             "/ops/auth/logout",
         ],
@@ -494,6 +495,24 @@ async def _run_official_routes(
                 raise ControlledOperationError(
                     "supervisor_password_change_required",
                     http_status=409,
+                )
+
+            reauthenticated = await client.post(
+                "/ops/auth/reauthenticate",
+                json={"password": supervisor_password},
+                headers=authorization_headers,
+            )
+            if (
+                reauthenticated.status_code != 200
+                or _json_object(
+                    reauthenticated,
+                    code="supervisor_reauthentication",
+                ).get("status")
+                != "reauthenticated"
+            ):
+                raise ControlledOperationError(
+                    "supervisor_reauthentication_rejected",
+                    http_status=int(reauthenticated.status_code),
                 )
 
             existing = await _find_existing_operator(

@@ -1,6 +1,5 @@
 import os
 from fastapi import FastAPI, Request
-from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -9,15 +8,10 @@ from schemas import HealthResponse
 from database import get_engine, ping_db
 
 
-from admin_migrate import router as admin_migrate_router
 from analyze import router as analyze_router
 from analyze_expediente import router as analyze_expediente_router
-from generate import router as generate_router
 from files import router as files_router
 from billing import router as billing_router
-from admin_migrate_payments import router as admin_payments_router
-from ai_router import router as ai_router
-from partner_cases import router as partner_cases_router
 from ops_automation_router import router as ops_automation_router
 from ops_operator_router import router as ops_operator_router
 from ops_queue_smart import router as ops_queue_smart_router
@@ -33,6 +27,22 @@ from rtm_core.document_extraction_router import (
     router as rtm_core_document_extraction_router,
 )
 from rtm_core.document_input_policy import document_input_policy_block
+from rtm_core.document_extraction import extraction_limits
+from rtm_core.environment_contract import (
+    assert_environment_ready,
+    runtime_requires_environment_preflight,
+)
+from rtm_core.parser_isolation import assert_parser_isolation_ready
+from rtm_core.http_security import (
+    ExactHostMiddleware,
+    RequestBodyLimitMiddleware,
+    SecurityHeaderAmbiguityMiddleware,
+    SecurityHeadersMiddleware,
+    SensitiveRateLimitMiddleware,
+    configured_allowed_hosts,
+    parse_allowed_origins,
+    scope_path,
+)
 from rtm_core.reanalysis_execution import install_safe_extraction_policy
 from rtm_core.reanalysis_execution_router import (
     router as rtm_core_reanalysis_execution_router,
@@ -43,10 +53,6 @@ from rtm_core.family_router import router as rtm_core_family_router
 from rtm_core.specialist_router import router as rtm_core_specialist_router
 from rtm_core.preview_router import router as rtm_core_preview_router
 from rtm_core.generation_router import router as rtm_core_generation_router
-from rtm_core.migration_router import router as rtm_core_migration_router
-from rtm_core.document_extraction_migration import (
-    router as rtm_core_document_extraction_migration_router,
-)
 from rtm_core.operator_auth_router import router as rtm_operator_auth_router
 from rtm_core.legacy_ops_session_bridge import (
     legacy_ops_individual_session_bridge,
@@ -80,7 +86,33 @@ from partner import router as partner_router
 # aunque el módulo legacy ya hubiera sido importado por otro router.
 install_safe_extraction_policy()
 
-app = FastAPI(title="RecurreTuMulta Backend", version="0.1.0")
+_DEPLOYED_PROFILE = runtime_requires_environment_preflight()
+_APP_ALLOWED_HOSTS = configured_allowed_hosts()
+app = FastAPI(
+    title="RecurreTuMulta Backend",
+    version="0.1.0",
+    # Starlette reconstruye los redirects automáticos de barra final con el
+    # header Host. Como la API no necesita redirects canónicos, una variante
+    # de ruta debe fallar 404 y nunca producir un Location controlable.
+    redirect_slashes=False,
+    docs_url=None if _DEPLOYED_PROFILE else "/docs",
+    redoc_url=None if _DEPLOYED_PROFILE else "/redoc",
+    openapi_url=None if _DEPLOYED_PROFILE else "/openapi.json",
+)
+
+
+@app.on_event("startup")
+def validate_deployed_environment() -> None:
+    """Abort deployed profiles before serving if the safety contract is invalid."""
+
+    if runtime_requires_environment_preflight():
+        assert_environment_ready()
+        extraction_limits()
+        assert_parser_isolation_ready()
+
+# Cota dura previa al parseo de JSON/multipart. Los routers mantienen además
+# sus límites específicos, normalmente mucho menores.
+app.add_middleware(RequestBodyLimitMiddleware)
 
 # En staging, las superficies OPS legacy dejan de aceptar la credencial
 # compartida del navegador. Se registra antes de CORS para que también las
@@ -93,37 +125,32 @@ _NO_STORE_HEADERS = {
 }
 
 
-def _has_sensitive_operator_validation_input(path: str) -> bool:
-    """Reconoce solo rutas cuyos errores 422 podrían reflejar credenciales."""
-
-    normalized = "/" + "/".join(
-        segment for segment in str(path or "").split("/") if segment
-    )
-    if normalized == "/ops/auth" or normalized.startswith("/ops/auth/"):
-        return True
-    segments = normalized.strip("/").split("/")
-    if segments == ["ops", "admin", "operators"]:
-        return True
-    return (
-        len(segments) == 6
-        and segments[:3] == ["ops", "admin", "operators"]
-        and segments[4:] == ["credentials", "rotate"]
-    )
-
-
 @app.exception_handler(RequestValidationError)
-async def redact_operator_auth_validation_error(
+async def redact_request_validation_error(
     request: Request,
     exc: RequestValidationError,
 ):
-    """No refleja inputs sensibles en errores 422 de autenticacion."""
+    """No refleja credenciales, PII ni cargas gigantes en ningún error 422."""
 
-    path = request.url.path
-    if not _has_sensitive_operator_validation_input(path):
-        return await request_validation_exception_handler(request, exc)
+    issues = []
+    for error in exc.errors()[:20]:
+        location = []
+        for segment in error.get("loc", ())[:8]:
+            value = str(segment)[:64]
+            location.append(
+                value
+                if value and all(ch.isalnum() or ch in "_.-" for ch in value)
+                else "field"
+            )
+        issues.append(
+            {
+                "location": ".".join(location)[:256],
+                "type": str(error.get("type") or "validation_error")[:80],
+            }
+        )
     return JSONResponse(
         status_code=422,
-        content={"detail": "Solicitud no válida"},
+        content={"detail": "Solicitud no válida", "issues": issues},
         headers=_NO_STORE_HEADERS,
     )
 
@@ -134,7 +161,7 @@ async def enforce_document_input_policy(request: Request, call_next):
 
     block = document_input_policy_block(
         method=request.method,
-        path=request.url.path,
+        path=scope_path(request),
     )
     if block is not None:
         return JSONResponse(
@@ -144,8 +171,7 @@ async def enforce_document_input_policy(request: Request, call_next):
     return await call_next(request)
 
 
-allowed = os.getenv("ALLOWED_ORIGINS", "").strip()
-origins = [o.strip() for o in allowed.split(",") if o.strip()] if allowed else ["*"]
+origins = parse_allowed_origins(os.getenv("ALLOWED_ORIGINS"))
 
 app.add_middleware(
     CORSMiddleware,
@@ -167,11 +193,14 @@ app.middleware("http")(human_filing_gate_middleware)
 
 @app.middleware("http")
 async def no_store_private_ops(request: Request, call_next):
-    """Evita cachear cualquier respuesta privada de OPS, incluidos errores."""
+    """Evita cachear respuestas privadas OPS/partner, incluidos errores."""
 
     response = await call_next(request)
-    path = request.url.path
-    if path == "/ops" or path.startswith("/ops/"):
+    path = scope_path(request)
+    ops_path = path == "/ops" or path.startswith("/ops/")
+    partner_path = path == "/partner" or path.startswith("/partner/")
+    private_path = ops_path or partner_path
+    if private_path:
         response.headers["Cache-Control"] = "no-store, max-age=0"
         response.headers["Pragma"] = "no-cache"
         vary = [
@@ -187,6 +216,7 @@ async def no_store_private_ops(request: Request, call_next):
             "Cookie",
             "X-Operator-Token",
             "X-RTM-Device",
+            "X-CSRF-Token",
         ):
             if value.casefold() not in known_vary:
                 vary.append(value)
@@ -198,16 +228,12 @@ async def no_store_private_ops(request: Request, call_next):
 app.include_router(rtm_core_legacy_guard_router)
 app.include_router(rtm_core_intake_router)
 
-# Routers existentes
-app.include_router(admin_migrate_router)
+# Routers existentes. Las migraciones administrativas son tareas offline y no
+# se montan en la aplicación HTTP.
 app.include_router(analyze_router)
 app.include_router(analyze_expediente_router)
-app.include_router(generate_router)
 app.include_router(files_router)
 app.include_router(billing_router)
-app.include_router(admin_payments_router)
-app.include_router(ai_router)
-app.include_router(partner_cases_router)
 app.include_router(ops_automation_router)
 app.include_router(ops_operator_router)
 app.include_router(ops_queue_smart_router)
@@ -225,8 +251,6 @@ app.include_router(rtm_core_family_router)
 app.include_router(rtm_core_specialist_router)
 app.include_router(rtm_core_preview_router)
 app.include_router(rtm_core_generation_router)
-app.include_router(rtm_core_migration_router)
-app.include_router(rtm_core_document_extraction_migration_router)
 app.include_router(rtm_operator_auth_router)
 app.include_router(rtm_operator_admin_router)
 app.include_router(rtm_operator_lifecycle_router)
@@ -241,12 +265,29 @@ app.include_router(ops_restaurant_router)
 app.include_router(cases_router)
 app.include_router(partner_router)
 
+# Última capa registrada: añade cabeceras también a errores y denegaciones de
+# los gates interiores. El límite de cuerpo sigue actuando antes de los parsers.
+app.add_middleware(SensitiveRateLimitMiddleware)
+app.add_middleware(ExactHostMiddleware, allowed_hosts=_APP_ALLOWED_HOSTS)
+app.add_middleware(SecurityHeaderAmbiguityMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+
+
+@app.get("/health/live", response_model=HealthResponse)
+def health_live():
+    return HealthResponse(ok=True)
+
 
 @app.get("/health", response_model=HealthResponse)
+@app.get("/health/ready", response_model=HealthResponse)
 def health():
     try:
         engine = get_engine()
         ping_db(engine)
         return HealthResponse(ok=True)
     except Exception:
-        return HealthResponse(ok=False)
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False},
+            headers={"Cache-Control": "no-store"},
+        )

@@ -16,7 +16,9 @@ on:
         description: "Modelo documental del entorno de staging"
         required: false
         default: "gpt-4o"
-        type: string
+        type: choice
+        options:
+          - "gpt-4o"
 
 permissions:
   contents: read
@@ -27,35 +29,55 @@ concurrency:
 
 jobs:
   synthetic-live:
-    if: ${{ inputs.confirmation == 'SYNTHETIC_ONLY' }}
+    # Never inject protected staging secrets into code selected from an
+    # arbitrary dispatch branch or tag.  GitHub environment approval and main
+    # branch protection remain mandatory repository settings.
+    if: ${{ inputs.confirmation == 'SYNTHETIC_ONLY' && github.ref == 'refs/heads/main' }}
     environment: rtm-staging
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     env:
+      OPENAI_DOCUMENT_MODEL: ${{ inputs.model }}
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_NO_INPUT: "1"
+      PIP_ONLY_BINARY: ":all:"
       RTM_ENV: staging
       RTM_STAGING_CONFIRM: SYNTHETIC_ONLY
       RTM_ALLOW_SYNTHETIC_LIVE_EXTRACTION: "1"
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OPENAI_DOCUMENT_MODEL: ${{ inputs.model }}
+      RTM_STAGING_SERVICES: ${{ inputs.services }}
 
     steps:
       - name: Checkout exact ref
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Scan repository files for accidental secrets
+        run: python scripts/rtm_secret_scan.py --history
 
       - name: Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip==26.2.1
+          python -m pip install -r requirements.txt
+          python -m pip check
+
+      - name: Audit Python dependencies
+        run: |
+          python -m pip install pip-audit==2.10.1
+          python -m pip_audit --strict --progress-spinner off -r requirements.txt
 
       - name: Verify staging secret
         shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           test -n "$OPENAI_API_KEY" || {
             echo "Falta OPENAI_API_KEY en el entorno protegido rtm-staging" >&2
@@ -67,5 +89,7 @@ jobs:
           python -m compileall -q rtm_core/staging_validation.py scripts/rtm_staging_smoke.py
 
       - name: Run synthetic live validation
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          python scripts/rtm_staging_smoke.py --services "${{ inputs.services }}"
+          python scripts/rtm_staging_smoke.py --services "$RTM_STAGING_SERVICES"

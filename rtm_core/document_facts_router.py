@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping, Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
@@ -30,6 +30,7 @@ from rtm_core.document_normalization import (
     normalize_document_packet,
     validate_packet_documents,
 )
+from rtm_core.ops_case_scope import load_ops_case_scope, require_case_in_scope
 from rtm_core.security import normalized_actor, require_operator_token
 from rtm_core.service_catalog import canonical_department
 
@@ -268,11 +269,15 @@ def get_document_fact_catalog(
 def preview_document_facts(
     case_id: str,
     body: PreviewDocumentFactsBody,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     _operator(x_operator_token, None)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         _validate_case_and_packet(
             conn,
             case_id=case_id,
@@ -300,12 +305,16 @@ def preview_document_facts(
 def create_document_facts_draft(
     case_id: str,
     body: CreateDocumentFactsDraftBody,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     x_operator_actor: Optional[str] = Header(default=None, alias="X-Operator-Actor"),
 ):
     actor = _operator(x_operator_token, x_operator_actor)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         _validate_case_and_packet(
             conn,
             case_id=case_id,

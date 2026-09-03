@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
-from b2_storage import upload_bytes
+from b2_storage import delete_object, upload_bytes
 from case_authority import verify_signed_case_authority
 from docx_builder import build_docx
 from pdf_builder import build_pdf
@@ -324,13 +324,34 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _insert_document(conn, case_id: str, kind: str, bucket: str, key: str, mime: str, size: int) -> str:
+def cleanup_generated_uploads(coordinates: list[tuple[str, str]]) -> None:
+    """Compensación best-effort para recursos no confirmados por SQL."""
+
+    for bucket, key in reversed(coordinates):
+        try:
+            delete_object(bucket, key)
+        except Exception:
+            pass
+
+
+def _insert_document(
+    conn,
+    case_id: str,
+    kind: str,
+    bucket: str,
+    key: str,
+    mime: str,
+    size: int,
+    sha256: str,
+) -> str:
     row = conn.execute(
         text(
             """
             INSERT INTO documents(case_id, kind, b2_bucket, b2_key, mime,
-                                  size_bytes, created_at)
-            VALUES (:case_id, :kind, :bucket, :key, :mime, :size, NOW())
+                                  size_bytes, sha256, created_at)
+            VALUES (
+                :case_id, :kind, :bucket, :key, :mime, :size, :sha256, NOW()
+            )
             RETURNING id
             """
         ),
@@ -341,6 +362,7 @@ def _insert_document(conn, case_id: str, kind: str, bucket: str, key: str, mime:
             "key": key,
             "mime": mime,
             "size": size,
+            "sha256": sha256,
         },
     ).fetchone()
     return str(row[0])
@@ -368,6 +390,7 @@ def generate_from_frozen_preview(
     case_id: str,
     preview_id: str,
     generated_by: str,
+    uploaded_coordinates: Optional[list[tuple[str, str]]] = None,
 ) -> GeneratedResourceRecord:
     case = _case_meta(conn, case_id, for_update=True)
     preview_record, facts_record, family_record = _authority_chain(
@@ -393,21 +416,31 @@ def generate_from_frozen_preview(
     content_hash = _sha256(content_bytes)
     docx_bytes = build_docx("", content)
     pdf_bytes = build_pdf("", content)
+    docx_hash = _sha256(docx_bytes)
+    pdf_hash = _sha256(pdf_bytes)
 
-    docx_bucket, docx_key = upload_bytes(
-        case_id,
-        "rtm_generated",
-        docx_bytes,
-        ".docx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
-    pdf_bucket, pdf_key = upload_bytes(
-        case_id,
-        "rtm_generated",
-        pdf_bytes,
-        ".pdf",
-        "application/pdf",
-    )
+    coordinates = uploaded_coordinates if uploaded_coordinates is not None else []
+    try:
+        docx_bucket, docx_key = upload_bytes(
+            case_id,
+            "rtm_generated",
+            docx_bytes,
+            ".docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        coordinates.append((docx_bucket, docx_key))
+        pdf_bucket, pdf_key = upload_bytes(
+            case_id,
+            "rtm_generated",
+            pdf_bytes,
+            ".pdf",
+            "application/pdf",
+        )
+        coordinates.append((pdf_bucket, pdf_key))
+    except Exception:
+        if uploaded_coordinates is None:
+            cleanup_generated_uploads(coordinates)
+        raise
     docx_id = _insert_document(
         conn,
         case_id,
@@ -416,6 +449,7 @@ def generate_from_frozen_preview(
         docx_key,
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         len(docx_bytes),
+        docx_hash,
     )
     pdf_id = _insert_document(
         conn,
@@ -425,6 +459,7 @@ def generate_from_frozen_preview(
         pdf_key,
         "application/pdf",
         len(pdf_bytes),
+        pdf_hash,
     )
 
     sequence_row = conn.execute(
@@ -481,6 +516,8 @@ def generate_from_frozen_preview(
             "generator_version": GENERATION_GATEWAY_VERSION,
             "preview_payload_sha256": preview_record.payload_sha256,
             "content_sha256": content_hash,
+            "rendered_content_sha256": content_hash,
+            "pdf_sha256": pdf_hash,
             "docx_document_id": docx_id,
             "pdf_document_id": pdf_id,
             "case_authority_id": case["_active_case_authority"]["material"][
@@ -527,13 +564,19 @@ def approve_resource_for_submission(
     pdf = conn.execute(
         text(
             """
-            SELECT id, mime FROM documents
+            SELECT id, mime, sha256 FROM documents
             WHERE id=:document_id AND case_id=:case_id
             """
         ),
         {"document_id": resource.pdf_document_id, "case_id": case_id},
     ).fetchone()
-    if not pdf or str(pdf[1] or "") != "application/pdf":
+    pdf_sha256 = str(pdf[2] or "").strip().lower() if pdf else ""
+    if (
+        not pdf
+        or str(pdf[1] or "") != "application/pdf"
+        or len(pdf_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in pdf_sha256)
+    ):
         raise HTTPException(status_code=409, detail="El PDF final no está disponible")
 
     newly_approved = False
@@ -578,6 +621,8 @@ def approve_resource_for_submission(
                 "approved_by": approved_by,
                 "pdf_document_id": resource.pdf_document_id,
                 "content_sha256": resource.content_sha256,
+                "rendered_content_sha256": resource.content_sha256,
+                "pdf_sha256": pdf_sha256,
                 "case_authority_id": authority["material"]["authority_id"],
                 "case_authority_version": authority["material"]["authority_version"],
                 "case_authority_material_sha256": authority["material_sha256"],

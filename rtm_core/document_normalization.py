@@ -59,6 +59,10 @@ _CRITICAL_QUALITY = {
     "unreadable", "ilegible", "low_legibility", "baja_legibilidad",
     "handwritten", "manuscrito", "manuscrita", "truncated", "cortado",
     "ocr_only",
+    "untrusted_instruction_pattern_detected",
+    "unanchored_document_evidence",
+    "visual_evidence_requires_operator",
+    "model_evidence_requires_operator",
 }
 _AUTOMATIC_SOURCES = {
     "document_text", "document_vision", "deterministic_document",

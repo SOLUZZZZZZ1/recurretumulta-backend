@@ -1,8 +1,11 @@
 from pathlib import Path
+import io
 import unittest
 
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
+from PIL import Image
 
+from cases import router as cases_router
 from rtm_core.intake_router import MAX_FILE_BYTES, _validate_upload, router as intake_router
 
 
@@ -45,30 +48,35 @@ class SafeIntakeTest(unittest.TestCase):
             _validate_upload("programa.exe", "application/octet-stream", b"x")
         self.assertEqual(bad_type.exception.status_code, 415)
 
-        extension = _validate_upload(
+        image = io.BytesIO()
+        Image.new("RGB", (2, 2), "white").save(image, format="TIFF")
+        metadata = _validate_upload(
             "documento.tiff",
             "image/tiff",
-            b"contenido",
+            image.getvalue(),
         )
-        self.assertEqual(extension, ".tiff")
+        self.assertEqual(metadata.extension, ".tiff")
+        self.assertEqual(metadata.mime, "image/tiff")
 
-    def test_safe_route_precedes_dummy_legacy_route(self):
+    def test_core_routes_have_no_registered_legacy_duplicates(self):
         app = FastAPI()
         app.include_router(intake_router)
-        legacy = APIRouter(prefix="/cases")
+        app.include_router(cases_router)
 
-        @legacy.get("/{case_id}/public-status")
-        def legacy_public_status(case_id: str):
-            return {"unsafe": True, "case_id": case_id}
-
-        app.include_router(legacy)
-        matches = [
-            route
-            for route in app.routes
-            if getattr(route, "path", None) == "/cases/{case_id}/public-status"
-        ]
-        self.assertGreaterEqual(len(matches), 2)
-        self.assertEqual(matches[0].endpoint.__name__, "public_status_core")
+        expected = (
+            ("POST", "/cases/{case_id}/append-documents", "append_documents_core"),
+            ("POST", "/cases/{case_id}/review", "review_case_core"),
+            ("GET", "/cases/{case_id}/public-status", "public_status_core"),
+        )
+        for method, path, endpoint_name in expected:
+            matches = [
+                route
+                for route in app.routes
+                if getattr(route, "path", None) == path
+                and method in (getattr(route, "methods", set()) or set())
+            ]
+            self.assertEqual(len(matches), 1, f"ruta duplicada: {method} {path}")
+            self.assertEqual(matches[0].endpoint.__name__, endpoint_name)
 
 
 if __name__ == "__main__":

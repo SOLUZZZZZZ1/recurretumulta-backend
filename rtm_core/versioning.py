@@ -39,7 +39,7 @@ DECLARED_COMPONENT_VERSIONS = {
     "document_extraction_schema": "rtm_document_extraction_schema_v1_0",
     "synthetic_staging_validation": "rtm_synthetic_staging_validation_v1_0",
     "synthetic_staging_fixture_set": "rtm_synthetic_fixture_set_v1_0",
-    "service_catalog": "rtm_service_catalog_v1_1",
+    "service_catalog": "rtm_service_catalog_v1_2",
     "domain_catalog": "rtm_domain_catalog_v1_0",
     "family_dispatch": "rtm_family_dispatch_v1_0",
     "family_core": "rtm_family_core_v1_0",
@@ -325,8 +325,11 @@ def _runtime_constant(
         module = importlib.import_module(module_name)
         value = getattr(module, attribute, None)
         return (str(value) if value not in (None, "") else None, None)
-    except Exception as exc:
-        return None, f"{type(exc).__name__}: {exc}"
+    except Exception:
+        # El inventario se devuelve por HTTP a personal OPS. Un fallo de
+        # importación no debe filtrar rutas, nombres internos ni mensajes de
+        # dependencias; el diagnóstico detallado pertenece al log/monitoring.
+        return None, "runtime_lookup_failed"
 
 
 def build_version_snapshot() -> dict[str, Any]:

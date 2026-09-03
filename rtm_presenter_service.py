@@ -22,6 +22,15 @@ from urllib.parse import unquote, urlsplit
 
 from sqlalchemy import text
 
+from rtm_core.parser_isolation import (
+    ParserIsolationError,
+    ParserRejected,
+    run_parser_isolated,
+)
+from rtm_core.upload_security import (
+    UploadSecurityError,
+    validate_document_bytes,
+)
 from rtm_presenter_contracts import (
     RTM_PRESENTER_CONTRACT_VERSION,
     RTM_PRESENTER_MAX_FILE_BYTES,
@@ -89,10 +98,27 @@ _EXTERNAL_MEDIA_EXTENSIONS = {
     "image/jpeg": (".jpg", ".jpeg"),
     "image/png": (".png",),
 }
-_DOCX_CONTENT_TYPE = (
-    b"application/vnd.openxmlformats-officedocument."
-    b"wordprocessingml.document.main+xml"
-)
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _require_docx_main_content_type(content: bytes) -> None:
+    """Comprueba el subtipo Word dentro de la misma frontera de proceso."""
+
+    try:
+        valid = run_parser_isolated(
+            "require_docx_main_content_type",
+            {"data": bytes(content)},
+        )
+    except (ParserRejected, ParserIsolationError) as exc:
+        raise UploadSecurityError(
+            "El DOCX no declara tipos OOXML válidos",
+            status_code=422,
+        ) from exc
+    if valid is not True:
+        raise UploadSecurityError(
+            "El DOCX no declara tipos OOXML válidos",
+            status_code=422,
+        )
 
 
 class PresenterServiceError(RuntimeError):
@@ -234,117 +260,40 @@ def validate_external_document_upload(
             "Tipo documental no admitido",
         )
 
-    detected_mime: str | None = None
-    if content.startswith(b"%PDF-") and content.rstrip().endswith(b"%%EOF"):
-        detected_mime = "application/pdf"
-    elif (
-        len(content) >= 33
-        and content.startswith(b"\x89PNG\r\n\x1a\n")
-        and content[8:12] == b"\x00\x00\x00\r"
-        and content[12:16] == b"IHDR"
-        and int.from_bytes(content[16:20], "big") > 0
-        and int.from_bytes(content[20:24], "big") > 0
-        and content.endswith(b"\x00\x00\x00\x00IEND\xaeB`\x82")
+    if not clean_filename.lower().endswith(
+        _EXTERNAL_MEDIA_EXTENSIONS[clean_declared_mime]
     ):
-        detected_mime = "image/png"
-    elif (
-        len(content) >= 4
-        and content.startswith(b"\xff\xd8")
-        and content.endswith(b"\xff\xd9")
-        and b"\xff\xda" in content
-        and any(
-            marker in content
-            for marker in (
-                b"\xff\xc0",
-                b"\xff\xc1",
-                b"\xff\xc2",
-                b"\xff\xc3",
-                b"\xff\xc5",
-                b"\xff\xc6",
-                b"\xff\xc7",
-                b"\xff\xc9",
-                b"\xff\xca",
-                b"\xff\xcb",
-                b"\xff\xcd",
-                b"\xff\xce",
-                b"\xff\xcf",
-            )
-        )
-    ):
-        detected_mime = "image/jpeg"
-    elif content.startswith(b"PK"):
-        try:
-            with zipfile.ZipFile(io.BytesIO(content), mode="r") as archive:
-                infos = archive.infolist()
-                names = {info.filename for info in infos}
-                unsafe_name = any(
-                    not info.filename
-                    or "\x00" in info.filename
-                    or "\\" in info.filename
-                    or info.filename.startswith("/")
-                    or ".." in info.filename.split("/")
-                    for info in infos
-                )
-                encrypted = any(info.flag_bits & 0x1 for info in infos)
-                expanded_bytes = sum(info.file_size for info in infos)
-                content_types = archive.getinfo("[Content_Types].xml")
-                document_xml = archive.getinfo("word/document.xml")
-                if (
-                    not infos
-                    or len(infos) > 4096
-                    or unsafe_name
-                    or encrypted
-                    or expanded_bytes > 100 * 1024 * 1024
-                    or content_types.file_size <= 0
-                    or content_types.file_size > 1024 * 1024
-                    or document_xml.file_size <= 0
-                    or "[Content_Types].xml" not in names
-                    or "word/document.xml" not in names
-                ):
-                    raise PresenterConflict(
-                        "presenter.external_document_structure_invalid",
-                        "Estructura DOCX no admitida",
-                    )
-                if _DOCX_CONTENT_TYPE not in archive.read("[Content_Types].xml"):
-                    raise PresenterConflict(
-                        "presenter.external_document_structure_invalid",
-                        "Estructura DOCX no admitida",
-                    )
-                detected_mime = (
-                    "application/vnd.openxmlformats-officedocument."
-                    "wordprocessingml.document"
-                )
-        except PresenterServiceError:
-            raise
-        except Exception as exc:
-            raise PresenterConflict(
-                "presenter.external_document_structure_invalid",
-                "Estructura DOCX no admitida",
-            ) from exc
-
-    if detected_mime is None or detected_mime != clean_declared_mime:
-        raise PresenterConflict(
-            "presenter.external_document_signature_mismatch",
-            "Firma y tipo documental no coinciden",
-        )
-    allowed_extensions = _EXTERNAL_MEDIA_EXTENSIONS[detected_mime]
-    extension = next(
-        (suffix for suffix in allowed_extensions if clean_filename.lower().endswith(suffix)),
-        None,
-    )
-    if extension is None:
         raise PresenterConflict(
             "presenter.external_document_extension_mismatch",
             "Extension y tipo documental no coinciden",
         )
+    try:
+        validated = validate_document_bytes(
+            filename=clean_filename,
+            declared_mime=clean_declared_mime,
+            data=content,
+            max_bytes=RTM_PRESENTER_MAX_FILE_BYTES,
+            allowed_mimes=_EXTERNAL_MEDIA_EXTENSIONS,
+        )
+        if validated.mime == _DOCX_MIME:
+            _require_docx_main_content_type(content)
+    except Exception as exc:
+        # La frontera HTTP no debe revelar que comprobacion interna (macro,
+        # relacion externa, compresion, parser, etc.) rechazo el documento.
+        # Tambien convierte fallos de parsers de terceros en un rechazo
+        # cerrado, sin permitir que sus detalles crucen la API.
+        raise PresenterConflict(
+            "presenter.external_document_structure_invalid",
+            "El documento no supera la validacion de seguridad",
+        ) from exc
     return PresenterExternalDocumentUpload(
         content=content,
-        sha256=hashlib.sha256(content).hexdigest(),
-        original_filename=clean_filename,
-        media_type=detected_mime,
-        size_bytes=len(content),
+        sha256=validated.sha256,
+        original_filename=validated.filename,
+        media_type=validated.mime,
+        size_bytes=validated.size_bytes,
         purpose=clean_purpose,
-        extension=extension,
+        extension=validated.extension,
         source_original_filename=clean_source_filename,
     )
 
@@ -2397,7 +2346,7 @@ class SqlPresenterRepository:
             conn.execute(
                 text(
                     """
-                    SELECT d.b2_bucket, d.b2_key
+                    SELECT d.b2_bucket, d.b2_key, COALESCE(d.size_bytes, 0)
                     FROM rtm_presenter_document_versions v
                     JOIN documents d ON d.id=v.source_document_id
                     WHERE v.id=CAST(:document_version_id AS UUID)
@@ -2429,12 +2378,33 @@ class SqlPresenterRepository:
         )
         if not row or not row.get("b2_bucket") or not row.get("b2_key"):
             raise PresenterNotFound("Bytes documentales no disponibles")
-        from b2_storage import download_bytes
+        from b2_storage import B2ObjectTooLargeError, download_bytes_limited
 
-        content = download_bytes(str(row["b2_bucket"]), str(row["b2_key"]))
+        declared_size = int(row.get("size_bytes") or 0)
+        if declared_size > RTM_PRESENTER_MAX_FILE_BYTES:
+            raise PresenterConflict(
+                "presenter.document_too_large", "Documento fuera del límite permitido"
+            )
+        try:
+            content = download_bytes_limited(
+                str(row["b2_bucket"]),
+                str(row["b2_key"]),
+                max_bytes=RTM_PRESENTER_MAX_FILE_BYTES,
+                case_id=case_id,
+            )
+        except B2ObjectTooLargeError as exc:
+            raise PresenterConflict(
+                "presenter.document_too_large", "Documento fuera del límite permitido"
+            ) from exc
         if not isinstance(content, bytes):
             raise PresenterConflict(
                 "presenter.invalid_storage_response", "Storage no devolvio bytes"
+            )
+        actual_sha256 = hashlib.sha256(content).hexdigest()
+        if not secrets.compare_digest(actual_sha256, expected_sha256):
+            raise PresenterConflict(
+                "presenter.document_integrity_mismatch",
+                "La integridad del documento no coincide",
             )
         return content
 

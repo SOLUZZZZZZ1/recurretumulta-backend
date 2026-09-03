@@ -14,13 +14,17 @@ from __future__ import annotations
 
 import os
 import re
+import ipaddress
+from email.utils import parseaddr
 from typing import Literal, Mapping, Optional
 from urllib.parse import unquote, urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from rtm_core.http_security import parse_allowed_hosts
 
-ENVIRONMENT_CONTRACT_VERSION = "rtm_environment_contract_v1_1"
+
+ENVIRONMENT_CONTRACT_VERSION = "rtm_environment_contract_v1_2"
 
 EnvironmentName = Literal["development", "test", "staging", "production"]
 CheckStatus = Literal["pass", "warning", "blocking"]
@@ -28,12 +32,23 @@ CheckStatus = Literal["pass", "warning", "blocking"]
 _TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 _FALSE_VALUES = {"0", "false", "no", "off", "disabled", ""}
 _KNOWN_ENVIRONMENTS = {"development", "test", "staging", "production"}
+_LOCAL_ENVIRONMENTS = {"development", "test"}
+_DEPLOYED_ENVIRONMENTS = {"staging", "production"}
 _STAGING_CONFIRMATION = "RTM_STAGING_ISOLATED"
 _PRODUCTION_CONFIRMATION = "RTM_PRODUCTION_LIVE"
 _DEFAULT_PRODUCTION_FRONTEND_HOSTS = {
     "recurretumulta.eu",
     "www.recurretumulta.eu",
+    "recurretumulta.vercel.app",
 }
+_TRUSTED_FRONTEND_HOSTS = frozenset(
+    _DEFAULT_PRODUCTION_FRONTEND_HOSTS | {"staging.recurretumulta.eu"}
+)
+_ALLOWED_SMTP_HOSTS = frozenset({"authsmtp.securemail.pro"})
+_FORBIDDEN_DEPLOYED_OVERRIDES = (
+    "FRONTEND_BASE_URL",
+    "OPENAI_BASE_URL",
+)
 _PLACEHOLDER_TOKENS = {
     "change_me",
     "changeme",
@@ -51,6 +66,45 @@ _FEATURE_FLAGS = (
     "RTM_ENABLE_DOCUMENT_PROVIDER",
     "RTM_ENABLE_OUTBOUND_EMAIL",
     "RTM_ENABLE_EXTERNAL_SUBMISSION",
+)
+
+# Solo se devuelven nombres, nunca valores. Estas señales permiten distinguir
+# una ejecución local realmente vacía de un servicio desplegado cuyo RTM_ENV se
+# haya omitido o escrito mal. ``DATABASE_URL`` se admite en desarrollo local
+# únicamente cuando RTM_ENV declara explícitamente development/test.
+_DEPLOYMENT_SIGNAL_NAMES = (
+    "DATABASE_URL",
+    "FRONTEND_URL",
+    "FRONTEND_BASE_URL",
+    "ALLOWED_ORIGINS",
+    "RTM_ALLOWED_HOSTS",
+    "OPENAI_BASE_URL",
+    "RTM_INSTANCE_ID",
+    "RTM_DATA_NAMESPACE",
+    "RTM_ENVIRONMENT_CONFIRMATION",
+    "RTM_SIDE_EFFECT_POLICY",
+    "RTM_EXPECTED_BRANCH",
+    "RENDER",
+    "RENDER_SERVICE_ID",
+    "RENDER_SERVICE_NAME",
+    "RENDER_EXTERNAL_HOSTNAME",
+    "RENDER_INSTANCE_ID",
+    "DYNO",
+    "K_SERVICE",
+    "FLY_APP_NAME",
+    "RAILWAY_ENVIRONMENT_ID",
+)
+_MANAGED_DEPLOYMENT_SIGNAL_NAMES = (
+    "RTM_ENVIRONMENT_CONFIRMATION",
+    "RENDER",
+    "RENDER_SERVICE_ID",
+    "RENDER_SERVICE_NAME",
+    "RENDER_EXTERNAL_HOSTNAME",
+    "RENDER_INSTANCE_ID",
+    "DYNO",
+    "K_SERVICE",
+    "FLY_APP_NAME",
+    "RAILWAY_ENVIRONMENT_ID",
 )
 
 
@@ -143,6 +197,45 @@ def _value(environ: Mapping[str, str], name: str) -> str:
     return str(environ.get(name) or "").strip()
 
 
+def deployment_runtime_signals(
+    environ: Optional[Mapping[str, str]] = None,
+) -> tuple[str, ...]:
+    """Enumera solo los nombres de señales que delatan un runtime desplegado."""
+
+    source: Mapping[str, str] = environ if environ is not None else os.environ
+    names = {
+        name
+        for name in (*_DEPLOYMENT_SIGNAL_NAMES, *_FEATURE_FLAGS)
+        if _value(source, name)
+    }
+    # Render puede añadir nuevas variables de plataforma. El prefijo es una
+    # señal inequívoca y el valor no se copia ni se registra.
+    names.update(
+        str(name)
+        for name, value in source.items()
+        if str(name).startswith("RENDER_") and str(value or "").strip()
+    )
+    return tuple(sorted(names))
+
+
+def runtime_requires_environment_preflight(
+    environ: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Cierra entornos desplegados o ambiguos antes de servir una petición."""
+
+    source: Mapping[str, str] = environ if environ is not None else os.environ
+    environment = _value(source, "RTM_ENV").lower()
+    if environment in _DEPLOYED_ENVIRONMENTS:
+        return True
+    if environment and environment not in _LOCAL_ENVIRONMENTS:
+        return True
+
+    signals = set(deployment_runtime_signals(source))
+    if environment in _LOCAL_ENVIRONMENTS:
+        return bool(signals.intersection(_MANAGED_DEPLOYMENT_SIGNAL_NAMES))
+    return bool(signals)
+
+
 def _normalise(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
@@ -154,6 +247,30 @@ def _looks_placeholder(value: str) -> bool:
     if "<" in value or ">" in value:
         return True
     return any(token.replace("_", "") in normalised for token in _PLACEHOLDER_TOKENS)
+
+
+def _looks_trivial_secret(value: str) -> bool:
+    """Reject obvious repetitions/sequences without guessing provider entropy."""
+
+    compact = "".join(character for character in value.casefold() if character.isalnum())
+    if not compact:
+        return True
+    if len(set(compact)) < 6:
+        return True
+    if max(compact.count(character) for character in set(compact)) * 2 >= len(compact):
+        return True
+    for period in range(1, min(8, len(compact) // 2) + 1):
+        if all(character == compact[index % period] for index, character in enumerate(compact)):
+            return True
+    return any(
+        sequence in compact
+        for sequence in (
+            "0123456789",
+            "1234567890",
+            "abcdefghijklmnopqrstuvwxyz",
+            "qwertyuiop",
+        )
+    )
 
 
 def _flag(environ: Mapping[str, str], name: str) -> tuple[bool, bool]:
@@ -174,9 +291,23 @@ def _url_parts(value: str):
 
 def _origin(value: str) -> Optional[str]:
     parsed = _url_parts(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    try:
+        port = parsed.port
+    except ValueError:
         return None
-    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+        or parsed.path not in ("", "/")
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    return f"https://{parsed.hostname.lower()}"
 
 
 def _database_name(value: str) -> Optional[str]:
@@ -236,11 +367,16 @@ def _require_secret(
     *,
     code: str,
     minimum_length: int = 20,
+    reject_trivial: bool = True,
 ) -> str:
     value = _value(environ, name)
     if not value:
         collector.blocking(code, f"Falta el secreto obligatorio {name}.", name)
-    elif len(value) < minimum_length or _looks_placeholder(value):
+    elif (
+        len(value) < minimum_length
+        or _looks_placeholder(value)
+        or (reject_trivial and _looks_trivial_secret(value))
+    ):
         collector.blocking(
             code,
             f"{name} no supera las reglas mínimas de secreto configurado.",
@@ -249,6 +385,149 @@ def _require_secret(
     else:
         collector.pass_(code, f"{name} está presente y no se expone en el informe.", name)
     return value
+
+
+def _check_forbidden_deployed_overrides(
+    collector: _CheckCollector,
+    environ: Mapping[str, str],
+) -> None:
+    """Prevent legacy/provider overrides from silently changing trust boundaries."""
+
+    for name in _FORBIDDEN_DEPLOYED_OVERRIDES:
+        code = f"{name.lower()}_forbidden"
+        if _value(environ, name):
+            collector.blocking(
+                code,
+                f"{name} no puede configurarse en staging o producción.",
+                name,
+            )
+        else:
+            collector.pass_(
+                code,
+                f"{name} no altera el destino canónico del servicio.",
+                name,
+            )
+
+
+def _valid_mailbox(value: str) -> bool:
+    if not value or len(value) > 320 or any(
+        ord(character) < 32 or ord(character) == 127 for character in value
+    ):
+        return False
+    display_name, address = parseaddr(value)
+    if value != address:
+        # ``parseaddr`` es deliberadamente tolerante. Solo se acepta además
+        # del buzón plano el formato completo ``Nombre <buzón>``; así texto
+        # sobrante no puede convertirse silenciosamente en otra dirección.
+        suffix = f"<{address}>"
+        if (
+            not display_name
+            or not value.endswith(suffix)
+            or not value[: -len(suffix)].strip()
+        ):
+            return False
+    return bool(
+        address
+        and len(address) <= 254
+        and re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", address)
+    )
+
+
+def _check_smtp_configuration(
+    collector: _CheckCollector,
+    environ: Mapping[str, str],
+) -> None:
+    host = _require_non_secret(
+        collector,
+        environ,
+        "SMTP_HOST",
+        code="smtp_host_present",
+    ).casefold().rstrip(".")
+    if host and host not in _ALLOWED_SMTP_HOSTS:
+        collector.blocking(
+            "smtp_host_allowed",
+            "SMTP_HOST no pertenece al proveedor SMTP aprobado.",
+            "SMTP_HOST",
+        )
+    elif host:
+        collector.pass_(
+            "smtp_host_allowed",
+            "SMTP_HOST pertenece al proveedor SMTP aprobado.",
+            "SMTP_HOST",
+        )
+
+    raw_port = _require_non_secret(
+        collector,
+        environ,
+        "SMTP_PORT",
+        code="smtp_port_present",
+    )
+    try:
+        port = int(raw_port, 10)
+    except ValueError:
+        port = 0
+
+    security = _require_non_secret(
+        collector,
+        environ,
+        "SMTP_SECURITY",
+        code="smtp_security_present",
+    ).casefold()
+    expected_port = {"ssl": 465, "starttls": 587}.get(security)
+    if expected_port is None:
+        collector.blocking(
+            "smtp_transport_secure",
+            "SMTP_SECURITY debe ser ssl o starttls; plain está prohibido.",
+            "SMTP_SECURITY",
+        )
+    elif port != expected_port:
+        collector.blocking(
+            "smtp_transport_secure",
+            f"SMTP_SECURITY={security} exige el puerto {expected_port}.",
+            "SMTP_SECURITY",
+            "SMTP_PORT",
+        )
+    else:
+        collector.pass_(
+            "smtp_transport_secure",
+            "El transporte y puerto SMTP coinciden con el perfil TLS aprobado.",
+            "SMTP_SECURITY",
+            "SMTP_PORT",
+        )
+
+    user = _require_non_secret(
+        collector,
+        environ,
+        "SMTP_USER",
+        code="smtp_user_present",
+    )
+    sender = _require_non_secret(
+        collector,
+        environ,
+        "SMTP_FROM",
+        code="smtp_from_present",
+    )
+    for name, value in (("SMTP_USER", user), ("SMTP_FROM", sender)):
+        if value and not _valid_mailbox(value):
+            collector.blocking(
+                f"{name.lower()}_valid",
+                f"{name} debe identificar un buzón de correo válido.",
+                name,
+            )
+        elif value:
+            collector.pass_(
+                f"{name.lower()}_valid",
+                f"{name} identifica un buzón válido.",
+                name,
+            )
+
+    _require_secret(
+        collector,
+        environ,
+        "SMTP_PASSWORD",
+        code="smtp_password_ready",
+        minimum_length=20,
+    )
 
 
 def _check_base_identity(
@@ -451,6 +730,19 @@ def _check_frontend_and_cors(
             "FRONTEND_URL",
         )
 
+    if frontend_host not in _TRUSTED_FRONTEND_HOSTS:
+        collector.blocking(
+            "frontend_host_trusted",
+            "FRONTEND_URL debe pertenecer a un host RTM autorizado.",
+            "FRONTEND_URL",
+        )
+    else:
+        collector.pass_(
+            "frontend_host_trusted",
+            "FRONTEND_URL pertenece a un host RTM autorizado.",
+            "FRONTEND_URL",
+        )
+
     if environment == "staging" and frontend_origin:
         if frontend_host in production_hosts:
             collector.blocking(
@@ -522,6 +814,24 @@ def _check_frontend_and_cors(
             "ALLOWED_ORIGINS",
         )
 
+    cors_hosts = {
+        str(_url_parts(origin).hostname or "").lower()
+        for origin in origins
+        if _origin(origin)
+    }
+    if any(host not in _TRUSTED_FRONTEND_HOSTS for host in cors_hosts):
+        collector.blocking(
+            "cors_hosts_trusted",
+            "CORS contiene un host que no pertenece a RTM.",
+            "ALLOWED_ORIGINS",
+        )
+    else:
+        collector.pass_(
+            "cors_hosts_trusted",
+            "CORS solo contiene hosts RTM autorizados.",
+            "ALLOWED_ORIGINS",
+        )
+
     if frontend_origin and frontend_origin not in parsed_origins:
         collector.blocking(
             "cors_includes_frontend",
@@ -558,6 +868,43 @@ def _check_frontend_and_cors(
             )
 
 
+def _check_allowed_hosts(
+    collector: _CheckCollector,
+    environ: Mapping[str, str],
+) -> None:
+    """Exige una allowlist de autoridades exactas en perfiles desplegados."""
+
+    raw_hosts = _value(environ, "RTM_ALLOWED_HOSTS")
+    if not raw_hosts:
+        collector.blocking(
+            "allowed_hosts_present",
+            "RTM_ALLOWED_HOSTS debe declarar al menos un hostname exacto.",
+            "RTM_ALLOWED_HOSTS",
+        )
+        return
+    try:
+        hosts = parse_allowed_hosts(raw_hosts)
+    except ValueError:
+        collector.blocking(
+            "allowed_hosts_exact",
+            "RTM_ALLOWED_HOSTS solo admite hostnames exactos sin esquemas, puertos ni comodines.",
+            "RTM_ALLOWED_HOSTS",
+        )
+        return
+    if not hosts:
+        collector.blocking(
+            "allowed_hosts_present",
+            "RTM_ALLOWED_HOSTS debe declarar al menos un hostname exacto.",
+            "RTM_ALLOWED_HOSTS",
+        )
+        return
+    collector.pass_(
+        "allowed_hosts_exact",
+        "La allowlist HTTP contiene exclusivamente hostnames exactos.",
+        "RTM_ALLOWED_HOSTS",
+    )
+
+
 def _check_operator_token(
     collector: _CheckCollector,
     environ: Mapping[str, str],
@@ -569,6 +916,51 @@ def _check_operator_token(
         code="operator_token_ready",
         minimum_length=32,
     )
+
+
+def _check_trusted_proxy_configuration(
+    collector: _CheckCollector,
+    environ: Mapping[str, str],
+) -> None:
+    enabled, valid = _flag(environ, "RTM_TRUST_PROXY_HEADERS")
+    if not valid:
+        collector.blocking(
+            "trusted_proxy_flag_valid",
+            "RTM_TRUST_PROXY_HEADERS contiene un valor no reconocido.",
+            "RTM_TRUST_PROXY_HEADERS",
+        )
+        return
+    raw_cidrs = _value(environ, "RTM_TRUSTED_PROXY_CIDRS")
+    if not enabled:
+        collector.pass_(
+            "trusted_proxy_headers_disabled",
+            "Las cabeceras de proxy no se consideran autoritativas.",
+            "RTM_TRUST_PROXY_HEADERS",
+        )
+        return
+    networks = []
+    try:
+        networks = [
+            ipaddress.ip_network(item.strip(), strict=False)
+            for item in raw_cidrs.split(",")
+            if item.strip()
+        ]
+    except ValueError:
+        networks = []
+    if not networks or any(network.prefixlen == 0 for network in networks):
+        collector.blocking(
+            "trusted_proxy_cidrs_restricted",
+            "El uso de cabeceras proxy exige CIDR concretos y válidos.",
+            "RTM_TRUST_PROXY_HEADERS",
+            "RTM_TRUSTED_PROXY_CIDRS",
+        )
+    else:
+        collector.pass_(
+            "trusted_proxy_cidrs_restricted",
+            "Las cabeceras proxy solo se aceptan desde redes concretas.",
+            "RTM_TRUST_PROXY_HEADERS",
+            "RTM_TRUSTED_PROXY_CIDRS",
+        )
 
 
 def _check_case_authority_secrets(
@@ -771,6 +1163,9 @@ def _check_b2(
         "B2_KEY_ID",
         code="b2_key_id_ready",
         minimum_length=10,
+        # Es un identificador de cuenta, no material secreto por sí solo. La
+        # clave de aplicación sí conserva la comprobación anti-valores triviales.
+        reject_trivial=False,
     )
     _require_secret(
         collector,
@@ -781,16 +1176,26 @@ def _check_b2(
     )
 
     parsed_endpoint = _url_parts(endpoint)
-    if parsed_endpoint.scheme == "https" and parsed_endpoint.netloc:
+    endpoint_host = str(parsed_endpoint.hostname or "").lower()
+    if (
+        parsed_endpoint.scheme == "https"
+        and parsed_endpoint.username is None
+        and parsed_endpoint.password is None
+        and parsed_endpoint.port in (None, 443)
+        and parsed_endpoint.path in ("", "/")
+        and not parsed_endpoint.query
+        and not parsed_endpoint.fragment
+        and re.fullmatch(r"s3\.[a-z0-9-]+\.backblazeb2\.com", endpoint_host)
+    ):
         collector.pass_(
-            "b2_endpoint_https",
-            "B2_ENDPOINT utiliza HTTPS.",
+            "b2_endpoint_official",
+            "B2_ENDPOINT utiliza un origen HTTPS oficial de Backblaze.",
             "B2_ENDPOINT",
         )
     else:
         collector.blocking(
-            "b2_endpoint_https",
-            "B2_ENDPOINT debe ser una URL HTTPS completa.",
+            "b2_endpoint_official",
+            "B2_ENDPOINT debe ser un origen HTTPS oficial de Backblaze.",
             "B2_ENDPOINT",
         )
 
@@ -990,19 +1395,19 @@ def _check_stripe(
             )
 
     if final_payments:
-        for name in ("STRIPE_PRICE_ID_DGT", "STRIPE_PRICE_ID_VEHICLE"):
-            value = _require_non_secret(
-                collector,
-                environ,
+        name = "STRIPE_PRICE_ID_ELIMINAR_COCHE"
+        value = _require_non_secret(
+            collector,
+            environ,
+            name,
+            code=f"{name.lower()}_present",
+        )
+        if value and not value.startswith("price_"):
+            collector.blocking(
+                f"{name.lower()}_format",
+                f"{name} no tiene formato de Price ID de Stripe.",
                 name,
-                code=f"{name.lower()}_present",
             )
-            if value and not value.startswith("price_"):
-                collector.blocking(
-                    f"{name.lower()}_format",
-                    f"{name} no tiene formato de Price ID de Stripe.",
-                    name,
-                )
 
 
 def _check_document_provider(
@@ -1114,6 +1519,7 @@ def _check_outbound_channels(
             "RTM_ALLOW_EXTERNAL_SUBMISSIONS",
         )
         if outbound_email:
+            _check_smtp_configuration(collector, environ)
             if notifications_valid and notifications_allowed:
                 collector.pass_(
                     "production_notifications_confirmed",
@@ -1197,6 +1603,7 @@ def build_environment_preflight(
             "RTM_ENV",
         )
     else:
+        _check_forbidden_deployed_overrides(collector, source)
         instance_id, namespace, markers = _check_base_identity(
             collector,
             source,
@@ -1204,7 +1611,9 @@ def build_environment_preflight(
         )
         _check_database(collector, source, environment, markers)
         _check_frontend_and_cors(collector, source, environment, markers)
+        _check_allowed_hosts(collector, source)
         _check_operator_token(collector, source)
+        _check_trusted_proxy_configuration(collector, source)
         _check_case_authority_secrets(collector, source)
         _check_deployment_identity(collector, source, environment, markers)
         _check_b2(

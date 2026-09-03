@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Awaitable, Callable
 
 from fastapi import Request, Response
@@ -89,6 +90,9 @@ class LegacyOpsOperatorContext:
     role_code: str | None
     permissions: tuple[str, ...]
     actor: str
+    login_at: datetime | None = None
+    last_verified_at: datetime | None = None
+    reauthentication_max_age_seconds: int = 300
 
 
 def _is_path_or_child(path: str, prefix: str) -> bool:
@@ -278,6 +282,15 @@ async def legacy_ops_individual_session_bridge(
     if not is_legacy_ops_path(path) or request.method == "OPTIONS":
         return await call_next(request)
 
+    # Este endpoint no tenía scope de expediente ni autenticación propia y
+    # dispara trabajo de IA con efectos persistentes. Su retirada es global:
+    # el modo legacy nunca debe reabrirlo por accidente.
+    if _is_path_or_child(path, _LEGACY_AI_PATH):
+        return _json_error(
+            410,
+            "Análisis legacy retirado; utilice el flujo RTM CORE",
+        )
+
     environment_mode = operator_auth_environment_mode()
     if environment_mode == OPERATOR_AUTH_MODE_LEGACY:
         return await call_next(request)
@@ -289,11 +302,6 @@ async def legacy_ops_individual_session_bridge(
 
     if _is_path_or_child(path, _LEGACY_LOGIN_PATH):
         return _json_error(410, "Acceso individual requerido")
-    if _is_path_or_child(path, _LEGACY_AI_PATH):
-        return _json_error(
-            410,
-            "Análisis legacy retirado; utilice el flujo RTM CORE",
-        )
     if is_retired_vehicle_mark_paid(path, request.method):
         return _json_error(
             410,
@@ -310,7 +318,7 @@ async def legacy_ops_individual_session_bridge(
         )
 
     try:
-        load_operator_auth_runtime_config(require_enabled=True)
+        auth_config = load_operator_auth_runtime_config(require_enabled=True)
     except OperatorAuthRoutesDisabled:
         return _json_error(
             503,
@@ -324,7 +332,7 @@ async def legacy_ops_individual_session_bridge(
 
     authorization = request.headers.get("Authorization")
     device_header = request.headers.get("X-RTM-Device")
-    device_cookie = request.cookies.get("rtm_presenter_device")
+    device_cookie = request.cookies.get("__Host-rtm_presenter_device")
     try:
         engine = get_engine()
         with engine.begin() as conn:
@@ -380,6 +388,11 @@ async def legacy_ops_individual_session_bridge(
         role_code=role_code,
         permissions=permissions,
         actor=actor,
+        login_at=getattr(session, "login_at", None),
+        last_verified_at=getattr(session, "last_verified_at", None),
+        reauthentication_max_age_seconds=int(
+            getattr(auth_config, "reauthentication_max_age_seconds", 300)
+        ),
     )
     request.state.rtm_operator_context = context
     request.state.rtm_operator_id = context.operator_id

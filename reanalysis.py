@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import io
 import json
 import os
 import re
 import unicodedata
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -14,10 +16,28 @@ from fastapi import HTTPException
 from sqlalchemy import text
 
 from database import get_engine
-from b2_storage import download_bytes
+from b2_storage import B2ObjectTooLargeError, download_bytes_limited
+from rtm_core.ai_security import (
+    ModelCallBudgetExceeded,
+    consume_model_call_budget,
+    model_call_budget,
+    protect_responses_payload,
+    require_model_call_budget,
+)
+from rtm_core.runtime_capabilities import require_capability
+from rtm_core.parser_isolation import (
+    ParserIsolationError,
+    run_image_parser_isolated,
+)
+from rtm_core.upload_security import (
+    SAFE_IMAGE_OR_PDF_MIMES,
+    UploadSecurityError,
+    validate_document_bytes,
+)
 from analyze import (
-    analyze_existing_case_document,
+    _candidate_wrapper,
     _enrich_with_triage,
+    _extract_untrusted_document_bounded,
     _flatten_text,
     _merge_extracted,
 )
@@ -33,6 +53,19 @@ _ENGINE_NAME = "rtm_intelligence_core_v1"
 _EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_18"
 _SECONDARY_FACTS_VERSION = "velocity_secondary_v1_0"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
+_MAX_REANALYSIS_DOCUMENTS = 8
+_MAX_REANALYSIS_DOCUMENT_BYTES = 8 * 1024 * 1024
+_MAX_REANALYSIS_TOTAL_BYTES = 20 * 1024 * 1024
+_MAX_REANALYSIS_MODEL_CALLS = 24
+
+
+def _passive_openai_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Autoriza el proveedor e impone la frontera de IA sin herramientas."""
+
+    require_capability("document_provider")
+    require_model_call_budget()
+    consume_model_call_budget()
+    return protect_responses_payload(payload)
 
 
 def _append_event(case_id: str, event_type: str, payload: Optional[Dict[str, Any]] = None) -> None:
@@ -49,6 +82,50 @@ def _append_event(case_id: str, event_type: str, payload: Optional[Dict[str, Any
                 "payload": json.dumps(payload or {}, ensure_ascii=False),
             },
         )
+
+
+def _append_event_best_effort(
+    case_id: str,
+    event_type: str,
+    payload: Optional[Dict[str, Any]] = None,
+) -> None:
+    """La telemetria de fallo nunca debe ocultar la respuesta segura original."""
+
+    try:
+        _append_event(case_id, event_type, payload)
+    except Exception:
+        pass
+
+
+def _analyze_page_candidate(
+    content: bytes,
+    filename: str,
+    mime: str,
+) -> Tuple[Dict[str, Any], float]:
+    """Extrae una pagina en memoria, sin eventos, estado ni filas parciales.
+
+    Reanalysis publica exclusivamente el documento logico consolidado. Esta
+    frontera evita que Generate u otro consumidor pueda observar una pagina
+    intermedia si el presupuesto, el proveedor o la persistencia final fallan.
+    """
+
+    try:
+        meta = validate_document_bytes(
+            filename=filename,
+            declared_mime=mime,
+            data=content,
+            max_bytes=_MAX_REANALYSIS_DOCUMENT_BYTES,
+            allowed_mimes=SAFE_IMAGE_OR_PDF_MIMES,
+        )
+    except UploadSecurityError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    extracted_core, _model_used, confidence = _extract_untrusted_document_bounded(
+        content,
+        meta.mime,
+        meta.filename,
+    )
+    return _candidate_wrapper(meta=meta, extracted=extracted_core), confidence
 
 
 def _case_meta(case_id: str) -> Dict[str, str]:
@@ -80,7 +157,7 @@ def _load_original_documents(case_id: str) -> List[Dict[str, Any]]:
         rows = conn.execute(
             text(
                 "SELECT id, b2_bucket, b2_key, COALESCE(mime,''), "
-                "COALESCE(size_bytes,0), created_at "
+                "COALESCE(size_bytes,0), created_at, COALESCE(sha256,'') "
                 "FROM documents "
                 "WHERE case_id=:id AND kind='original' "
                 "AND b2_bucket IS NOT NULL AND b2_key IS NOT NULL "
@@ -97,6 +174,7 @@ def _load_original_documents(case_id: str) -> List[Dict[str, Any]]:
             "mime": str(r[3] or ""),
             "size_bytes": int(r[4] or 0),
             "created_at": str(r[5]),
+            "sha256": str(r[6] or "").strip().lower(),
         }
         for r in rows
     ]
@@ -126,21 +204,6 @@ def _sniff_mime(content: bytes, declared_mime: str = "", key: str = "") -> str:
 
     if declared and declared != "application/octet-stream":
         return declared
-
-    if Image is not None:
-        try:
-            with Image.open(io.BytesIO(content)) as img:
-                fmt = str(img.format or "").upper()
-            return {
-                "JPEG": "image/jpeg",
-                "JPG": "image/jpeg",
-                "PNG": "image/png",
-                "TIFF": "image/tiff",
-                "TIF": "image/tiff",
-                "WEBP": "image/webp",
-            }.get(fmt, declared or "application/octet-stream")
-        except Exception:
-            pass
 
     return declared or "application/octet-stream"
 
@@ -260,8 +323,9 @@ def _choose_upright_document_image(img) -> Tuple[Any, Dict[str, Any]]:
         r = requests.post(
             "https://api.openai.com/v1/responses",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
+            json=_passive_openai_payload(payload),
             timeout=60,
+            allow_redirects=False,
         )
 
         if r.ok:
@@ -281,8 +345,10 @@ def _choose_upright_document_image(img) -> Tuple[Any, Dict[str, Any]]:
                         "orientation_confidence": confidence,
                         "orientation_preview_max_dim": 900,
                     }
-    except Exception as exc:
-        meta["orientation_selector_error"] = f"{type(exc).__name__}: {exc}"
+    except ModelCallBudgetExceeded:
+        raise
+    except Exception:
+        meta["orientation_selector_error"] = "provider_processing_failed"
     finally:
         try:
             del preview
@@ -302,44 +368,50 @@ def _normalize_image_for_analysis(content: bytes, mime: str) -> Tuple[bytes, str
     if not (mime or "").startswith("image/"):
         return content, mime, meta
     if Image is None:
-        return content, mime, meta
+        raise HTTPException(
+            status_code=503,
+            detail="El procesamiento seguro de imágenes no está disponible",
+        )
 
     try:
-        with Image.open(io.BytesIO(content)) as source:
-            img = source.copy()
-
-        if ImageOps is not None:
-            img = ImageOps.exif_transpose(img)
-
-        if getattr(img, "n_frames", 1) > 1:
-            try:
-                img.seek(0)
-            except Exception:
-                pass
-
-        img = img.convert("RGB")
+        # La primera decodificación de bytes controlados por el usuario sucede
+        # en un proceso desechable. A partir de aquí Pillow solo abre el JPEG
+        # canónico generado por RTM, nunca la estructura original.
+        canonical, canonical_mime, canonical_meta = run_image_parser_isolated(
+            "canonicalize_image",
+            content,
+            mime,
+            max_dimension=2600,
+        )
+        with Image.open(io.BytesIO(canonical)) as safe_source:
+            img = safe_source.convert("RGB")
         img, orientation_meta = _choose_upright_document_image(img)
         meta.update(orientation_meta)
-
-        meta["source_oriented_width"] = int(img.width)
-        meta["source_oriented_height"] = int(img.height)
-
-        # 2.600 px es suficiente para OCR/visión documental y evita conservar
-        # fotografías de móvil de 10-20 MP durante todas las pasadas.
-        max_analysis_dim = 2600
-        if max(img.width, img.height) > max_analysis_dim:
-            img.thumbnail((max_analysis_dim, max_analysis_dim))
-            meta["analysis_resized"] = True
-        else:
-            meta["analysis_resized"] = False
-
+        meta["source_oriented_width"] = int(
+            canonical_meta.get("source_width") or img.width
+        )
+        meta["source_oriented_height"] = int(
+            canonical_meta.get("source_height") or img.height
+        )
+        meta["analysis_resized"] = bool(canonical_meta.get("resized"))
         meta["normalized_width"] = int(img.width)
         meta["normalized_height"] = int(img.height)
-        meta["analysis_max_dim"] = max_analysis_dim
-        return _jpeg_bytes(img), "image/jpeg", meta
+        meta["analysis_max_dim"] = 2600
+        return _jpeg_bytes(img), canonical_mime, meta
+    except ModelCallBudgetExceeded:
+        raise
+    except ParserIsolationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="No pudo normalizarse la imagen de forma segura",
+        ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
-        meta["normalization_error"] = f"{type(exc).__name__}: {exc}"
-        return content, mime, meta
+        raise HTTPException(
+            status_code=422,
+            detail="La imagen no ha superado la normalización de seguridad",
+        ) from exc
 
 
 def _page_text(core: Dict[str, Any]) -> str:
@@ -441,7 +513,7 @@ def _critical_fields_from_images(analyzed_pages: List[Dict[str, Any]]) -> Dict[s
     """
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key:
-        return {"values": {}, "confidence": {}, "evidence": {}, "error": "OPENAI_API_KEY_missing"}
+        return {"values": {}, "confidence": {}, "evidence": {}, "error": "provider_unavailable"}
 
     image_parts: List[Dict[str, Any]] = []
     page_labels: List[str] = []
@@ -535,11 +607,12 @@ Reglas críticas:
         r = requests.post(
             "https://api.openai.com/v1/responses",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
+            json=_passive_openai_payload(payload),
             timeout=90,
+            allow_redirects=False,
         )
         if not r.ok:
-            return {"values": {}, "confidence": {}, "evidence": {}, "error": f"OpenAI {r.status_code}: {r.text[:300]}"}
+            return {"values": {}, "confidence": {}, "evidence": {}, "error": "provider_http_error"}
         obj = json.loads(_response_output_text(r.json()) or "{}")
         values = obj.get("values") if isinstance(obj, dict) else {}
         confidence = obj.get("confidence") if isinstance(obj, dict) else {}
@@ -589,10 +662,12 @@ Reglas críticas:
             "evidence": ev_clean,
             "pages": page_labels,
         }
-    except Exception as exc:
+    except ModelCallBudgetExceeded:
+        raise
+    except Exception:
         return {
             "values": {}, "confidence": {}, "evidence": {},
-            "error": f"{type(exc).__name__}: {exc}",
+            "error": "provider_processing_failed",
         }
 
 
@@ -725,8 +800,8 @@ def _critical_fields_from_zoomed_crops(analyzed_pages: List[Dict[str, Any]]) -> 
         try:
             with Image.open(io.BytesIO(bytes(content))) as source:
                 base_img = source.convert("RGB")
-        except Exception as exc:
-            errors.append(f"page_{page.get('page_index')}:open:{type(exc).__name__}")
+        except Exception:
+            errors.append("document_image_unreadable")
             continue
 
         for rotation_label, img in _variants(base_img):
@@ -809,12 +884,15 @@ REGLAS:
                 r = requests.post(
                     "https://api.openai.com/v1/responses",
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json=payload,
+                    json=_passive_openai_payload(payload),
                     timeout=90,
+                    allow_redirects=False,
                 )
                 if not r.ok:
                     errors.append(
-                        f"page_{page.get('page_index')}_rot_{rotation_label}:openai_{r.status_code}"
+                        "provider_rate_limited"
+                        if r.status_code == 429
+                        else "provider_request_failed"
                     )
                     continue
                 obj = json.loads(_response_output_text(r.json()) or "{}")
@@ -842,16 +920,22 @@ REGLAS:
                     "evidence": evidence,
                     "score": round(score, 3),
                 })
-            except Exception as exc:
+            except ModelCallBudgetExceeded:
+                raise
+            except Exception:
                 errors.append(
-                    f"page_{page.get('page_index')}_rot_{rotation_label}:{type(exc).__name__}:{exc}"
+                    "provider_processing_failed"
                 )
 
     if not page_candidates:
         return {
             "values": {}, "confidence": {}, "evidence": {},
             "crop_count": crop_count,
-            "error": "; ".join(errors)[:800] if errors else "no_zoom_candidates",
+            "error": (
+                "; ".join(dict.fromkeys(errors))[:800]
+                if errors
+                else "no_zoom_candidates"
+            ),
         }
 
     page_candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
@@ -1268,15 +1352,17 @@ def _apply_critical_fields(
         "zoomed_vision_error": zoom_meta.get("error"),
     }
 
-    if conflicts or missing_required or unresolved_fields:
-        out["requires_operator_review"] = True
-        reasons = list(out.get("operator_review_reasons") or [])
-        reason = "critical_fields_need_operator_validation"
-        if reason not in reasons:
-            reasons.append(reason)
-        out["operator_review_reasons"] = reasons
+    # Reanalysis consumes model/OCR observations. Completeness and confidence
+    # never make those observations authoritative; an operator attestation is
+    # required by the CORE authority workflow before generation/freeze.
+    out["requires_operator_review"] = True
+    reasons = list(out.get("operator_review_reasons") or [])
+    reason = "reanalysis_requires_operator_document_review"
+    if reason not in reasons:
+        reasons.append(reason)
+    out["operator_review_reasons"] = reasons
 
-    ready_for_generate = not missing_required and not unresolved_fields
+    ready_for_generate = False
     out["ready_for_generate"] = ready_for_generate
 
     return out, {
@@ -1308,7 +1394,7 @@ def _semaforo_critical_fields_from_images(analyzed_pages: List[Dict[str, Any]]) 
     '''
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key:
-        return {"values": {}, "confidence": {}, "evidence": {}, "error": "OPENAI_API_KEY_missing"}
+        return {"values": {}, "confidence": {}, "evidence": {}, "error": "provider_unavailable"}
 
     image_parts: List[Dict[str, Any]] = []
     for page in analyzed_pages:
@@ -1393,11 +1479,12 @@ Reglas:
         r = requests.post(
             "https://api.openai.com/v1/responses",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
+            json=_passive_openai_payload(payload),
             timeout=90,
+            allow_redirects=False,
         )
         if not r.ok:
-            return {"values": {}, "confidence": {}, "evidence": {}, "error": f"OpenAI {r.status_code}: {r.text[:300]}"}
+            return {"values": {}, "confidence": {}, "evidence": {}, "error": "provider_http_error"}
 
         obj = json.loads(_response_output_text(r.json()) or "{}")
         values = obj.get("values") if isinstance(obj, dict) else {}
@@ -1464,11 +1551,13 @@ Reglas:
             "evidence": ev_out,
             "version": "semaforo_secondary_v1_4",
         }
-    except Exception as exc:
+    except ModelCallBudgetExceeded:
+        raise
+    except Exception:
         return {
             "values": {}, "confidence": {}, "evidence": {},
             "version": "semaforo_secondary_v1_4",
-            "error": f"{type(exc).__name__}: {exc}",
+            "error": "provider_processing_failed",
         }
 
 
@@ -1481,7 +1570,7 @@ def _semaforo_precision_from_crops(analyzed_pages: List[Dict[str, Any]]) -> Dict
             "confidence": {},
             "evidence": {},
             "version": "semaforo_precision_v1_0",
-            "error": "Pillow_not_available",
+            "error": "image_processing_unavailable",
         }
 
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
@@ -1491,7 +1580,7 @@ def _semaforo_precision_from_crops(analyzed_pages: List[Dict[str, Any]]) -> Dict
             "confidence": {},
             "evidence": {},
             "version": "semaforo_precision_v1_0",
-            "error": "OPENAI_API_KEY_missing",
+            "error": "provider_unavailable",
         }
 
     page = None
@@ -1630,8 +1719,9 @@ def _semaforo_precision_from_crops(analyzed_pages: List[Dict[str, Any]]) -> Dict
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json=payload,
+            json=_passive_openai_payload(payload),
             timeout=75,
+            allow_redirects=False,
         )
 
         if not r.ok:
@@ -1640,7 +1730,7 @@ def _semaforo_precision_from_crops(analyzed_pages: List[Dict[str, Any]]) -> Dict
                 "confidence": {},
                 "evidence": {},
                 "version": "semaforo_precision_v1_0",
-                "error": f"OpenAI {r.status_code}: {r.text[:300]}",
+                "error": "provider_http_error",
             }
 
         obj = json.loads(_response_output_text(r.json()) or "{}")
@@ -1705,13 +1795,15 @@ def _semaforo_precision_from_crops(analyzed_pages: List[Dict[str, Any]]) -> Dict
             "page_index": int(page.get("page_index") or 0),
         }
 
-    except Exception as exc:
+    except ModelCallBudgetExceeded:
+        raise
+    except Exception:
         return {
             "values": {},
             "confidence": {},
             "evidence": {},
             "version": "semaforo_precision_v1_0",
-            "error": f"{type(exc).__name__}: {exc}",
+            "error": "provider_processing_failed",
         }
 
 
@@ -2084,7 +2176,7 @@ def _traffic_generic_document_facts_from_images(
             "confidence": {},
             "evidence": {},
             "version": "traffic_generic_facts_v1_2",
-            "error": "OPENAI_API_KEY_missing",
+            "error": "provider_unavailable",
         }
 
     image_parts: List[Dict[str, Any]] = []
@@ -2199,8 +2291,9 @@ def _traffic_generic_document_facts_from_images(
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json=payload,
+            json=_passive_openai_payload(payload),
             timeout=90,
+            allow_redirects=False,
         )
         if not r.ok:
             return {
@@ -2208,7 +2301,7 @@ def _traffic_generic_document_facts_from_images(
                 "confidence": {},
                 "evidence": {},
                 "version": "traffic_generic_facts_v1_2",
-                "error": f"OpenAI {r.status_code}: {r.text[:300]}",
+                "error": "provider_http_error",
             }
 
         obj = json.loads(_response_output_text(r.json()) or "{}")
@@ -2330,13 +2423,15 @@ def _traffic_generic_document_facts_from_images(
             "version": "traffic_generic_facts_v1_2",
         }
 
-    except Exception as exc:
+    except ModelCallBudgetExceeded:
+        raise
+    except Exception:
         return {
             "values": {},
             "confidence": {},
             "evidence": {},
             "version": "traffic_generic_facts_v1_2",
-            "error": f"{type(exc).__name__}: {exc}",
+            "error": "provider_processing_failed",
         }
 
 
@@ -2391,7 +2486,7 @@ def _traffic_handwritten_precision_from_images(
             "evidence": {},
             "quality": {},
             "version": "traffic_handwritten_precision_v1_0",
-            "error": "Pillow_not_available",
+            "error": "image_processing_unavailable",
         }
 
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
@@ -2402,7 +2497,7 @@ def _traffic_handwritten_precision_from_images(
             "evidence": {},
             "quality": {},
             "version": "traffic_handwritten_precision_v1_0",
-            "error": "OPENAI_API_KEY_missing",
+            "error": "provider_unavailable",
         }
 
     page = None
@@ -2546,8 +2641,9 @@ def _traffic_handwritten_precision_from_images(
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json=payload,
+            json=_passive_openai_payload(payload),
             timeout=90,
+            allow_redirects=False,
         )
 
         if not r.ok:
@@ -2557,7 +2653,7 @@ def _traffic_handwritten_precision_from_images(
                 "evidence": {},
                 "quality": {},
                 "version": "traffic_handwritten_precision_v1_0",
-                "error": f"OpenAI {r.status_code}: {r.text[:300]}",
+                "error": "provider_http_error",
             }
 
         obj = json.loads(_response_output_text(r.json()) or "{}")
@@ -2639,14 +2735,16 @@ def _traffic_handwritten_precision_from_images(
             "page_index": int(page.get("page_index") or 0),
         }
 
-    except Exception as exc:
+    except ModelCallBudgetExceeded:
+        raise
+    except Exception:
         return {
             "values": {},
             "confidence": {},
             "evidence": {},
             "quality": {},
             "version": "traffic_handwritten_precision_v1_0",
-            "error": f"{type(exc).__name__}: {exc}",
+            "error": "provider_processing_failed",
         }
 
 
@@ -3129,7 +3227,7 @@ def _velocity_secondary_facts_from_images(analyzed_pages: List[Dict[str, Any]]) 
             "facts": {},
             "confidence": {},
             "evidence": {},
-            "error": "OPENAI_API_KEY_not_configured",
+            "error": "provider_unavailable",
         }
 
     image_parts: List[Dict[str, Any]] = []
@@ -3275,8 +3373,9 @@ REGLAS OBLIGATORIAS:
         r = requests.post(
             "https://api.openai.com/v1/responses",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
+            json=_passive_openai_payload(payload),
             timeout=90,
+            allow_redirects=False,
         )
         if not r.ok:
             return {
@@ -3284,7 +3383,7 @@ REGLAS OBLIGATORIAS:
                 "facts": {},
                 "confidence": {},
                 "evidence": {},
-                "error": f"OpenAI {r.status_code}: {r.text[:300]}",
+                "error": "provider_http_error",
             }
 
         obj = json.loads(_response_output_text(r.json()) or "{}")
@@ -3372,24 +3471,28 @@ REGLAS OBLIGATORIAS:
             "evidence": evidence_clean,
             "error": None,
         }
-    except Exception as exc:
+    except ModelCallBudgetExceeded:
+        raise
+    except Exception:
         return {
             "version": _SECONDARY_FACTS_VERSION,
             "facts": {},
             "confidence": {},
             "evidence": {},
-            "error": f"{type(exc).__name__}: {exc}",
+            "error": "provider_processing_failed",
         }
 
 
-def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _consolidate_extraction(
+    case_id: str,
+    analyzed_pages: List[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], Dict[str, Any], float]:
     if not analyzed_pages:
         raise HTTPException(status_code=422, detail="No se pudo analizar ningún documento original")
 
     combined_core: Dict[str, Any] = {}
     raw_parts: List[str] = []
     source_ids: List[str] = []
-    source_keys: List[str] = []
 
     for page in analyzed_pages:
         wrapper = page.get("wrapper") or {}
@@ -3405,8 +3508,6 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
 
         if page.get("document_id"):
             source_ids.append(str(page["document_id"]))
-        if page.get("key"):
-            source_keys.append(str(page["key"]))
 
     combined_blob = "\n\n".join(raw_parts).strip()
     if combined_blob:
@@ -3476,15 +3577,13 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
     wrapper = {
         "filename": "multa_consolidada",
         "mime": "application/x-rtm-logical-document",
+        "evidence_status": "candidate_only",
+        "completion_status": "completed",
         "size_bytes": sum(int(p.get("size_bytes") or 0) for p in analyzed_pages),
         "sha256": hashlib.sha256(
             "|".join(str(p.get("sha256") or "") for p in analyzed_pages).encode("utf-8")
         ).hexdigest(),
-        "storage": {
-            "type": "document_group",
-            "source_document_ids": source_ids,
-            "source_keys": source_keys,
-        },
+        "source_document_ids": source_ids,
         "document_group": {
             "role": "primary_case_document",
             "type": "traffic_fine",
@@ -3496,7 +3595,6 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "document_id": p.get("document_id"),
                 "mime_detected": p.get("mime_detected"),
                 "analysis_mime": p.get("analysis_mime"),
-                "key": p.get("key"),
                 "orientation": p.get("orientation"),
             }
             for p in analyzed_pages
@@ -3516,8 +3614,62 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
     if critical_meta.get("deterministic", {}).get("speed_pair_source") == "explicit_fact_sentence":
         confidence = max(confidence, 0.90)
 
+    return wrapper, critical_meta, confidence
+
+
+def _persist_completed_reanalysis(
+    case_id: str,
+    *,
+    wrapper: Dict[str, Any],
+    confidence: float,
+    event_payload: Dict[str, Any],
+) -> None:
+    """Publica resultado, estado y evento completo como una sola unidad SQL."""
+
+    try:
+        wrapper_run_id = str(uuid.UUID(str(wrapper.get("reanalysis_run_id") or "")))
+        event_run_id = str(
+            uuid.UUID(str(event_payload.get("reanalysis_run_id") or ""))
+        )
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("Identificador de ejecución de Reanalysis no válido") from exc
+    if not hmac.compare_digest(wrapper_run_id, event_run_id):
+        raise ValueError("La extracción y su finalización no corresponden")
+
     engine = get_engine()
     with engine.begin() as conn:
+        updated = conn.execute(
+            text(
+                """
+                UPDATE cases
+                SET status='manual_review', updated_at=NOW()
+                WHERE id=:id
+                  AND COALESCE(payment_status, '')='paid'
+                  AND COALESCE(authorized, FALSE)=TRUE
+                  AND COALESCE(status, '')='reanalysis_in_progress'
+                  AND COALESCE(status, '') NOT IN (
+                      'submitted', 'closed', 'archived', 'resolved',
+                      'estimado', 'desestimado',
+                      'presentado_manual_ayuntamiento',
+                      'presentado_auto_dgt', 'presentado_auto_registro'
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM rtm_validated_facts vf
+                      WHERE vf.case_id=cases.id
+                        AND vf.invalidated_at IS NULL
+                  )
+                RETURNING id
+                """
+            ),
+            {"id": case_id},
+        ).fetchone()
+        if not updated:
+            raise HTTPException(
+                status_code=409,
+                detail="El expediente cambió durante el reanálisis",
+            )
+
         conn.execute(
             text(
                 "INSERT INTO extractions(case_id, extracted_json, confidence, model, created_at) "
@@ -3530,8 +3682,17 @@ def _consolidate_extraction(case_id: str, analyzed_pages: List[Dict[str, Any]]) 
                 "model": f"{_ENGINE_NAME}+traffic_fine+v1_18",
             },
         )
-
-    return wrapper, critical_meta
+        conn.execute(
+            text(
+                "INSERT INTO events(case_id, type, payload, created_at) "
+                "VALUES (:id, 'case_reanalysis_completed', "
+                "CAST(:payload AS JSONB), NOW())"
+            ),
+            {
+                "id": case_id,
+                "payload": json.dumps(event_payload, ensure_ascii=False),
+            },
+        )
 
 
 def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
@@ -3540,6 +3701,8 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
     No crea un caso nuevo, no cobra y no modifica los originales de B2.
     Inserta una extracción consolidada que será la última consumida por Generate.
     """
+    # No se consulta ni descarga documentación si el proveedor está cerrado.
+    require_capability("document_provider")
     meta = _case_meta(case_id)
     if meta["department"] != "traffic" or meta["case_type"] not in _TRAFFIC_FINE_TYPES:
         raise HTTPException(
@@ -3550,11 +3713,27 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
     documents = _load_original_documents(case_id)
     if not documents:
         raise HTTPException(status_code=404, detail="El expediente no tiene documentos originales")
+    if len(documents) > _MAX_REANALYSIS_DOCUMENTS:
+        raise HTTPException(
+            status_code=413,
+            detail="El expediente supera el máximo de documentos para reanálisis",
+        )
+    declared_total = sum(max(0, int(doc.get("size_bytes") or 0)) for doc in documents)
+    if declared_total > _MAX_REANALYSIS_TOTAL_BYTES or any(
+        int(doc.get("size_bytes") or 0) > _MAX_REANALYSIS_DOCUMENT_BYTES
+        for doc in documents
+    ):
+        raise HTTPException(
+            status_code=413,
+            detail="La documentación declarada supera el presupuesto de reanálisis",
+        )
 
+    reanalysis_run_id = str(uuid.uuid4())
     _append_event(
         case_id,
         "case_reanalysis_started",
         {
+            "reanalysis_run_id": reanalysis_run_id,
             "engine": _ENGINE_NAME,
             "extractor_version": _EXTRACTOR_VERSION,
             "specialist": "traffic_fine",
@@ -3564,29 +3743,83 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
 
     analyzed_pages: List[Dict[str, Any]] = []
     seen_sha256: set[str] = set()
+    actual_total = 0
+    budget_guard = model_call_budget(_MAX_REANALYSIS_MODEL_CALLS)
+    budget_guard.__enter__()
 
     try:
         for index, doc in enumerate(documents, start=1):
-            content = download_bytes(doc["bucket"], doc["key"])
+            try:
+                content = download_bytes_limited(
+                    doc["bucket"],
+                    doc["key"],
+                    max_bytes=_MAX_REANALYSIS_DOCUMENT_BYTES,
+                    case_id=case_id,
+                )
+            except B2ObjectTooLargeError as exc:
+                raise HTTPException(status_code=413, detail=str(exc)) from exc
             if not content:
                 _append_event(
                     case_id,
                     "case_reanalysis_document_skipped",
-                    {"document_id": doc["id"], "reason": "empty_b2_object"},
+                    {
+                        "reanalysis_run_id": reanalysis_run_id,
+                        "document_id": doc["id"],
+                        "reason": "empty_b2_object",
+                    },
                 )
                 continue
+            actual_total += len(content)
+            if actual_total > _MAX_REANALYSIS_TOTAL_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="La documentación descargada supera el presupuesto de reanálisis",
+                )
+            try:
+                validated = validate_document_bytes(
+                    filename=doc.get("key") or "documento.pdf",
+                    declared_mime=doc.get("mime"),
+                    data=content,
+                    max_bytes=_MAX_REANALYSIS_DOCUMENT_BYTES,
+                    allowed_mimes=SAFE_IMAGE_OR_PDF_MIMES,
+                )
+            except UploadSecurityError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
             sha256 = hashlib.sha256(content).hexdigest()
+            stored_sha256 = str(doc.get("sha256") or "").strip().lower()
+            if (
+                not re.fullmatch(r"[0-9a-f]{64}", stored_sha256)
+                or not hmac.compare_digest(stored_sha256, sha256)
+            ):
+                _append_event(
+                    case_id,
+                    "case_reanalysis_document_quarantined",
+                    {
+                        "reanalysis_run_id": reanalysis_run_id,
+                        "document_id": doc["id"],
+                        "reason": "sha256_mismatch_or_missing",
+                    },
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="La integridad de un documento original no puede verificarse",
+                )
             if sha256 in seen_sha256:
                 _append_event(
                     case_id,
                     "case_reanalysis_document_skipped",
-                    {"document_id": doc["id"], "reason": "duplicate_sha256", "sha256": sha256},
+                    {
+                        "reanalysis_run_id": reanalysis_run_id,
+                        "document_id": doc["id"],
+                        "reason": "duplicate_sha256",
+                        "sha256": sha256,
+                    },
                 )
                 continue
             seen_sha256.add(sha256)
 
-            mime_detected = _sniff_mime(content, doc.get("mime") or "", doc.get("key") or "")
+            mime_detected = validated.mime
             analysis_content, analysis_mime, orientation_meta = _normalize_image_for_analysis(content, mime_detected)
             analysis_filename = _filename_for_mime(index, doc.get("key") or "", analysis_mime)
 
@@ -3594,26 +3827,22 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
                 case_id,
                 "case_reanalysis_document_detected",
                 {
+                    "reanalysis_run_id": reanalysis_run_id,
                     "document_id": doc["id"],
                     "page_index": index,
                     "declared_mime": doc.get("mime") or "",
                     "detected_mime": mime_detected,
                     "analysis_mime": analysis_mime,
                     "analysis_filename": analysis_filename,
-                    "original_key": doc.get("key"),
                     "orientation": orientation_meta,
                 },
             )
 
-            result = analyze_existing_case_document(
-                case_id=case_id,
-                content=analysis_content,
-                filename=analysis_filename,
-                mime=analysis_mime,
-                b2_bucket=doc["bucket"],
-                b2_key=doc["key"],
+            wrapper, page_confidence = _analyze_page_candidate(
+                analysis_content,
+                analysis_filename,
+                analysis_mime,
             )
-            wrapper = result.get("extracted") or {}
 
             analyzed_pages.append(
                 {
@@ -3628,20 +3857,27 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
                     "analysis_content": analysis_content,  # solo memoria; nunca se serializa en DB/eventos
                     "orientation": orientation_meta,
                     "wrapper": wrapper,
-                    "confidence": 0.75,
+                    "confidence": page_confidence,
                 }
             )
 
         if not analyzed_pages:
             raise HTTPException(status_code=422, detail="Ningún original pudo ser reanalizado")
 
-        consolidated, critical_meta = _consolidate_extraction(case_id, analyzed_pages)
+        consolidated, critical_meta, consolidated_confidence = (
+            _consolidate_extraction(case_id, analyzed_pages)
+        )
+        # Correlaciona de forma inequívoca la extracción con su evento de
+        # finalización. Los consumidores activos rechazan snapshots antiguos o
+        # incompletos que no conserven este enlace.
+        consolidated["reanalysis_run_id"] = reanalysis_run_id
         core = consolidated.get("extracted") or {}
         deterministic = critical_meta.get("deterministic") or {}
         conflicts = critical_meta.get("conflicts") or []
 
         event_payload = {
             "ok": True,
+            "reanalysis_run_id": reanalysis_run_id,
             "engine": _ENGINE_NAME,
             "extractor_version": _EXTRACTOR_VERSION,
             "specialist": "traffic_fine",
@@ -3709,7 +3945,12 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "requires_operator_review": bool(core.get("requires_operator_review")),
             "ready_for_generate": bool(critical_meta.get("ready_for_generate")),
         }
-        _append_event(case_id, "case_reanalysis_completed", event_payload)
+        _persist_completed_reanalysis(
+            case_id,
+            wrapper=consolidated,
+            confidence=consolidated_confidence,
+            event_payload=event_payload,
+        )
 
         return {
             "ok": True,
@@ -3779,20 +4020,45 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
             "message": "Reanálisis completado. Extracción consolidada con texto, visión de página y zoom de campos críticos.",
         }
 
+    except ModelCallBudgetExceeded as exc:
+        _append_event_best_effort(
+            case_id,
+            "case_reanalysis_budget_exhausted",
+            {
+                "reanalysis_run_id": reanalysis_run_id,
+                "maximum_model_calls": _MAX_REANALYSIS_MODEL_CALLS,
+                "extractor_version": _EXTRACTOR_VERSION,
+            },
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="El reanálisis alcanzó su presupuesto máximo de IA",
+        ) from exc
     except HTTPException as exc:
-        _append_event(
+        _append_event_best_effort(
             case_id,
             "case_reanalysis_failed",
-            {"error": str(exc.detail), "status_code": exc.status_code, "extractor_version": _EXTRACTOR_VERSION},
+            {
+                "reanalysis_run_id": reanalysis_run_id,
+                "error_code": "reanalysis_request_rejected",
+                "status_code": int(exc.status_code),
+                "extractor_version": _EXTRACTOR_VERSION,
+            },
         )
         raise
     except Exception as exc:
-        _append_event(
+        _append_event_best_effort(
             case_id,
             "case_reanalysis_failed",
-            {"error": f"{type(exc).__name__}: {exc}", "extractor_version": _EXTRACTOR_VERSION},
+            {
+                "reanalysis_run_id": reanalysis_run_id,
+                "error_code": "reanalysis_internal_failure",
+                "extractor_version": _EXTRACTOR_VERSION,
+            },
         )
         raise HTTPException(
             status_code=500,
-            detail=f"Error reanalizando expediente: {type(exc).__name__}: {exc}",
-        )
+            detail="Error interno durante el reanálisis del expediente",
+        ) from exc
+    finally:
+        budget_guard.__exit__(None, None, None)

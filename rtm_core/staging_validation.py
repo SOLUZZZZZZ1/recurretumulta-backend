@@ -22,6 +22,7 @@ from typing import Any, Iterable, Optional
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from rtm_core.ai_security import model_call_budget
 from rtm_core.contracts import FactStatus, ResolutionStatus
 from rtm_core.document_extraction import (
     DocumentProvider,
@@ -30,6 +31,7 @@ from rtm_core.document_extraction import (
     extract_service_documents,
 )
 from rtm_core.document_normalization import normalize_document_packet
+from rtm_core.document_provider_retry import MAX_DOCUMENT_PROVIDER_ATTEMPTS
 from rtm_core.family_dispatch import resolve_family
 from rtm_core.first_direction import build_first_direction
 from rtm_core.specialist_dispatch import registered_specialists
@@ -335,13 +337,16 @@ def run_synthetic_scenario(
     extractor_version = ""
 
     try:
-        extraction = extract_service_documents(
-            case_id=case_id,
-            service=scenario.service,
-            documents=[document],
-            provider=provider,
-            byte_loader=lambda _bucket, _key: content,
-        )
+        # Cada escenario usa un único documento. El presupuesto cubre el
+        # intento inicial y, como máximo, los reintentos 429 permitidos.
+        with model_call_budget(MAX_DOCUMENT_PROVIDER_ATTEMPTS):
+            extraction = extract_service_documents(
+                case_id=case_id,
+                service=scenario.service,
+                documents=[document],
+                provider=provider,
+                byte_loader=lambda _bucket, _key: content,
+            )
         extractor_version = extraction.packet.extractor_version
         warnings.extend(extraction.warnings)
         for diagnostic in extraction.diagnostics:

@@ -10,11 +10,12 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 
 from database import get_engine
+from rtm_core.ai_security import ModelCallBudgetExceeded, model_call_budget
 from rtm_core.authority_repository import create_validated_facts
 from rtm_core.document_extraction import (
     SERVICE_DOCUMENT_EXTRACTOR_VERSION,
@@ -32,16 +33,35 @@ from rtm_core.document_normalization import (
     DOCUMENT_NORMALIZATION_VERSION,
     normalize_document_packet,
 )
+from rtm_core.ops_case_scope import load_ops_case_scope, require_case_in_scope
 from rtm_core.runtime_capabilities import require_http_capability
 from rtm_core.security import normalized_actor, require_operator_token
 
 
 DOCUMENT_EXTRACTION_ROUTER_VERSION = "rtm_document_extraction_router_v1_0"
+MAX_DOCUMENT_EXTRACTION_MODEL_CALLS = 8
 
 router = APIRouter(
     prefix="/ops/core/cases",
     tags=["rtm-core-document-extraction"],
 )
+
+
+def _require_versioned_processing_authority() -> None:
+    """Fail closed until non-DGT services have signed, service-bound consent.
+
+    A legacy ``cases.authorized`` boolean is not sufficient evidence for
+    disclosing private documents to an external AI provider.  This guard is
+    intentionally not controlled by an environment flag.
+    """
+
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "La extracción documental externa está temporalmente retirada "
+            "hasta disponer de autorización firmada específica del servicio."
+        ),
+    )
 
 
 class _StrictModel(BaseModel):
@@ -114,6 +134,7 @@ def _append_promotion_event(
 def run_document_extraction(
     case_id: str,
     body: RunDocumentExtractionBody,
+    request: Request,
     x_operator_token: Optional[str] = Header(
         default=None,
         alias="X-Operator-Token",
@@ -127,26 +148,40 @@ def run_document_extraction(
     # La ruta OPS no descarga B2 ni llama al proveedor hasta que el entorno ha
     # habilitado de forma expresa la capacidad documental.
     require_http_capability("document_provider")
+    _require_versioned_processing_authority()
     engine = get_engine()
 
     # La transacción de preparación se cierra antes de descargar documentos o
     # llamar al proveedor externo. No se mantienen bloqueos de base de datos
     # durante una operación de red potencialmente larga.
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         service, documents = prepare_document_extraction(
             conn,
             case_id=case_id,
             requested_document_ids=body.document_ids or None,
         )
 
-    result = extract_service_documents(
-        case_id=case_id,
-        service=service,
-        documents=documents,
-    )
+    try:
+        with model_call_budget(MAX_DOCUMENT_EXTRACTION_MODEL_CALLS):
+            result = extract_service_documents(
+                case_id=case_id,
+                service=service,
+                documents=documents,
+            )
+    except ModelCallBudgetExceeded as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo completar la extracción documental de forma segura.",
+        ) from exc
     normalized = normalize_document_packet(result.packet)
 
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = persist_document_extraction(
             conn,
             case_id=case_id,
@@ -176,6 +211,7 @@ def run_document_extraction(
 @router.get("/{case_id}/document-extractions")
 def get_case_document_extractions(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(
         default=None,
         alias="X-Operator-Token",
@@ -184,6 +220,9 @@ def get_case_document_extractions(
     _operator(x_operator_token, None)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         records = list_document_extractions(conn, case_id)
     return {
         "ok": True,
@@ -198,6 +237,7 @@ def get_case_document_extractions(
 def get_case_document_extraction(
     case_id: str,
     extraction_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(
         default=None,
         alias="X-Operator-Token",
@@ -206,6 +246,9 @@ def get_case_document_extraction(
     _operator(x_operator_token, None)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = get_document_extraction(conn, case_id, extraction_id)
     return {
         "ok": True,
@@ -220,6 +263,7 @@ def get_case_document_extraction(
 def preview_extracted_document_facts(
     case_id: str,
     extraction_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(
         default=None,
         alias="X-Operator-Token",
@@ -228,6 +272,9 @@ def preview_extracted_document_facts(
     _operator(x_operator_token, None)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = get_document_extraction(conn, case_id, extraction_id)
         if record.invalidated_at is not None:
             raise HTTPException(
@@ -259,6 +306,7 @@ def preview_extracted_document_facts(
 def create_extracted_document_facts_draft(
     case_id: str,
     extraction_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(
         default=None,
         alias="X-Operator-Token",
@@ -272,6 +320,9 @@ def create_extracted_document_facts_draft(
     engine = get_engine()
 
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = get_document_extraction(
             conn,
             case_id,
@@ -349,6 +400,7 @@ def invalidate_case_document_extraction(
     case_id: str,
     extraction_id: str,
     body: ExtractionReasonBody,
+    request: Request,
     x_operator_token: Optional[str] = Header(
         default=None,
         alias="X-Operator-Token",
@@ -361,6 +413,9 @@ def invalidate_case_document_extraction(
     actor = _operator(x_operator_token, x_operator_actor)
     engine = get_engine()
     with engine.begin() as conn:
+        case_id = require_case_in_scope(
+            conn, scope=load_ops_case_scope(request), case_id=case_id
+        )
         record = invalidate_document_extraction(
             conn,
             case_id=case_id,

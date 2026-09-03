@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import os
 import unittest
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
@@ -16,6 +17,7 @@ from rtm_core.contracts import (
     ValidatedFact,
 )
 from rtm_core.versioning import build_version_snapshot
+from rtm_core.versioning import _runtime_constant
 
 
 NOW = datetime.now(timezone.utc)
@@ -139,6 +141,18 @@ class CoreContractsTest(unittest.TestCase):
                 os.environ.pop("OPERATOR_TOKEN", None)
             else:
                 os.environ["OPERATOR_TOKEN"] = previous
+
+    def test_version_lookup_error_is_opaque(self):
+        canary = "PRIVATE_IMPORT_PATH_CANARY"
+        with patch(
+            "rtm_core.versioning.importlib.import_module",
+            side_effect=RuntimeError(canary),
+        ):
+            runtime, error = _runtime_constant("synthetic.module", "VERSION")
+
+        self.assertIsNone(runtime)
+        self.assertEqual(error, "runtime_lookup_failed")
+        self.assertNotIn(canary, error)
 
 
 if __name__ == "__main__":

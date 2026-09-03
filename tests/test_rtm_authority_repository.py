@@ -1,10 +1,14 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
 
 from rtm_core.authority_repository import (
+    DocumentReviewAttestation,
     canonical_model_json,
+    freeze_validated_facts,
     model_digest,
     validate_facts_for_freeze,
     validate_resolution_against_facts,
@@ -60,6 +64,63 @@ def _facts(*, status: FactStatus = FactStatus.VALIDATED) -> ValidatedFacts:
     )
 
 
+def _reanalysis_facts(
+    *,
+    status: FactStatus = FactStatus.UNRESOLVED,
+    operator_reviewed: bool = False,
+    operator_page_index: int = 0,
+    operator_method: str = "ops_document_review_v1",
+) -> ValidatedFacts:
+    sources = [
+        SourceReference(
+            document_id="doc-1",
+            page_index=0,
+            source_type="model_document_observation",
+            extraction_method="critical_vision:traffic_critical_fields_v1",
+            evidence="CONDUCCIÓN TEMERARIA",
+            confidence=1.0,
+        )
+    ]
+    if operator_reviewed:
+        sources.append(
+            SourceReference(
+                document_id="doc-1",
+                page_index=operator_page_index,
+                source_type="operator_document_review",
+                extraction_method=operator_method,
+                evidence="CONDUCCIÓN TEMERARIA",
+                confidence=1.0,
+            )
+        )
+    fact = ValidatedFact(
+        value="Conducción temeraria" if status is FactStatus.VALIDATED else None,
+        status=status,
+        confidence=1.0,
+        sources=sources,
+        notes=[] if status is FactStatus.VALIDATED else ["Pendiente de revisión OPS"],
+    )
+    return ValidatedFacts(
+        case_id="case-1",
+        service="traffic",
+        extractor_version=(
+            "traffic_fine_reanalysis_v1_18+"
+            "rtm_reanalysis_to_validated_facts_v1_0"
+        ),
+        facts={"hecho_denunciado_literal": fact},
+        source_document_ids=["doc-1"],
+    )
+
+
+def _attestation(facts: ValidatedFacts) -> DocumentReviewAttestation:
+    return DocumentReviewAttestation(
+        documents_reviewed=True,
+        facts_reviewed=True,
+        source_document_ids=list(facts.source_document_ids),
+        facts_payload_sha256=model_digest(facts),
+        review_notes="Documento y hecho contrastados manualmente.",
+    )
+
+
 def _resolution(facts: ValidatedFacts) -> FamilyResolution:
     return FamilyResolution(
         case_id=facts.case_id,
@@ -101,6 +162,141 @@ class AuthorityRepositoryContractTest(unittest.TestCase):
                 _facts(),
                 available_document_ids={"different-document"},
             )
+
+    def test_reanalysis_freeze_requires_bound_document_review_attestation(self):
+        facts = _reanalysis_facts()
+
+        with self.assertRaises(HTTPException) as missing:
+            validate_facts_for_freeze(
+                facts,
+                available_document_ids={"doc-1"},
+            )
+        self.assertEqual(missing.exception.status_code, 409)
+        self.assertEqual(
+            missing.exception.detail["code"],
+            "document_review_attestation_required",
+        )
+
+        validate_facts_for_freeze(
+            facts,
+            available_document_ids={"doc-1"},
+            document_review_attestation=_attestation(facts),
+        )
+
+    def test_repository_freeze_fails_before_writes_without_attestation(self):
+        facts = _reanalysis_facts()
+        record = SimpleNamespace(
+            invalidated_at=None,
+            frozen=False,
+            facts=facts,
+        )
+        conn = Mock()
+
+        with patch(
+            "rtm_core.authority_repository.get_validated_facts",
+            return_value=record,
+        ), patch(
+            "rtm_core.authority_repository._available_document_ids",
+            return_value={"doc-1"},
+        ):
+            with self.assertRaises(HTTPException) as missing:
+                freeze_validated_facts(
+                    conn,
+                    facts.case_id,
+                    "facts-1",
+                    "ops:test",
+                )
+
+        self.assertEqual(
+            missing.exception.detail["code"],
+            "document_review_attestation_required",
+        )
+        conn.execute.assert_not_called()
+
+    def test_reanalysis_attestation_is_bound_to_exact_facts_hash(self):
+        facts = _reanalysis_facts()
+        attestation = _attestation(facts).model_copy(
+            update={"facts_payload_sha256": "0" * 64}
+        )
+
+        with self.assertRaises(HTTPException) as mismatch:
+            validate_facts_for_freeze(
+                facts,
+                available_document_ids={"doc-1"},
+                document_review_attestation=attestation,
+            )
+        self.assertEqual(
+            mismatch.exception.detail["code"],
+            "document_review_attestation_digest_mismatch",
+        )
+
+    def test_model_only_source_cannot_be_validated_even_with_attestation(self):
+        facts = _reanalysis_facts(status=FactStatus.VALIDATED)
+
+        with self.assertRaises(HTTPException) as rejected:
+            validate_facts_for_freeze(
+                facts,
+                available_document_ids={"doc-1"},
+                document_review_attestation=_attestation(facts),
+            )
+        self.assertEqual(rejected.exception.status_code, 409)
+        self.assertIn(
+            "hecho_denunciado_literal",
+            rejected.exception.detail["fields"],
+        )
+
+    def test_operator_review_must_match_model_document_and_page(self):
+        facts = _reanalysis_facts(
+            status=FactStatus.VALIDATED,
+            operator_reviewed=True,
+            operator_page_index=1,
+        )
+
+        with self.assertRaises(HTTPException):
+            validate_facts_for_freeze(
+                facts,
+                available_document_ids={"doc-1"},
+                document_review_attestation=_attestation(facts),
+            )
+
+    def test_operator_review_source_requires_allowlisted_method(self):
+        facts = _reanalysis_facts(
+            status=FactStatus.VALIDATED,
+            operator_reviewed=True,
+            operator_method="client_supplied_review_label",
+        )
+
+        with self.assertRaises(HTTPException):
+            validate_facts_for_freeze(
+                facts,
+                available_document_ids={"doc-1"},
+                document_review_attestation=_attestation(facts),
+            )
+
+    def test_frozen_legacy_model_authority_does_not_bypass_validation(self):
+        payload = _reanalysis_facts(
+            status=FactStatus.VALIDATED
+        ).model_dump(mode="python")
+        payload["frozen"] = True
+        facts = ValidatedFacts.model_validate(payload)
+
+        with self.assertRaises(HTTPException):
+            validate_facts_for_freeze(
+                facts,
+                available_document_ids={"doc-1"},
+            )
+
+    def test_operator_reviewed_model_candidate_can_freeze_with_attestation(self):
+        facts = _reanalysis_facts(
+            status=FactStatus.VALIDATED,
+            operator_reviewed=True,
+        )
+
+        validate_facts_for_freeze(
+            facts,
+            available_document_ids={"doc-1"},
+            document_review_attestation=_attestation(facts),
+        )
 
     def test_resolved_family_accepts_validated_evidence(self):
         facts = _facts()

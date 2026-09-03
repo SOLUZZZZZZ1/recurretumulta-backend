@@ -198,6 +198,39 @@ class OperatorReauthenticationTest(unittest.TestCase):
             )
         )
 
+    def test_recent_reauthentication_requires_persisted_fresh_timestamp(self):
+        missing = replace(self.session, last_verified_at=None)
+        stale = replace(
+            self.session,
+            last_verified_at=self.now - timedelta(seconds=301),
+        )
+        fresh = replace(
+            self.session,
+            last_verified_at=self.now - timedelta(seconds=30),
+        )
+
+        self.assertFalse(
+            auth_service.has_recent_reauthentication(
+                missing,
+                max_age_seconds=300,
+                now=self.now,
+            )
+        )
+        self.assertFalse(
+            auth_service.has_recent_reauthentication(
+                stale,
+                max_age_seconds=300,
+                now=self.now,
+            )
+        )
+        self.assertTrue(
+            auth_service.has_recent_reauthentication(
+                fresh,
+                max_age_seconds=300,
+                now=self.now,
+            )
+        )
+
     def test_wrong_password_does_not_refresh_verification(self):
         mark_verified = Mock()
         clear_failures = Mock()

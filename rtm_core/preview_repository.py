@@ -47,6 +47,14 @@ _TERMINAL_CASE_STATUSES = {
     "presentado_auto_dgt",
     "presentado_auto_registro",
 }
+_PROTECTED_PROCESSING_STATUSES = {
+    "submitting",
+    "reanalysis_in_progress",
+    "document_extraction_in_progress",
+}
+_NON_MUTABLE_CASE_STATUSES = (
+    _TERMINAL_CASE_STATUSES | _PROTECTED_PROCESSING_STATUSES
+)
 
 
 def utcnow() -> datetime:
@@ -96,7 +104,10 @@ def _json_payload(value: Any) -> dict[str, Any]:
         try:
             parsed = json.loads(value)
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Payload de previa inválido: {exc}")
+            raise HTTPException(
+                status_code=500,
+                detail="Payload de previa almacenado no válido",
+            ) from exc
         if isinstance(parsed, dict):
             return parsed
     raise HTTPException(status_code=500, detail="Payload de previa inválido")
@@ -111,8 +122,8 @@ def _row_to_record(row: Any) -> LegalPreviewRecord:
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"Previa Jurídica almacenada no válida: {exc}",
-        )
+            detail="Previa Jurídica almacenada no válida",
+        ) from exc
 
     stored_hash = str(mapping["payload_sha256"] or "")
     if not stored_hash or stored_hash != preview_digest(preview):
@@ -215,10 +226,10 @@ def _case_for_preview(conn, case_id: str) -> Mapping[str, Any]:
         )
     if not bool(mapping["authorized"]):
         raise HTTPException(status_code=409, detail="Falta autorización del cliente")
-    if str(mapping["status"]) in _TERMINAL_CASE_STATUSES:
+    if str(mapping["status"]) in _NON_MUTABLE_CASE_STATUSES:
         raise HTTPException(
             status_code=409,
-            detail="El expediente está en un estado final y no admite una nueva previa",
+            detail="El expediente no admite una nueva previa en su estado actual",
         )
     return mapping
 
@@ -689,6 +700,23 @@ def invalidate_preview(
     operator: str,
     reason: str,
 ) -> LegalPreviewRecord:
+    # Lock the case first, consistently with submission/reanalysis claims.  A
+    # child record must not be invalidated after an external side effect has
+    # been claimed or after the case became legally immutable.
+    case_row = conn.execute(
+        text(
+            "SELECT COALESCE(status,'') FROM cases "
+            "WHERE id=:case_id FOR UPDATE"
+        ),
+        {"case_id": case_id},
+    ).fetchone()
+    if not case_row:
+        raise HTTPException(status_code=404, detail="Expediente no encontrado")
+    if str(case_row[0]) in _NON_MUTABLE_CASE_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail="El expediente no admite invalidaciones en su estado actual",
+        )
     record = get_preview(conn, case_id, preview_id, for_update=True)
     if record.status is PreviewStatus.INVALIDATED:
         return record
@@ -721,15 +749,10 @@ def invalidate_preview(
         ),
         {"preview_id": preview_id, "reason": clean_reason},
     )
-    case_row = conn.execute(
-        text("SELECT COALESCE(status,'') FROM cases WHERE id=:case_id"),
+    conn.execute(
+        text("UPDATE cases SET status='manual_review', updated_at=NOW() WHERE id=:case_id"),
         {"case_id": case_id},
-    ).fetchone()
-    if case_row and str(case_row[0]) not in _TERMINAL_CASE_STATUSES:
-        conn.execute(
-            text("UPDATE cases SET status='manual_review', updated_at=NOW() WHERE id=:case_id"),
-            {"case_id": case_id},
-        )
+    )
     _append_event(
         conn,
         case_id,

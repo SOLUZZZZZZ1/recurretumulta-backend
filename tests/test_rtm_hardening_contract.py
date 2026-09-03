@@ -43,22 +43,47 @@ class _Result:
 
 
 class _AuthorityConn:
-    def __init__(self, *, case_row, event_row, invalidated=None, signed_row=None):
-        self.case_row = case_row
+    def __init__(
+        self,
+        *,
+        case_row,
+        event_row,
+        invalidated=None,
+        issue_row=None,
+        signed_row=None,
+        view_row=None,
+        reauthentication_row=None,
+    ):
+        self.case_row = (
+            (*case_row, "traffic", "fine")
+            if case_row is not None and len(case_row) == 3
+            else case_row
+        )
         self.event_row = event_row
         self.invalidated = invalidated
+        self.issue_row = issue_row
         self.signed_row = signed_row
+        self.view_row = view_row
+        self.reauthentication_row = reauthentication_row
+        self.calls = []
 
     def execute(self, statement, parameters):
         sql = str(statement)
+        self.calls.append(sql)
         if "SELECT authorized" in sql:
             return _Result(self.case_row)
-        if "SELECT payload, created_at FROM events" in sql:
-            return _Result(self.event_row)
         if "case_authority_revoked" in sql:
             return _Result(self.invalidated)
-        if "authorization_signed_uploaded" in sql:
+        if "authorization_pdf_issued" in sql:
+            return _Result(self.issue_row)
+        if "authorization_signature_approved" in sql:
             return _Result(self.signed_row)
+        if "authorization_signature_candidate_viewed" in sql:
+            return _Result(self.view_row)
+        if "FROM rtm_operator_access_events" in sql:
+            return _Result(self.reauthentication_row)
+        if "SELECT payload, created_at FROM events" in sql:
+            return _Result(self.event_row)
         raise AssertionError(f"SQL inesperado: {sql}")
 
 
@@ -135,7 +160,7 @@ def _load_billing_for_event(event, engine):
     }
 
     rtm_core = types.ModuleType("rtm_core")
-    rtm_core.__path__ = []
+    rtm_core.__path__ = [str(ROOT / "rtm_core")]
     repository = types.ModuleType("rtm_core.repository")
     repository.build_case_review_readiness = lambda snapshot: None
     repository.load_case_review_snapshot = lambda conn, case_id: None
@@ -143,6 +168,8 @@ def _load_billing_for_event(event, engine):
     capabilities.require_http_capability = lambda name: None
     catalog = types.ModuleType("rtm_core.service_catalog")
     catalog.normalize_code = lambda value: str(value or "").strip().lower()
+    trusted_origins = types.ModuleType("rtm_core.trusted_origins")
+    trusted_origins.trusted_frontend_origin = lambda: "https://recurretumulta.eu"
 
     stubs = {
         "stripe": stripe,
@@ -152,12 +179,17 @@ def _load_billing_for_event(event, engine):
         "rtm_core.repository": repository,
         "rtm_core.runtime_capabilities": capabilities,
         "rtm_core.service_catalog": catalog,
+        "rtm_core.trusted_origins": trusted_origins,
     }
     module_name = f"billing_hardening_test_{uuid4().hex}"
     spec = importlib.util.spec_from_file_location(module_name, ROOT / "billing.py")
     if spec is None or spec.loader is None:
         raise AssertionError("No se pudo cargar billing.py")
     module = importlib.util.module_from_spec(spec)
+    # ``exec_module`` normally runs with its module registered in
+    # ``sys.modules``.  FastAPI resolves postponed annotations through that
+    # registry, so the isolated loader must preserve the same import contract.
+    stubs[module_name] = module
     with mock.patch.dict(sys.modules, stubs, clear=False):
         spec.loader.exec_module(module)
     return module
@@ -173,6 +205,7 @@ class PublicCaseAccessTest(TestCase):
             clear=False,
         ):
             token = public_case_access.issue_case_access_token(case_id)
+            self.assertTrue(token.startswith("v2."))
             self.assertTrue(public_case_access.verify_case_access_token(case_id, token))
             self.assertFalse(
                 public_case_access.verify_case_access_token(other_case_id, token)
@@ -185,6 +218,39 @@ class PublicCaseAccessTest(TestCase):
             with self.assertRaises(HTTPException) as missing:
                 public_case_access.issue_case_access_token(case_id)
             self.assertEqual(missing.exception.status_code, 503)
+
+    def test_public_case_token_is_unique_expiring_and_future_safe(self):
+        case_id = str(uuid4())
+        issued_at = 2_000_000_000
+        with mock.patch.dict(
+            os.environ,
+            {
+                "RTM_PUBLIC_CASE_ACCESS_SECRET": "p" * 48,
+                "RTM_PUBLIC_CASE_TOKEN_TTL_SECONDS": "3600",
+            },
+            clear=True,
+        ):
+            first = public_case_access.issue_case_access_token(case_id, now=issued_at)
+            second = public_case_access.issue_case_access_token(case_id, now=issued_at)
+            self.assertNotEqual(first, second)
+            self.assertTrue(
+                public_case_access.verify_case_access_token(
+                    case_id, first, now=issued_at + 3599
+                )
+            )
+            self.assertFalse(
+                public_case_access.verify_case_access_token(
+                    case_id, first, now=issued_at + 3601
+                )
+            )
+            future = public_case_access.issue_case_access_token(
+                case_id, now=issued_at + 301
+            )
+            self.assertFalse(
+                public_case_access.verify_case_access_token(
+                    case_id, future, now=issued_at
+                )
+            )
 
     def test_operator_can_read_billing_status_without_public_capability(self):
         case_id = str(uuid4())
@@ -222,6 +288,20 @@ class PublicCaseAccessTest(TestCase):
 
 
 class CaseAuthorityTest(TestCase):
+    def test_dgt_authority_is_rejected_for_vehicle_and_non_traffic_cases(self):
+        case_authority.require_dgt_fine_authority_scope("traffic", "fine")
+        for department, case_type in (
+            ("traffic", "vehicle_removal"),
+            ("debt", "credit_file"),
+            ("claims", "travel"),
+        ):
+            with self.subTest(department=department, case_type=case_type):
+                with self.assertRaises(HTTPException) as denied:
+                    case_authority.require_dgt_fine_authority_scope(
+                        department, case_type
+                    )
+                self.assertEqual(denied.exception.status_code, 409)
+
     def test_active_authority_binds_case_identity_time_and_signature(self):
         case_id = str(uuid4())
         interested = {
@@ -260,9 +340,10 @@ class CaseAuthorityTest(TestCase):
                 case_authority.verify_active_case_authority(tampered_conn, case_id)
             self.assertEqual(tampered.exception.status_code, 409)
 
-    def test_signed_authority_binds_document_storage_hash_and_active_grant(self):
+    def test_signed_authority_requires_bound_candidate_and_human_review(self):
         case_id = str(uuid4())
-        document_id = str(uuid4())
+        generated_document_id = str(uuid4())
+        candidate_document_id = str(uuid4())
         interested = {
             "full_name": "Ana Ejemplo",
             "dni_nie": "12345678Z",
@@ -281,37 +362,216 @@ class CaseAuthorityTest(TestCase):
                 accepted_at=accepted_at.isoformat(),
                 request_ip="192.0.2.10",
             )
-            signed = case_authority.build_signed_authority_document_attestation(
+            issuance = case_authority.build_authority_document_issue_attestation(
                 case_id=case_id,
                 authority_payload=authority,
-                document_id=document_id,
+                document_id=generated_document_id,
+                document_sha256="e" * 64,
+                size_bytes=654,
+                document_version="v1_dgt_homologado",
+                document_nonce=str(uuid4()),
+                issued_at=accepted_at.isoformat(),
+            )
+            candidate = case_authority.build_authorization_signature_candidate_attestation(
+                case_id=case_id,
+                authority_payload=authority,
+                issuance_payload=issuance,
+                document_id=candidate_document_id,
                 document_sha256="d" * 64,
                 size_bytes=321,
-                storage_bucket="rtm-staging-authority",
-                storage_key=f"{case_id}/authorization.pdf",
                 uploaded_at=accepted_at.isoformat(),
+            )
+            reviewer_operator_id = str(uuid4())
+            reviewer_session_id = str(uuid4())
+            view_event_id = str(uuid4())
+            reauthentication_event_id = str(uuid4())
+            view = case_authority.build_authorization_signature_view_attestation(
+                case_id=case_id,
+                candidate_payload=candidate,
+                reviewer_actor=f"operator:{reviewer_operator_id}",
+                operator_session_id=reviewer_session_id,
+                viewed_at=accepted_at.isoformat(),
+            )
+            signed = case_authority.build_reviewed_signed_authority_attestation(
+                case_id=case_id,
+                authority_payload=authority,
+                issuance_payload=issuance,
+                candidate_payload=candidate,
+                reviewer_actor=f"operator:{reviewer_operator_id}",
+                operator_session_id=reviewer_session_id,
+                view_event_id=view_event_id,
+                view_payload=view,
+                reauthentication_event_id=reauthentication_event_id,
+                review_checklist={
+                    "reviewed_entire_document": True,
+                    "generated_document_matches": True,
+                    "identity_matches": True,
+                    "signature_present": True,
+                },
+                reviewed_at=accepted_at.isoformat(),
             )
             conn = _AuthorityConn(
                 case_row=(True, interested, accepted_at),
                 event_row=(authority, accepted_at),
+                issue_row=(
+                    issuance,
+                    accepted_at,
+                    generated_document_id,
+                    "e" * 64,
+                    "application/pdf",
+                    654,
+                ),
                 signed_row=(
                     signed,
                     accepted_at,
-                    document_id,
+                    candidate,
+                    accepted_at,
+                    candidate_document_id,
+                    "d" * 64,
                     "application/pdf",
                     321,
-                    "rtm-staging-authority",
-                    f"{case_id}/authorization.pdf",
+                    "authorization_signed",
+                ),
+                view_row=(view, accepted_at),
+                reauthentication_row=(
+                    reviewer_operator_id,
+                    reviewer_session_id,
+                    accepted_at,
                 ),
             )
             verified = case_authority.verify_signed_case_authority(conn, case_id)
             self.assertEqual(verified["material_sha256"], authority["material_sha256"])
             self.assertEqual(verified["signed_document_attestation"], signed)
 
-            conn.signed_row = (*conn.signed_row[:4], 999, *conn.signed_row[5:])
+            conn.signed_row = (*conn.signed_row[:7], 999, conn.signed_row[8])
             with self.assertRaises(HTTPException) as tampered:
                 case_authority.verify_signed_case_authority(conn, case_id)
             self.assertEqual(tampered.exception.status_code, 409)
+
+    def test_legacy_public_upload_event_is_never_accepted_as_signed_authority(self):
+        case_id = str(uuid4())
+        interested = {
+            "full_name": "Ana Ejemplo",
+            "dni_nie": "12345678Z",
+            "domicilio_notif": "Calle Uno 1",
+            "email": "ana@example.test",
+        }
+        accepted_at = datetime.now(timezone.utc)
+        with mock.patch.dict(
+            os.environ,
+            {"RTM_AUTHORITY_SIGNING_SECRET": "a" * 48},
+            clear=False,
+        ):
+            authority = case_authority.build_case_authority_payload(
+                case_id=case_id,
+                interested=interested,
+                accepted_at=accepted_at.isoformat(),
+                request_ip="192.0.2.10",
+            )
+            issuance = case_authority.build_authority_document_issue_attestation(
+                case_id=case_id,
+                authority_payload=authority,
+                document_id=str(uuid4()),
+                document_sha256="e" * 64,
+                size_bytes=654,
+                document_version="v1_dgt_homologado",
+                document_nonce=str(uuid4()),
+                issued_at=accepted_at.isoformat(),
+            )
+            conn = _AuthorityConn(
+                case_row=(True, interested, accepted_at),
+                event_row=(authority, accepted_at),
+                issue_row=(
+                    issuance,
+                    accepted_at,
+                    issuance["material"]["document_id"],
+                    "e" * 64,
+                    "application/pdf",
+                    654,
+                ),
+                signed_row=None,
+            )
+            with self.assertRaises(HTTPException) as denied:
+                case_authority.verify_signed_case_authority(conn, case_id)
+        self.assertEqual(denied.exception.status_code, 409)
+        self.assertFalse(any("authorization_signed_uploaded" in sql for sql in conn.calls))
+
+    def test_browser_binding_rejects_tampering_and_stale_authority(self):
+        case_id = str(uuid4())
+        accepted_at = datetime.now(timezone.utc)
+        interested = {
+            "full_name": "Ana Ejemplo",
+            "dni_nie": "12345678Z",
+            "domicilio_notif": "Calle Uno 1",
+            "email": "ana@example.test",
+        }
+        with mock.patch.dict(
+            os.environ,
+            {"RTM_AUTHORITY_SIGNING_SECRET": "a" * 48},
+            clear=False,
+        ):
+            authority = case_authority.build_case_authority_payload(
+                case_id=case_id,
+                interested=interested,
+                accepted_at=accepted_at.isoformat(),
+                request_ip="192.0.2.10",
+            )
+            issuance = case_authority.build_authority_document_issue_attestation(
+                case_id=case_id,
+                authority_payload=authority,
+                document_id=str(uuid4()),
+                document_sha256="e" * 64,
+                size_bytes=654,
+                document_version="v1_dgt_homologado",
+                document_nonce=str(uuid4()),
+                issued_at=accepted_at.isoformat(),
+            )
+            material = issuance["material"]
+            binding = {
+                "authority_material_sha256": authority["material_sha256"],
+                "generated_document_id": material["document_id"],
+                "generated_document_sha256": material["document_sha256"],
+                "generated_document_version": material["document_version"],
+                "document_nonce": material["document_nonce"],
+                "issuance_attestation_sha256": issuance["material_sha256"],
+            }
+            self.assertIsNone(
+                case_authority.require_authority_document_binding(
+                    issuance, **binding
+                )
+            )
+            with self.assertRaises(HTTPException) as tampered:
+                case_authority.require_authority_document_binding(
+                    issuance,
+                    **{**binding, "generated_document_sha256": "f" * 64},
+                )
+            self.assertEqual(tampered.exception.status_code, 409)
+
+            replacement_authority = case_authority.build_case_authority_payload(
+                case_id=case_id,
+                interested=interested,
+                accepted_at=accepted_at.isoformat(),
+                request_ip="192.0.2.10",
+            )
+            stale_conn = _AuthorityConn(
+                case_row=(True, interested, accepted_at),
+                event_row=(replacement_authority, accepted_at),
+                issue_row=(
+                    issuance,
+                    accepted_at,
+                    material["document_id"],
+                    material["document_sha256"],
+                    "application/pdf",
+                    654,
+                ),
+            )
+            with self.assertRaises(HTTPException) as stale:
+                case_authority.verify_active_authority_document_issue(
+                    stale_conn,
+                    case_id,
+                    authority=replacement_authority,
+                )
+            self.assertEqual(stale.exception.status_code, 409)
 
 
 class SyntheticStagingGuardTest(TestCase):
@@ -375,7 +635,7 @@ class StripeSettlementBehaviorTest(TestCase):
             "signed_document_attestation_sha256": "s" * 64,
         }
 
-    def test_paid_session_is_settled_once_and_replay_emits_no_events(self):
+    def test_legacy_final_session_requires_manual_reconciliation(self):
         case_id = str(uuid4())
         session_id = "cs_settlement_1"
         event = self._event(case_id, session_id)
@@ -384,25 +644,17 @@ class StripeSettlementBehaviorTest(TestCase):
             "STRIPE_WEBHOOK_SECRET": "whsec_test",
         }
 
-        first_conn = _BillingConn(
+        connection = _BillingConn(
             case_row=("pending", session_id, "DGT"),
             intent=self._intent(session_id),
         )
-        billing = _load_billing_for_event(event, _Engine(first_conn))
+        billing = _load_billing_for_event(event, _Engine(connection))
         with mock.patch.dict(os.environ, env, clear=False):
-            result = asyncio.run(billing.stripe_webhook(_WebhookRequest()))
-        self.assertTrue(result["processed"])
-        self.assertEqual(first_conn.events, ["paid_ok", "final_payment_confirmed"])
-
-        replay_conn = _BillingConn(
-            case_row=("paid", session_id, "DGT"),
-            intent=self._intent(session_id),
-        )
-        billing = _load_billing_for_event(event, _Engine(replay_conn))
-        with mock.patch.dict(os.environ, env, clear=False):
-            replay = asyncio.run(billing.stripe_webhook(_WebhookRequest()))
-        self.assertTrue(replay["replayed"])
-        self.assertEqual(replay_conn.events, [])
+            with self.assertRaises(HTTPException) as rejected:
+                asyncio.run(billing.stripe_webhook(_WebhookRequest()))
+        self.assertEqual(rejected.exception.status_code, 409)
+        self.assertIn("conciliación manual", str(rejected.exception.detail))
+        self.assertEqual(connection.events, [])
 
     def test_unbound_session_is_rejected(self):
         case_id = str(uuid4())
@@ -440,6 +692,8 @@ class SourceHardeningContractTest(TestCase):
         self.assertIn("representation_confirmed: Literal[True]", cases)
         self.assertIn("build_case_authority_payload", cases)
         self.assertIn("case_authority_invalidated_by_identity_change", cases)
+        self.assertIn("authorization_signed_candidate_stale", cases)
+        self.assertIn("_mark_authorization_evidence_stale", cases)
         self.assertIn('capability_state("outbound_email").enabled', cases)
 
         for intake_path in ("analyze.py", "analyze_expediente.py"):
@@ -449,7 +703,11 @@ class SourceHardeningContractTest(TestCase):
 
         signed = _function_source("cases.py", "_store_authorization_signed")
         self.assertIn("verify_active_case_authority", signed)
-        self.assertIn("build_signed_authority_document_attestation", signed)
+        self.assertIn("verify_active_authority_document_issue", signed)
+        self.assertIn("require_authority_document_binding", signed)
+        self.assertIn("build_authorization_signature_candidate_attestation", signed)
+        self.assertIn("authorization_signature_candidate_uploaded", signed)
+        self.assertNotIn("authorization_signed_uploaded", signed)
         self.assertIn("_validate_public_pdf", signed)
         self.assertNotIn("SET authorized", signed)
 
@@ -465,16 +723,19 @@ class SourceHardeningContractTest(TestCase):
         checkout = _function_source("billing.py", "create_checkout")
         webhook = _function_source("billing.py", "stripe_webhook")
         self.assertIn("require_case_access_token", checkout)
-        self.assertIn("verify_signed_case_authority", checkout)
+        self.assertIn('require_http_capability("final_payments")', checkout)
+        self.assertIn("la creación legacy está retirada", checkout)
+        self.assertNotIn("_resolve_final_stripe_product", checkout)
         self.assertIn("stripe_session_id=:session_id", checkout)
         self.assertIn("checkout_session_created", checkout)
         self.assertIn("idempotency_key", checkout)
         self.assertNotIn("access_token=", checkout)
         self.assertIn('session_payment_status != "paid"', webhook)
+        self.assertIn("pago final legacy requiere conciliación manual", webhook)
         self.assertIn("stored_session_id != session_id", webhook)
         self.assertIn("stripe_amount_total", webhook)
         self.assertIn('"replayed": True', webhook)
-        self.assertIn("payment_status IS DISTINCT FROM 'paid'", webhook)
+        self.assertIn("payment_status='pending'", webhook)
 
     def test_legacy_submitters_cannot_claim_external_success(self):
         active = _function_source("ops_operator_router.py", "submit_to_dgt")
@@ -516,7 +777,10 @@ class SourceHardeningContractTest(TestCase):
             _function_source("ops_automation.py", "tick"),
         )
         self.assertIn('state.reason != "explicitly_enabled"', automation)
-        self.assertIn("actual_content_sha256 = hashlib.sha256(pdf_bytes)", automation)
+        self.assertIn("actual_pdf_sha256 = hashlib.sha256(pdf_bytes)", automation)
+        self.assertIn('pdf["pdf_sha256"]', automation)
+        self.assertIn('"rendered_content_sha256"', automation)
+        self.assertIn('"pdf_sha256"', automation)
         self.assertIn("verify_signed_case_authority", automation)
         self.assertIn("hmac.compare_digest", automation)
         self.assertIn("_verified_submission_evidence", automation)
@@ -536,6 +800,9 @@ class SourceHardeningContractTest(TestCase):
         self.assertIn("AND approved_at IS NULL", approve)
         self.assertIn("AND status='final_ready' RETURNING id", approve)
         self.assertIn("case_authority_material_sha256", gateway)
+        self.assertIn("pdf_hash = _sha256(pdf_bytes)", gateway)
+        self.assertIn('"pdf_sha256": pdf_hash', gateway)
+        self.assertIn("size_bytes, sha256, created_at", gateway)
 
     def test_a1s_operational_steps_revalidate_latest_authority(self):
         service = _source("rtm_connect/human_filing_service.py")

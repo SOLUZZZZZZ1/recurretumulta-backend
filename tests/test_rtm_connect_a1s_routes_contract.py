@@ -31,7 +31,19 @@ class ConnectA1SRoutesContractTest(unittest.TestCase):
         source = ROUTER.read_text(encoding="utf-8")
         self.assertIn("Authorization", source)
         self.assertIn("extract_bearer_token", source)
-        self.assertIn("load_operator_session", source)
+        self.assertIn("load_operator_session_with_device_possession", source)
+        self.assertIn('alias="X-RTM-Device"', source)
+        self.assertIn('alias="__Host-rtm_presenter_device"', source)
+        self.assertIn("x_rtm_device=gate.x_rtm_device", source)
+        self.assertIn(
+            "rtm_presenter_device=gate.rtm_presenter_device",
+            source,
+        )
+        self.assertNotIn(
+            "from rtm_core.operator_auth_service import load_operator_session",
+            source,
+        )
+        self.assertGreaterEqual(source.count("field(repr=False)"), 5)
         self.assertIn("operator", source.lower())
         for forbidden in (
             "OPERATOR_TOKEN",

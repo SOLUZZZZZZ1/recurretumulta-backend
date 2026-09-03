@@ -17,6 +17,7 @@ def _base_env() -> dict[str, str]:
         "RTM_ENABLE_OPERATOR_AUTH_V1": "1",
         "RTM_OPERATOR_ACCESS_HMAC_KEY": "H" * 64,
         "RTM_TRUST_PROXY_HEADERS": "1",
+        "RTM_TRUSTED_PROXY_CIDRS": "10.0.0.0/8",
         "RTM_OPERATOR_ACCESS_RETENTION_DAYS": "180",
         "RTM_ENABLE_OPERATOR_ADMIN_V1": "0",
     }

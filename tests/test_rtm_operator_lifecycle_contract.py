@@ -17,6 +17,14 @@ SMOKE = ROOT / "scripts" / "rtm_operator_lifecycle_smoke.py"
 
 
 class OperatorLifecycleContractTest(unittest.TestCase):
+    def test_supervisor_mutations_require_recent_persisted_reauthentication(self):
+        source = ROUTER.read_text(encoding="utf-8")
+        self.assertIn("has_recent_reauthentication", source)
+        self.assertEqual(
+            source.count("require_recent_lifecycle_supervisor_context"),
+            8,
+        )
+
     def test_app_wires_lifecycle_after_admin(self):
         source = (ROOT / "app.py").read_text(encoding="utf-8")
         self.assertIn(
@@ -74,7 +82,7 @@ class OperatorLifecycleContractTest(unittest.TestCase):
 
     def test_password_fields_are_bounded_and_hidden_from_repr(self):
         source = ROUTER.read_text(encoding="utf-8")
-        self.assertGreaterEqual(source.count("repr=False"), 3)
+        self.assertGreaterEqual(source.count("repr=False"), 7)
         self.assertIn("min_length=12", source)
         self.assertIn("max_length=256", source)
 
@@ -181,6 +189,34 @@ class OperatorLifecycleContractTest(unittest.TestCase):
         source = REPOSITORY.read_text(encoding="utf-8")
         self.assertIn("def _count_active_supervisors", source)
         self.assertIn("último supervisor activo", source)
+        lock_start = source.index("def _lock_supervisor_transition")
+        count_start = source.index("def _count_active_supervisors")
+        count_end = source.index("\ndef _revoke_active_sessions", count_start)
+        lock_source = source[lock_start:count_start]
+        count_source = source[count_start:count_end]
+        self.assertIn("pg_advisory_xact_lock", lock_source)
+        self.assertLess(
+            count_source.index("_lock_supervisor_transition(conn)"),
+            count_source.index("SELECT COUNT(*)"),
+        )
+        # Definición + las dos transiciones que pueden reducir el recuento.
+        self.assertEqual(source.count("_count_active_supervisors(conn)"), 3)
+
+        suspend_start = source.index("def suspend_operator")
+        suspend_end = source.index("\ndef reactivate_operator", suspend_start)
+        suspend_source = source[suspend_start:suspend_end]
+        self.assertLess(
+            suspend_source.index("_lock_supervisor_transition(conn)"),
+            suspend_source.index("_operator_for_update(conn, operator_id)"),
+        )
+
+        assign_start = source.index("def assign_operator_role")
+        assign_end = source.index("\ndef rotate_operator_password", assign_start)
+        assign_source = source[assign_start:assign_end]
+        self.assertLess(
+            assign_source.index("_lock_supervisor_transition(conn)"),
+            assign_source.index('_role_row(conn, role_code)'),
+        )
 
     def test_supervisor_self_protections_are_explicit(self):
         source = REPOSITORY.read_text(encoding="utf-8")
@@ -205,6 +241,7 @@ class OperatorLifecycleContractTest(unittest.TestCase):
     def test_privileged_access_requires_changed_password(self):
         source = ROUTER.read_text(encoding="utf-8")
         self.assertIn("session.must_change_password", source)
+        self.assertIn("session.mfa_required", source)
         self.assertIn(
             "Debe cambiar la contraseña temporal",
             source,
@@ -222,7 +259,7 @@ class OperatorLifecycleContractTest(unittest.TestCase):
             source,
         )
         self.assertIn('alias="X-RTM-Device"', source)
-        self.assertIn('alias="rtm_presenter_device"', source)
+        self.assertIn('alias="__Host-rtm_presenter_device"', source)
         self.assertNotIn(
             "session = load_operator_session(\n",
             source,

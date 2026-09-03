@@ -59,8 +59,12 @@ class ConnectC5SupervisorRoutesContractTest(unittest.TestCase):
     def test_protected_context_is_fail_closed_and_uses_live_permission(self):
         for required in (
             "extract_bearer_token",
-            "load_operator_session",
+            "load_operator_session_with_device_possession",
+            'alias="X-RTM-Device"',
+            'alias="__Host-rtm_presenter_device"',
             "touch=False",
+            "session.must_change_password",
+            "session.mfa_required",
             "session_has_connect_supervisor_permission",
             "current_operator_can_supervise",
             "assert_synthetic_supervisor_scope",
@@ -69,6 +73,11 @@ class ConnectC5SupervisorRoutesContractTest(unittest.TestCase):
             "status_code=503",
         ):
             self.assertIn(required, self.source)
+        self.assertNotIn(
+            "from rtm_core.operator_auth_service import load_operator_session",
+            self.source,
+        )
+        self.assertGreaterEqual(self.source.count("field(repr=False)"), 7)
 
     def test_runtime_flag_disabled_is_hidden_as_not_found(self):
         self.assertIn("ConnectSupervisorRoutesDisabled", self.source)

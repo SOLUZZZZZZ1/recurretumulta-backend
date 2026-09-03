@@ -192,8 +192,8 @@ async def _run_http_smoke(
             )
             body = login.json()
             token = str(body.get("token") or "")
-            response_device_cookie = login.cookies.get("rtm_presenter_device")
-            client_device_cookie = client.cookies.get("rtm_presenter_device")
+            response_device_cookie = login.cookies.get("__Host-rtm_presenter_device")
+            client_device_cookie = client.cookies.get("__Host-rtm_presenter_device")
             device_token = str(
                 response_device_cookie or client_device_cookie or ""
             )
@@ -371,7 +371,7 @@ async def _run_http_smoke(
                 second.status_code == 200
                 and "device_token" not in second_body
                 and second.headers.get("set-cookie") is None
-                and client.cookies.get("rtm_presenter_device")
+                and client.cookies.get("__Host-rtm_presenter_device")
                 == device_token
             )
             second_token = str(second_body.get("token") or "")
@@ -427,6 +427,7 @@ def main() -> int:
             "RTM_ENABLE_OPERATOR_AUTH_V1",
             "RTM_OPERATOR_ACCESS_HMAC_KEY",
             "RTM_TRUST_PROXY_HEADERS",
+            "RTM_TRUSTED_PROXY_CIDRS",
             "RTM_OPERATOR_ACCESS_RETENTION_DAYS",
             "OPERATOR_TOKEN",
         )
@@ -434,6 +435,7 @@ def main() -> int:
     os.environ["RTM_ENABLE_OPERATOR_AUTH_V1"] = "1"
     os.environ["RTM_OPERATOR_ACCESS_HMAC_KEY"] = "S" * 64
     os.environ["RTM_TRUST_PROXY_HEADERS"] = "1"
+    os.environ["RTM_TRUSTED_PROXY_CIDRS"] = "127.0.0.1/32"
     os.environ["RTM_OPERATOR_ACCESS_RETENTION_DAYS"] = "180"
     os.environ["OPERATOR_TOKEN"] = (
         "rtm-routes-smoke-internal-legacy-token-" + report["run_id"]

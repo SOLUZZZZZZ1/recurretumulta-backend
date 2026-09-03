@@ -25,8 +25,15 @@ from rtm_core.operator_provisioning import normalize_synthetic_operator_email
 
 
 OPERATOR_LIFECYCLE_REPOSITORY_VERSION = (
-    "rtm_operator_lifecycle_repository_v1_0"
+    "rtm_operator_lifecycle_repository_v1_1"
 )
+
+# Las transiciones remotas de ciclo de vida que pueden reducir el número de
+# supervisores usan la misma exclusión transaccional. El par de claves es
+# estable y queda limitado a esta base de datos; no depende de una fila que la
+# propia transición pueda cambiar.
+_LAST_SUPERVISOR_LOCK_NAMESPACE = 5_397_837
+_LAST_SUPERVISOR_LOCK_KEY = 1
 
 
 class OperatorLifecycleConflict(RuntimeError):
@@ -143,7 +150,28 @@ def _operator_for_update(conn, operator_id: str):
     return row
 
 
+def _lock_supervisor_transition(conn) -> None:
+    """Serializa una transición antes de que la transacción tome su snapshot."""
+
+    # La llamada temprana también protege despliegues que eleven el aislamiento
+    # sobre READ COMMITTED: esperar al COUNT permitiría conservar un snapshot
+    # anterior a la transición que acaba de liberar el lock.
+    conn.execute(
+        text(
+            "SELECT pg_advisory_xact_lock(:lock_namespace, :lock_key)"
+        ),
+        {
+            "lock_namespace": _LAST_SUPERVISOR_LOCK_NAMESPACE,
+            "lock_key": _LAST_SUPERVISOR_LOCK_KEY,
+        },
+    )
+
+
 def _count_active_supervisors(conn) -> int:
+    # Sin esta exclusión, dos transacciones sobre supervisores distintos pueden
+    # observar ambas COUNT(*) > 1 y dejar el sistema sin ninguno. En PostgreSQL
+    # el advisory lock se libera automáticamente al terminar la transacción.
+    _lock_supervisor_transition(conn)
     return int(
         conn.execute(
             text(
@@ -302,6 +330,7 @@ def suspend_operator(
             "No se puede suspender la cuenta supervisora actual"
         )
     current = now or _utcnow()
+    _lock_supervisor_transition(conn)
     operator = _operator_for_update(conn, operator_id)
     if str(operator["status"]) == "suspended":
         return _mutation_from_row(
@@ -419,6 +448,7 @@ def assign_operator_role(
             "No se puede cambiar el rol de la sesión supervisora actual"
         )
     current = now or _utcnow()
+    _lock_supervisor_transition(conn)
     target_role = _role_row(conn, role_code)
     operator = _operator_for_update(conn, operator_id)
     current_role = str(operator["role_code"] or "")

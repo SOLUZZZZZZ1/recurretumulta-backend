@@ -7,7 +7,7 @@ de operadores, rotación de credenciales, roles ni evidencia sensible.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 from uuid import UUID
 
@@ -48,6 +48,7 @@ from rtm_core.operator_admin_repository import (
 from rtm_core.operator_auth_request import (
     build_request_fingerprint,
 )
+from rtm_core.operator_auth_service import has_recent_reauthentication
 from rtm_core.operator_auth_router import (
     load_operator_session_with_device_possession,
 )
@@ -67,8 +68,8 @@ class RevokeRequest(_StrictModel):
 
 @dataclass(frozen=True)
 class SupervisorContext:
-    session: Any
-    config: OperatorAdminRuntimeConfig
+    session: Any = field(repr=False)
+    config: OperatorAdminRuntimeConfig = field(repr=False)
 
 
 async def operator_admin_connection() -> AsyncIterator[Connection]:
@@ -105,7 +106,7 @@ async def require_supervisor_context(
     ),
     rtm_presenter_device: str | None = Cookie(
         default=None,
-        alias="rtm_presenter_device",
+        alias="__Host-rtm_presenter_device",
     ),
     conn: Connection = Depends(operator_admin_connection),
 ) -> SupervisorContext:
@@ -119,12 +120,33 @@ async def require_supervisor_context(
     )
     if not session:
         raise HTTPException(status_code=401, detail="Sesión no válida")
+    if bool(session.must_change_password) or bool(session.mfa_required):
+        raise HTTPException(
+            status_code=403,
+            detail="Completa los controles de identidad antes de administrar",
+        )
     if not session_has_supervisor_permission(session):
         raise HTTPException(
             status_code=403,
             detail="Permiso de supervisor requerido",
         )
     return SupervisorContext(session=session, config=config)
+
+
+async def require_recent_supervisor_context(
+    context: SupervisorContext = Depends(require_supervisor_context),
+) -> SupervisorContext:
+    """Step-up persistido obligatorio para mutaciones supervisoras."""
+
+    if not has_recent_reauthentication(
+        context.session,
+        max_age_seconds=context.config.auth.reauthentication_max_age_seconds,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Reautenticación reciente requerida",
+        )
+    return context
 
 
 def _fingerprint(request: Request, context: SupervisorContext):
@@ -134,6 +156,7 @@ def _fingerprint(request: Request, context: SupervisorContext):
         client_host=client_host,
         hmac_key=context.config.auth.hmac_key,
         trust_proxy_headers=context.config.auth.trust_proxy_headers,
+        trusted_proxy_cidrs=context.config.auth.trusted_proxy_cidrs,
     )
 
 
@@ -279,7 +302,7 @@ async def admin_revoke_session(
     session_id: UUID,
     payload: RevokeRequest,
     request: Request,
-    context: SupervisorContext = Depends(require_supervisor_context),
+    context: SupervisorContext = Depends(require_recent_supervisor_context),
     conn: Connection = Depends(operator_admin_connection),
 ):
     reason = _clean_reason(payload.reason)
@@ -333,7 +356,7 @@ async def admin_revoke_device(
     device_id: UUID,
     payload: RevokeRequest,
     request: Request,
-    context: SupervisorContext = Depends(require_supervisor_context),
+    context: SupervisorContext = Depends(require_recent_supervisor_context),
     conn: Connection = Depends(operator_admin_connection),
 ):
     reason = _clean_reason(payload.reason)
@@ -386,6 +409,7 @@ __all__ = [
     "OPERATOR_ADMIN_ROUTES_VERSION",
     "SupervisorContext",
     "operator_admin_connection",
+    "require_recent_supervisor_context",
     "require_supervisor_context",
     "router",
 ]

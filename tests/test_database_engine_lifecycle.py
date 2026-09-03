@@ -25,7 +25,11 @@ class DatabaseEngineLifecycleTest(unittest.TestCase):
 
         self.assertIs(first, engine)
         self.assertIs(second, engine)
-        create.assert_called_once_with(url, pool_pre_ping=True)
+        create.assert_called_once_with(
+            url,
+            pool_pre_ping=True,
+            hide_parameters=True,
+        )
 
     def test_different_urls_never_share_engine(self):
         first_engine = MagicMock(name="first_engine")

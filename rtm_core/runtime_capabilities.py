@@ -2,12 +2,8 @@
 
 El contrato de entorno valida la configuración antes de desplegar. Este módulo
 aplica la segunda barrera dentro del proceso: una capacidad sensible no puede
-usarse en staging o producción si su interruptor explícito no está activo.
-
-En instalaciones legacy donde ``RTM_ENV`` todavía no está configurado, una
-capacidad sin flag conserva temporalmente el comportamiento anterior. En cuanto
-se arranca mediante el preflight de staging/producción, todas las capacidades
-pasan a ser opt-in y fallan cerradas.
+usarse en ningún entorno si su interruptor explícito no está activo. La falta
+de ``RTM_ENV`` nunca concede permisos implícitos.
 """
 
 from __future__ import annotations
@@ -19,12 +15,13 @@ from typing import Literal, Mapping, Optional
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict
 
+from rtm_core.environment_contract import runtime_requires_environment_preflight
 
-RUNTIME_CAPABILITIES_VERSION = "rtm_runtime_capabilities_v1_0"
+
+RUNTIME_CAPABILITIES_VERSION = "rtm_runtime_capabilities_v1_2"
 
 _TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 _FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
-_ENFORCED_ENVIRONMENTS = {"staging", "production"}
 
 _CAPABILITY_FLAGS = {
     "b2": "RTM_ENABLE_B2",
@@ -112,16 +109,27 @@ def capability_state(
     configured = bool(raw)
     parsed, valid = _parse_bool(raw) if configured else (False, True)
 
-    force_raw = _value(source, "RTM_ENFORCE_CAPABILITY_FLAGS")
-    forced, force_valid = _parse_bool(force_raw) if force_raw else (False, True)
-    enforced = environment in _ENFORCED_ENVIRONMENTS or (force_valid and forced)
+    # Opt-in universal. Un proceso arrancado sin contrato de entorno sigue
+    # siendo seguro y no recupera silenciosamente el comportamiento legacy.
+    enforced = True
 
-    if not configured and not enforced:
-        enabled = True
-        reason = "legacy_unconfigured_compatibility"
-    elif not configured and enforced:
+    environment_known = environment in {
+        "development",
+        "test",
+        "staging",
+        "production",
+    }
+    ambiguous_deployment = (
+        runtime_requires_environment_preflight(source)
+        and environment not in {"staging", "production"}
+    )
+
+    if not configured:
         enabled = False
         reason = "required_flag_missing"
+    elif not environment_known or ambiguous_deployment:
+        enabled = False
+        reason = "environment_not_safe"
     elif not valid:
         enabled = False
         reason = "invalid_boolean_flag"
@@ -170,14 +178,8 @@ def require_http_capability(
     try:
         return require_capability(capability, environ)
     except CapabilityDisabledError as exc:
-        state = exc.state
         raise HTTPException(
             status_code=503,
-            detail={
-                "message": "La capacidad externa solicitada no está habilitada en este entorno.",
-                "capability": state.capability,
-                "environment": state.environment,
-                "required_flag": state.env_var,
-                "reason": state.reason,
-            },
+            detail={"code": "external_capability_unavailable"},
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         ) from exc

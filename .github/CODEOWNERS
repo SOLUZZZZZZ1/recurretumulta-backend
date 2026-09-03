@@ -1,0 +1,11 @@
+* @SOLUZZZZZZ1
+
+# Security-sensitive boundaries require explicit owner review.
+/.github/ @SOLUZZZZZZ1
+/app.py @SOLUZZZZZZ1
+/billing.py @SOLUZZZZZZ1
+/case_authority.py @SOLUZZZZZZ1
+/ops_automation.py @SOLUZZZZZZ1
+/public_case_access.py @SOLUZZZZZZ1
+/rtm_core/ @SOLUZZZZZZ1
+/scripts/rtm_secret_scan.py @SOLUZZZZZZ1

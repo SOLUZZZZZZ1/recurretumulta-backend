@@ -15,7 +15,7 @@ class DocumentInputPolicyTest(unittest.TestCase):
     def test_version_is_explicit(self):
         self.assertEqual(
             DOCUMENT_INPUT_POLICY_VERSION,
-            "rtm_document_input_policy_v1_0",
+            "rtm_document_input_policy_v1_2",
         )
 
     def test_irrelevant_route_is_not_blocked(self):
@@ -55,6 +55,35 @@ class DocumentInputPolicyTest(unittest.TestCase):
             "scripts/rtm_staging_smoke.py",
         )
 
+    def test_staging_blocks_every_public_or_ops_document_entrypoint(self):
+        paths = (
+            RUN_PATH,
+            "/ops/core/cases/case-123/reanalysis/run",
+            "/analyze",
+            "/analyze/expediente",
+            "/vehicle-removal/verify-registration",
+            "/cases/intake-draft",
+            "/cases/case-123/append-documents",
+            "/cases/case-123/upload-authorization-signed",
+            "/cases/case-123/authorization-signed",
+            "/cases/case-123/upload-receipt",
+            "/partner/cases",
+            "/ops/cases/case-123/upload-justificante",
+            "/ops/cases/case-123/register-manual-submission",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                block = document_input_policy_block(
+                    method="POST",
+                    path=path,
+                    environ={
+                        "RTM_ENV": "staging",
+                        "RTM_DOCUMENT_INPUT_POLICY": "synthetic_only",
+                    },
+                )
+                self.assertIsNotNone(block)
+                self.assertEqual(block.status_code, 409)
+
     def test_production_requires_customer_documents_policy(self):
         block = document_input_policy_block(
             method="POST",
@@ -86,6 +115,22 @@ class DocumentInputPolicyTest(unittest.TestCase):
             environ={},
         )
         self.assertIsNone(block)
+
+    def test_ambiguous_deployment_blocks_document_inputs(self):
+        for environment in (
+            {"RENDER_SERVICE_ID": "srv-rtm"},
+            {"RTM_ENV": "stagin"},
+            {"RTM_ENABLE_DOCUMENT_PROVIDER": "1"},
+        ):
+            with self.subTest(environment=environment):
+                block = document_input_policy_block(
+                    method="POST",
+                    path=RUN_PATH,
+                    environ=environment,
+                )
+                self.assertIsNotNone(block)
+                self.assertEqual(block.status_code, 503)
+                self.assertNotIn("srv-rtm", str(block.detail))
 
 
 if __name__ == "__main__":

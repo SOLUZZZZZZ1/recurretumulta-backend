@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable, Mapping, Optional
@@ -225,6 +226,17 @@ _SOURCE_PRIORITY = {
     "velocity_secondary_facts": 55,
     "reanalysis_core": 10,
 }
+
+# La confianza y la evidencia incluidas en estas salidas proceden del propio
+# modelo. Son útiles para ordenar una revisión, pero nunca constituyen una
+# validación documental. Solo el parser determinista puede producir un hecho
+# validado automáticamente (si además conserva evidencia y supera su umbral).
+_VERIFIABLE_DETERMINISTIC_METHODS = frozenset({"deterministic"})
+_MODEL_DERIVED_METHODS = frozenset(
+    {spec[0] for spec in _SOURCE_SPECS}
+    - _VERIFIABLE_DETERMINISTIC_METHODS
+    | {"reanalysis_core"}
+)
 
 
 @dataclass(frozen=True)
@@ -477,12 +489,27 @@ def _threshold(candidate: _Candidate) -> float:
     return 0.90
 
 
+def _method_root(method: str) -> str:
+    return str(method or "").strip().lower().split(":", 1)[0]
+
+
+def reanalysis_method_is_model_derived(method: str) -> bool:
+    """Indica si una procedencia de Reanalysis depende de una salida de modelo."""
+
+    return _method_root(method) in _MODEL_DERIVED_METHODS
+
+
 def _source_references(
     document_ids: list[str],
     page_by_document: Mapping[str, Optional[int]],
     candidate: _Candidate,
 ) -> list[SourceReference]:
-    source_type = "document" if len(document_ids) == 1 else "document_group"
+    if candidate.method in _VERIFIABLE_DETERMINISTIC_METHODS:
+        source_type = "deterministic_document"
+    elif reanalysis_method_is_model_derived(candidate.method):
+        source_type = "model_document_observation"
+    else:
+        source_type = "document" if len(document_ids) == 1 else "document_group"
     method = candidate.method
     if candidate.version:
         method = f"{method}:{candidate.version}"
@@ -507,6 +534,26 @@ def _candidate_note(candidate: _Candidate) -> str:
         f"Lectura candidata no consolidada ({candidate.method}, "
         f"confianza {candidate.confidence:.2f}): {value}"
     )
+
+
+def assert_reanalysis_draft_is_safe(facts: ValidatedFacts) -> None:
+    """Defensa en profundidad: un hecho de modelo no puede salir VALIDATED."""
+
+    for fact_key, fact in facts.facts.items():
+        if fact.status is not FactStatus.VALIDATED:
+            continue
+        if any(
+            source.source_type == "model_document_observation"
+            or reanalysis_method_is_model_derived(source.extraction_method)
+            for source in fact.sources
+        ):
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "El borrador de Reanalysis intentó validar una salida de modelo "
+                    f"sin revisión documental: {fact_key}"
+                ),
+            )
 
 
 def build_validated_facts_from_reanalysis(
@@ -648,12 +695,14 @@ def build_validated_facts_from_reanalysis(
             reason = "Reanalysis declaró el campo como ausente o no resuelto"
         elif not document_ids:
             reason = "No hay documentos de procedencia enlazados"
+        elif chosen.method == "handwritten_precision" and low_handwriting_quality:
+            reason = "La calidad manuscrita exige revisión humana"
+        elif reanalysis_method_is_model_derived(chosen.method):
+            reason = "La lectura derivada de modelo exige revisión documental del operador"
         elif chosen.confidence < _threshold(chosen):
             reason = "La confianza no alcanza el umbral de validación"
         elif not chosen.evidence:
             reason = "No existe fragmento o evidencia visual conservada"
-        elif chosen.method == "handwritten_precision" and low_handwriting_quality:
-            reason = "La calidad manuscrita exige revisión humana"
 
         if reason:
             fact_models[key] = ValidatedFact(
@@ -691,6 +740,7 @@ def build_validated_facts_from_reanalysis(
         source_document_ids=document_ids,
         frozen=False,
     )
+    assert_reanalysis_draft_is_safe(snapshot)
     return ReanalysisAdapterResult(
         facts=snapshot,
         accepted_fields=sorted(accepted),
@@ -731,25 +781,52 @@ def load_latest_reanalysis_snapshot(
             status_code=409,
             detail="La última extracción no corresponde al Reanalysis validado",
         )
+    try:
+        reanalysis_run_id = str(
+            uuid.UUID(str(wrapper.get("reanalysis_run_id") or ""))
+        )
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="La última extracción no conserva una finalización verificable",
+        ) from exc
 
     event_row = conn.execute(
         text(
             """
             SELECT payload, created_at
             FROM events
-            WHERE case_id=:case_id AND type='case_reanalysis_completed'
+            WHERE case_id=:case_id
+              AND type='case_reanalysis_completed'
+              AND payload->>'reanalysis_run_id'=:reanalysis_run_id
             ORDER BY created_at DESC, id DESC
             LIMIT 1
             """
         ),
-        {"case_id": case_id},
+        {"case_id": case_id, "reanalysis_run_id": reanalysis_run_id},
     ).fetchone()
-    event = _mapping(event_row[0]) if event_row else {}
-    if event:
-        event_version = str(event.get("extractor_version") or "").strip()
-        if event_version and event_version != extractor_version:
-            # No se mezcla trazabilidad de dos ejecuciones distintas.
-            event = {}
+    if not event_row:
+        raise HTTPException(
+            status_code=409,
+            detail="La última extracción no conserva una finalización verificable",
+        )
+    event = _mapping(event_row[0])
+    try:
+        event_run_id = str(
+            uuid.UUID(str(event.get("reanalysis_run_id") or ""))
+        )
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="La última extracción no conserva una finalización verificable",
+        ) from exc
+    event_version = str(event.get("extractor_version") or "").strip()
+    if event_version != extractor_version or event_run_id != reanalysis_run_id:
+        # Nunca se mezcla una extracción con el evento de otra ejecución.
+        raise HTTPException(
+            status_code=409,
+            detail="La última extracción no conserva una finalización verificable",
+        )
 
     document_ids, _ = _document_sources(wrapper)
     if document_ids:

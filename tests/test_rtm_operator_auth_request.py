@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 
+from starlette.datastructures import Headers
+
 from rtm_core.operator_auth_request import (
     OPERATOR_AUTH_MODE_FAIL_CLOSED,
     OPERATOR_AUTH_MODE_INDIVIDUAL,
@@ -60,7 +62,7 @@ class OperatorAuthRequestTest(unittest.TestCase):
             OPERATOR_AUTH_MODE_FAIL_CLOSED,
         )
 
-    def test_environment_mode_preserves_normal_legacy_production(self):
+    def test_environment_mode_never_allows_shared_legacy_production(self):
         self.assertEqual(
             operator_auth_environment_mode(
                 {
@@ -71,7 +73,53 @@ class OperatorAuthRequestTest(unittest.TestCase):
                     "RENDER_SERVICE_NAME": "recurretumulta-api",
                 }
             ),
-            OPERATOR_AUTH_MODE_LEGACY,
+            OPERATOR_AUTH_MODE_FAIL_CLOSED,
+        )
+
+    def test_legacy_mode_is_local_only_and_ambiguous_deployments_fail_closed(self):
+        for environment in ("development", "test"):
+            with self.subTest(environment=environment):
+                self.assertEqual(
+                    operator_auth_environment_mode({"RTM_ENV": environment}),
+                    OPERATOR_AUTH_MODE_LEGACY,
+                )
+        self.assertEqual(
+            operator_auth_environment_mode(
+                {"DATABASE_URL": "postgresql://deployed.example/rtm"}
+            ),
+            OPERATOR_AUTH_MODE_FAIL_CLOSED,
+        )
+        self.assertEqual(
+            operator_auth_environment_mode(
+                {
+                    "RTM_ENV": "development",
+                    "RENDER_SERVICE_ID": "srv-deployed",
+                }
+            ),
+            OPERATOR_AUTH_MODE_FAIL_CLOSED,
+        )
+
+    def test_emergency_switch_blocks_legacy_operator_auth(self):
+        for value in ("1", "true", "enabled"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    operator_auth_environment_mode(
+                        {
+                            "RTM_ENV": "production",
+                            "RTM_ENABLE_OPERATOR_AUTH_V1": "0",
+                            "RTM_BLOCK_LEGACY_OPERATOR_AUTH": value,
+                        }
+                    ),
+                    OPERATOR_AUTH_MODE_FAIL_CLOSED,
+                )
+        self.assertEqual(
+            operator_auth_environment_mode(
+                {
+                    "RTM_ENV": "production",
+                    "RTM_BLOCK_LEGACY_OPERATOR_AUTH": "invalid",
+                }
+            ),
+            OPERATOR_AUTH_MODE_FAIL_CLOSED,
         )
 
     def test_feature_is_disabled_by_default(self):
@@ -89,6 +137,7 @@ class OperatorAuthRequestTest(unittest.TestCase):
             "RTM_ENABLE_OPERATOR_AUTH_V1": "1",
             "RTM_OPERATOR_ACCESS_HMAC_KEY": "K" * 64,
             "RTM_TRUST_PROXY_HEADERS": "1",
+            "RTM_TRUSTED_PROXY_CIDRS": "10.0.0.0/8",
             "RTM_OPERATOR_ACCESS_RETENTION_DAYS": "180",
         }
         config = load_operator_auth_runtime_config(base)
@@ -114,6 +163,33 @@ class OperatorAuthRequestTest(unittest.TestCase):
                 with self.assertRaises(OperatorAuthRuntimeMisconfigured):
                     load_operator_auth_runtime_config(
                         dict(base, RTM_OPERATOR_ACCESS_RETENTION_DAYS=value)
+                    )
+
+    def test_reauthentication_window_is_configurable_and_bounded(self):
+        base = {
+            "RTM_ENV": "staging",
+            "RTM_ENABLE_OPERATOR_AUTH_V1": "1",
+            "RTM_OPERATOR_ACCESS_HMAC_KEY": "K" * 64,
+        }
+        self.assertEqual(
+            load_operator_auth_runtime_config(base)
+            .reauthentication_max_age_seconds,
+            300,
+        )
+        self.assertEqual(
+            load_operator_auth_runtime_config(
+                dict(base, RTM_OPERATOR_REAUTH_MAX_AGE_SECONDS="120")
+            ).reauthentication_max_age_seconds,
+            120,
+        )
+        for value in ("59", "901", "not-number"):
+            with self.subTest(value=value):
+                with self.assertRaises(OperatorAuthRuntimeMisconfigured):
+                    load_operator_auth_runtime_config(
+                        dict(
+                            base,
+                            RTM_OPERATOR_REAUTH_MAX_AGE_SECONDS=value,
+                        )
                     )
 
     def test_bearer_token_parser_is_strict(self):
@@ -158,10 +234,25 @@ class OperatorAuthRequestTest(unittest.TestCase):
             client_host="10.0.0.2",
             hmac_key="K" * 64,
             trust_proxy_headers=True,
+            trusted_proxy_cidrs=("10.0.0.0/8",),
         )
         self.assertEqual(trusted.ip_address, "203.0.113.44")
         self.assertEqual(trusted.ip_source, "x_forwarded_for")
         self.assertEqual(trusted.country_code, "ES")
+
+        prefixed_spoof = build_request_fingerprint(
+            {
+                **headers,
+                "x-forwarded-for": (
+                    "198.51.100.66, 203.0.113.44, 10.0.0.1"
+                ),
+            },
+            client_host="10.0.0.2",
+            hmac_key="K" * 64,
+            trust_proxy_headers=True,
+            trusted_proxy_cidrs=("10.0.0.0/8",),
+        )
+        self.assertEqual(prefixed_spoof.ip_address, "203.0.113.44")
 
         ignored = build_request_fingerprint(
             headers,
@@ -171,6 +262,38 @@ class OperatorAuthRequestTest(unittest.TestCase):
         )
         self.assertEqual(ignored.ip_address, "10.0.0.2")
         self.assertIn("proxy_headers_ignored", ignored.risk_flags)
+
+        spoofed = build_request_fingerprint(
+            headers,
+            client_host="198.51.100.9",
+            hmac_key="K" * 64,
+            trust_proxy_headers=True,
+            trusted_proxy_cidrs=("10.0.0.0/8",),
+        )
+        self.assertEqual(spoofed.ip_address, "198.51.100.9")
+        self.assertEqual(spoofed.ip_source, "direct")
+        self.assertIsNone(spoofed.country_code)
+        self.assertIn("untrusted_proxy_peer", spoofed.risk_flags)
+
+    def test_duplicate_forwarded_header_cannot_choose_audit_identity(self):
+        headers = Headers(
+            raw=[
+                (b"x-forwarded-for", b"198.51.100.66"),
+                (b"x-forwarded-for", b"203.0.113.44"),
+                (b"user-agent", b"curl/8.0"),
+            ]
+        )
+        context = build_request_fingerprint(
+            headers,
+            client_host="10.0.0.2",
+            hmac_key="K" * 64,
+            trust_proxy_headers=True,
+            trusted_proxy_cidrs=("10.0.0.0/8",),
+        )
+
+        self.assertEqual(context.ip_address, "10.0.0.2")
+        self.assertEqual(context.ip_source, "direct")
+        self.assertNotIn("x-forwarded-for", context.trusted_headers)
 
 
 if __name__ == "__main__":

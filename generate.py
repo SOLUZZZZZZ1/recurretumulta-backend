@@ -1,7 +1,7 @@
 import json
 import re
 import unicodedata
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -38,12 +38,20 @@ from ai.infractions.velocidad import (
     VELOCITY_LEGAL_INTELLIGENCE_VERSION,
 )
 
-from b2_storage import upload_bytes
+from b2_storage import delete_object, upload_bytes
 from docx_builder import build_docx
 from pdf_builder import build_pdf
 from ai.infractions.dispatch import dispatch_deterministic_template
 
 router = APIRouter(tags=["generate"])
+
+
+def _cleanup_generated_objects(coordinates: List[tuple[str, str]]) -> None:
+    for bucket, key in reversed(coordinates):
+        try:
+            delete_object(bucket, key)
+        except Exception:
+            pass
 
 _GENERATOR_VERSION = "traffic_generate_v1_7"
 
@@ -538,6 +546,15 @@ def _is_rtm_validated_extraction(core: Dict[str, Any]) -> bool:
     validados y NO deben ser pisados por valores antiguos de la tabla cases.
     """
     core = core or {}
+
+    # Ninguna observación de modelo/candidato puede adquirir autoridad por el
+    # mero hecho de ser la última fila disponible.
+    if (
+        core.get("evidence_status") == "candidate_only"
+        or bool(core.get("needs_operator_review"))
+        or bool(core.get("requires_operator_review"))
+    ):
+        return False
 
     version = _safe_str(core.get("extractor_version")).strip()
     if not version.startswith("traffic_fine_reanalysis_"):
@@ -3451,7 +3468,14 @@ def _apply_speed_identity_check(speed_intelligence: Dict[str, Any], interesado: 
     return intel
 
 
-def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str]] = None, forced_tipo: Optional[str] = None) -> Dict[str, Any]:
+def generate_dgt_for_case(
+    conn,
+    case_id: str,
+    interesado: Optional[Dict[str, str]] = None,
+    forced_tipo: Optional[str] = None,
+    *,
+    uploaded_coordinates: Optional[List[tuple[str, str]]] = None,
+) -> Dict[str, Any]:
     row = conn.execute(
         text("SELECT extracted_json FROM extractions WHERE case_id=:case_id ORDER BY created_at DESC LIMIT 1"),
         {"case_id": case_id},
@@ -3462,6 +3486,20 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
 
     wrapper = row[0] if isinstance(row[0], dict) else json.loads(row[0])
     core = wrapper.get("extracted") or {}
+
+    if (
+        wrapper.get("evidence_status") == "candidate_only"
+        or core.get("evidence_status") == "candidate_only"
+        or bool(core.get("needs_operator_review"))
+        or bool(core.get("requires_operator_review"))
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "La extracción es solo candidata y requiere validación humana "
+                "antes de generar el recurso"
+            ),
+        )
 
     # Intelligence CORE: una extracción moderna normalmente debe venir lista.
     # Excepción controlada: SEMÁFORO validado mantiene ready_for_generate=false hasta
@@ -3737,9 +3775,15 @@ def generate_dgt_for_case(conn, case_id: str, interesado: Optional[Dict[str, str
         ".docx",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
+    if uploaded_coordinates is not None:
+        uploaded_coordinates.append((b2_bucket, b2_key_docx))
 
     pdf_bytes = build_pdf("", tpl["cuerpo"])
-    _, b2_key_pdf = upload_bytes(case_id, "generated", pdf_bytes, ".pdf", "application/pdf")
+    pdf_bucket, b2_key_pdf = upload_bytes(
+        case_id, "generated", pdf_bytes, ".pdf", "application/pdf"
+    )
+    if uploaded_coordinates is not None:
+        uploaded_coordinates.append((pdf_bucket, b2_key_pdf))
 
     conn.execute(
         text("""
@@ -3827,6 +3871,17 @@ class GenerateRequest(BaseModel):
 @router.post("/generate/dgt")
 def generate_dgt(req: GenerateRequest) -> Dict[str, Any]:
     engine = get_engine()
-    with engine.begin() as conn:
-        result = generate_dgt_for_case(conn, req.case_id, interesado=req.interesado, forced_tipo=req.tipo)
+    uploaded_coordinates: List[tuple[str, str]] = []
+    try:
+        with engine.begin() as conn:
+            result = generate_dgt_for_case(
+                conn,
+                req.case_id,
+                interesado=req.interesado,
+                forced_tipo=req.tipo,
+                uploaded_coordinates=uploaded_coordinates,
+            )
+    except Exception:
+        _cleanup_generated_objects(uploaded_coordinates)
+        raise
     return {"ok": True, "message": "Recurso generado.", **result}

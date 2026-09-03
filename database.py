@@ -33,7 +33,11 @@ def get_engine() -> Engine:
         engine = _ENGINES.get(url)
         if engine is None:
             # pool_pre_ping evita reutilizar conexiones muertas en Render.
-            engine = create_engine(url, pool_pre_ping=True)
+            engine = create_engine(
+                url,
+                pool_pre_ping=True,
+                hide_parameters=True,
+            )
             _ENGINES[url] = engine
         return engine
 

@@ -9,12 +9,19 @@ from unittest.mock import patch
 from sqlalchemy import create_engine, text
 
 from rtm_core.authority_repository import (
+    DocumentReviewAttestation,
     create_family_resolution,
     create_validated_facts,
     freeze_validated_facts,
     lock_family_resolution,
+    model_digest,
 )
-from rtm_core.contracts import FactStatus, PreviewStatus
+from rtm_core.contracts import (
+    FactStatus,
+    PreviewStatus,
+    SourceReference,
+    ValidatedFacts,
+)
 from rtm_core.family_core import resolve_family
 from rtm_core.generation_gateway import (
     approve_resource_for_submission,
@@ -161,7 +168,9 @@ class PostgresAuthorityIntegrationTest(unittest.TestCase):
     def test_full_authority_chain_reaches_approved_resource(self):
         case_id = str(uuid.uuid4())
         document_id = str(uuid.uuid4())
+        reanalysis_run_id = str(uuid.uuid4())
         wrapper = {
+            "reanalysis_run_id": reanalysis_run_id,
             "storage": {"source_document_ids": [document_id]},
             "pages": [
                 {
@@ -185,6 +194,7 @@ class PostgresAuthorityIntegrationTest(unittest.TestCase):
             },
         }
         event_payload = {
+            "reanalysis_run_id": reanalysis_run_id,
             "extractor_version": "traffic_fine_reanalysis_v1_18",
             "handwritten_precision_version": "traffic_handwritten_precision_v1_0",
             "handwritten_precision_values": {
@@ -310,17 +320,58 @@ class PostgresAuthorityIntegrationTest(unittest.TestCase):
             )
             self.assertEqual(
                 adapted.facts.facts["hecho_denunciado_literal"].status,
-                FactStatus.VALIDATED,
+                FactStatus.UNRESOLVED,
             )
             self.assertEqual(
                 adapted.facts.facts["velocidad_medida_kmh"].status,
                 FactStatus.UNRESOLVED,
             )
 
+            reviewed_payload = adapted.facts.model_dump(mode="python")
+            reviewed_values = {
+                "hecho_denunciado_literal": (
+                    "Conducir de forma temeraria creando un riesgo grave."
+                ),
+                "organismo": "Servei Català de Trànsit",
+                "expediente_ref": "02510067072-0",
+                "tipo_documento": "denuncia",
+                "fase_procedimental": "initial_notice",
+                "sancion_importe_eur": 500,
+                "puntos_detraccion": 6,
+            }
+            for fact_key, fact_value in reviewed_values.items():
+                reviewed_payload["facts"][fact_key] = {
+                    "value": fact_value,
+                    "status": FactStatus.VALIDATED,
+                    "confidence": 1.0,
+                    "sources": [
+                        source.model_dump(mode="python")
+                        for source in adapted.facts.facts[fact_key].sources
+                    ]
+                    + [
+                        SourceReference(
+                            document_id=document_id,
+                            page_index=0,
+                            source_type="operator_document_review",
+                            extraction_method="ops_document_review_v1",
+                            evidence=str(fact_value),
+                            confidence=1.0,
+                        ).model_dump(mode="python")
+                    ],
+                    "conflicts": [],
+                    "notes": ["Hecho contrastado con el documento por OPS."],
+                }
+            reviewed_payload["unresolved"] = [
+                key
+                for key in reviewed_payload["unresolved"]
+                if key not in reviewed_values
+            ]
+            reviewed_facts = ValidatedFacts.model_validate(reviewed_payload)
+
             facts_record = create_validated_facts(
                 conn,
                 case_id=case_id,
-                facts=adapted.facts,
+                facts=reviewed_facts,
                 created_by="ci:reanalysis-adapter",
             )
             facts_record = freeze_validated_facts(
@@ -328,6 +379,13 @@ class PostgresAuthorityIntegrationTest(unittest.TestCase):
                 case_id,
                 facts_record.id,
                 "ops:ci",
+                document_review_attestation=DocumentReviewAttestation(
+                    documents_reviewed=True,
+                    facts_reviewed=True,
+                    source_document_ids=list(reviewed_facts.source_document_ids),
+                    facts_payload_sha256=model_digest(reviewed_facts),
+                    review_notes="Revisión documental completa en integración CI.",
+                ),
             )
 
             resolution = resolve_family(facts_record.facts)

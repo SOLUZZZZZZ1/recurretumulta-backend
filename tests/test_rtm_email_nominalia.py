@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import email_utils
 
@@ -36,7 +36,7 @@ class NominaliaEmailTransportTest(unittest.TestCase):
 
         self.assertTrue(sent)
         smtp_ssl.assert_called_once_with(
-            "authsmtp.securemail.pro", 465, timeout=20
+            "authsmtp.securemail.pro", 465, timeout=20, context=ANY
         )
         smtp.assert_not_called()
         connection.starttls.assert_not_called()
@@ -69,7 +69,8 @@ class NominaliaEmailTransportTest(unittest.TestCase):
             "authsmtp.securemail.pro", 587, timeout=20
         )
         smtp_ssl.assert_not_called()
-        connection.starttls.assert_called_once_with()
+        connection.starttls.assert_called_once_with(context=ANY)
+        self.assertEqual(connection.ehlo.call_count, 2)
 
     def test_canonical_password_is_required_and_legacy_pass_is_ignored(self):
         environment = self._environment()
@@ -78,14 +79,34 @@ class NominaliaEmailTransportTest(unittest.TestCase):
 
         with patch.dict(os.environ, environment, clear=True):
             with patch("email_utils.smtplib.SMTP_SSL") as smtp_ssl:
-                sent = email_utils.send_email(
-                    to_email="recipient@example.com",
-                    subject="Prueba RTM",
-                    body="Mensaje sintético.",
-                )
+                with self.assertRaisesRegex(RuntimeError, "incompleta"):
+                    email_utils.send_email(
+                        to_email="recipient@example.com",
+                        subject="Prueba RTM",
+                        body="Mensaje sintético.",
+                    )
 
-        self.assertFalse(sent)
         smtp_ssl.assert_not_called()
+
+    def test_plain_smtp_and_non_allowlisted_hosts_are_rejected(self):
+        for overrides in (
+            {"SMTP_SECURITY": "plain", "SMTP_PORT": "587"},
+            {"SMTP_HOST": "smtp.attacker.example"},
+        ):
+            with self.subTest(overrides=overrides):
+                with patch.dict(
+                    os.environ,
+                    self._environment(**overrides),
+                    clear=True,
+                ):
+                    with patch("email_utils.smtplib.SMTP") as smtp:
+                        with self.assertRaises(RuntimeError):
+                            email_utils.send_email(
+                                to_email="recipient@example.com",
+                                subject="Prueba RTM",
+                                body="Mensaje sintético.",
+                            )
+                    smtp.assert_not_called()
 
 
 if __name__ == "__main__":

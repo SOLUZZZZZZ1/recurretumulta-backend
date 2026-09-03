@@ -171,6 +171,15 @@ class _OfficialRouteScenario:
                     },
                 },
             )
+        if method == "POST" and path == "/ops/auth/reauthenticate":
+            self.calls.append("reauthenticate")
+            body = kwargs.get("json") or {}
+            if body != {"password": SUPERVISOR_PASSWORD}:
+                return _FakeResponse(401, {"ok": False})
+            return _FakeResponse(
+                200,
+                {"ok": True, "status": "reauthenticated"},
+            )
         if method == "GET" and path == "/ops/admin/operators":
             self.calls.append("list")
             self.seen_device_header = (kwargs.get("headers") or {}).get(
@@ -412,7 +421,15 @@ class StagingOperatorLifecycleCreateScriptTest(unittest.TestCase):
             )
         self.assertEqual(
             app.calls,
-            ["auth_status", "lifecycle_status", "login", "list", "create", "logout"],
+            [
+                "auth_status",
+                "lifecycle_status",
+                "login",
+                "reauthenticate",
+                "list",
+                "create",
+                "logout",
+            ],
         )
         self.assertEqual(app.seen_device_header, "D" * 48)
         self.assertEqual(issued_calls, 1)
@@ -473,7 +490,15 @@ class StagingOperatorLifecycleCreateScriptTest(unittest.TestCase):
         issue.assert_not_called()
         self.assertEqual(
             app.calls,
-            ["auth_status", "lifecycle_status", "login", "list", "detail", "logout"],
+            [
+                "auth_status",
+                "lifecycle_status",
+                "login",
+                "reauthenticate",
+                "list",
+                "detail",
+                "logout",
+            ],
         )
 
     def test_existing_identity_mismatch_fails_closed_and_logs_out(self):

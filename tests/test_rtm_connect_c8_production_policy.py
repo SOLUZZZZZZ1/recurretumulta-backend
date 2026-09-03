@@ -47,6 +47,9 @@ SECURITY_ID = "33333333-3333-4333-8333-333333333333"
 OPERATIONS_ID = "44444444-4444-4444-8444-444444444444"
 ACTION_ID = "55555555-5555-4555-8555-555555555555"
 AUTHORIZATION_ID = "66666666-6666-4666-8666-666666666666"
+SECRET_A = "A7mQ2vN9kR4xT8pL3sW6cD1hJ5uZ0bY"
+SECRET_B = "F9rK3xV7nM2qP8dT4zH6wC1jL5sG0aU"
+SECRET_C = "Z6pD1yW8kQ4mR9vB2tN7cH5xJ3fL0sE"
 
 
 def safe_env() -> dict[str, str]:
@@ -62,9 +65,10 @@ def safe_env() -> dict[str, str]:
         ),
         "FRONTEND_URL": "https://staging.recurretumulta.eu",
         "ALLOWED_ORIGINS": "https://staging.recurretumulta.eu",
-        "OPERATOR_TOKEN": "op_" + ("x" * 48),
-        "RTM_PUBLIC_CASE_ACCESS_SECRET": "case_" + ("c" * 48),
-        "RTM_AUTHORITY_SIGNING_SECRET": "authority_" + ("a" * 48),
+        "RTM_ALLOWED_HOSTS": "backend-staging.invalid",
+        "OPERATOR_TOKEN": "op_" + SECRET_A,
+        "RTM_PUBLIC_CASE_ACCESS_SECRET": "case_" + SECRET_B,
+        "RTM_AUTHORITY_SIGNING_SECRET": "authority_" + SECRET_C,
         "RTM_EXPECTED_BRANCH": "rtm-c8-staging-2026-08-24",
         "RENDER_GIT_BRANCH": "rtm-c8-staging-2026-08-24",
         "RENDER_SERVICE_NAME": "rtm-staging-backend",
