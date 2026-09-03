@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
+from fastapi import HTTPException
+
+from rtm_core import workspace_router
 from rtm_core.workspace_router import WORKSPACE_VERSION, determine_workspace_stage
 
 
@@ -66,6 +72,10 @@ class WorkspaceProgressionTest(unittest.TestCase):
 
         paths = {getattr(route, "path", "") for route in app.app.routes}
         self.assertIn(f"{BASE}/workspace".replace(CASE_ID, "{case_id}"), paths)
+        self.assertIn(
+            f"{BASE}/payment-status".replace(CASE_ID, "{case_id}"),
+            paths,
+        )
 
     def test_intake_and_payment_stages(self):
         result = _stage(
@@ -204,6 +214,172 @@ class WorkspaceProgressionTest(unittest.TestCase):
         )
         self.assertEqual(result["stage"], "submitted_followup")
         self.assertEqual(result["primary_action"], "monitor_followup")
+
+
+class _PaymentResult:
+    def __init__(self, row):
+        self.row = row
+
+    def fetchone(self):
+        return self.row
+
+
+class _PaymentConnection:
+    def __init__(self, row=None):
+        self.row = row
+        self.calls = []
+
+    def execute(self, statement, parameters=None):
+        self.calls.append((str(statement), parameters or {}))
+        return _PaymentResult(self.row)
+
+
+class _PaymentEngine:
+    def __init__(self, connection):
+        self.connection = connection
+
+    @contextmanager
+    def begin(self):
+        yield self.connection
+
+
+class WorkspaceScopedReadTest(unittest.TestCase):
+    CASE_UUID = "11111111-1111-4111-8111-111111111111"
+
+    def test_payment_status_is_minimal_and_scoped_in_its_read_transaction(self):
+        paid_at = datetime(2026, 9, 2, 12, 30, tzinfo=timezone.utc)
+        connection = _PaymentConnection(
+            ("paid", paid_at, "traffic-appeal", "core_review_pending")
+        )
+        request = SimpleNamespace(state=SimpleNamespace())
+        scope = object()
+        with (
+            mock.patch.object(workspace_router, "require_operator_token"),
+            mock.patch.object(
+                workspace_router,
+                "load_ops_case_scope",
+                return_value=scope,
+            ) as load_scope,
+            mock.patch.object(
+                workspace_router,
+                "require_case_in_scope",
+                return_value=self.CASE_UUID,
+            ) as require_scope,
+            mock.patch.object(
+                workspace_router,
+                "get_engine",
+                return_value=_PaymentEngine(connection),
+            ),
+        ):
+            payload = workspace_router.get_case_payment_status(
+                case_id=self.CASE_UUID,
+                request=request,
+                x_operator_token="server-injected-token",
+            )
+
+        self.assertEqual(
+            payload,
+            {
+                "ok": True,
+                "case_id": self.CASE_UUID,
+                "payment_status": "paid",
+                "paid_at": paid_at,
+                "product_code": "traffic-appeal",
+                "status": "core_review_pending",
+            },
+        )
+        load_scope.assert_called_once_with(request)
+        require_scope.assert_called_once_with(
+            connection,
+            scope=scope,
+            case_id=self.CASE_UUID,
+        )
+        statement, parameters = connection.calls[0]
+        self.assertEqual(parameters, {"case_id": self.CASE_UUID})
+        for forbidden in (
+            "stripe_session_id",
+            "stripe_payment_intent",
+            "x_case_token",
+            "require_case_or_operator_access",
+            "contact_email",
+            "interested_data",
+            "authorized",
+            "b2_bucket",
+            "b2_key",
+        ):
+            self.assertNotIn(forbidden, statement.lower())
+
+    def test_payment_status_missing_row_uses_uniform_404(self):
+        connection = _PaymentConnection(None)
+        with (
+            mock.patch.object(workspace_router, "require_operator_token"),
+            mock.patch.object(
+                workspace_router,
+                "load_ops_case_scope",
+                return_value=object(),
+            ),
+            mock.patch.object(
+                workspace_router,
+                "require_case_in_scope",
+                return_value=self.CASE_UUID,
+            ),
+            mock.patch.object(
+                workspace_router,
+                "get_engine",
+                return_value=_PaymentEngine(connection),
+            ),
+            self.assertRaises(HTTPException) as denied,
+        ):
+            workspace_router.get_case_payment_status(
+                case_id=self.CASE_UUID,
+                request=SimpleNamespace(state=SimpleNamespace()),
+                x_operator_token="server-injected-token",
+            )
+
+        self.assertEqual(denied.exception.status_code, 404)
+        self.assertEqual(denied.exception.detail, "Expediente no encontrado")
+
+    def test_workspace_rechecks_scope_on_the_connection_it_reads(self):
+        connection = _PaymentConnection()
+        request = SimpleNamespace(state=SimpleNamespace())
+        scope = object()
+        expected = {"ok": True, "workspace": "scoped"}
+        with (
+            mock.patch.object(workspace_router, "require_operator_token"),
+            mock.patch.object(
+                workspace_router,
+                "load_ops_case_scope",
+                return_value=scope,
+            ),
+            mock.patch.object(
+                workspace_router,
+                "require_case_in_scope",
+                return_value=self.CASE_UUID,
+            ) as require_scope,
+            mock.patch.object(
+                workspace_router,
+                "build_case_workspace",
+                return_value=expected,
+            ) as build_workspace,
+            mock.patch.object(
+                workspace_router,
+                "get_engine",
+                return_value=_PaymentEngine(connection),
+            ),
+        ):
+            payload = workspace_router.get_case_workspace(
+                case_id=self.CASE_UUID,
+                request=request,
+                x_operator_token="server-injected-token",
+            )
+
+        self.assertEqual(payload, expected)
+        require_scope.assert_called_once_with(
+            connection,
+            scope=scope,
+            case_id=self.CASE_UUID,
+        )
+        build_workspace.assert_called_once_with(connection, self.CASE_UUID)
 
 
 if __name__ == "__main__":

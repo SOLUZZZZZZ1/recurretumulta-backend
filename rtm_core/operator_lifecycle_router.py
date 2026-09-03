@@ -56,7 +56,7 @@ from rtm_core.operator_lifecycle_repository import (
 )
 
 
-OPERATOR_LIFECYCLE_ROUTES_VERSION = "rtm_operator_lifecycle_routes_v1_0"
+OPERATOR_LIFECYCLE_ROUTES_VERSION = "rtm_operator_lifecycle_routes_v1_1"
 router = APIRouter(tags=["ops-operator-lifecycle"])
 
 
@@ -289,6 +289,9 @@ async def operator_lifecycle_status() -> dict[str, Any]:
         "direct_supervisor_creation_available": False,
         "passwords_returned": False,
         "legacy_login_unchanged": True,
+        "legacy_login_retired_in_staging": True,
+        "non_staging_legacy_login_unchanged": True,
+        "shared_ops_login_accepted": False,
     }
 
 
@@ -570,7 +573,10 @@ async def lifecycle_change_own_password(
         "audit_event_id": event_id,
         "password_returned": False,
         "reauthentication_required": True,
+        "shared_ops_login_accepted": False,
         "legacy_login_unchanged": True,
+        "legacy_login_retired_in_staging": True,
+        "non_staging_legacy_login_unchanged": True,
     }
 
 

@@ -2,11 +2,16 @@ import os
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from database import get_engine
+from rtm_core.legacy_ops_session_bridge import (
+    LegacyOpsOperatorContext,
+    OPS_SUPERVISE_PERMISSION,
+    OPS_SUPERVISOR_ROLE,
+)
 
 router = APIRouter(prefix="/ops", tags=["ops-restaurant-reservations"])
 
@@ -53,6 +58,29 @@ def _need_admin(x_admin_token: Optional[str]) -> None:
         raise HTTPException(status_code=500, detail="ADMIN_TOKEN no configurado.")
     if not x_admin_token or x_admin_token.strip() != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _staging_environment() -> bool:
+    return str(os.getenv("RTM_ENV") or "").strip().casefold() == "staging"
+
+
+def _need_verified_individual_supervisor(request: Request) -> None:
+    """Confía solo en el contexto que instala el bridge tras validar sesión."""
+
+    context = getattr(request.state, "rtm_operator_context", None)
+    if not isinstance(context, LegacyOpsOperatorContext):
+        raise HTTPException(
+            status_code=401,
+            detail="Autenticación individual requerida",
+        )
+    if (
+        context.role_code != OPS_SUPERVISOR_ROLE
+        or OPS_SUPERVISE_PERMISSION not in context.permissions
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Permiso de supervisor requerido",
+        )
 
 
 def _now() -> datetime:
@@ -104,9 +132,14 @@ class AdminCreateRestaurantBody(BaseModel):
 @router.post("/admin/restaurants/create")
 def admin_create_restaurant(
     body: AdminCreateRestaurantBody,
+    request: Request,
     x_admin_token: Optional[str] = Header(default=None, alias="x-admin-token"),
 ):
-    _need_admin(x_admin_token)
+    if _staging_environment():
+        # El token compartido no participa en la decisión de acceso en staging.
+        _need_verified_individual_supervisor(request)
+    else:
+        _need_admin(x_admin_token)
 
     name = (body.display_name or "").strip()
     pin = (body.pin or "").strip()

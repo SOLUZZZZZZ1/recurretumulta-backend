@@ -166,6 +166,9 @@ async def operator_admin_status() -> dict[str, Any]:
         "credential_rotation_available": False,
         "raw_evidence_available": False,
         "legacy_login_unchanged": True,
+        "legacy_login_retired_in_staging": True,
+        "non_staging_legacy_login_unchanged": True,
+        "shared_ops_login_accepted": False,
     }
 
 
@@ -319,6 +322,9 @@ async def admin_revoke_session(
         "status": result.status,
         "audit_event_id": event_id,
         "legacy_login_unchanged": True,
+        "legacy_login_retired_in_staging": True,
+        "non_staging_legacy_login_unchanged": True,
+        "shared_ops_login_accepted": False,
     }
 
 
@@ -370,6 +376,9 @@ async def admin_revoke_device(
         "sessions_revoked": result.sessions_revoked,
         "audit_event_id": event_id,
         "legacy_login_unchanged": True,
+        "legacy_login_retired_in_staging": True,
+        "non_staging_legacy_login_unchanged": True,
+        "shared_ops_login_accepted": False,
     }
 
 

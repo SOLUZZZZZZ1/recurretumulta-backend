@@ -7,11 +7,17 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, List
 
-from fastapi import APIRouter, HTTPException, Header, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File, Form, Query, Request
 from sqlalchemy import text
 
 from database import get_engine
 from case_authority import verify_signed_case_authority
+from rtm_core.ops_case_scope import (
+    load_ops_case_scope,
+    ops_case_scope_filter,
+    require_case_in_scope,
+    require_current_case_scope,
+)
 from rtm_staging_guards import require_isolated_synthetic_staging
 
 router = APIRouter(prefix="/ops", tags=["ops"])
@@ -180,6 +186,166 @@ _INTERNAL_EVENT_KEYS = {
     "secret",
 }
 
+# La timeline de una sesión individual no necesita identidad civil,
+# telemetría, evidencia cruda ni credenciales. Las claves se comparan sin
+# separadores para cubrir por igual snake_case, kebab-case y camelCase.
+_PRIVATE_INDIVIDUAL_EVENT_KEYS = {
+    # Coordenadas de almacenamiento y enlaces internos.
+    "b2",
+    "b2bucket",
+    "b2key",
+    "bucket",
+    "key",
+    "objectkey",
+    "originalbucket",
+    "originalkey",
+    "sourcebucket",
+    "sourcekey",
+    "sourcekeys",
+    "storage",
+    "storagebucket",
+    "storagecoordinates",
+    "storagelocator",
+    "storagekey",
+    "storagepath",
+    "internalpath",
+    "downloadendpoint",
+    "downloadurl",
+    "documenturl",
+    "providerurl",
+    "presignedurl",
+    "signedurl",
+    # Credenciales, sesiones y evidencia sin minimizar.
+    "accesstoken",
+    "apikey",
+    "applicationkey",
+    "authorization",
+    "authorizationheader",
+    "authorizationip",
+    "bearer",
+    "cookie",
+    "credential",
+    "credentialref",
+    "credentials",
+    "evidence",
+    "evidencepayload",
+    "headers",
+    "httpauthorization",
+    "password",
+    "portalsession",
+    "privatekey",
+    "rawevidence",
+    "rawheaders",
+    "rawpayload",
+    "rawrequest",
+    "rawresponse",
+    "secret",
+    "sessiontoken",
+    "setcookie",
+    "signature",
+    "signaturebytes",
+    "signaturedata",
+    "token",
+    # IP y agente de usuario.
+    "cfconnectingip",
+    "clientip",
+    "clientipaddress",
+    "forwardedfor",
+    "ip",
+    "ipaddress",
+    "rawip",
+    "rawuseragent",
+    "remoteip",
+    "sourceip",
+    "ua",
+    "useragent",
+    "useragentsummary",
+    "xforwardedfor",
+    # Identidad y contacto personal, innecesarios en el historial operativo.
+    "address",
+    "cif",
+    "contactemail",
+    "contactname",
+    "customeremail",
+    "customername",
+    "dni",
+    "dnie",
+    "dninie",
+    "documentnumber",
+    "domicilio",
+    "domicilionotif",
+    "email",
+    "firstname",
+    "fullname",
+    "identitydocument",
+    "identitydocumentnumber",
+    "lastname",
+    "mobile",
+    "mobilenumber",
+    "movil",
+    "nationalid",
+    "nie",
+    "nif",
+    "notificationaddress",
+    "passport",
+    "passportnumber",
+    "phone",
+    "phonenumber",
+    "postaladdress",
+    "streetaddress",
+    "taxid",
+    "telephone",
+    "telefono",
+}
+_PRIVATE_INDIVIDUAL_EVENT_SUFFIXES = (
+    "accesstoken",
+    "address",
+    "apikey",
+    "applicationkey",
+    "bucket",
+    "clientip",
+    "contactemail",
+    "contactname",
+    "credential",
+    "credentialref",
+    "dninie",
+    "documenturl",
+    "domicilio",
+    "domicilionotif",
+    "downloadurl",
+    "email",
+    "evidence",
+    "fullname",
+    "identitydocumentnumber",
+    "internalpath",
+    "ipaddress",
+    "mobile",
+    "movil",
+    "nif",
+    "objectkey",
+    "passportnumber",
+    "password",
+    "phone",
+    "phonenumber",
+    "portalsession",
+    "presignedurl",
+    "privatekey",
+    "providerurl",
+    "rawip",
+    "secret",
+    "sessiontoken",
+    "signedurl",
+    "storagebucket",
+    "storagecoordinates",
+    "storagekey",
+    "storagelocator",
+    "storagepath",
+    "storageref",
+    "telephone",
+    "telefono",
+    "token",
+    "useragent",
+)
 
 def _sanitize_operator_payload(value: Any, depth: int = 0) -> Any:
     if depth > 8:
@@ -192,6 +358,55 @@ def _sanitize_operator_payload(value: Any, depth: int = 0) -> Any:
         str(key): _sanitize_operator_payload(child, depth + 1)
         for key, child in value.items()
         if str(key).strip().lower() not in _INTERNAL_EVENT_KEYS
+    }
+
+
+def _normalized_operator_payload_key(value: Any) -> str:
+    folded = unicodedata.normalize("NFKD", str(value or "")).casefold()
+    return "".join(character for character in folded if character.isalnum())
+
+
+def _private_individual_event_key(value: Any) -> bool:
+    normalized = _normalized_operator_payload_key(value)
+    return normalized in _PRIVATE_INDIVIDUAL_EVENT_KEYS or any(
+        normalized.endswith(suffix)
+        for suffix in _PRIVATE_INDIVIDUAL_EVENT_SUFFIXES
+    )
+
+
+def _private_individual_event_value(value: str) -> bool:
+    normalized = str(value or "").strip().casefold()
+    return (
+        normalized.startswith(("b2://", "s3://", "gs://", "vault://"))
+        or normalized.startswith(("bearer ", "basic "))
+        or "-----begin private key-----" in normalized
+        or "/workspace/" in normalized
+        or "/home/" in normalized
+        or "x-amz-credential=" in normalized
+        or "x-amz-signature=" in normalized
+        or "x-goog-credential=" in normalized
+        or "x-goog-signature=" in normalized
+    )
+
+
+def _sanitize_individual_operator_payload(value: Any, depth: int = 0) -> Any:
+    """Proyecta solo metadatos operativos seguros para sesiones individuales."""
+
+    if depth > 8:
+        return "<truncated>"
+    if isinstance(value, (list, tuple)):
+        return [
+            _sanitize_individual_operator_payload(item, depth + 1)
+            for item in value
+        ]
+    if isinstance(value, str) and _private_individual_event_value(value):
+        return "<redacted>"
+    if not isinstance(value, dict):
+        return value
+    return {
+        str(key): _sanitize_individual_operator_payload(child, depth + 1)
+        for key, child in value.items()
+        if not _private_individual_event_key(key)
     }
 
 
@@ -221,41 +436,47 @@ def ops_login(pin: str = Form(...)) -> Dict[str, Any]:
 
 @router.get("/queue")
 def queue(
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     status: str = Query("all"),
     limit: int = Query(300, ge=1, le=500),
 ) -> Dict[str, Any]:
     """OPS CORE v1: cola común enriquecida con familia, tipo y datos humanos."""
     _require_operator(x_operator_token)
+    scope = load_ops_case_scope(request)
 
     select_sql = """
-        SELECT id, status, payment_status, product_code, contact_email,
-               created_at, updated_at, contact_name, department, case_type,
-               category, organismo, expediente_ref,
-               COALESCE(interested_data, '{}'::jsonb) AS interested_data,
-               customer_comment, source_module
-        FROM cases
+        SELECT c.id, c.status, c.payment_status, c.product_code, c.contact_email,
+               c.created_at, c.updated_at, c.contact_name, c.department,
+               c.case_type, c.category, c.organismo, c.expediente_ref,
+               COALESCE(c.interested_data, '{}'::jsonb) AS interested_data,
+               c.customer_comment, c.source_module
+        FROM cases c
     """
+    scope_sql, scope_params = ops_case_scope_filter(scope)
 
     engine = get_engine()
     with engine.begin() as conn:
         if status == "ready_to_submit":
             rows = conn.execute(text(select_sql + """
-                WHERE status='ready_to_submit'
-                  AND payment_status='paid'
-                  AND authorized=TRUE
-                ORDER BY created_at ASC LIMIT :limit
-            """), {"limit": limit}).fetchall()
+                WHERE c.status='ready_to_submit'
+                  AND c.payment_status='paid'
+                  AND c.authorized=TRUE
+                  AND """ + scope_sql + """
+                ORDER BY c.created_at ASC LIMIT :limit
+            """), {**scope_params, "limit": limit}).fetchall()
         elif status == "all":
             rows = conn.execute(text(select_sql + """
-                WHERE COALESCE(status,'') <> 'archived_test'
-                ORDER BY updated_at DESC LIMIT :limit
-            """), {"limit": limit}).fetchall()
+                WHERE COALESCE(c.status,'') <> 'archived_test'
+                  AND """ + scope_sql + """
+                ORDER BY c.updated_at DESC LIMIT :limit
+            """), {**scope_params, "limit": limit}).fetchall()
         else:
             rows = conn.execute(text(select_sql + """
-                WHERE status=:status
-                ORDER BY updated_at DESC LIMIT :limit
-            """), {"status": status, "limit": limit}).fetchall()
+                WHERE c.status=:status
+                  AND """ + scope_sql + """
+                ORDER BY c.updated_at DESC LIMIT :limit
+            """), {**scope_params, "status": status, "limit": limit}).fetchall()
 
     items = []
     for r in rows:
@@ -308,6 +529,7 @@ def queue(
 
 @router.get("/presented-cases")
 def list_presented_cases_safe(
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     q: Optional[str] = Query(default=None),
     limit: int = Query(100, ge=1, le=500),
@@ -318,6 +540,8 @@ def list_presented_cases_safe(
     Evita conflictos con /ops/cases/{case_id}.
     """
     _require_operator(x_operator_token)
+    scope = load_ops_case_scope(request)
+    scope_sql, scope_params = ops_case_scope_filter(scope)
 
     term = (q or "").strip()
 
@@ -336,6 +560,7 @@ def list_presented_cases_safe(
                         OR c.status ILIKE '%%presentado%%'
                     )
                     AND {PRESENTED_EVIDENCE_SQL}
+                    AND {scope_sql}
                     AND (
                         CAST(c.id AS TEXT) ILIKE :term
                         OR COALESCE(c.expediente_ref, '') ILIKE :term
@@ -346,7 +571,7 @@ def list_presented_cases_safe(
                     LIMIT :limit
                     """
                 ),
-                {"term": f"%{term}%", "limit": limit},
+                {**scope_params, "term": f"%{term}%", "limit": limit},
             ).fetchall()
         else:
             rows = conn.execute(
@@ -361,11 +586,12 @@ def list_presented_cases_safe(
                         OR c.status ILIKE '%%presentado%%'
                     )
                     AND {PRESENTED_EVIDENCE_SQL}
+                    AND {scope_sql}
                     ORDER BY c.updated_at DESC
                     LIMIT :limit
                     """
                 ),
-                {"limit": limit},
+                {**scope_params, "limit": limit},
             ).fetchall()
 
     items = [
@@ -384,15 +610,21 @@ def list_presented_cases_safe(
     return {"ok": True, "count": len(items), "items": items}
 
 
-@router.get("/cases/{case_id}/documents")
+@router.get(
+    "/cases/{case_id}/documents",
+    dependencies=[Depends(require_current_case_scope)],
+)
 def list_documents(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ) -> Dict[str, Any]:
     _require_operator(x_operator_token)
 
     engine = get_engine()
     with engine.begin() as conn:
+        scope = load_ops_case_scope(request)
+        require_case_in_scope(conn, scope=scope, case_id=case_id)
         rows = conn.execute(
             text(
                 """
@@ -440,9 +672,13 @@ def download_document(
     )
 
 
-@router.get("/cases/{case_id}/events")
+@router.get(
+    "/cases/{case_id}/events",
+    dependencies=[Depends(require_current_case_scope)],
+)
 def list_events(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     limit: int = Query(200, ge=1, le=1000),
 ) -> Dict[str, Any]:
@@ -450,6 +686,8 @@ def list_events(
 
     engine = get_engine()
     with engine.begin() as conn:
+        scope = load_ops_case_scope(request)
+        require_case_in_scope(conn, scope=scope, case_id=case_id)
         rows = conn.execute(
             text(
                 """
@@ -463,10 +701,15 @@ def list_events(
             {"case_id": case_id, "limit": limit},
         ).fetchall()
 
+    sanitize_payload = (
+        _sanitize_individual_operator_payload
+        if getattr(scope, "individual_session", False)
+        else _sanitize_operator_payload
+    )
     items = [
         {
             "type": r[0],
-            "payload": _sanitize_operator_payload(r[1]),
+            "payload": sanitize_payload(r[1]),
             "created_at": r[2],
         }
         for r in rows
@@ -614,9 +857,13 @@ def _validated_submitted_at(value: str) -> str:
     raise HTTPException(status_code=400, detail="submitted_at no tiene formato ISO válido")
 
 
-@router.post("/cases/{case_id}/mark-submitted")
+@router.post(
+    "/cases/{case_id}/mark-submitted",
+    dependencies=[Depends(require_current_case_scope)],
+)
 def mark_submitted(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     channel: str = Form("DGT"),
     registro: Optional[str] = Form(default=None),
@@ -632,6 +879,8 @@ def mark_submitted(
 
     engine = get_engine()
     with engine.begin() as conn:
+        scope = load_ops_case_scope(request)
+        require_case_in_scope(conn, scope=scope, case_id=case_id)
         authority = _require_paid_and_authorized(conn, case_id)
 
         row = conn.execute(
@@ -709,9 +958,13 @@ def mark_submitted(
     }
 
 
-@router.post("/cases/{case_id}/upload-justificante")
+@router.post(
+    "/cases/{case_id}/upload-justificante",
+    dependencies=[Depends(require_current_case_scope)],
+)
 async def upload_justificante(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     file: UploadFile = File(...),
     kind: str = Form("justificante_presentacion"),
@@ -730,6 +983,8 @@ async def upload_justificante(
 
     engine = get_engine()
     with engine.begin() as conn:
+        scope = load_ops_case_scope(request)
+        require_case_in_scope(conn, scope=scope, case_id=case_id)
         _require_paid_and_authorized(conn, case_id)
 
         _, ext = os.path.splitext(filename.lower())
@@ -795,7 +1050,10 @@ async def upload_justificante(
         "custody": "rtm_internal_only",
     }
 
-@router.post("/cases/{case_id}/upload-external-document")
+@router.post(
+    "/cases/{case_id}/upload-external-document",
+    dependencies=[Depends(require_current_case_scope)],
+)
 async def upload_external_document(
     case_id: str,
 ) -> None:
@@ -814,9 +1072,13 @@ async def upload_external_document(
     )
 
 
-@router.post("/cases/{case_id}/register-manual-submission")
+@router.post(
+    "/cases/{case_id}/register-manual-submission",
+    dependencies=[Depends(require_current_case_scope)],
+)
 async def register_manual_submission(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     organismo: str = Form(...),
     registro: str = Form(...),
@@ -855,6 +1117,8 @@ async def register_manual_submission(
 
     engine = get_engine()
     with engine.begin() as conn:
+        scope = load_ops_case_scope(request)
+        require_case_in_scope(conn, scope=scope, case_id=case_id)
         authority = _require_paid_and_authorized(conn, case_id)
 
         row = conn.execute(
@@ -1102,15 +1366,21 @@ def _ensure_standard_followups_after_manual_submission(conn, case_id: str, organ
         )
 
 
-@router.get("/cases/{case_id}/followups")
+@router.get(
+    "/cases/{case_id}/followups",
+    dependencies=[Depends(require_current_case_scope)],
+)
 def list_case_followups(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ) -> Dict[str, Any]:
     _require_operator(x_operator_token)
 
     engine = get_engine()
     with engine.begin() as conn:
+        scope = load_ops_case_scope(request)
+        require_case_in_scope(conn, scope=scope, case_id=case_id)
         _case_exists(conn, case_id)
 
         rows = conn.execute(
@@ -1167,12 +1437,14 @@ def list_case_followups(
 
 @router.get("/followups")
 def list_all_followups(
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     status: str = Query("all"),
     limit: int = Query(500, ge=1, le=500),
 ) -> Dict[str, Any]:
     """Bandeja global de seguimientos para OPS, protegida por token de operador."""
     _require_operator(x_operator_token)
+    scope = load_ops_case_scope(request)
 
     normalized_status = (status or "all").strip().lower()
     if normalized_status not in {"all", "pending", "resolved"}:
@@ -1182,7 +1454,8 @@ def list_all_followups(
         )
 
     where_status = ""
-    params: Dict[str, Any] = {"limit": limit}
+    scope_sql, scope_params = ops_case_scope_filter(scope)
+    params: Dict[str, Any] = {**scope_params, "limit": limit}
     if normalized_status != "all":
         where_status = "AND f.status = :followup_status"
         params["followup_status"] = normalized_status
@@ -1204,6 +1477,7 @@ def list_all_followups(
                 FROM ops_followups f
                 JOIN cases c ON c.id = f.case_id
                 WHERE COALESCE(c.status, '') <> 'archived_test'
+                  AND {scope_sql}
                   {where_status}
                 ORDER BY
                   CASE WHEN f.status = 'pending' THEN 0 ELSE 1 END,
@@ -1292,6 +1566,7 @@ def list_all_followups(
 
 @router.get("/followups/due")
 def list_due_followups(
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     days: int = Query(7, ge=0, le=365),
     limit: int = Query(100, ge=1, le=500),
@@ -1301,6 +1576,8 @@ def list_due_followups(
     Útil para dashboard OPS.
     """
     _require_operator(x_operator_token)
+    scope = load_ops_case_scope(request)
+    scope_sql, scope_params = ops_case_scope_filter(scope)
 
     engine = get_engine()
     with engine.begin() as conn:
@@ -1313,11 +1590,16 @@ def list_due_followups(
                 JOIN cases c ON c.id = f.case_id
                 WHERE f.status = 'pending'
                   AND f.due_at <= NOW() + (:days || ' days')::interval
+                  AND """ + scope_sql + """
                 ORDER BY f.due_at ASC
                 LIMIT :limit
                 """
             ),
-            {"days": days, "limit": limit},
+            {
+                **scope_params,
+                "days": days,
+                "limit": limit,
+            },
         ).fetchall()
 
     return {
@@ -1340,9 +1622,13 @@ def list_due_followups(
     }
 
 
-@router.post("/cases/{case_id}/followups")
+@router.post(
+    "/cases/{case_id}/followups",
+    dependencies=[Depends(require_current_case_scope)],
+)
 def create_case_followup(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     kind: str = Form("seguimiento"),
     title: str = Form(...),
@@ -1359,6 +1645,8 @@ def create_case_followup(
 
     engine = get_engine()
     with engine.begin() as conn:
+        scope = load_ops_case_scope(request)
+        require_case_in_scope(conn, scope=scope, case_id=case_id)
         _case_exists(conn, case_id)
 
         _create_followup(
@@ -1388,10 +1676,14 @@ def create_case_followup(
     return {"ok": True, "case_id": case_id}
 
 
-@router.post("/cases/{case_id}/followups/{followup_id}/resolve")
+@router.post(
+    "/cases/{case_id}/followups/{followup_id}/resolve",
+    dependencies=[Depends(require_current_case_scope)],
+)
 def resolve_case_followup(
     case_id: str,
     followup_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     note: Optional[str] = Form(default=None),
 ) -> Dict[str, Any]:
@@ -1399,6 +1691,8 @@ def resolve_case_followup(
 
     engine = get_engine()
     with engine.begin() as conn:
+        scope = load_ops_case_scope(request)
+        require_case_in_scope(conn, scope=scope, case_id=case_id)
         _case_exists(conn, case_id)
 
         res = conn.execute(
@@ -1434,9 +1728,13 @@ def resolve_case_followup(
     return {"ok": True, "case_id": case_id, "followup_id": followup_id, "status": "resolved"}
 
 
-@router.post("/cases/{case_id}/restore-real-case")
+@router.post(
+    "/cases/{case_id}/restore-real-case",
+    dependencies=[Depends(require_current_case_scope)],
+)
 def restore_real_case(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     note: Optional[str] = Form(default=None),
 ) -> Dict[str, Any]:
@@ -1456,6 +1754,8 @@ def restore_real_case(
     engine = get_engine()
 
     with engine.begin() as conn:
+        scope = load_ops_case_scope(request)
+        require_case_in_scope(conn, scope=scope, case_id=case_id)
         row = conn.execute(
             text(
                 """
@@ -1580,6 +1880,7 @@ def restore_real_case(
 
 @router.get("/cases/presented")
 def list_presented_cases(
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
     q: Optional[str] = Query(default=None),
     limit: int = Query(100, ge=1, le=500),
@@ -1589,6 +1890,8 @@ def list_presented_cases(
     Query robusta sin ANY(:lista), para evitar problemas de binding.
     """
     _require_operator(x_operator_token)
+    scope = load_ops_case_scope(request)
+    scope_sql, scope_params = ops_case_scope_filter(scope)
 
     term = (q or "").strip()
 
@@ -1607,6 +1910,7 @@ def list_presented_cases(
                         OR c.status ILIKE '%%presentado%%'
                     )
                     AND {PRESENTED_EVIDENCE_SQL}
+                    AND {scope_sql}
                     AND (
                         CAST(c.id AS TEXT) ILIKE :term
                         OR COALESCE(c.expediente_ref, '') ILIKE :term
@@ -1617,7 +1921,7 @@ def list_presented_cases(
                     LIMIT :limit
                     """
                 ),
-                {"term": f"%{term}%", "limit": limit},
+                {**scope_params, "term": f"%{term}%", "limit": limit},
             ).fetchall()
         else:
             rows = conn.execute(
@@ -1632,11 +1936,12 @@ def list_presented_cases(
                         OR c.status ILIKE '%%presentado%%'
                     )
                     AND {PRESENTED_EVIDENCE_SQL}
+                    AND {scope_sql}
                     ORDER BY c.updated_at DESC
                     LIMIT :limit
                     """
                 ),
-                {"limit": limit},
+                {**scope_params, "limit": limit},
             ).fetchall()
 
     items = []
@@ -1656,9 +1961,13 @@ def list_presented_cases(
     return {"ok": True, "count": len(items), "items": items}
 
 
-@router.post("/cases/{case_id}/rebuild-followups")
+@router.post(
+    "/cases/{case_id}/rebuild-followups",
+    dependencies=[Depends(require_current_case_scope)],
+)
 def rebuild_followups(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     """
@@ -1673,6 +1982,8 @@ def rebuild_followups(
     engine = get_engine()
 
     with engine.begin() as conn:
+        scope = load_ops_case_scope(request)
+        require_case_in_scope(conn, scope=scope, case_id=case_id)
         row = conn.execute(
             text(
                 """
@@ -1756,7 +2067,10 @@ def rebuild_followups(
     }
 
 
-@router.post("/cases/{case_id}/force-ready-to-submit")
+@router.post(
+    "/cases/{case_id}/force-ready-to-submit",
+    dependencies=[Depends(require_current_case_scope)],
+)
 def force_ready_to_submit(
     case_id: str,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
@@ -1841,7 +2155,10 @@ def force_ready_to_submit(
 
     return {"ok": True, "case_id": case_id, "status": "ready_to_submit"}
 
-@router.post("/cases/{case_id}/lab-force-ready-to-submit")
+@router.post(
+    "/cases/{case_id}/lab-force-ready-to-submit",
+    dependencies=[Depends(require_current_case_scope)],
+)
 def lab_force_ready_to_submit(
     case_id: str,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
@@ -1932,7 +2249,10 @@ def lab_force_ready_to_submit(
 
     return {"ok": True, "case_id": case_id, "status": "ready_to_submit"}
 
-@router.post("/cases/{case_id}/lab-force-authorize")
+@router.post(
+    "/cases/{case_id}/lab-force-authorize",
+    dependencies=[Depends(require_current_case_scope)],
+)
 def lab_force_authorize(
     case_id: str,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
@@ -1990,7 +2310,10 @@ def lab_force_authorize(
 
     return {"ok": True, "case_id": case_id, "authorized": True}
 
-@router.post("/cases/{case_id}/lab-force-paid")
+@router.post(
+    "/cases/{case_id}/lab-force-paid",
+    dependencies=[Depends(require_current_case_scope)],
+)
 def lab_force_paid(
     case_id: str,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),

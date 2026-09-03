@@ -52,6 +52,9 @@ def main(argv: list[str] | None = None) -> int:
         "credential_rotation_available": False,
         "raw_evidence_available": False,
         "legacy_login_unchanged": True,
+        "legacy_login_retired_in_staging": True,
+        "non_staging_legacy_login_unchanged": True,
+        "shared_ops_login_accepted": False,
         "checks": {},
         "blockers": [],
     }

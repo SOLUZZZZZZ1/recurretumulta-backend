@@ -48,6 +48,9 @@ from rtm_core.document_extraction_migration import (
     router as rtm_core_document_extraction_migration_router,
 )
 from rtm_core.operator_auth_router import router as rtm_operator_auth_router
+from rtm_core.legacy_ops_session_bridge import (
+    legacy_ops_individual_session_bridge,
+)
 from rtm_core.operator_admin_router import (
     router as rtm_operator_admin_router,
 )
@@ -79,10 +82,33 @@ install_safe_extraction_policy()
 
 app = FastAPI(title="RecurreTuMulta Backend", version="0.1.0")
 
+# En staging, las superficies OPS legacy dejan de aceptar la credencial
+# compartida del navegador. Se registra antes de CORS para que también las
+# denegaciones del puente conserven el contrato CORS del frontend.
+app.middleware("http")(legacy_ops_individual_session_bridge)
+
 _NO_STORE_HEADERS = {
     "Cache-Control": "no-store, max-age=0",
     "Pragma": "no-cache",
 }
+
+
+def _has_sensitive_operator_validation_input(path: str) -> bool:
+    """Reconoce solo rutas cuyos errores 422 podrían reflejar credenciales."""
+
+    normalized = "/" + "/".join(
+        segment for segment in str(path or "").split("/") if segment
+    )
+    if normalized == "/ops/auth" or normalized.startswith("/ops/auth/"):
+        return True
+    segments = normalized.strip("/").split("/")
+    if segments == ["ops", "admin", "operators"]:
+        return True
+    return (
+        len(segments) == 6
+        and segments[:3] == ["ops", "admin", "operators"]
+        and segments[4:] == ["credentials", "rotate"]
+    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -93,7 +119,7 @@ async def redact_operator_auth_validation_error(
     """No refleja inputs sensibles en errores 422 de autenticacion."""
 
     path = request.url.path
-    if path != "/ops/auth" and not path.startswith("/ops/auth/"):
+    if not _has_sensitive_operator_validation_input(path):
         return await request_validation_exception_handler(request, exc)
     return JSONResponse(
         status_code=422,

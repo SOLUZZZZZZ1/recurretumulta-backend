@@ -132,6 +132,11 @@ class OperatorAdminContractTest(unittest.TestCase):
         self.assertIn('"read_only": True', source)
         self.assertIn('"/ops/login" in paths', source)
         self.assertIn('"raw_evidence_available": False', source)
+        self.assertIn('"shared_ops_login_accepted": False', source)
+        self.assertIn('"legacy_login_retired_in_staging": True', source)
+        self.assertIn(
+            '"non_staging_legacy_login_unchanged": True', source
+        )
         self.assertNotIn("--apply", source)
 
     def test_preflight_refuses_outside_staging_before_database_access(self):

@@ -3,6 +3,9 @@ from __future__ import annotations
 import unittest
 
 from rtm_core.operator_auth_request import (
+    OPERATOR_AUTH_MODE_FAIL_CLOSED,
+    OPERATOR_AUTH_MODE_INDIVIDUAL,
+    OPERATOR_AUTH_MODE_LEGACY,
     OperatorAuthRoutesDisabled,
     OperatorAuthRuntimeMisconfigured,
     build_request_fingerprint,
@@ -10,11 +13,67 @@ from rtm_core.operator_auth_request import (
     load_operator_auth_runtime_config,
     mask_ip,
     normalize_device_token,
+    operator_auth_environment_mode,
     parse_user_agent,
 )
 
 
 class OperatorAuthRequestTest(unittest.TestCase):
+    def test_environment_mode_never_reopens_staging_on_identity_drift(self):
+        self.assertEqual(
+            operator_auth_environment_mode({"RTM_ENV": "staging"}),
+            OPERATOR_AUTH_MODE_INDIVIDUAL,
+        )
+        for environment in ({}, {"RTM_ENV": "production"}):
+            with self.subTest(environment=environment):
+                self.assertEqual(
+                    operator_auth_environment_mode(
+                        {
+                            **environment,
+                            "RTM_ENABLE_OPERATOR_AUTH_V1": "1",
+                        }
+                    ),
+                    OPERATOR_AUTH_MODE_FAIL_CLOSED,
+                )
+        for marker in (
+            "RTM_INSTANCE_ID",
+            "RTM_DATA_NAMESPACE",
+            "RENDER_SERVICE_NAME",
+        ):
+            with self.subTest(marker=marker):
+                self.assertEqual(
+                    operator_auth_environment_mode(
+                        {
+                            "RTM_ENV": "stagin",
+                            marker: "recurretumulta-staging-service",
+                        }
+                    ),
+                    OPERATOR_AUTH_MODE_FAIL_CLOSED,
+                )
+        self.assertEqual(
+            operator_auth_environment_mode(
+                {
+                    "RTM_ENV": "production",
+                    "RTM_ENABLE_OPERATOR_AUTH_V1": "definitely",
+                }
+            ),
+            OPERATOR_AUTH_MODE_FAIL_CLOSED,
+        )
+
+    def test_environment_mode_preserves_normal_legacy_production(self):
+        self.assertEqual(
+            operator_auth_environment_mode(
+                {
+                    "RTM_ENV": "production",
+                    "RTM_ENABLE_OPERATOR_AUTH_V1": "0",
+                    "RTM_INSTANCE_ID": "recurretumulta-production",
+                    "RTM_DATA_NAMESPACE": "rtm_production",
+                    "RENDER_SERVICE_NAME": "recurretumulta-api",
+                }
+            ),
+            OPERATOR_AUTH_MODE_LEGACY,
+        )
+
     def test_feature_is_disabled_by_default(self):
         with self.assertRaises(OperatorAuthRoutesDisabled):
             load_operator_auth_runtime_config(

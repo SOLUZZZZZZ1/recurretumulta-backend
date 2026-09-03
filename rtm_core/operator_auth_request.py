@@ -20,9 +20,17 @@ from rtm_core.operator_auth_crypto import hmac_identifier
 
 
 OPERATOR_AUTH_REQUEST_VERSION = "rtm_operator_auth_request_v1_0"
+OPERATOR_AUTH_MODE_INDIVIDUAL = "individual"
+OPERATOR_AUTH_MODE_LEGACY = "legacy"
+OPERATOR_AUTH_MODE_FAIL_CLOSED = "fail_closed"
 _DEVICE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{24,200}$")
 _TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 _FALSE_VALUES = {"0", "false", "no", "off", "disabled", ""}
+_STAGING_IDENTITY_VARIABLES = (
+    "RTM_INSTANCE_ID",
+    "RTM_DATA_NAMESPACE",
+    "RENDER_SERVICE_NAME",
+)
 
 
 class OperatorAuthRoutesDisabled(RuntimeError):
@@ -80,6 +88,37 @@ def _strict_flag(value: str | None, *, default: bool = False) -> bool:
     if raw in _FALSE_VALUES:
         return False
     raise ValueError("Valor booleano no reconocido")
+
+
+def operator_auth_environment_mode(
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """Clasifica la frontera legacy sin confiar solo en ``RTM_ENV``.
+
+    El despliegue inicial de sesiones individuales pertenece exclusivamente a
+    staging. Si el flag las solicita fuera de staging, tiene un valor inválido
+    o cualquier identidad técnica sigue marcando staging, la única respuesta
+    segura es cerrar el acceso. El passthrough legacy queda reservado a un
+    entorno no marcado en el que la función no se ha solicitado.
+    """
+
+    source = environ if environ is not None else os.environ
+    environment = str(source.get("RTM_ENV") or "").strip().casefold()
+    raw_feature = source.get("RTM_ENABLE_OPERATOR_AUTH_V1")
+    try:
+        feature_enabled = _strict_flag(raw_feature, default=False)
+    except ValueError:
+        return OPERATOR_AUTH_MODE_FAIL_CLOSED
+
+    staging_identity_present = any(
+        "staging" in str(source.get(variable) or "").strip().casefold()
+        for variable in _STAGING_IDENTITY_VARIABLES
+    )
+    if environment == "staging":
+        return OPERATOR_AUTH_MODE_INDIVIDUAL
+    if feature_enabled or staging_identity_present:
+        return OPERATOR_AUTH_MODE_FAIL_CLOSED
+    return OPERATOR_AUTH_MODE_LEGACY
 
 
 def load_operator_auth_runtime_config(

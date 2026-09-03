@@ -284,6 +284,15 @@ async def _run_http_smoke(
                 "reauthentication_required"
             ) is True
             and first_change.json().get("password_returned") is False
+            and first_change.json().get(
+                "shared_ops_login_accepted"
+            ) is False
+            and first_change.json().get(
+                "legacy_login_retired_in_staging"
+            ) is True
+            and first_change.json().get(
+                "non_staging_legacy_login_unchanged"
+            ) is True
         )
         old_session = await client.get(
             "/ops/auth/me",
@@ -632,13 +641,16 @@ def main() -> int:
     report: dict[str, Any] = {
         "ok": False,
         "authority": "rtm_operator_lifecycle_smoke",
-        "version": "rtm_operator_lifecycle_smoke_v1_0",
+        "version": "rtm_operator_lifecycle_smoke_v1_1",
         "environment": (os.getenv("RTM_ENV") or "").strip().lower() or "unset",
         "synthetic_only": True,
         "transactional": True,
         "public_registration_available": False,
         "passwords_returned": False,
         "legacy_login_unchanged": True,
+        "legacy_login_retired_in_staging": True,
+        "non_staging_legacy_login_unchanged": True,
+        "shared_ops_login_accepted": False,
         "run_id": uuid.uuid4().hex,
         "checks": {},
         "cleanup": {"database_rolled_back": False, "error": None},

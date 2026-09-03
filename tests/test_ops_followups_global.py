@@ -3,11 +3,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import HTTPException
 
 import ops
+
+
+def _request():
+    return SimpleNamespace(state=SimpleNamespace())
 
 
 class _Result:
@@ -79,10 +84,14 @@ class GlobalFollowupsTest(unittest.TestCase):
 
     def test_global_followups_include_case_context_and_urgency(self):
         engine = _Engine([self.row])
-        with patch.dict(os.environ, {"OPERATOR_TOKEN": "operator-test"}), patch(
+        with patch.dict(
+            os.environ,
+            {"OPERATOR_TOKEN": "operator-test", "RTM_ENV": "production"},
+        ), patch(
             "ops.get_engine", return_value=engine
         ):
             result = ops.list_all_followups(
+                request=_request(),
                 x_operator_token="operator-test",
                 status="all",
                 limit=500,
@@ -99,14 +108,21 @@ class GlobalFollowupsTest(unittest.TestCase):
         self.assertTrue(item["overdue"])
         self.assertLess(item["days_left"], 0)
         self.assertIn("JOIN cases", engine.connection.statement)
+        self.assertNotIn("rtm_work_assignments", engine.connection.statement)
         self.assertNotIn("followup_status", engine.connection.params)
+        self.assertNotIn("rtm_ops_scope_all", engine.connection.params)
+        self.assertNotIn("rtm_ops_operator_id", engine.connection.params)
 
     def test_status_filter_is_parameterized(self):
         engine = _Engine([self.row])
-        with patch.dict(os.environ, {"OPERATOR_TOKEN": "operator-test"}), patch(
+        with patch.dict(
+            os.environ,
+            {"OPERATOR_TOKEN": "operator-test", "RTM_ENV": "production"},
+        ), patch(
             "ops.get_engine", return_value=engine
         ):
             ops.list_all_followups(
+                request=_request(),
                 x_operator_token="operator-test",
                 status="pending",
                 limit=100,
@@ -116,9 +132,13 @@ class GlobalFollowupsTest(unittest.TestCase):
         self.assertIn("f.status = :followup_status", engine.connection.statement)
 
     def test_invalid_status_is_rejected_before_database_access(self):
-        with patch.dict(os.environ, {"OPERATOR_TOKEN": "operator-test"}):
+        with patch.dict(
+            os.environ,
+            {"OPERATOR_TOKEN": "operator-test", "RTM_ENV": "production"},
+        ):
             with self.assertRaises(HTTPException) as ctx:
                 ops.list_all_followups(
+                    request=_request(),
                     x_operator_token="operator-test",
                     status="unknown",
                     limit=100,

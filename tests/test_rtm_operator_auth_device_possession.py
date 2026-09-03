@@ -5,9 +5,10 @@ import json
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.requests import Request
@@ -208,6 +209,75 @@ class OperatorDevicePossessionTest(unittest.TestCase):
 
 
 class OperatorAuthAppHardeningTest(unittest.TestCase):
+    def test_auth_status_declares_the_authoritative_rollout_boundary(self):
+        response = Response()
+        config = SimpleNamespace(available=True, hmac_key="H" * 32)
+        with (
+            patch.object(
+                auth_router,
+                "operator_auth_environment_mode",
+                return_value="individual",
+            ),
+            patch.object(
+                auth_router,
+                "load_operator_auth_runtime_config",
+                return_value=config,
+            ),
+        ):
+            payload = asyncio.run(auth_router.operator_auth_status(response))
+
+        self.assertIs(payload["shared_ops_login_accepted"], False)
+        self.assertIs(payload["legacy_login_retired_in_staging"], True)
+        self.assertIs(
+            payload["non_staging_legacy_login_unchanged"], True
+        )
+        self.assertEqual(response.headers["cache-control"], "no-store, max-age=0")
+
+    def test_successful_login_repeats_the_authoritative_rollout_boundary(self):
+        decision = SimpleNamespace(
+            ok=True,
+            device_token=None,
+            token="T" * 48,
+            session_id="44444444-4444-4444-8444-444444444444",
+            expires_at=self._future_time(),
+            absolute_expires_at=self._future_time(),
+            device_id="55555555-5555-4555-8555-555555555555",
+            operator={"email": "operator@example.test"},
+        )
+        response = Response()
+        with (
+            patch.object(auth_router, "_runtime_config", return_value=object()),
+            patch.object(
+                auth_router,
+                "_fingerprint",
+                return_value=SimpleNamespace(request_id="request-rollout"),
+            ),
+            patch.object(auth_router, "login_operator", return_value=decision),
+        ):
+            payload = asyncio.run(
+                auth_router.operator_login(
+                    auth_router.OperatorLoginRequest(
+                        email="operator@example.test",
+                        password="synthetic-password",
+                    ),
+                    _request("/ops/auth/login"),
+                    response,
+                    None,
+                    None,
+                    Mock(),
+                )
+            )
+
+        self.assertIs(payload["shared_ops_login_accepted"], False)
+        self.assertIs(payload["legacy_login_retired_in_staging"], True)
+        self.assertIs(
+            payload["non_staging_legacy_login_unchanged"], True
+        )
+
+    @staticmethod
+    def _future_time():
+        return datetime(2026, 9, 3, 23, 0, tzinfo=timezone.utc)
+
     def test_auth_validation_error_never_reflects_password_or_input(self):
         secret = "validation-password-canary"
         error = RequestValidationError(

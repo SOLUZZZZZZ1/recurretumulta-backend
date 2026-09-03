@@ -450,10 +450,13 @@ class RtmPresenterBackendNoExportContractTest(unittest.TestCase):
         connection = _DocumentsConnection()
         with (
             mock.patch.object(ops, "_require_operator", return_value=None),
+            mock.patch.object(ops, "load_ops_case_scope", return_value=object()),
+            mock.patch.object(ops, "require_case_in_scope", return_value=None),
             mock.patch.object(ops, "get_engine", return_value=_Engine(connection)),
         ):
             payload = ops.list_documents(
                 case_id="synthetic-case",
+                request=types.SimpleNamespace(state=types.SimpleNamespace()),
                 x_operator_token="synthetic-operator-token",
             )
 

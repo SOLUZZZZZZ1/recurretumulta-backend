@@ -51,6 +51,9 @@ class OperatorLifecycleContractTest(unittest.TestCase):
             '"direct_supervisor_creation_available": False',
             '"passwords_returned": False',
             '"legacy_login_unchanged": True',
+            '"legacy_login_retired_in_staging": True',
+            '"non_staging_legacy_login_unchanged": True',
+            '"shared_ops_login_accepted": False',
         ):
             self.assertIn(declaration, source)
 
@@ -105,6 +108,31 @@ class OperatorLifecycleContractTest(unittest.TestCase):
         self.assertIn('"password_returned": False', source)
         self.assertNotIn('"temporary_password": payload.temporary_password', source)
         self.assertNotIn('"new_password": payload.new_password', source)
+
+    def test_first_password_change_rejects_shared_ops_login_explicitly(self):
+        router_source = ROUTER.read_text(encoding="utf-8")
+        route = router_source[
+            router_source.index("async def lifecycle_change_own_password"):
+        ]
+        self.assertIn('"shared_ops_login_accepted": False', route)
+        self.assertIn('"legacy_login_retired_in_staging": True', route)
+        self.assertIn(
+            '"non_staging_legacy_login_unchanged": True', route
+        )
+
+        smoke_source = SMOKE.read_text(encoding="utf-8")
+        self.assertIn(
+            'first_change.json().get(\n                "shared_ops_login_accepted"',
+            smoke_source,
+        )
+        self.assertIn(
+            'first_change.json().get(\n                "legacy_login_retired_in_staging"',
+            smoke_source,
+        )
+        self.assertIn(
+            '"rtm_operator_lifecycle_smoke_v1_1"',
+            smoke_source,
+        )
 
     def test_repository_hashes_with_argon2id_helper(self):
         source = REPOSITORY.read_text(encoding="utf-8")

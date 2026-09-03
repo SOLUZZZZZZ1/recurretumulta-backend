@@ -5,7 +5,7 @@ import json
 import os
 from typing import Optional, Any, Dict
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -21,8 +21,17 @@ from rtm_presenter_policy import (
     PresenterRuntimeDisabled,
     load_presenter_runtime_configuration,
 )
+from rtm_core.ops_case_scope import (
+    load_ops_case_scope,
+    require_case_in_scope,
+    require_current_case_scope,
+)
 
-router = APIRouter(prefix="/ops/cases", tags=["ops-operator"])
+router = APIRouter(
+    prefix="/ops/cases",
+    tags=["ops-operator"],
+    dependencies=[Depends(require_current_case_scope)],
+)
 
 
 def _utcnow():
@@ -608,11 +617,14 @@ def send_complete_case_file(
 @router.get("/{case_id}")
 def get_case_detail(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     require_operator_token(x_operator_token)
     engine = get_engine()
     with engine.begin() as conn:
+        scope = load_ops_case_scope(request)
+        require_case_in_scope(conn, scope=scope, case_id=case_id)
         case = _case_or_404(conn, case_id)
 
         evs = conn.execute(
@@ -676,11 +688,14 @@ def get_case_detail(
 @router.get("/{case_id}/ai-overrides")
 def get_ai_overrides(
     case_id: str,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     require_operator_token(x_operator_token)
     engine = get_engine()
     with engine.begin() as conn:
+        scope = load_ops_case_scope(request)
+        require_case_in_scope(conn, scope=scope, case_id=case_id)
         _case_or_404(conn, case_id)
         overrides = _load_ai_overrides(conn, case_id)
 
@@ -785,11 +800,14 @@ def approve_case(
 def send_to_manual_review(
     case_id: str,
     body: ManualBody,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     require_operator_token(x_operator_token)
     engine = get_engine()
     with engine.begin() as conn:
+        scope = load_ops_case_scope(request)
+        require_case_in_scope(conn, scope=scope, case_id=case_id)
         _case_or_404(conn, case_id)
         _set_status(conn, case_id, "manual_review")
         _append_event(
@@ -807,11 +825,14 @@ def send_to_manual_review(
 def add_operator_note(
     case_id: str,
     body: NoteBody,
+    request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
 ):
     require_operator_token(x_operator_token)
     engine = get_engine()
     with engine.begin() as conn:
+        scope = load_ops_case_scope(request)
+        require_case_in_scope(conn, scope=scope, case_id=case_id)
         _case_or_404(conn, case_id)
         _append_event(
             conn,

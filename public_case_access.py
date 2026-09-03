@@ -13,12 +13,29 @@ import os
 import uuid
 
 from fastapi import HTTPException
+from rtm_core.operator_auth_request import (
+    OPERATOR_AUTH_MODE_FAIL_CLOSED,
+    OPERATOR_AUTH_MODE_LEGACY,
+    operator_auth_environment_mode,
+)
 
 
 PUBLIC_CASE_ACCESS_VERSION = "rtm_public_case_access_v1"
 PUBLIC_CASE_ACCESS_HEADER = "X-RTM-Case-Token"
 _TOKEN_PREFIX = "v1"
 _SECRET_ENV = "RTM_PUBLIC_CASE_ACCESS_SECRET"
+
+
+def _shared_operator_token_allowed() -> bool:
+    """Conserva el contrato legacy fuera de staging.
+
+    En staging las superficies OPS usan sesiones individuales. El secreto
+    compartido puede seguir existiendo para que los routers históricos lo
+    reciban de forma interna, pero deja de ser una capacidad aceptable desde
+    rutas públicas o legacy ajenas al puente de sesión.
+    """
+
+    return operator_auth_environment_mode() == OPERATOR_AUTH_MODE_LEGACY
 
 
 def _canonical_case_id(case_id: str) -> str:
@@ -76,7 +93,8 @@ def require_case_or_operator_access(
     expected_operator = (os.getenv("OPERATOR_TOKEN") or "").strip()
     received_operator = str(operator_token or "").strip()
     if (
-        expected_operator
+        _shared_operator_token_allowed()
+        and expected_operator
         and received_operator
         and hmac.compare_digest(received_operator, expected_operator)
     ):
@@ -85,6 +103,16 @@ def require_case_or_operator_access(
 
 
 def require_operator_case_access(case_id: str, operator_token: str | None) -> str:
+    if operator_auth_environment_mode() == OPERATOR_AUTH_MODE_FAIL_CLOSED:
+        raise HTTPException(
+            status_code=503,
+            detail="Autenticación individual no disponible",
+        )
+    if not _shared_operator_token_allowed():
+        raise HTTPException(
+            status_code=401,
+            detail="Autenticación individual requerida",
+        )
     expected = (os.getenv("OPERATOR_TOKEN") or "").strip()
     candidate = str(operator_token or "").strip()
     if not expected:

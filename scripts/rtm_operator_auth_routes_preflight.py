@@ -26,16 +26,57 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _middleware_dispatch_registered(app, expected_dispatch) -> bool:
+    """Comprueba la identidad de la función instalada, no solo sus helpers."""
+
+    return any(
+        getattr(middleware, "kwargs", {}).get("dispatch")
+        is expected_dispatch
+        for middleware in app.user_middleware
+    )
+
+
+def _execute_case_scope_probe(engine, text_factory, scope_sql: str) -> None:
+    """Planifica y ejecuta el filtro real dentro de una transacción read-only."""
+
+    with engine.connect() as scope_conn:
+        with scope_conn.begin():
+            scope_conn.execute(text_factory("SET TRANSACTION READ ONLY"))
+            scope_conn.execute(
+                text_factory(
+                    """
+                    SELECT c.id
+                    FROM cases c
+                    WHERE c.id = CAST(:rtm_ops_probe_case_id AS UUID)
+                      AND """ + scope_sql + """
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "rtm_ops_probe_case_id": (
+                        "00000000-0000-4000-8000-000000000001"
+                    ),
+                    "rtm_ops_operator_id": (
+                        "00000000-0000-4000-8000-000000000002"
+                    ),
+                    "rtm_ops_scope_all": False,
+                },
+            ).fetchone()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     report = {
         "ok": False,
         "authority": "rtm_operator_auth_routes_preflight",
-        "version": "rtm_operator_auth_routes_preflight_v1_0",
+        "version": "rtm_operator_auth_routes_preflight_v1_3",
         "environment": (os.getenv("RTM_ENV") or "").strip().lower() or "unset",
         "require_enabled": bool(args.require_enabled),
         "routes_published": True,
         "legacy_login_unchanged": True,
+        "legacy_login_retired_in_staging": True,
+        "non_staging_legacy_login_unchanged": True,
+        "shared_ops_login_accepted": False,
         "operator_creation_available": False,
         "checks": {},
         "blockers": [],
@@ -77,6 +118,9 @@ def main(argv: list[str] | None = None) -> int:
                     "id", "email", "password_hash", "status",
                     "failed_login_count", "locked_until", "auth_epoch",
                 },
+                "rtm_operator_roles": {
+                    "id", "code", "permissions", "active",
+                },
                 "rtm_operator_sessions": {
                     "id", "operator_id", "token_sha256", "status",
                     "absolute_expires_at", "auth_epoch", "device_id",
@@ -90,6 +134,23 @@ def main(argv: list[str] | None = None) -> int:
                 },
                 "rtm_operator_access_evidence": {
                     "id", "access_event_id", "retention_until",
+                },
+                "cases": {"id", "test_mode"},
+                "rtm_work_assignments": {
+                    "id", "case_id", "attention_item_id", "operator_id",
+                    "assignment_role", "status", "accepted_at",
+                    "released_at", "metadata",
+                },
+                "rtm_connect_a1s_tenants": {
+                    "id", "status", "synthetic_only", "metadata",
+                },
+                "rtm_connect_a1s_memberships": {
+                    "id", "tenant_id", "operator_id", "status",
+                    "synthetic_only", "revoked_at", "metadata",
+                },
+                "rtm_connect_a1s_case_bindings": {
+                    "id", "tenant_id", "case_id", "status",
+                    "synthetic_only", "revoked_at", "metadata",
                 },
             }
             missing: list[str] = []
@@ -114,6 +175,17 @@ def main(argv: list[str] | None = None) -> int:
             if missing:
                 report["blockers"].append("operator_auth_schema_not_ready")
 
+        from rtm_core.ops_case_scope import OPS_CASE_SCOPE_SQL
+        try:
+            _execute_case_scope_probe(engine, text, OPS_CASE_SCOPE_SQL)
+            report["checks"]["case_scope_sql_executable"] = True
+        except Exception as exc:
+            report["checks"]["case_scope_sql_executable"] = False
+            report["case_scope_sql_error"] = type(exc).__name__
+            report["blockers"].append(
+                "operator_auth_case_scope_sql_not_executable"
+            )
+
         from app import app
         paths = {route.path for route in app.routes}
         expected_paths = {
@@ -131,6 +203,29 @@ def main(argv: list[str] | None = None) -> int:
             report["blockers"].append("operator_auth_routes_not_wired")
         if "/ops/login" not in paths:
             report["blockers"].append("legacy_login_missing")
+
+        from rtm_core.legacy_ops_session_bridge import (
+            is_legacy_ops_path,
+            legacy_ops_individual_session_bridge,
+            legacy_ops_requires_supervisor,
+        )
+        bridge_registered = _middleware_dispatch_registered(
+            app,
+            legacy_ops_individual_session_bridge,
+        )
+        bridge_ready = (
+            bridge_registered
+            and is_legacy_ops_path("/ops/login")
+            and is_legacy_ops_path("/ai/expediente/run")
+            and legacy_ops_requires_supervisor("/ops/automation/tick")
+        )
+        report["checks"][
+            "legacy_ops_session_bridge_registered"
+        ] = bridge_registered
+        report["checks"]["legacy_ops_session_bridge_ready"] = bridge_ready
+        report["checks"]["shared_ops_login_accepted"] = False
+        if not bridge_ready:
+            report["blockers"].append("legacy_ops_session_bridge_not_ready")
 
         if config is not None and config.enabled:
             report["checks"]["staging_only"] = config.environment == "staging"

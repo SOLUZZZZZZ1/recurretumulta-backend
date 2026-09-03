@@ -1,8 +1,9 @@
 """Rutas staging de login individual y sesión de operadores RTM.
 
-El router convive con ``POST /ops/login``. La activación requiere
-``RTM_ENABLE_OPERATOR_AUTH_V1=1`` y queda cerrada fuera de staging.
-No contiene rutas de creación de operadores.
+La activación requiere ``RTM_ENABLE_OPERATOR_AUTH_V1=1`` y queda cerrada fuera
+de staging. El router no contiene rutas de creación de operadores. En staging,
+el puente de compatibilidad retira ``POST /ops/login`` para las superficies
+OPS migradas sin alterar los controles propios de Presenter.
 """
 
 from __future__ import annotations
@@ -23,12 +24,15 @@ from rtm_core.operator_auth_repository import (
     touch_operator_session,
 )
 from rtm_core.operator_auth_request import (
+    OPERATOR_AUTH_MODE_FAIL_CLOSED,
+    OPERATOR_AUTH_MODE_LEGACY,
     OperatorAuthRoutesDisabled,
     OperatorAuthRuntimeMisconfigured,
     build_request_fingerprint,
     extract_bearer_token,
     load_operator_auth_runtime_config,
     normalize_device_token,
+    operator_auth_environment_mode,
 )
 from rtm_core.operator_auth_service import (
     load_operator_session,
@@ -39,7 +43,7 @@ from rtm_core.operator_auth_service import (
 )
 
 
-OPERATOR_AUTH_ROUTES_VERSION = "rtm_operator_auth_routes_v1_2"
+OPERATOR_AUTH_ROUTES_VERSION = "rtm_operator_auth_routes_v1_3"
 router = APIRouter(prefix="/ops/auth", tags=["ops-operator-auth"])
 _NO_STORE_HEADERS = {
     "Cache-Control": "no-store, max-age=0",
@@ -68,6 +72,12 @@ async def operator_auth_connection() -> AsyncIterator[Connection]:
 
 
 def _runtime_config():
+    if operator_auth_environment_mode() == OPERATOR_AUTH_MODE_FAIL_CLOSED:
+        raise HTTPException(
+            status_code=503,
+            detail="Autenticación individual no disponible",
+            headers=_NO_STORE_HEADERS,
+        )
     try:
         return load_operator_auth_runtime_config(require_enabled=True)
     except OperatorAuthRoutesDisabled as exc:
@@ -198,10 +208,17 @@ def require_operator_device_possession(
 @router.get("/status")
 async def operator_auth_status(response: Response) -> dict[str, Any]:
     response.headers.update(_NO_STORE_HEADERS)
+    environment_mode = operator_auth_environment_mode()
     try:
         config = load_operator_auth_runtime_config(require_enabled=False)
-        available = config.available and len(config.hmac_key) >= 32
-        configuration_valid = True
+        configuration_valid = (
+            environment_mode != OPERATOR_AUTH_MODE_FAIL_CLOSED
+        )
+        available = (
+            configuration_valid
+            and config.available
+            and len(config.hmac_key) >= 32
+        )
     except OperatorAuthRuntimeMisconfigured:
         available = False
         configuration_valid = False
@@ -211,7 +228,12 @@ async def operator_auth_status(response: Response) -> dict[str, Any]:
         "individual_login_enabled": available,
         "configuration_valid": configuration_valid,
         "staging_only": True,
+        "shared_ops_login_accepted": (
+            environment_mode == OPERATOR_AUTH_MODE_LEGACY
+        ),
         "legacy_login_unchanged": True,
+        "legacy_login_retired_in_staging": True,
+        "non_staging_legacy_login_unchanged": True,
         "operator_creation_available": False,
     }
 
@@ -275,7 +297,10 @@ async def operator_login(
         "device_id": decision.device_id,
         "operator": decision.operator,
         "request_id": context.request_id,
+        "shared_ops_login_accepted": False,
         "legacy_login_unchanged": True,
+        "legacy_login_retired_in_staging": True,
+        "non_staging_legacy_login_unchanged": True,
     }
 
 
