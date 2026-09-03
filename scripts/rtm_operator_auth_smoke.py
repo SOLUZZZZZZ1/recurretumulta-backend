@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Smoke transaccional del núcleo de autenticación individual RTM.
 
-Crea únicamente rol, operador y sesiones sintéticas en staging y revierte toda
-la transacción. No publica rutas, no crea operadores reales y no toca casos.
+Crea únicamente rol, operador, dispositivo y sesiones sintéticas en staging y
+revierte toda la transacción. No publica rutas, no crea operadores reales y no
+toca casos.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPOSITORY_ROOT))
 
-SMOKE_VERSION = "rtm_operator_auth_smoke_v1_0"
+SMOKE_VERSION = "rtm_operator_auth_smoke_v1_1"
 _TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 _FALSE_VALUES = {"0", "false", "no", "off", "disabled"}
 
@@ -78,7 +79,9 @@ def main() -> int:
         from sqlalchemy import text
         from database import get_engine
         from rtm_core.operator_auth_crypto import (
+            generate_device_secret,
             generate_session_token,
+            hash_device_secret,
             hash_operator_password,
             hash_session_token,
             verify_operator_password,
@@ -99,6 +102,7 @@ def main() -> int:
             now = datetime.now(timezone.utc)
             role_id = uuid.uuid4()
             operator_id = uuid.uuid4()
+            device_id = str(uuid.uuid4())
             email = f"rtm-auth-smoke-{run_id[:12]}@recurretumulta.eu"
             password = "RTM synthetic passphrase 2026!"
             password_hash = hash_operator_password(password)
@@ -159,6 +163,50 @@ def main() -> int:
                 verify_operator_password(password_hash, "wrong-password-value").valid
             )
 
+            device_secret = generate_device_secret()
+            device_digest = hash_device_secret(device_secret)
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO rtm_operator_devices(
+                        id, operator_id, device_key_sha256, status,
+                        display_name, device_type, metadata,
+                        created_at, updated_at
+                    ) VALUES (
+                        CAST(:id AS UUID), CAST(:operator_id AS UUID),
+                        :device_key_sha256, 'known',
+                        'RTM STAGING AUTH DEVICE', 'bot',
+                        CAST(:metadata AS JSONB), :now, :now
+                    )
+                    """
+                ),
+                {
+                    "id": device_id,
+                    "operator_id": operator_id,
+                    "device_key_sha256": device_digest,
+                    "metadata": json.dumps({"synthetic": True}),
+                    "now": now,
+                },
+            )
+            report["checks"]["device_inserted"] = True
+            stored_device = connection.execute(
+                text(
+                    """
+                    SELECT device_key_sha256, status
+                    FROM rtm_operator_devices
+                    WHERE id=CAST(:id AS UUID)
+                    """
+                ),
+                {"id": device_id},
+            ).fetchone()
+            report["checks"]["device_stores_sha256_only"] = bool(
+                stored_device
+                and stored_device[0] == device_digest
+                and stored_device[0] != device_secret
+                and len(stored_device[0]) == 64
+                and stored_device[1] == "known"
+            )
+
             locked = None
             for _ in range(5):
                 locked = register_failed_login(connection, str(operator_id), now=now)
@@ -187,6 +235,7 @@ def main() -> int:
                 raw_token=raw_token,
                 auth_epoch=1,
                 now=now,
+                device_id=device_id,
                 metadata_json='{"synthetic": true}',
             )
             stored = connection.execute(
@@ -203,7 +252,9 @@ def main() -> int:
             )
             session = load_active_operator_session(connection, raw_token, now=now)
             report["checks"]["active_session_loaded"] = bool(
-                session and session.operator_id == str(operator_id)
+                session
+                and session.operator_id == str(operator_id)
+                and session.device_id == device_id
             )
 
             closed = close_operator_session(connection, session_id)
@@ -219,8 +270,19 @@ def main() -> int:
                 raw_token=second_token,
                 auth_epoch=1,
                 now=now,
+                device_id=device_id,
             )
             report["checks"]["second_session_created"] = bool(second_session_id)
+            second_session = load_active_operator_session(
+                connection,
+                second_token,
+                now=now,
+            )
+            report["checks"]["second_session_active_before_epoch_change"] = bool(
+                second_session
+                and second_session.operator_id == str(operator_id)
+                and second_session.device_id == device_id
+            )
             increment_operator_auth_epoch(connection, str(operator_id))
             report["checks"]["auth_epoch_invalidates_sessions"] = (
                 load_active_operator_session(connection, second_token, now=now) is None
@@ -232,6 +294,7 @@ def main() -> int:
             report["synthetic_ids"] = {
                 "role_id": str(role_id),
                 "operator_id": str(operator_id),
+                "device_id": device_id,
                 "session_id": str(session_id),
                 "second_session_id": str(second_session_id),
             }
