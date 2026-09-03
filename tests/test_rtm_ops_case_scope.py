@@ -183,6 +183,22 @@ class OpsCaseScopePolicyTest(unittest.TestCase):
         self.assertEqual(scope.role_code, "rtm.operator")
         self.assertEqual(scope.operator_id, OPERATOR_ID)
 
+    def test_list_scope_sql_has_only_declared_bind_parameters(self):
+        statement = ops_case_scope.text(ops_case_scope.OPS_CASE_SCOPE_SQL)
+        bindparams = getattr(statement, "_bindparams", None)
+        if bindparams is None:  # pragma: no cover - CI mínimo sin SQLAlchemy
+            self.skipTest("SQLAlchemy no está disponible")
+
+        self.assertEqual(
+            set(bindparams),
+            {"rtm_ops_operator_id", "rtm_ops_scope_all"},
+        )
+
+    def test_scope_source_has_no_accidental_boolean_bind_markers(self):
+        source = _source("rtm_core/ops_case_scope.py")
+        self.assertNotIn(":true", source)
+        self.assertNotIn(":false", source)
+
     def test_only_exact_supervisor_with_permission_sees_all(self):
         with patch.dict(os.environ, {"RTM_ENV": "staging"}, clear=True):
             supervisor = ops_case_scope.load_ops_case_scope(
@@ -319,7 +335,7 @@ class OpsCaseScopePolicyTest(unittest.TestCase):
             self.assertIn("rtm_ops_binding.status = 'active'", sql)
             self.assertIn("rtm_ops_binding.synthetic_only = true", sql)
             self.assertIn("rtm_ops_binding.revoked_at is null", sql)
-            self.assertIn('"test_mode":true', sql)
+            self.assertIn("'test_mode', true", sql)
 
     def test_suspended_a1s_tenant_removes_case_from_lists_and_exact_reads(self):
         for sql in self._operator_scope_sql_pair():
@@ -344,10 +360,42 @@ class OpsCaseScopePolicyTest(unittest.TestCase):
         for sql in self._operator_scope_sql_pair():
             self.assertIn("rtm_ops_assignment.metadata @>", sql)
             self.assertIn(
-                '"synthetic_marker":"rtm_presenter_synthetic_only"',
+                "'synthetic_marker', 'rtm_presenter_synthetic_only'",
                 sql,
             )
-            self.assertIn('"synthetic_only":true', sql)
+            self.assertIn("'synthetic_only', true", sql)
+
+    def test_exact_scope_sql_has_only_declared_bind_parameters(self):
+        class BindCaptureConnection(_Connection):
+            def __init__(self):
+                super().__init__(scalar_value=(CASE_ID,))
+                self.bindparams = None
+
+            def execute(self, statement, params=None):
+                self.bindparams = getattr(statement, "_bindparams", None)
+                return super().execute(statement, params)
+
+        scope = ops_case_scope.OpsCaseScope(
+            operator_id=OPERATOR_ID,
+            role_code="rtm.operator",
+            permissions=("ops.view",),
+            scope_all=False,
+            individual_session=True,
+        )
+        connection = BindCaptureConnection()
+
+        ops_case_scope.require_case_in_scope(
+            connection,
+            scope=scope,
+            case_id=CASE_ID,
+        )
+
+        if connection.bindparams is None:  # pragma: no cover - CI mínimo
+            self.skipTest("SQLAlchemy no está disponible")
+        self.assertEqual(
+            set(connection.bindparams),
+            {"rtm_ops_case_id", "rtm_ops_operator_id"},
+        )
 
     def test_supervisor_exact_case_locks_case_without_assignment_join(self):
         scope = ops_case_scope.OpsCaseScope(

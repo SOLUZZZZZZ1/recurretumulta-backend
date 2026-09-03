@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import unittest
 
+try:
+    from sqlalchemy import text
+except ModuleNotFoundError:  # pragma: no cover - CI mínimo
+    text = None
+
 from scripts.rtm_operator_auth_routes_preflight import (
     _execute_case_scope_probe,
 )
@@ -55,6 +60,36 @@ class _Engine:
 
 
 class OperatorAuthPreflightScopeProbeTest(unittest.TestCase):
+    def test_real_scope_sql_declares_only_probe_parameters(self):
+        if text is None:  # pragma: no cover - CI mínimo sin SQLAlchemy
+            self.skipTest("SQLAlchemy no está disponible")
+
+        from rtm_core.ops_case_scope import OPS_CASE_SCOPE_SQL
+
+        class BindCaptureConnection(_Connection):
+            def __init__(self):
+                super().__init__()
+                self.raw_statements = []
+
+            def execute(self, statement, parameters=None):
+                self.raw_statements.append(statement)
+                return super().execute(statement, parameters)
+
+        engine = _Engine()
+        engine.connection = BindCaptureConnection()
+        engine.context = _Context(engine.connection)
+        _execute_case_scope_probe(engine, text, OPS_CASE_SCOPE_SQL)
+
+        statement = engine.connection.raw_statements[1]
+        self.assertEqual(
+            set(statement._bindparams),
+            {
+                "rtm_ops_probe_case_id",
+                "rtm_ops_operator_id",
+                "rtm_ops_scope_all",
+            },
+        )
+
     def test_probe_executes_real_filter_inside_read_only_transaction(self):
         engine = _Engine()
         scope_sql = "(:rtm_ops_scope_all = TRUE OR FALSE)"

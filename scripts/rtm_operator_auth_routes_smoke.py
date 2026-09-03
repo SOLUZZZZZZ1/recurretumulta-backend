@@ -543,7 +543,10 @@ def main() -> int:
                     VALUES (
                         CAST(:case_id AS UUID),
                         'rtm_operator_auth_routes_smoke_probe',
-                        '{"synthetic":true,"external_effects":false}'::jsonb,
+                        jsonb_build_object(
+                            'synthetic', TRUE,
+                            'external_effects', FALSE
+                        ),
                         NOW()
                     )
                     """
@@ -559,8 +562,10 @@ def main() -> int:
                     ) VALUES (
                         CAST(:id AS UUID), :tenant_code,
                         'RTM STAGING ROUTES TENANT', 'active', TRUE,
-                        '{"synthetic_marker":"RTM_A1S_SYNTHETIC_ONLY",\
-                          "synthetic_only":true}'::jsonb,
+                        jsonb_build_object(
+                            'synthetic_marker', 'RTM_A1S_SYNTHETIC_ONLY',
+                            'synthetic_only', TRUE
+                        ),
                         NOW(), NOW()
                     )
                     """
@@ -584,8 +589,11 @@ def main() -> int:
                         CAST(:case_id AS UUID), :binding_code, 'active', TRUE,
                         :case_snapshot_sha256, CAST(:operator_id AS UUID),
                         NOW(), 1,
-                        '{"synthetic_marker":"RTM_A1S_SYNTHETIC_ONLY",\
-                          "synthetic_only":true,"test_mode":true}'::jsonb
+                        jsonb_build_object(
+                            'synthetic_marker', 'RTM_A1S_SYNTHETIC_ONLY',
+                            'synthetic_only', TRUE,
+                            'test_mode', TRUE
+                        )
                     )
                     """
                 ),
@@ -613,8 +621,10 @@ def main() -> int:
                         CAST(:operator_id AS UUID),
                         CAST(:operator_id AS UUID), 'executor', 'active', TRUE,
                         CAST(:operator_id AS UUID), NOW(), NULL, NULL, 1,
-                        '{"synthetic_marker":"RTM_A1S_SYNTHETIC_ONLY",\
-                          "synthetic_only":true}'::jsonb
+                        jsonb_build_object(
+                            'synthetic_marker', 'RTM_A1S_SYNTHETIC_ONLY',
+                            'synthetic_only', TRUE
+                        )
                     )
                     """
                 ),
@@ -636,8 +646,11 @@ def main() -> int:
                         CAST(:id AS UUID), CAST(:case_id AS UUID), NULL,
                         CAST(:operator_id AS UUID), 'responsible', 'active',
                         CAST(:operator_id AS UUID), NOW(), NOW(), NULL,
-                        '{"synthetic_marker":"RTM_PRESENTER_SYNTHETIC_ONLY",\
-                          "synthetic_only":true}'::jsonb, NOW(), NOW()
+                        jsonb_build_object(
+                            'synthetic_marker',
+                            'RTM_PRESENTER_SYNTHETIC_ONLY',
+                            'synthetic_only', TRUE
+                        ), NOW(), NOW()
                     )
                     """
                 ),

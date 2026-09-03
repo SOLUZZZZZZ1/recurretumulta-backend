@@ -115,6 +115,8 @@ class OperatorAuthRoutesContractTest(unittest.TestCase):
         self.assertIn('"transactional": True', source)
         self.assertIn("transaction.rollback()", source)
         self.assertIn("database_rolled_back", source)
+        self.assertNotIn(":true", source)
+        self.assertNotIn(":false", source)
 
     def test_smoke_uses_http_only_device_cookie_without_json_secret(self):
         source = (

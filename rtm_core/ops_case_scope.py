@@ -60,16 +60,19 @@ OPS_CASE_SCOPE_SQL = """
              AND rtm_ops_binding.status = 'active'
              AND rtm_ops_binding.synthetic_only = TRUE
              AND rtm_ops_binding.revoked_at IS NULL
-             AND rtm_ops_binding.metadata @>
-                 '{"synthetic_marker":"RTM_A1S_SYNTHETIC_ONLY",\
-                   "synthetic_only":true,"test_mode":true}'::jsonb
+             AND rtm_ops_binding.metadata @> jsonb_build_object(
+                 'synthetic_marker', 'RTM_A1S_SYNTHETIC_ONLY',
+                 'synthetic_only', TRUE,
+                 'test_mode', TRUE
+             )
             JOIN rtm_connect_a1s_tenants rtm_ops_tenant
               ON rtm_ops_tenant.id = rtm_ops_binding.tenant_id
              AND rtm_ops_tenant.status = 'active'
              AND rtm_ops_tenant.synthetic_only = TRUE
-             AND rtm_ops_tenant.metadata @>
-                 '{"synthetic_marker":"RTM_A1S_SYNTHETIC_ONLY",\
-                   "synthetic_only":true}'::jsonb
+             AND rtm_ops_tenant.metadata @> jsonb_build_object(
+                 'synthetic_marker', 'RTM_A1S_SYNTHETIC_ONLY',
+                 'synthetic_only', TRUE
+             )
             JOIN rtm_connect_a1s_memberships rtm_ops_membership
               ON rtm_ops_membership.tenant_id = rtm_ops_binding.tenant_id
              AND rtm_ops_membership.operator_id =
@@ -77,9 +80,10 @@ OPS_CASE_SCOPE_SQL = """
              AND rtm_ops_membership.status = 'active'
              AND rtm_ops_membership.synthetic_only = TRUE
              AND rtm_ops_membership.revoked_at IS NULL
-             AND rtm_ops_membership.metadata @>
-                 '{"synthetic_marker":"RTM_A1S_SYNTHETIC_ONLY",\
-                   "synthetic_only":true}'::jsonb
+             AND rtm_ops_membership.metadata @> jsonb_build_object(
+                 'synthetic_marker', 'RTM_A1S_SYNTHETIC_ONLY',
+                 'synthetic_only', TRUE
+             )
             WHERE rtm_ops_assignment.case_id = c.id
               AND rtm_ops_assignment.attention_item_id IS NULL
               AND rtm_ops_assignment.operator_id =
@@ -90,9 +94,10 @@ OPS_CASE_SCOPE_SQL = """
               AND rtm_ops_assignment.assignment_role IN (
                   'responsible', 'reviewer', 'supervisor'
               )
-              AND rtm_ops_assignment.metadata @>
-                  '{"synthetic_marker":"RTM_PRESENTER_SYNTHETIC_ONLY",\
-                    "synthetic_only":true}'::jsonb
+              AND rtm_ops_assignment.metadata @> jsonb_build_object(
+                  'synthetic_marker', 'RTM_PRESENTER_SYNTHETIC_ONLY',
+                  'synthetic_only', TRUE
+              )
         )
     )
 )
@@ -256,16 +261,19 @@ def require_case_in_scope(
              AND rtm_ops_binding.status = 'active'
              AND rtm_ops_binding.synthetic_only = TRUE
              AND rtm_ops_binding.revoked_at IS NULL
-             AND rtm_ops_binding.metadata @>
-                 '{"synthetic_marker":"RTM_A1S_SYNTHETIC_ONLY",\
-                   "synthetic_only":true,"test_mode":true}'::jsonb
+             AND rtm_ops_binding.metadata @> jsonb_build_object(
+                 'synthetic_marker', 'RTM_A1S_SYNTHETIC_ONLY',
+                 'synthetic_only', TRUE,
+                 'test_mode', TRUE
+             )
             JOIN rtm_connect_a1s_tenants rtm_ops_tenant
               ON rtm_ops_tenant.id = rtm_ops_binding.tenant_id
              AND rtm_ops_tenant.status = 'active'
              AND rtm_ops_tenant.synthetic_only = TRUE
-             AND rtm_ops_tenant.metadata @>
-                 '{"synthetic_marker":"RTM_A1S_SYNTHETIC_ONLY",\
-                   "synthetic_only":true}'::jsonb
+             AND rtm_ops_tenant.metadata @> jsonb_build_object(
+                 'synthetic_marker', 'RTM_A1S_SYNTHETIC_ONLY',
+                 'synthetic_only', TRUE
+             )
             JOIN rtm_connect_a1s_memberships rtm_ops_membership
               ON rtm_ops_membership.tenant_id = rtm_ops_binding.tenant_id
              AND rtm_ops_membership.operator_id =
@@ -273,9 +281,10 @@ def require_case_in_scope(
              AND rtm_ops_membership.status = 'active'
              AND rtm_ops_membership.synthetic_only = TRUE
              AND rtm_ops_membership.revoked_at IS NULL
-             AND rtm_ops_membership.metadata @>
-                 '{"synthetic_marker":"RTM_A1S_SYNTHETIC_ONLY",\
-                   "synthetic_only":true}'::jsonb
+             AND rtm_ops_membership.metadata @> jsonb_build_object(
+                 'synthetic_marker', 'RTM_A1S_SYNTHETIC_ONLY',
+                 'synthetic_only', TRUE
+             )
             JOIN rtm_work_assignments rtm_ops_assignment
               ON rtm_ops_assignment.case_id = c.id
              AND rtm_ops_assignment.attention_item_id IS NULL
@@ -287,9 +296,10 @@ def require_case_in_scope(
              AND rtm_ops_assignment.assignment_role IN (
                  'responsible', 'reviewer', 'supervisor'
              )
-             AND rtm_ops_assignment.metadata @>
-                 '{"synthetic_marker":"RTM_PRESENTER_SYNTHETIC_ONLY",\
-                   "synthetic_only":true}'::jsonb
+             AND rtm_ops_assignment.metadata @> jsonb_build_object(
+                 'synthetic_marker', 'RTM_PRESENTER_SYNTHETIC_ONLY',
+                 'synthetic_only', TRUE
+             )
             WHERE c.id = CAST(:rtm_ops_case_id AS UUID)
               AND COALESCE(c.test_mode, FALSE) = TRUE
             ORDER BY rtm_ops_assignment.assigned_at DESC,
