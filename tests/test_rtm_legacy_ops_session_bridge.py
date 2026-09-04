@@ -760,6 +760,7 @@ class RestaurantAdminIndividualSessionTest(unittest.TestCase):
             patch.dict(os.environ, environment, clear=True),
             patch.object(backend_app, "assert_environment_ready"),
             patch.object(backend_app, "extraction_limits"),
+            patch.object(backend_app, "assert_parser_isolation_ready"),
             patch.object(
                 bridge,
                 "load_operator_auth_runtime_config",
@@ -800,6 +801,7 @@ class RestaurantAdminIndividualSessionTest(unittest.TestCase):
             patch.dict(os.environ, environment, clear=True),
             patch.object(backend_app, "assert_environment_ready"),
             patch.object(backend_app, "extraction_limits"),
+            patch.object(backend_app, "assert_parser_isolation_ready"),
             patch.object(
                 bridge,
                 "load_operator_auth_runtime_config",
@@ -852,6 +854,7 @@ class RestaurantAdminIndividualSessionTest(unittest.TestCase):
             patch.dict(os.environ, environment, clear=True),
             patch.object(backend_app, "assert_environment_ready"),
             patch.object(backend_app, "extraction_limits"),
+            patch.object(backend_app, "assert_parser_isolation_ready"),
             patch.object(
                 bridge,
                 "load_operator_auth_runtime_config",
@@ -896,6 +899,7 @@ class RestaurantAdminIndividualSessionTest(unittest.TestCase):
             patch.dict(os.environ, environment, clear=True),
             patch.object(backend_app, "assert_environment_ready"),
             patch.object(backend_app, "extraction_limits"),
+            patch.object(backend_app, "assert_parser_isolation_ready"),
             patch.object(
                 bridge,
                 "load_operator_auth_runtime_config",
@@ -1021,6 +1025,7 @@ class LegacyOpsBridgeWiringContractTest(unittest.TestCase):
             patch.dict(os.environ, environment, clear=True),
             patch.object(backend_app, "assert_environment_ready"),
             patch.object(backend_app, "extraction_limits"),
+            patch.object(backend_app, "assert_parser_isolation_ready"),
             patch.object(
                 bridge,
                 "load_operator_auth_runtime_config",

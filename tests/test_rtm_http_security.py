@@ -405,10 +405,15 @@ class HttpSecurityTest(unittest.IsolatedAsyncioTestCase):
                 patch.dict(os.environ, {"RTM_ENV": environment}, clear=True),
                 patch.object(backend_app, "assert_environment_ready") as preflight,
                 patch.object(backend_app, "extraction_limits") as limits,
+                patch.object(
+                    backend_app,
+                    "assert_parser_isolation_ready",
+                ) as parser_preflight,
             ):
                 backend_app.validate_deployed_environment()
                 preflight.assert_called_once_with()
                 limits.assert_called_once_with()
+                parser_preflight.assert_called_once_with()
 
     def test_startup_fails_closed_for_missing_or_misspelled_deployed_env(self):
         scenarios = (
