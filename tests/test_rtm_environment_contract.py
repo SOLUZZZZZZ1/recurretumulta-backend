@@ -17,6 +17,10 @@ from rtm_core.environment_contract import (
 
 
 BRANCH = "rtm-core-consolidation-2026-08-08"
+STAGING_BRANCH_HOST = (
+    "recurretumulta-frontendweb3-8-26-git-r-cbbb3a-soluzzzs-projects.vercel.app"
+)
+STAGING_BRANCH_ORIGIN = f"https://{STAGING_BRANCH_HOST}"
 SECRET_A = "A7mQ2vN9kR4xT8pL3sW6cD1hJ5uZ0bY"
 SECRET_B = "F9rK3xV7nM2qP8dT4zH6wC1jL5sG0aU"
 SECRET_C = "Z6pD1yW8kQ4mR9vB2tN7cH5xJ3fL0sE"
@@ -82,6 +86,68 @@ def _base_production() -> dict[str, str]:
 
 
 class EnvironmentContractTest(unittest.TestCase):
+    def test_exact_staging_branch_origin_passes_without_enabling_capabilities(self):
+        environment = _base_staging()
+        environment.update(
+            FRONTEND_URL=STAGING_BRANCH_ORIGIN,
+            ALLOWED_ORIGINS=STAGING_BRANCH_ORIGIN,
+        )
+        report = build_environment_preflight(environment)
+        self.assertTrue(report.safe, report.model_dump(mode="json"))
+        self.assertFalse(any(report.capabilities.values()))
+
+    def test_staging_branch_origin_does_not_trust_lookalikes_or_other_projects(self):
+        for origin in (
+            STAGING_BRANCH_ORIGIN.replace("cbbb3a", "cbbb3b"),
+            STAGING_BRANCH_ORIGIN.replace("soluzzzs-projects", "other-projects"),
+            f"{STAGING_BRANCH_ORIGIN}.attacker.example",
+            "https://*.vercel.app",
+        ):
+            with self.subTest(origin=origin):
+                environment = _base_staging()
+                environment.update(FRONTEND_URL=origin, ALLOWED_ORIGINS=origin)
+                report = build_environment_preflight(environment)
+                self.assertFalse(report.safe)
+                self.assertIn("frontend_host_trusted", report.blockers)
+                self.assertIn("cors_hosts_trusted", report.blockers)
+
+    def test_staging_branch_origin_requires_a_clean_https_origin(self):
+        for origin in (
+            f"http://{STAGING_BRANCH_HOST}",
+            f"https://user:password@{STAGING_BRANCH_HOST}",
+            f"{STAGING_BRANCH_ORIGIN}:444",
+            f"{STAGING_BRANCH_ORIGIN}/path",
+            f"{STAGING_BRANCH_ORIGIN}?redirect=attacker",
+            f"{STAGING_BRANCH_ORIGIN}#fragment",
+        ):
+            with self.subTest(origin=origin):
+                environment = _base_staging()
+                environment.update(FRONTEND_URL=origin, ALLOWED_ORIGINS=origin)
+                report = build_environment_preflight(environment)
+                self.assertFalse(report.safe)
+                self.assertIn("frontend_url_valid", report.blockers)
+                self.assertIn("cors_origins_valid", report.blockers)
+
+    def test_production_rejects_staging_frontend_and_cors_even_if_configured(self):
+        for origin in ("https://staging.recurretumulta.eu", STAGING_BRANCH_ORIGIN):
+            with self.subTest(origin=origin):
+                environment = _base_production()
+                environment.update(
+                    FRONTEND_URL=origin,
+                    ALLOWED_ORIGINS=origin,
+                    RTM_PRODUCTION_FRONTEND_HOSTS=origin.removeprefix("https://"),
+                )
+                report = build_environment_preflight(environment)
+                self.assertFalse(report.safe)
+                self.assertIn("production_frontend_identity", report.blockers)
+                self.assertIn("production_cors_excludes_staging", report.blockers)
+
+                environment["FRONTEND_URL"] = "https://recurretumulta.eu"
+                environment["ALLOWED_ORIGINS"] += ",https://recurretumulta.eu"
+                report = build_environment_preflight(environment)
+                self.assertFalse(report.safe)
+                self.assertIn("production_cors_excludes_staging", report.blockers)
+
     def test_version_and_minimal_staging_profile_are_explicit(self):
         self.assertEqual(
             ENVIRONMENT_CONTRACT_VERSION,

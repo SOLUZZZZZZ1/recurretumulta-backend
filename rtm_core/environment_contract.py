@@ -22,6 +22,7 @@ from urllib.parse import unquote, urlparse
 from pydantic import BaseModel, ConfigDict, Field
 
 from rtm_core.http_security import parse_allowed_hosts
+from rtm_core.trusted_origins import STAGING_FRONTEND_HOSTS
 
 
 ENVIRONMENT_CONTRACT_VERSION = "rtm_environment_contract_v1_2"
@@ -42,7 +43,7 @@ _DEFAULT_PRODUCTION_FRONTEND_HOSTS = {
     "recurretumulta.vercel.app",
 }
 _TRUSTED_FRONTEND_HOSTS = frozenset(
-    _DEFAULT_PRODUCTION_FRONTEND_HOSTS | {"staging.recurretumulta.eu"}
+    _DEFAULT_PRODUCTION_FRONTEND_HOSTS | STAGING_FRONTEND_HOSTS
 )
 _ALLOWED_SMTP_HOSTS = frozenset({"authsmtp.securemail.pro"})
 _FORBIDDEN_DEPLOYED_OVERRIDES = (
@@ -751,7 +752,10 @@ def _check_frontend_and_cors(
                 "FRONTEND_URL",
                 "RTM_PRODUCTION_FRONTEND_HOSTS",
             )
-        elif not _contains_any_marker(frontend_host, markers):
+        elif (
+            frontend_host not in STAGING_FRONTEND_HOSTS
+            and not _contains_any_marker(frontend_host, markers)
+        ):
             collector.blocking(
                 "staging_frontend_isolated",
                 "El host de staging debe incluir su marcador de aislamiento.",
@@ -765,7 +769,9 @@ def _check_frontend_and_cors(
             )
 
     if environment == "production" and frontend_origin:
-        if any(token in frontend_host for token in ("staging", "test", "localhost")):
+        if frontend_host in STAGING_FRONTEND_HOSTS or any(
+            token in frontend_host for token in ("staging", "test", "localhost")
+        ):
             collector.blocking(
                 "production_frontend_identity",
                 "FRONTEND_URL de producción parece un host de staging, test o local.",
@@ -846,6 +852,20 @@ def _check_frontend_and_cors(
             "ALLOWED_ORIGINS",
             "FRONTEND_URL",
         )
+
+    if environment == "production":
+        if cors_hosts & STAGING_FRONTEND_HOSTS:
+            collector.blocking(
+                "production_cors_excludes_staging",
+                "ALLOWED_ORIGINS de producción contiene un host exacto de staging.",
+                "ALLOWED_ORIGINS",
+            )
+        else:
+            collector.pass_(
+                "production_cors_excludes_staging",
+                "CORS de producción no autoriza los hosts exactos de staging.",
+                "ALLOWED_ORIGINS",
+            )
 
     if environment == "staging":
         exact_hosts = {

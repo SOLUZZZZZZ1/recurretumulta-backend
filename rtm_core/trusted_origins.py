@@ -6,11 +6,17 @@ import os
 from urllib.parse import urlsplit
 
 
-_TRUSTED_FRONTEND_HOSTS = frozenset(
+# The verified branch alias has no staging marker; classify it by exact host.
+STAGING_FRONTEND_HOSTS = frozenset(
+    {
+        "staging.recurretumulta.eu",
+        "recurretumulta-frontendweb3-8-26-git-r-cbbb3a-soluzzzs-projects.vercel.app",
+    }
+)
+_TRUSTED_FRONTEND_HOSTS = STAGING_FRONTEND_HOSTS | frozenset(
     {
         "recurretumulta.eu",
         "www.recurretumulta.eu",
-        "staging.recurretumulta.eu",
         "recurretumulta.vercel.app",
     }
 )
@@ -45,4 +51,9 @@ def trusted_frontend_origin() -> str:
     ):
         raise RuntimeError("FRONTEND_URL no es un origen HTTPS RTM autorizado")
     host = parsed.hostname.lower()
+    if (
+        (os.getenv("RTM_ENV") or "").strip().lower() == "production"
+        and host in STAGING_FRONTEND_HOSTS
+    ):
+        raise RuntimeError("FRONTEND_URL de producción no puede usar un host de staging")
     return f"https://{host}"
