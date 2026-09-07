@@ -9,6 +9,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
 from app import app
+from tests.postgres_security_fixtures import (
+    apply_operator_security_schema,
+    operator_http_environment,
+    seed_supervisor_session,
+)
 from rtm_core.document_facts_router import DOCUMENT_FACTS_GATEWAY_VERSION
 from rtm_core.migration_router import authority_v1_ddl
 from rtm_core.workspace_policy_ext import determine_workspace_stage
@@ -16,7 +21,6 @@ from rtm_core.workspace_policy_ext import determine_workspace_stage
 
 RUN_POSTGRES_INTEGRATION = os.getenv("RTM_CORE_INTEGRATION_DB") == "1"
 DATABASE_URL = os.getenv("DATABASE_URL", "")
-OPERATOR_TOKEN = "ci-document-facts-token"
 
 
 @unittest.skipUnless(
@@ -29,6 +33,9 @@ class DocumentFactsGatewayIntegrationTest(unittest.TestCase):
         cls.engine = create_engine(DATABASE_URL, pool_pre_ping=True)
         cls._reset_schema()
         cls._apply_migration_twice()
+        with cls.engine.begin() as conn:
+            apply_operator_security_schema(conn)
+            cls.operator = seed_supervisor_session(conn)
         cls.client = TestClient(app)
 
     @classmethod
@@ -198,14 +205,35 @@ class DocumentFactsGatewayIntegrationTest(unittest.TestCase):
         }
 
     def _headers(self) -> dict[str, str]:
-        return {
-            "X-Operator-Token": OPERATOR_TOKEN,
-            "X-Operator-Actor": "ops:ci-document-facts",
-        }
+        return self.operator.headers
+
+    def test_gateway_requires_real_device_session_and_existing_case(self):
+        case_id, document_id = self._insert_case()
+        path = f"/ops/core/cases/{case_id}/document-facts/preview"
+        environment = operator_http_environment()
+        with patch.dict(os.environ, environment):
+            for headers in (
+                {},
+                {"Authorization": self._headers()["Authorization"]},
+                {"X-Operator-Token": environment["OPERATOR_TOKEN"]},
+            ):
+                with self.subTest(headers=list(headers)):
+                    denied = self.client.post(
+                        path, headers=headers, json=self._body(case_id, document_id)
+                    )
+                    self.assertEqual(denied.status_code, 401, denied.text)
+
+            missing_case = str(uuid.uuid4())
+            missing = self.client.post(
+                f"/ops/core/cases/{missing_case}/document-facts/preview",
+                headers=self._headers(),
+                json=self._body(missing_case, document_id),
+            )
+            self.assertEqual(missing.status_code, 404, missing.text)
 
     def test_catalog_preview_and_draft_are_separate_authorized_steps(self):
         case_id, document_id = self._insert_case()
-        with patch.dict(os.environ, {"OPERATOR_TOKEN": OPERATOR_TOKEN}):
+        with patch.dict(os.environ, operator_http_environment()):
             catalog = self.client.get(
                 "/ops/core/document-facts/catalog/debt",
                 headers=self._headers(),
@@ -303,7 +331,7 @@ class DocumentFactsGatewayIntegrationTest(unittest.TestCase):
             (*self._insert_case(department="travel"), "debt", 409),
             (*self._insert_case(document_kind="rtm_generated_pdf"), "debt", 409),
         ]
-        with patch.dict(os.environ, {"OPERATOR_TOKEN": OPERATOR_TOKEN}):
+        with patch.dict(os.environ, operator_http_environment()):
             for case_id, document_id, service, expected in cases:
                 with self.subTest(case_id=case_id, expected=expected):
                     response = self.client.post(

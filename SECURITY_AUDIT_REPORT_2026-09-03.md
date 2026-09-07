@@ -5,6 +5,92 @@
 **Naturaleza:** revisión defensiva de código y configuración; no se realizaron acciones ofensivas contra terceros
 **Estado de publicación:** borrador público, sin datos personales, valores secretos ni instrucciones de explotación
 
+## Actualización de evidencia — 7 de septiembre de 2026
+
+Esta actualización prevalece sobre las referencias posteriores a cambios todavía
+sin commit o push. El resto del informe conserva su fecha de corte original.
+
+- Las ramas `rtm-ai-security-hardening-2026-09-03` están publicadas y el usuario
+  confirmó la igualdad de PC/GitHub el 7 de septiembre. Coinciden con los últimos
+  commits comprobados en el portátil: backend
+  `314096d7b597d623e936b90233ebb857c9429f37` y frontend
+  `b5a7690637847e595b82a92b642f47c5c9278f5c`.
+- El ajuste backend `314096d` solo separó el preflight POSIX de determinadas
+  pruebas de autenticación y arranque en Windows. La ejecución del portátil
+  terminó con `Ran 2029 tests / OK (skipped=11)`: 2.018 pruebas satisfactorias y
+  11 omitidas. No equivale a una validación PostgreSQL ni a un despliegue.
+- El [CI backend del SHA 314096d](https://github.com/SOLUZZZZZZ1/recurretumulta-backend/actions/runs/33850100197)
+  ejecutó el escaneo histórico, instalación, `pip-audit --strict`, compilación e
+  importación correctamente el 4 de septiembre. El audit informó
+  `No known vulnerabilities found`; esto cierra la falta de acceso a la base CVE
+  para aquella ejecución concreta, no garantiza ausencia de vulnerabilidades futuras.
+- Ese mismo CI terminó con `FAILED (failures=8, errors=8)` al ejecutar la suite
+  con PostgreSQL. Se identificaron fixtures antiguas de autenticación, autoridad
+  y plazos; una referencia a `download_bytes` retirada; y dos pruebas HTTP que
+  heredaban configuración DB sin declarar su entorno de test. La suite remota
+  completa sigue pendiente de una ejecución satisfactoria tras la corrección.
+- El [CI frontend del SHA b5a7690](https://github.com/SOLUZZZZZZ1/recurretumulta-frontendweb3-8-26/actions/runs/33788939590)
+  terminó con una prueba Python fallida porque intentaba importar `@babel/parser`
+  antes de `npm ci`. Las fases posteriores de instalación, audit, Node y build
+  quedaron omitidas en ese job. El orden corregido debe instalar y auditar las
+  dependencias antes de ejecutar los contratos Python, conservando el escaneo de
+  secretos antes de la instalación.
+
+### Correcciones preparadas tras revisar los logs remotos
+
+- **Frontend:** commit local `06836c8c1215e9ab3114db3a52aa9da7d721307f`,
+  descendiente directo de `b5a7690`. Instala y audita antes de las pruebas Python;
+  un contrato comprueba ese orden. Las 228 pruebas Python y los dos contratos
+  de cadena de suministro pasan localmente; el escaneo de secretos e historial
+  es correcto. Instalación limpia, audit y build del nuevo CI siguen pendientes
+  de la ejecución remota.
+- **Backend HTTP:** las dos pruebas de Host declaran `RTM_ENV=test` con entorno
+  aislado. Se reprodujeron los dos errores originales con `DATABASE_URL` de CI;
+  tras el ajuste pasan las 35 pruebas de seguridad HTTP. Los controles de Host y
+  arranque del código productivo conservan su comportamiento.
+- **Backend PostgreSQL:** las fixtures crean operador supervisor, dispositivo y
+  sesión individuales, sustituyendo el token compartido. Los datos de autoridad
+  contienen la cadena de evidencias firmadas que exige el verificador real y los
+  hechos revisados incluyen un plazo explícito. La extracción interna utiliza
+  PDF sintético válido, hash y tamaño reales, proveedor ficticio y bytes locales.
+- **Defensas de extracción:** se mantiene el bloqueo HTTP de documentos
+  persistidos en staging `synthetic_only` y la barrera adicional del endpoint
+  que exige autorización específica. Las pruebas comprueban rechazo y ausencia
+  de preparación, descarga, llamada al proveedor y nuevas filas de negocio.
+
+Las fixtures de autoridad siembran revisión y reautenticación sintéticas; no
+acreditan un login, step-up HTTP ni una firma documental reales. Las integraciones
+HTTP tampoco ejecutan el lifespan de despliegue. La base local auxiliar es
+PostgreSQL 18.3/WASM mediante PGlite y `pgcrypto` real; no equivale al servicio
+PostgreSQL 17 de CI y no soporta transacciones independientes concurrentes.
+Ningún ajuste de producción se realiza para acomodar esa limitación local.
+
+### Validación local del ajuste — 7 de septiembre
+
+| Comprobación | Resultado observado | Alcance |
+|---|---|---|
+| Backend, suite completa sin activar integración DB | `Ran 2031 tests in 103.850s / OK (skipped=10)` | 2.021 satisfactorias; las 10 omitidas se ejecutan por separado |
+| Backend, las cuatro suites PostgreSQL modificadas | `Ran 10 tests in 7.305s / OK` | Base efímera PGlite; incluye las dos regresiones nuevas |
+| Backend, seguridad HTTP con entorno CI sintético | 35 pruebas satisfactorias | Comprueba los dos fallos de arranque/Host corregidos |
+| Frontend, suite Python | 228 pruebas satisfactorias | Incluye el parser requerido por CI |
+| Frontend, contrato de cadena de suministro | 2 pruebas satisfactorias | Regresión de orden reproducida contra el workflow anterior |
+| Escaneo de secretos e historial de ambos repositorios | Correcto | Sin firmas de credenciales detectadas; no es prueba de ausencia absoluta |
+| Backend, compilación Python y revisión de diferencias | Correcto | Código de aplicación sin modificaciones en este ajuste |
+
+El adaptador local de PGlite colisionaba al preparar sentencias en conexiones
+multiplexadas. Solo el lanzador temporal de validación desactiva la preparación
+automática de psycopg (`prepare_threshold=None`); este ajuste no forma parte del
+repositorio ni de GitHub CI. Las dos ejecuciones del backend no se presentan como
+una suite integral satisfactoria con PostgreSQL 17: esa comprobación remota sigue
+pendiente. La revisión independiente detectó además imports incompletos de los
+helpers de prueba, ya corregidos para admitir ejecución por módulo y por discovery.
+
+Las correcciones de CI requieren publicación de sus propios commits y una nueva
+ejecución remota satisfactoria. Estos resultados no autorizan merge a `main`, despliegue,
+migraciones, activación de capacidades ni operaciones con proveedores reales.
+Permanece el dictamen NO-GO para producción y el resto de controles externos de
+las secciones 6 y 9 continúa pendiente.
+
 ## 1. Dictamen ejecutivo
 
 La revisión ha encontrado y corregido múltiples clases de riesgo de impacto alto o crítico: inyección de instrucciones en flujos de IA, documentos hostiles, autorización horizontal entre expedientes, sesiones compartidas, manipulación y repetición de pagos, carreras de estado, falsos positivos de presentación externa, exposición de datos en el navegador y debilidades de CI/CD.
@@ -26,7 +112,7 @@ No existe una forma responsable de certificar “cero vulnerabilidades”. Las c
 
 ### 1.2 Resultados de cierre
 
-**Backend final:** 2.029/2.029 pruebas ejecutadas correctamente; 8 integraciones omitidas de forma declarativa por requerir PostgreSQL o proveedores externos. Suite focal final: 231/231. Restaurante/PIN: 18/18. Compilación Python, `git diff --check`, validación YAML, `pip check` y escaneo de secretos del árbol e historial: correctos.
+**Backend al corte original:** 2.029 pruebas contabilizadas, con 8 integraciones omitidas de forma declarativa por requerir PostgreSQL o proveedores externos. Las omitidas no se consideran pruebas superadas. Suite focal final: 231/231. Restaurante/PIN: 18/18. Compilación Python, `git diff --check`, validación YAML, `pip check` y escaneo de secretos del árbol e historial: correctos.
 
 **Auditoría CVE Python:** no verificable en este entorno. `pip-audit --strict` no pudo consultar su servicio de vulnerabilidades porque la salida de red fue bloqueada; la consulta secundaria al registro oficial también fue denegada. No se interpreta como ausencia de vulnerabilidades. Las 20 dependencias directas están fijadas exactamente y `pip check` es correcto, pero el audit remoto completo sigue siendo un bloqueo de CI.
 

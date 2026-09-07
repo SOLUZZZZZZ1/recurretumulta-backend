@@ -1,25 +1,42 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import os
 import uuid
 import unittest
 from unittest.mock import patch
 
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter
 from sqlalchemy import create_engine, text
 
 from app import app
+from tests.postgres_security_fixtures import (
+    apply_operator_security_schema,
+    operator_http_environment,
+    seed_supervisor_session,
+)
 from rtm_core.document_extraction import (
     ProviderDocumentResult,
     ProviderObservation,
+    extract_service_documents,
 )
 from rtm_core.document_extraction_migration import document_extraction_ddl
+from rtm_core.document_extraction_repository import (
+    persist_document_extraction,
+    prepare_document_extraction,
+)
+from rtm_core.document_extraction_router import (
+    RunDocumentExtractionBody,
+    run_document_extraction,
+)
 from rtm_core.migration_router import authority_v1_ddl
 
 
 RUN_POSTGRES_INTEGRATION = os.getenv("RTM_CORE_INTEGRATION_DB") == "1"
 DATABASE_URL = os.getenv("DATABASE_URL", "")
-OPERATOR_TOKEN = "ci-service-extractor-token"
 
 
 class _FakeProvider:
@@ -87,6 +104,14 @@ class DocumentExtractionIntegrationTest(unittest.TestCase):
         cls.engine = create_engine(DATABASE_URL, pool_pre_ping=True)
         cls._reset_schema()
         cls._apply_migrations_twice()
+        with cls.engine.begin() as conn:
+            apply_operator_security_schema(conn)
+            cls.operator = seed_supervisor_session(conn)
+        writer = PdfWriter()
+        writer.add_blank_page(width=300, height=300)
+        content = io.BytesIO()
+        writer.write(content)
+        cls.document_content = content.getvalue()
         cls.client = TestClient(app)
 
     @classmethod
@@ -180,10 +205,7 @@ class DocumentExtractionIntegrationTest(unittest.TestCase):
                     conn.execute(text(statement))
 
     def _headers(self):
-        return {
-            "X-Operator-Token": OPERATOR_TOKEN,
-            "X-Operator-Actor": "ops:ci-service-extractor",
-        }
+        return self.operator.headers
 
     def _insert_document(
         self,
@@ -203,8 +225,8 @@ class DocumentExtractionIntegrationTest(unittest.TestCase):
                         mime, size_bytes, created_at
                     ) VALUES (
                         CAST(:document_id AS UUID), CAST(:case_id AS UUID),
-                        :kind, 'ci', :b2_key, 'sha-ci',
-                        :mime, 2048, NOW()
+                        :kind, 'ci', :b2_key, :sha256,
+                        :mime, :size_bytes, NOW()
                     )
                     """
                 ),
@@ -214,6 +236,8 @@ class DocumentExtractionIntegrationTest(unittest.TestCase):
                     "kind": kind,
                     "b2_key": f"cases/{case_id}/{key_suffix}",
                     "mime": mime,
+                    "sha256": hashlib.sha256(self.document_content).hexdigest(),
+                    "size_bytes": len(self.document_content),
                 },
             )
         return document_id
@@ -298,23 +322,36 @@ class DocumentExtractionIntegrationTest(unittest.TestCase):
         )
         return case_id, original_id
 
-    def _provider_patches(self):
-        return (
-            patch(
-                "rtm_core.document_extraction.get_document_provider",
-                return_value=_FakeProvider(),
-            ),
-            patch(
-                "rtm_core.document_extraction.download_bytes",
-                return_value=b"%PDF-1.4 controlled integration content",
-            ),
+    def _extract_synthetic_case(self, case_id, original_id):
+        # Exercise storage/normalization using only local synthetic content.
+        # The public run route remains withdrawn until service-bound consent
+        # exists; this is deliberately not a bypass of its HTTP guard.
+        with self.engine.begin() as conn:
+            service, documents = prepare_document_extraction(
+                conn,
+                case_id=case_id,
+                requested_document_ids=[original_id],
+            )
+        result = extract_service_documents(
+            case_id=case_id,
+            service=service,
+            documents=documents,
+            provider=_FakeProvider(),
+            byte_loader=lambda bucket, key: self.document_content,
         )
+        with self.engine.begin() as conn:
+            return persist_document_extraction(
+                conn,
+                case_id=case_id,
+                result=result,
+                created_by=self.operator.actor,
+            )
 
-    def test_full_extraction_preview_and_facts_promotion(self):
+    def test_synthetic_extraction_preview_and_facts_promotion(self):
         case_id, original_id = self._insert_case()
         self.assertIsNotNone(original_id)
 
-        with patch.dict(os.environ, {"OPERATOR_TOKEN": OPERATOR_TOKEN}):
+        with patch.dict(os.environ, operator_http_environment()):
             before = self.client.get(
                 f"/ops/core/cases/{case_id}/workspace",
                 headers=self._headers(),
@@ -325,19 +362,8 @@ class DocumentExtractionIntegrationTest(unittest.TestCase):
                 "service_fact_extraction_pending",
             )
 
-            provider_patch, bytes_patch = self._provider_patches()
-            with provider_patch, bytes_patch:
-                run = self.client.post(
-                    f"/ops/core/cases/{case_id}/document-extractions/run",
-                    headers=self._headers(),
-                    json={"document_ids": [original_id]},
-                )
-            self.assertEqual(run.status_code, 200, run.text)
-            run_payload = run.json()
-            self.assertTrue(run_payload["persisted"])
-            self.assertFalse(run_payload["facts_persisted"])
-            self.assertFalse(run_payload["generate_allowed"])
-            extraction_id = run_payload["extraction"]["id"]
+            extraction = self._extract_synthetic_case(case_id, original_id)
+            extraction_id = extraction.id
 
             with self.engine.begin() as conn:
                 extraction_count = conn.execute(
@@ -440,24 +466,54 @@ class DocumentExtractionIntegrationTest(unittest.TestCase):
 
     def test_duplicate_extraction_is_blocked(self):
         case_id, original_id = self._insert_case()
-        with patch.dict(os.environ, {"OPERATOR_TOKEN": OPERATOR_TOKEN}):
-            provider_patch, bytes_patch = self._provider_patches()
-            with provider_patch, bytes_patch:
-                first = self.client.post(
-                    f"/ops/core/cases/{case_id}/document-extractions/run",
-                    headers=self._headers(),
-                    json={"document_ids": [original_id]},
-                )
-            self.assertEqual(first.status_code, 200, first.text)
+        with patch.dict(os.environ, operator_http_environment()):
+            first = self._extract_synthetic_case(case_id, original_id)
+            self.assertEqual(first.status, "completed")
+            with self.assertRaises(HTTPException) as duplicate:
+                self._extract_synthetic_case(case_id, original_id)
+            self.assertEqual(duplicate.exception.status_code, 409)
 
-            provider_patch, bytes_patch = self._provider_patches()
-            with provider_patch, bytes_patch:
-                duplicate = self.client.post(
-                    f"/ops/core/cases/{case_id}/document-extractions/run",
-                    headers=self._headers(),
-                    json={"document_ids": [original_id]},
+    def test_external_run_stays_withdrawn_without_service_bound_consent(self):
+        case_id, original_id = self._insert_case()
+        environment = operator_http_environment()
+        environment["RTM_ENABLE_DOCUMENT_PROVIDER"] = "1"
+        with (
+            patch.dict(os.environ, environment),
+            patch("rtm_core.document_extraction.get_document_provider") as provider,
+            patch("rtm_core.document_extraction.download_bytes_limited") as download,
+            patch("rtm_core.document_extraction_router.prepare_document_extraction") as prepare,
+        ):
+            response = self.client.post(
+                f"/ops/core/cases/{case_id}/document-extractions/run",
+                headers=self._headers(),
+                json={"document_ids": [original_id]},
+            )
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertEqual(response.json()["detail"]["policy"], "synthetic_only")
+            # Independently exercise the endpoint's second barrier. The full
+            # staging application rejects persisted inputs before reaching it.
+            with self.assertRaises(HTTPException) as consent_block:
+                run_document_extraction(
+                    case_id,
+                    RunDocumentExtractionBody(document_ids=[original_id]),
+                    Request({"type": "http", "headers": []}),
+                    x_operator_token=environment["OPERATOR_TOKEN"],
+                    x_operator_actor=self.operator.actor,
                 )
-            self.assertEqual(duplicate.status_code, 409)
+            self.assertEqual(consent_block.exception.status_code, 503)
+            self.assertIn(
+                "autorización firmada específica", consent_block.exception.detail
+            )
+        prepare.assert_not_called()
+        provider.assert_not_called()
+        download.assert_not_called()
+        with self.engine.begin() as conn:
+            for table in ("rtm_document_extractions", "rtm_validated_facts", "events"):
+                count = conn.execute(
+                    text(f"SELECT COUNT(*) FROM {table} WHERE case_id=CAST(:id AS UUID)"),
+                    {"id": case_id},
+                ).scalar_one()
+                self.assertEqual(count, 0, table)
 
     def test_case_and_document_guards(self):
         scenarios = [
@@ -473,28 +529,12 @@ class DocumentExtractionIntegrationTest(unittest.TestCase):
             ),
         ]
 
-        with patch.dict(os.environ, {"OPERATOR_TOKEN": OPERATOR_TOKEN}):
+        with patch.dict(os.environ, operator_http_environment()):
             for case_id, original_id, expected in scenarios:
                 with self.subTest(case_id=case_id, expected=expected):
-                    provider_patch, bytes_patch = self._provider_patches()
-                    with provider_patch, bytes_patch:
-                        response = self.client.post(
-                            (
-                                f"/ops/core/cases/{case_id}/"
-                                "document-extractions/run"
-                            ),
-                            headers=self._headers(),
-                            json={
-                                "document_ids": (
-                                    [original_id] if original_id else []
-                                )
-                            },
-                        )
-                    self.assertEqual(
-                        response.status_code,
-                        expected,
-                        response.text,
-                    )
+                    with self.assertRaises(HTTPException) as rejected:
+                        self._extract_synthetic_case(case_id, original_id)
+                    self.assertEqual(rejected.exception.status_code, expected)
 
 
 if __name__ == "__main__":

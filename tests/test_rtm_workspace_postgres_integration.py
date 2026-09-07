@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import os
+import secrets
 import uuid
 import unittest
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, text
 
+from tests.postgres_authority_fixture import seed_signed_case_authority
+from tests.postgres_security_fixtures import apply_operator_security_schema
 from rtm_core.authority_repository import (
     create_family_resolution,
     create_validated_facts,
@@ -60,6 +63,7 @@ class WorkspacePostgresIntegrationTest(unittest.TestCase):
                         status TEXT NOT NULL DEFAULT 'uploaded',
                         payment_status TEXT,
                         authorized BOOLEAN NOT NULL DEFAULT FALSE,
+                        authorized_at TIMESTAMPTZ,
                         department TEXT,
                         case_type TEXT,
                         category TEXT,
@@ -121,10 +125,19 @@ class WorkspacePostgresIntegrationTest(unittest.TestCase):
             )
             for _, statement in authority_v1_ddl():
                 conn.execute(text(statement))
+            apply_operator_security_schema(conn)
 
     @classmethod
     def tearDownClass(cls):
         cls.engine.dispose()
+
+    def setUp(self):
+        self.enterContext(
+            patch.dict(
+                os.environ,
+                {"RTM_AUTHORITY_SIGNING_SECRET": secrets.token_urlsafe(48)},
+            )
+        )
 
     @staticmethod
     def _source(document_id: str, evidence: str) -> SourceReference:
@@ -183,7 +196,6 @@ class WorkspacePostgresIntegrationTest(unittest.TestCase):
                 (original_id, "original", "image/tiff"),
                 (str(uuid.uuid4()), "identity_front", "image/jpeg"),
                 (str(uuid.uuid4()), "identity_back", "image/jpeg"),
-                (str(uuid.uuid4()), "authorization_signed", "application/pdf"),
             ):
                 conn.execute(
                     text(
@@ -205,6 +217,8 @@ class WorkspacePostgresIntegrationTest(unittest.TestCase):
                         "mime": mime,
                     },
                 )
+
+            seed_signed_case_authority(conn, case_id)
 
             facts = ValidatedFacts(
                 case_id=case_id,

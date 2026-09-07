@@ -376,10 +376,10 @@ class HttpSecurityTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('openapi_url=None if _DEPLOYED_PROFILE else "/openapi.json"', source)
 
     def test_trailing_slash_never_redirects_to_an_attacker_host(self):
-        with TestClient(
-            backend_app.app,
-            follow_redirects=False,
-        ) as client:
+        with (
+            patch.dict(os.environ, {"RTM_ENV": "test"}, clear=True),
+            TestClient(backend_app.app, follow_redirects=False) as client,
+        ):
             response = client.get(
                 "/health/live/",
                 headers={"Host": "attacker.example"},
@@ -388,7 +388,10 @@ class HttpSecurityTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("location", response.headers)
 
     def test_application_accepts_only_its_exact_local_host(self):
-        with TestClient(backend_app.app) as client:
+        with (
+            patch.dict(os.environ, {"RTM_ENV": "test"}, clear=True),
+            TestClient(backend_app.app) as client,
+        ):
             accepted = client.get("/health/live", headers={"Host": "testserver"})
             rejected = client.get(
                 "/health/live",

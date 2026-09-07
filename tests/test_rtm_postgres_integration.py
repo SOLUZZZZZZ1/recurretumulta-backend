@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import uuid
 import unittest
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, text
 
+from tests.postgres_authority_fixture import seed_signed_case_authority
+from tests.postgres_security_fixtures import apply_operator_security_schema
 from rtm_core.authority_repository import (
     DocumentReviewAttestation,
     create_family_resolution,
@@ -62,6 +65,14 @@ class PostgresAuthorityIntegrationTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.engine.dispose()
 
+    def setUp(self):
+        self.enterContext(
+            patch.dict(
+                os.environ,
+                {"RTM_AUTHORITY_SIGNING_SECRET": secrets.token_urlsafe(48)},
+            )
+        )
+
     @classmethod
     def _reset_legacy_schema(cls):
         with cls.engine.begin() as conn:
@@ -76,6 +87,7 @@ class PostgresAuthorityIntegrationTest(unittest.TestCase):
                         status TEXT NOT NULL DEFAULT 'uploaded',
                         payment_status TEXT,
                         authorized BOOLEAN NOT NULL DEFAULT FALSE,
+                        authorized_at TIMESTAMPTZ,
                         department TEXT,
                         case_type TEXT,
                         category TEXT,
@@ -142,6 +154,7 @@ class PostgresAuthorityIntegrationTest(unittest.TestCase):
             with cls.engine.begin() as conn:
                 for _, statement in authority_v1_ddl():
                     conn.execute(text(statement))
+                apply_operator_security_schema(conn)
 
         with cls.engine.begin() as conn:
             tables = {
@@ -310,6 +323,7 @@ class PostgresAuthorityIntegrationTest(unittest.TestCase):
                 ),
                 {"case_id": case_id, "payload": json.dumps(event_payload)},
             )
+            seed_signed_case_authority(conn, case_id)
 
         with self.engine.begin() as conn:
             stored_wrapper, stored_event = load_latest_reanalysis_snapshot(conn, case_id)
@@ -338,6 +352,7 @@ class PostgresAuthorityIntegrationTest(unittest.TestCase):
                 "fase_procedimental": "initial_notice",
                 "sancion_importe_eur": 500,
                 "puntos_detraccion": 6,
+                "fecha_limite": "2026-08-20",
             }
             for fact_key, fact_value in reviewed_values.items():
                 reviewed_payload["facts"][fact_key] = {
