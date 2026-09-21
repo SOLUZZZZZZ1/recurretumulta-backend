@@ -355,11 +355,17 @@ class PostgresAuthorityIntegrationTest(unittest.TestCase):
             objects[kind] = data
             return fixture.storage.upload_bytes(case_id, kind, data, extension, mime)
         def require_ephemeral_database(conn):
-            # The runner verifies cluster identity before loading this suite.
+            # Local runs verify their own cluster; GitHub uses the disposable
+            # PostgreSQL service configured in rtm-core-ci.yml.
             from sqlalchemy.engine import make_url
             expected = make_url(DATABASE_URL)
             actual = conn.execute(text("SELECT current_database(),current_user,inet_server_port()" )).one()
-            self.assertTrue(expected.database.startswith("rtm_check_"))
+            github_test_service = (
+                os.getenv("GITHUB_ACTIONS") == "true"
+                and (expected.host, expected.port, expected.username, expected.database)
+                == ("127.0.0.1", 5432, "postgres", "rtm_core_test")
+            )
+            self.assertTrue(expected.database.startswith("rtm_check_") or github_test_service)
             self.assertEqual(tuple(actual), (expected.database, expected.username, expected.port))
         with self.engine.begin() as conn:
             for name, kind in [("contact_name", "TEXT"), ("customer_comment", "TEXT"),
