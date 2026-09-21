@@ -13,6 +13,7 @@ from sqlalchemy import text
 
 from database import get_engine
 from case_authority import (
+    project_case_authorization_evidence,
     build_authorization_signature_view_attestation,
     build_rejected_authorization_signature_attestation,
     build_reviewed_signed_authority_attestation,
@@ -43,6 +44,9 @@ from rtm_core.ops_case_scope import (
 )
 from rtm_core.case_state_policy import lock_case_for_material_mutation
 from rtm_core.upload_security import PDF, UploadSecurityError, validate_document_bytes
+from rtm_core.post_filing_deadlines import local_post_filing_projection
+from rtm_core.post_filing_review import DeadlineReviewBody, save_deadline_review
+from rtm_core import traffic_working_draft as working_drafts
 
 router = APIRouter(
     prefix="/ops/cases",
@@ -971,6 +975,19 @@ def get_case_detail(
 
         overrides = _load_ai_overrides(conn, case_id)
 
+        authority_meta = conn.execute(text('''
+            SELECT COALESCE(c.authorized,FALSE), COALESCE(c.department,''),
+                   COALESCE(c.case_type,''),
+                   ARRAY(SELECT d.kind FROM documents d WHERE d.case_id=c.id)
+            FROM cases c WHERE c.id=:case_id
+        '''), {"case_id": case_id}).one()
+        is_fine = authority_meta[1] == "traffic" and authority_meta[2] == "fine"
+        authority = project_case_authorization_evidence(
+            conn, case_id,
+            authorized=bool(authority_meta[0]) and is_fine,
+            document_kinds=authority_meta[3],
+        )
+
         familia = (
             overrides.get("familia")
             or payload.get("familia_resuelta")
@@ -1004,10 +1021,91 @@ def get_case_detail(
             "hecho": hecho,
             "ai_overrides": overrides,
             "updated_at": case["updated_at"],
+            "case_type": authority_meta[2],
+            "authorization_evidence_status": authority["authorization_evidence_status"],
+            "signed_authority_verified": authority["signed_authority_verified"],
+            "post_filing": local_post_filing_projection(conn, case_id),
             "actions": {
                 "presenter_available": _presenter_available(case),
             },
         }
+
+
+@router.post("/{case_id}/post-filing/reviews")
+def review_case_deadlines(
+    case_id: str, body: DeadlineReviewBody, request: Request,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+):
+    require_operator_token(x_operator_token)
+    scope = load_ops_case_scope(request)
+    if (not scope.individual_session or scope.role_code != "rtm.supervisor"
+            or "ops.supervise" not in set(scope.permissions)):
+        raise HTTPException(403, "La revisión de plazos requiere supervisión individual")
+    operator_id, _, actor = _reviewer_identity(request)
+    if operator_id != scope.operator_id:
+        raise HTTPException(403, "Identidad de revisión no válida")
+    with get_engine().begin() as conn:
+        case_id = require_case_in_scope(conn, scope=scope, case_id=case_id)
+        projection = save_deadline_review(conn, case_id=case_id, body=body, actor=actor)
+    return {"ok": True, "case_id": case_id, "post_filing": projection}
+
+
+def _working_draft_supervisor(request, token):
+    require_operator_token(token)
+    scope = load_ops_case_scope(request)
+    if (not scope.individual_session or scope.role_code != "rtm.supervisor"
+            or "ops.supervise" not in set(scope.permissions)):
+        raise HTTPException(403, "El borrador de trabajo requiere supervisión individual")
+    operator_id, _, actor = _reviewer_identity(request)
+    if operator_id != scope.operator_id:
+        raise HTTPException(403, "Identidad de revisión no válida")
+    return scope, actor
+
+
+@router.get("/{case_id}/working-draft")
+def get_working_draft(case_id: str, request: Request,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token")):
+    scope, _ = _working_draft_supervisor(request, x_operator_token)
+    with get_engine().begin() as conn:
+        case_id = require_case_in_scope(conn, scope=scope, case_id=case_id)
+        state = working_drafts.projection(conn, case_id)
+    return {"ok": True, "case_id": case_id, "working_draft": state}
+
+
+@router.post("/{case_id}/working-draft")
+def save_working_draft(case_id: str, body: working_drafts.WorkingDraftBody, request: Request,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token")):
+    scope, actor = _working_draft_supervisor(request, x_operator_token)
+    uploaded = []
+    try:
+        with get_engine().begin() as conn:
+            case_id = require_case_in_scope(conn, scope=scope, case_id=case_id)
+            state = working_drafts.save_draft(conn, case_id=case_id, body=body, actor=actor, uploaded=uploaded)
+    except Exception:
+        for bucket, key in reversed(uploaded):
+            working_drafts.storage.delete_object(bucket, key)
+        raise
+    return {"ok": True, "case_id": case_id, "working_draft": state}
+
+
+@router.get("/{case_id}/working-draft/{draft_id}/pdf")
+def get_working_draft_pdf(case_id: str, draft_id: str, request: Request,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token")):
+    scope, _ = _working_draft_supervisor(request, x_operator_token)
+    try:
+        if str(uuid.UUID(draft_id)) != draft_id: raise ValueError()
+    except ValueError as exc:
+        raise HTTPException(404, "Borrador no encontrado") from exc
+    with get_engine().begin() as conn:
+        case_id = require_case_in_scope(conn, scope=scope, case_id=case_id)
+        content, evidence = working_drafts.read_pdf(conn, case_id, draft_id)
+    return Response(content, media_type="application/pdf", headers={
+        "Cache-Control": "no-store, max-age=0", "Pragma": "no-cache",
+        "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
+        "Content-Security-Policy": "sandbox; frame-ancestors 'none'",
+        "Content-Disposition": f'inline; filename="RTM-borrador-{draft_id}.pdf"',
+        "X-RTM-Document-SHA256": evidence["sha256"],
+    })
 
 
 @router.get("/{case_id}/ai-overrides")

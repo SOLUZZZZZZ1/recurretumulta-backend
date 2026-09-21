@@ -18,6 +18,11 @@ from urllib.parse import unquote
 
 from rtm_core.environment_contract import runtime_requires_environment_preflight
 from rtm_core.http_security import resolve_forwarded_client_ip
+from rtm_core.local_operator_auth import (
+    LocalOperatorAuthMisconfigured,
+    assert_local_operator_auth_ready,
+    local_operator_auth_requested,
+)
 from rtm_core.operator_auth_crypto import hmac_identifier
 
 
@@ -59,10 +64,14 @@ class OperatorAuthRuntimeConfig:
     reauthentication_max_age_seconds: int = (
         DEFAULT_OPERATOR_REAUTH_MAX_AGE_SECONDS
     )
+    local_development: bool = False
 
     @property
     def available(self) -> bool:
-        return self.environment == "staging" and self.enabled
+        return self.enabled and (
+            self.environment == "staging"
+            or (self.environment == "development" and self.local_development)
+        )
 
 
 @dataclass(frozen=True)
@@ -106,14 +115,21 @@ def operator_auth_environment_mode(
 ) -> str:
     """Clasifica la frontera legacy sin confiar solo en ``RTM_ENV``.
 
-    El despliegue inicial de sesiones individuales pertenece exclusivamente a
-    staging. Producción queda cerrada hasta que el flujo individual se publique
+    El despliegue de sesiones individuales pertenece exclusivamente a staging.
+    Desarrollo local tiene un opt-in independiente con su propia frontera.
+    Producción queda cerrada hasta que el flujo individual se publique
     allí de forma explícita: nunca vuelve al PIN/token compartido. El passthrough
     legacy se reserva a perfiles locales de desarrollo/prueba (y a una ejecución
     local totalmente sin configurar), nunca a un perfil desplegado o ambiguo.
     """
 
     source = environ if environ is not None else os.environ
+    if local_operator_auth_requested(source):
+        try:
+            assert_local_operator_auth_ready(source)
+        except LocalOperatorAuthMisconfigured:
+            return OPERATOR_AUTH_MODE_FAIL_CLOSED
+        return OPERATOR_AUTH_MODE_INDIVIDUAL
     environment = str(source.get("RTM_ENV") or "").strip().casefold()
     raw_feature = source.get("RTM_ENABLE_OPERATOR_AUTH_V1")
     try:
@@ -152,6 +168,12 @@ def load_operator_auth_runtime_config(
 ) -> OperatorAuthRuntimeConfig:
     source = environ if environ is not None else os.environ
     environment = str(source.get("RTM_ENV") or "").strip().lower()
+    local_development = local_operator_auth_requested(source)
+    if local_development:
+        try:
+            assert_local_operator_auth_ready(source)
+        except LocalOperatorAuthMisconfigured as exc:
+            raise OperatorAuthRuntimeMisconfigured(str(exc)) from exc
     try:
         enabled = _strict_flag(
             source.get("RTM_ENABLE_OPERATOR_AUTH_V1"),
@@ -226,11 +248,12 @@ def load_operator_auth_runtime_config(
         hmac_key=hmac_key,
         evidence_retention_days=retention_days,
         reauthentication_max_age_seconds=reauthentication_max_age_seconds,
+        local_development=local_development,
     )
     if require_enabled and not enabled:
         raise OperatorAuthRoutesDisabled("Autenticación individual desactivada")
     if enabled:
-        if environment != "staging":
+        if environment != "staging" and not local_development:
             raise OperatorAuthRuntimeMisconfigured(
                 "La primera publicación de rutas solo está autorizada en staging"
             )

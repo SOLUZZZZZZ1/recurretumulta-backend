@@ -150,11 +150,11 @@ class TravelFlightCancelledSpecialistTest(unittest.TestCase):
         )
         self.assertEqual(
             SPECIALIST_DISPATCH_VERSION,
-            "rtm_specialist_dispatch_v1_3",
+            "rtm_specialist_dispatch_v1_4",
         )
         self.assertEqual(
             SPECIALIST_REGISTRY_VERSION,
-            "rtm_specialist_registry_v1_4",
+            "rtm_specialist_registry_v1_5",
         )
         self.assertIn("travel.flight_cancelled", registered_specialists())
         profile = family_profile("travel", "vuelo_cancelado")

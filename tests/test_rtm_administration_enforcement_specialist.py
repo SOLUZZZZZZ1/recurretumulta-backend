@@ -136,7 +136,7 @@ class AdministrationEnforcementSpecialistTest(unittest.TestCase):
             ADMINISTRATION_ENFORCEMENT_SPECIALIST_VERSION,
             "rtm_administration_enforcement_specialist_v1_0",
         )
-        self.assertEqual(SPECIALIST_REGISTRY_VERSION, "rtm_specialist_registry_v1_4")
+        self.assertEqual(SPECIALIST_REGISTRY_VERSION, "rtm_specialist_registry_v1_5")
         self.assertIn("administration.enforcement", registered_specialists())
         profile = family_profile("administration", "apremio_recaudacion")
         self.assertIsNotNone(profile)

@@ -12,6 +12,7 @@ from analyze import router as analyze_router
 from analyze_expediente import router as analyze_expediente_router
 from files import router as files_router
 from billing import router as billing_router
+from rtm_core.public_pricing_router import router as public_pricing_router
 from ops_automation_router import router as ops_automation_router
 from ops_operator_router import router as ops_operator_router
 from ops_queue_smart import router as ops_queue_smart_router
@@ -33,6 +34,16 @@ from rtm_core.environment_contract import (
     runtime_requires_environment_preflight,
 )
 from rtm_core.parser_isolation import assert_parser_isolation_ready
+from rtm_core.local_operator_auth import (
+    LocalOperatorAuthMiddleware,
+    assert_local_operator_auth_ready,
+    local_operator_auth_requested,
+)
+from rtm_core.local_document_storage import (
+    assert_local_document_storage_ready,
+    local_document_storage_requested,
+)
+from rtm_core.operator_auth_request import load_operator_auth_runtime_config
 from rtm_core.http_security import (
     ExactHostMiddleware,
     RequestBodyLimitMiddleware,
@@ -78,6 +89,8 @@ from rtm_connect.human_filing_router import (
 from ops import router as ops_router
 from ops_restaurant_reservations import router as ops_restaurant_router
 from cases import router as cases_router
+from rtm_core.generic_authorization_router import router as generic_authorization_router
+from rtm_core.generic_authorization_router import ops_router as local_recovery_router
 from partner import router as partner_router
 
 
@@ -105,6 +118,11 @@ app = FastAPI(
 def validate_deployed_environment() -> None:
     """Abort deployed profiles before serving if the safety contract is invalid."""
 
+    if local_operator_auth_requested():
+        assert_local_operator_auth_ready()
+        load_operator_auth_runtime_config(require_enabled=True)
+    if local_document_storage_requested():
+        assert_local_document_storage_ready()
     if runtime_requires_environment_preflight():
         assert_environment_ready()
         extraction_limits()
@@ -234,6 +252,7 @@ app.include_router(analyze_router)
 app.include_router(analyze_expediente_router)
 app.include_router(files_router)
 app.include_router(billing_router)
+app.include_router(public_pricing_router)
 app.include_router(ops_automation_router)
 app.include_router(ops_operator_router)
 app.include_router(ops_queue_smart_router)
@@ -263,6 +282,8 @@ app.include_router(connect_human_filing_router)
 app.include_router(ops_router)
 app.include_router(ops_restaurant_router)
 app.include_router(cases_router)
+app.include_router(generic_authorization_router)
+app.include_router(local_recovery_router)
 app.include_router(partner_router)
 
 # Última capa registrada: añade cabeceras también a errores y denegaciones de
@@ -270,6 +291,7 @@ app.include_router(partner_router)
 app.add_middleware(SensitiveRateLimitMiddleware)
 app.add_middleware(ExactHostMiddleware, allowed_hosts=_APP_ALLOWED_HOSTS)
 app.add_middleware(SecurityHeaderAmbiguityMiddleware)
+app.add_middleware(LocalOperatorAuthMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 
 

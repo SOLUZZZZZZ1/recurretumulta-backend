@@ -29,6 +29,7 @@ from rtm_core.authority_repository import (
 from rtm_core.case_state_policy import lock_case_for_public_material_mutation
 from rtm_core.repository import build_case_review_readiness, load_case_review_snapshot
 from rtm_core.runtime_capabilities import require_http_capability
+from rtm_core.local_operator_auth import local_operator_auth_requested
 from rtm_core.upload_security import (
     UploadSecurityError,
     read_upload_limited,
@@ -138,6 +139,17 @@ def _cleanup_b2_objects(coordinates: list[tuple[str, str]]) -> None:
             pass
 
 
+def _require_local_append_case(conn, case_id: str) -> None:
+    if not local_operator_auth_requested():
+        return
+    from rtm_core.generic_authorization import load_snapshot, require_local_generic_profile
+    from scripts.rtm_local_operator_setup import require_local_database
+
+    require_local_generic_profile()
+    require_local_database(conn)
+    load_snapshot(conn, case_id)
+
+
 def _existing_original_hashes(case_id: str, hashes: list[str]) -> set[str]:
     """Preflight síncrono para evitar subir duplicados ya registrados."""
 
@@ -148,6 +160,7 @@ def _existing_original_hashes(case_id: str, hashes: list[str]) -> set[str]:
         # está congelado. `_commit_appended_documents` repite el lock después
         # de las subidas para cerrar la carrera entre ambas fases.
         lock_case_for_public_material_mutation(conn, case_id)
+        _require_local_append_case(conn, case_id)
         for digest in dict.fromkeys(hashes):
             row = conn.execute(
                 text(
@@ -238,6 +251,7 @@ def _commit_appended_documents(
     unused_coordinates: list[tuple[str, str]] = []
     with engine.begin() as conn:
         case_state = lock_case_for_public_material_mutation(conn, case_id)
+        _require_local_append_case(conn, case_id)
 
         for item in prepared:
             digest = item["sha256"]
@@ -367,7 +381,11 @@ async def append_documents_core(
     """Almacena originales; nunca llama a Analyze, scoring o especialistas."""
 
     case_id = require_case_access_token(case_id, x_case_token)
-    require_http_capability("b2")
+    if local_operator_auth_requested():
+        from rtm_core.generic_authorization import require_local_generic_profile
+        require_local_generic_profile()
+    else:
+        require_http_capability("b2")
     if not files:
         raise HTTPException(status_code=400, detail="No se han recibido archivos")
     if len(files) > MAX_APPEND_FILES:
@@ -479,6 +497,10 @@ def _authorization_evidence_state(
     document_kinds: tuple[str, ...] | list[str] | set[str],
 ) -> tuple[bool, bool, bool]:
     """Return verified/pending/rejected only for the active authority chain."""
+
+    if local_operator_auth_requested() and "rtm_authorization_signed_candidate" in document_kinds:
+        from rtm_core.generic_authorization import has_pending_local_candidate
+        return False, has_pending_local_candidate(conn, case_id), False
 
     evidence = project_case_authorization_evidence(
         conn,

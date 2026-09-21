@@ -129,7 +129,7 @@ class DebtUnpaidInvoiceSpecialistTest(unittest.TestCase):
             DEBT_UNPAID_INVOICE_SPECIALIST_VERSION,
             "rtm_debt_unpaid_invoice_specialist_v1_0",
         )
-        self.assertEqual(SPECIALIST_REGISTRY_VERSION, "rtm_specialist_registry_v1_4")
+        self.assertEqual(SPECIALIST_REGISTRY_VERSION, "rtm_specialist_registry_v1_5")
         self.assertIn("debt.unpaid_invoice", registered_specialists())
         self.assertIn("administration.enforcement", registered_specialists())
         profile = family_profile("debt", "factura_impagada")

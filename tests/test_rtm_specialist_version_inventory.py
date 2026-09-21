@@ -11,7 +11,9 @@ class SpecialistVersionInventoryTest(unittest.TestCase):
         components = snapshot["components"]
         expected = {
             "document_fact_catalog": "rtm_document_fact_catalog_v1_2",
-            "specialist_dispatch": "rtm_specialist_dispatch_v1_3",
+            "specialist_dispatch": "rtm_specialist_dispatch_v1_4",
+            "traffic_parking_preparation": "rtm_traffic_parking_preparation_v1_0",
+            "traffic_parking_specialist": "rtm_traffic_parking_specialist_v1_0",
             "air_passenger_regime": "rtm_air_passenger_regime_v1_0",
             "air_baggage_liability_regime": (
                 "rtm_air_baggage_liability_regime_v1_0"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from database import get_engine
@@ -26,6 +26,7 @@ from rtm_core.authority_repository import (
 from rtm_core.contracts import FamilyResolution, ValidatedFacts
 from rtm_core.ops_case_scope import load_ops_case_scope, require_case_in_scope
 from rtm_core.security import normalized_actor, require_operator_token
+from rtm_core.facts_review import ReviewFactsBody, review_facts
 
 
 router = APIRouter(prefix="/ops/core/cases", tags=["rtm-core-authority"])
@@ -141,6 +142,24 @@ def create_case_validated_facts(
             supersedes_id=body.supersedes_id,
         )
     return {"ok": True, "facts": _serialized(record)}
+
+
+@router.post("/{case_id}/validated-facts/{facts_id}/review")
+def review_case_facts(
+    case_id: str, facts_id: str, body: ReviewFactsBody, request: Request,
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+):
+    require_operator_token(x_operator_token)
+    scope = load_ops_case_scope(request)
+    if not scope.individual_session or not scope.scope_all:
+        raise HTTPException(403, "La corrección de hechos requiere supervisión individual")
+    with get_engine().begin() as conn:
+        case_id = require_case_in_scope(conn, scope=load_ops_case_scope(request), case_id=case_id)
+        record = review_facts(
+            conn, case_id=case_id, facts_id=facts_id, body=body,
+            actor=f"operator:{scope.operator_id}",
+        )
+    return {"ok": True, "case_id": case_id, "facts": _serialized(record)}
 
 
 @router.post("/{case_id}/validated-facts/{facts_id}/freeze")

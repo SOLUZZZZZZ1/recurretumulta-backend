@@ -277,6 +277,9 @@ def _load_ops_operator_router_module():
     database = types.ModuleType("database")
     database.get_engine = lambda: None
     case_authority = types.ModuleType("case_authority")
+    case_authority.project_case_authorization_evidence = mock.Mock(
+        side_effect=AssertionError("Unexpected authorization projection in final-resource test")
+    )
     case_authority.build_authorization_signature_view_attestation = (
         lambda *args, **kwargs: None
     )

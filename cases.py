@@ -17,6 +17,8 @@ from b2_storage import (
     B2ObjectTooLargeError,
     delete_object,
     download_bytes_limited,
+    local_document_storage_enabled,
+    require_http_document_storage,
     upload_bytes,
 )
 from email_utils import send_email
@@ -24,6 +26,7 @@ from rtm_core.runtime_capabilities import capability_state, require_http_capabil
 from rtm_core.case_state_policy import lock_case_for_public_material_mutation
 from rtm_core.service_catalog import validate_public_intake_classification
 from rtm_core.trusted_origins import trusted_frontend_origin
+from rtm_core.local_operator_auth import local_operator_auth_requested
 from case_authority import (
     AUTHORITY_VERSION,
     build_authorization_signature_candidate_attestation,
@@ -560,17 +563,23 @@ def _persist_rtm_intake_draft(
     docs: List[Dict[str, Any]] = []
     engine = get_engine()
     with engine.begin() as conn:
+        local_test = local_operator_auth_requested()
+        if local_test:
+            from scripts.rtm_local_operator_setup import require_local_database
+            require_local_database(conn)
+            if not local_document_storage_enabled():
+                raise RuntimeError("La custodia local no está configurada.")
         conn.execute(text("""
             INSERT INTO cases(
                 id, contact_email, contact_name, status, payment_status, authorized,
                 interested_data, department, case_type, customer_comment, source_module,
-                category, created_at, updated_at
+                category, test_mode, created_at, updated_at
             ) VALUES (
                 CAST(:id AS UUID), :email, :name, 'authorization_pending', NULL, FALSE,
                 CAST(:interested AS JSONB), :department, :case_type, :comment, :source,
-                :category, NOW(), NOW()
+                :category, :local_test, NOW(), NOW()
             )
-        """), {"id": case_id, **case_record})
+        """), {"id": case_id, **case_record, "local_test": local_test})
         for bucket, key, content, validated, kind in stored_identity:
             document_row = conn.execute(text("""
                 INSERT INTO documents(
@@ -715,7 +724,24 @@ async def create_rtm_intake_draft(
     # uploads o abrir una transacción. Una configuración incompleta no puede
     # dejar PII ni filas huérfanas.
     require_public_case_access_configured()
-    require_http_capability("b2")
+    local_test = local_operator_auth_requested()
+    if local_test:
+        require_http_document_storage()
+        if not local_document_storage_enabled():
+            raise HTTPException(status_code=503, detail="La custodia local no está configurada.")
+        if not email_text.lower().endswith("@example.com") or dni_nie != "RTMTEST001":
+            raise HTTPException(
+                status_code=400,
+                detail="La prueba local requiere email @example.com y documento RTMTEST001.",
+            )
+        from scripts.rtm_local_operator_setup import require_local_database
+        try:
+            with get_engine().connect() as conn:
+                require_local_database(conn)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail="La base local no está disponible para esta prueba.") from exc
+    else:
+        require_http_capability("b2")
 
     # Ambos documentos se validan antes de crear el caso o escribir en B2.
     prepared_identity = [
@@ -758,6 +784,8 @@ async def create_rtm_intake_draft(
     }
     if public_service_family:
         interested["public_service_family"] = public_service_family
+    if local_test:
+        interested["local_test"] = {"synthetic": True, "local_only": True}
 
     stored_identity: List[tuple[str, str, bytes, ValidatedUpload, str]] = []
     stored_coordinates: List[tuple[str, str]] = []
@@ -800,6 +828,7 @@ async def create_rtm_intake_draft(
         "prejudicial_counsel_requested": bool(
             prejudicial_counsel_requested
         ),
+        "test_mode": local_test,
     }
     try:
         # Caso, documentos y eventos forman una sola unidad de persistencia. B2
@@ -825,6 +854,7 @@ async def create_rtm_intake_draft(
         "case_access_token_header": "X-RTM-Case-Token",
         "status": "authorization_pending",
         "authorized": False,
+        "test_mode": local_test,
         "next_path": _rtm_next_path(department, case_type),
     }
 
@@ -834,6 +864,9 @@ def download_rtm_authorization_pdf(
     case_id: str,
     x_case_token: Optional[str] = Header(default=None, alias="X-RTM-Case-Token"),
 ):
+    if local_operator_auth_requested():
+        from rtm_core.generic_authorization_router import download_generic_authorization
+        return download_generic_authorization(case_id, x_case_token)
     case_id = require_case_access_token(case_id, x_case_token)
     engine = get_engine()
     with engine.begin() as conn:

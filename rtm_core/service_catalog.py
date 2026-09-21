@@ -1,4 +1,4 @@
-"""Catálogo autoritativo de servicios y precios de revisión inicial RTM.
+"""Catálogo autoritativo de revisión inicial y oferta de recurso de multa RTM.
 
 El navegador puede solicitar un producto, pero no decide el importe. Para la
 revisión inicial, la autoridad es el departamento guardado en el expediente.
@@ -37,6 +37,27 @@ class ReviewQuote(BaseModel):
     currency: Literal["EUR"] = "EUR"
     stripe_price_env: Literal["STRIPE_PRICE_ID_REVIEW_BASIC", "STRIPE_PRICE_ID_ADMIN"]
     label: str
+
+
+class TrafficFineAppealOffer(BaseModel):
+    """Total informativo; no acredita pagos previos ni autoriza un checkout."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    service: Literal["traffic_fine_appeal"] = "traffic_fine_appeal"
+    amount_cents: int = Field(gt=0)
+    currency: Literal["EUR"] = "EUR"
+    review_credit_applies: Literal[True] = True
+
+
+def resolve_traffic_fine_appeal_offer() -> TrafficFineAppealOffer:
+    """Total aprobado de 39 EUR, con la revisión pagada a cuenta.
+
+La futura cotización individual debe comprobar el cobro previo liquidado y
+no revertido antes de descontarlo. Este catálogo no declara saldo pagadero.
+    """
+
+    return TrafficFineAppealOffer(amount_cents=3900)
 
 
 def normalize_code(value: str | None) -> str:

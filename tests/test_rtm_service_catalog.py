@@ -4,11 +4,23 @@ from rtm_core.service_catalog import (
     SERVICE_CATALOG_VERSION,
     canonical_department,
     resolve_review_quote,
+    resolve_traffic_fine_appeal_offer,
     validate_public_intake_classification,
 )
 
 
 class ServiceCatalogTest(unittest.TestCase):
+    def test_fine_appeal_total_includes_review_credit_without_creating_checkout_quote(self):
+        offer = resolve_traffic_fine_appeal_offer()
+        review = resolve_review_quote("traffic", "fine")
+        self.assertEqual(offer.model_dump(), {
+            "service": "traffic_fine_appeal", "amount_cents": 3900,
+            "currency": "EUR", "review_credit_applies": True,
+        })
+        self.assertEqual(offer.amount_cents - review.amount_cents, 2900)
+        self.assertNotIn("stripe_price_env", offer.model_dump())
+        self.assertNotIn("case_id", offer.model_dump())
+
     def test_version_is_explicit(self):
         self.assertEqual(SERVICE_CATALOG_VERSION, "rtm_service_catalog_v1_2")
 

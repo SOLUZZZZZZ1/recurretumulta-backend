@@ -7,7 +7,28 @@ from urllib.parse import urlsplit
 import boto3
 from botocore.config import Config
 
-from rtm_core.runtime_capabilities import require_capability
+from fastapi import HTTPException
+
+from rtm_core import local_document_storage as _local_storage
+from rtm_core.local_operator_auth import LocalOperatorAuthMisconfigured
+from rtm_core.runtime_capabilities import require_capability, require_http_capability
+
+
+local_document_storage_enabled = _local_storage.local_document_storage_enabled
+
+
+def require_http_document_storage():
+    """Require one explicit custody provider; this never enables the B2 capability."""
+    try:
+        if local_document_storage_enabled():
+            return "local"
+    except (LocalOperatorAuthMisconfigured, _local_storage.LocalDocumentStorageMisconfigured) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "local_document_storage_unavailable"},
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        ) from exc
+    return require_http_capability("b2")
 
 
 class B2ObjectTooLargeError(ValueError):
@@ -22,7 +43,14 @@ def _env(name: str) -> str:
 
 
 def get_b2_bucket() -> str:
+    # Historical name retained for the database's b2_bucket/b2_key fields.
+    if local_document_storage_enabled():
+        return _local_storage.LOCAL_DOCUMENT_BUCKET
     return _env("B2_BUCKET")
+
+
+def get_document_bucket() -> str:
+    return get_b2_bucket()
 
 
 def _validated_b2_endpoint(value: str) -> str:
@@ -48,7 +76,12 @@ def validate_b2_object_coordinate(
     *,
     case_id: str | None = None,
 ) -> tuple[str, str]:
-    """Constrain every B2 read/write helper to RTM's private case namespace."""
+    """Constrain coordinates to the explicitly selected provider and case."""
+
+    if local_document_storage_enabled():
+        return _local_storage.validate_local_object_coordinate(bucket, key, case_id=case_id)
+    if bucket == _local_storage.LOCAL_DOCUMENT_BUCKET:
+        raise ValueError("La coordenada local requiere el proveedor local explícito")
 
     expected_bucket = get_b2_bucket()
     clean_bucket = str(bucket or "").strip()
@@ -73,6 +106,9 @@ def get_s3_client():
     # En staging/producción B2 es opt-in. La comprobación se hace antes de
     # leer credenciales o construir un cliente con capacidad de red.
     require_capability("b2")
+    if _local_storage.local_document_storage_requested():
+        # Even direct S3 consumers cannot ignore a conflicting local profile.
+        local_document_storage_enabled()
 
     endpoint = _validated_b2_endpoint(_env("B2_ENDPOINT"))
     key_id = _env("B2_KEY_ID")
@@ -115,6 +151,11 @@ def guess_ext(filename: Optional[str], mime: Optional[str]) -> str:
 
 
 def upload_bytes(case_id: str, kind_folder: str, content: bytes, ext: str, mime: str) -> Tuple[str, str]:
+    if local_document_storage_enabled():
+        try:
+            return _local_storage.upload_bytes(case_id, kind_folder, content, ext, mime)
+        except _local_storage.LocalDocumentTooLargeError as exc:
+            raise B2ObjectTooLargeError(str(exc)) from exc
     bucket = get_b2_bucket()
     s3 = get_s3_client()
     key = f"cases/{case_id}/{kind_folder}/{uuid.uuid4().hex}{ext}"
@@ -147,6 +188,8 @@ def delete_object(bucket: str, key: str) -> None:
     primitiva de borrado arbitrario si se reutiliza por error.
     """
 
+    if local_document_storage_enabled():
+        return _local_storage.delete_object(bucket, key)
     clean_bucket, clean_key = validate_b2_object_coordinate(bucket, key)
     get_s3_client().delete_object(Bucket=clean_bucket, Key=clean_key)
 
@@ -160,6 +203,10 @@ def download_bytes(bucket: str, key: str, *, case_id: str | None = None) -> byte
     """
     Descarga el objeto completo como bytes desde B2 (S3 compatible).
     """
+    if local_document_storage_enabled():
+        return download_bytes_limited(
+            bucket, key, max_bytes=_local_storage.MAX_LOCAL_DOCUMENT_BYTES, case_id=case_id,
+        )
     clean_bucket, clean_key = validate_b2_object_coordinate(
         bucket, key, case_id=case_id
     )
@@ -178,6 +225,13 @@ def download_bytes_limited(
 ) -> bytes:
     """Descarga como máximo ``max_bytes + 1`` y aborta el stream al excederlo."""
 
+    if local_document_storage_enabled():
+        try:
+            return _local_storage.download_bytes_limited(
+                bucket, key, max_bytes=max_bytes, case_id=case_id,
+            )
+        except _local_storage.LocalDocumentTooLargeError as exc:
+            raise B2ObjectTooLargeError(str(exc)) from exc
     if not 1 <= int(max_bytes) <= 64 * 1024 * 1024:
         raise ValueError("Límite B2 fuera del rango seguro")
     clean_bucket, clean_key = validate_b2_object_coordinate(
@@ -205,6 +259,8 @@ def presign_get_url(bucket: str, key: str, expires_seconds: int = 300, filename:
     """
     Genera una URL temporal (presigned) para descargar desde B2.
     """
+    if local_document_storage_enabled():
+        raise RuntimeError("La custodia local solo admite descarga autenticada por el backend; no genera enlaces firmados")
     clean_bucket, clean_key = validate_b2_object_coordinate(bucket, key)
     s3 = get_s3_client()
     requested_name = str(filename or clean_key.rsplit("/", 1)[-1] or "documento.bin")

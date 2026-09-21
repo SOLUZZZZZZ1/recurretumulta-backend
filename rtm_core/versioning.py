@@ -25,7 +25,7 @@ DECLARED_COMPONENT_VERSIONS = {
     "extractor": "traffic_fine_reanalysis_v1_18",
     "extraction_route_policy": "rtm_extraction_route_policy_v1_0",
     "safe_reanalysis_execution": "rtm_safe_reanalysis_execution_v1_0",
-    "reanalysis_adapter": "rtm_reanalysis_to_validated_facts_v1_0",
+    "reanalysis_adapter": "rtm_reanalysis_to_validated_facts_v1_1",
     "document_scope": "rtm_document_scope_v1_0",
     "document_fact_catalog": "rtm_document_fact_catalog_v1_2",
     "document_extraction_packet": "rtm_document_extraction_packet_v1_0",
@@ -42,11 +42,13 @@ DECLARED_COMPONENT_VERSIONS = {
     "service_catalog": "rtm_service_catalog_v1_2",
     "domain_catalog": "rtm_domain_catalog_v1_0",
     "family_dispatch": "rtm_family_dispatch_v1_0",
-    "family_core": "rtm_family_core_v1_0",
+    "family_core": "rtm_family_core_v1_1",
     "cross_service_family": "rtm_cross_service_family_v1_0",
     "first_direction": "rtm_first_direction_projection_v1_0",
-    "specialist_registry": "rtm_specialist_registry_v1_4",
-    "specialist_dispatch": "rtm_specialist_dispatch_v1_3",
+    "specialist_registry": "rtm_specialist_registry_v1_5",
+    "specialist_dispatch": "rtm_specialist_dispatch_v1_4",
+    "traffic_parking_preparation": "rtm_traffic_parking_preparation_v1_0",
+    "traffic_parking_specialist": "rtm_traffic_parking_specialist_v1_0",
     "cross_service_specialist_support": (
         "rtm_cross_service_specialist_support_v1_0"
     ),
@@ -102,6 +104,8 @@ DECLARED_COMPONENT_VERSIONS = {
 }
 
 _RUNTIME_LOOKUPS = {
+    "traffic_parking_preparation": ("rtm_core.traffic_parking_preparation", "PARKING_PREPARATION_VERSION"),
+    "traffic_parking_specialist": ("rtm_core.traffic_parking_specialist", "PARKING_SPECIALIST_VERSION"),
     "extractor": ("reanalysis", "_EXTRACTOR_VERSION"),
     "extraction_route_policy": (
         "rtm_core.extraction_policy",

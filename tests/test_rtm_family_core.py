@@ -45,7 +45,7 @@ def _facts(mapping: dict[str, ValidatedFact]) -> ValidatedFacts:
 
 class FamilyCoreTest(unittest.TestCase):
     def test_version_is_explicit(self):
-        self.assertEqual(FAMILY_CORE_VERSION, "rtm_family_core_v1_0")
+        self.assertEqual(FAMILY_CORE_VERSION, "rtm_family_core_v1_1")
 
     def test_printed_kmh_label_does_not_activate_velocity(self):
         resolution = resolve_family(

@@ -26,7 +26,7 @@ from rtm_core.contracts import (
 from rtm_core.service_catalog import canonical_department
 
 
-FAMILY_CORE_VERSION = "rtm_family_core_v1_0"
+FAMILY_CORE_VERSION = "rtm_family_core_v1_1"
 
 
 _FOCUSED_TEXT_KEYS = {
@@ -62,6 +62,7 @@ _SEMAPHORE_PHASE_KEYS = {
 }
 
 _SPECIALISTS = {
+    "estacionamiento": "traffic.estacionamiento",
     "temeraria": "traffic.temeraria",
     "velocidad": "traffic.velocidad",
     "semaforo": "traffic.semaforo",
@@ -292,7 +293,30 @@ def _apply_structured_semaphore(store: dict[str, _Candidate], atoms: list[_Atom]
     )
 
 
+def _apply_parking_rule(store: dict[str, _Candidate], text_atoms: list[_Atom]) -> None:
+    # Only the reported conduct: incidental parked vehicles (ITV, insurance),
+    # sign descriptions, raw OCR and negated allegations are not parking facts.
+    for atom in text_atoms:
+        if atom.key not in _FOCUSED_TEXT_KEYS or atom.fact.conflicts or not atom.document_ids:
+            continue
+        value = atom.normalized
+        if re.search(r"\b(?:no|nunca|niega|negado|descarta|descartado|sin|no consta)\b.{0,65}\b(?:estacion|aparc)", value):
+            continue
+        if not re.search(
+            r"^(?:(?:hecho(?:s)?(?: denunciado(?:s)?| ficticio)?|conducta imputada|infraccion)\s*[:.-]\s*)?"
+            r"(?:(?:se denuncia por|denunciado por|denuncia por)\s+)?"
+            r"(?:estacionar|aparcar|estacionamiento (?:prohibido|indebido|en|sin)|aparcamiento (?:prohibido|indebido|en|sin))\b",
+            value,
+        ):
+            continue
+        _candidate(store, "estacionamiento").add(
+            code="explicit_parking_conduct", description="El hecho documental validado atribuye una conducta de estacionamiento; su legalidad queda por revisar.",
+            keys=[atom.key], document_ids=atom.document_ids, confidence=0.96,
+        )
+
+
 def _apply_explicit_rules(store: dict[str, _Candidate], text_atoms: list[_Atom]) -> None:
+    _apply_parking_rule(store, text_atoms)
     _add_text_rule(
         store,
         text_atoms,

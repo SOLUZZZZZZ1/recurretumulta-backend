@@ -1,6 +1,7 @@
 """Puente temporal entre las sesiones individuales y los routers OPS legacy.
 
-Los routers históricos todavía esperan ``X-Operator-Token``. En staging este
+Los routers históricos todavía esperan ``X-Operator-Token``. En staging y en el
+perfil local individual explícitamente aislado, este
 middleware hace que ese secreto deje de ser una credencial de cliente:
 
 * valida ``Bearer`` + posesión del dispositivo contra la sesión individual;
@@ -15,8 +16,8 @@ El contexto sin secretos también queda en ``request.state`` para que la
 posterior migración de auditoría y asignaciones no tenga que confiar en
 cabeceras aportadas por el navegador.
 
-El puente es deliberadamente exclusivo de staging. El contrato legacy solo se
-conserva fuera de staging cuando la función individual no está solicitada y la
+El puente usa la misma autorización individual en ambos perfiles. El contrato
+legacy solo se conserva cuando la función individual no está solicitada y la
 identidad técnica tampoco sigue marcada como staging. Una deriva entre esas
 señales falla cerrada en vez de reabrir el secreto compartido.
 """

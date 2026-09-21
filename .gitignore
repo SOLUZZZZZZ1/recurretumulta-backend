@@ -29,3 +29,7 @@ backup*/
 *.log
 *.tmp
 ~$*
+
+# Machine-local historical installers and source backups
+/RTM_LOCAL_OPS.py
+/RTM_LOCAL_OPS_RESPALDO/

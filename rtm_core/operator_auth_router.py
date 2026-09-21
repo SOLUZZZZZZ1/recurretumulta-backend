@@ -1,7 +1,8 @@
-"""Rutas staging de login individual y sesión de operadores RTM.
+"""Login individual de staging y del perfil local explícitamente aislado.
 
-La activación requiere ``RTM_ENABLE_OPERATOR_AUTH_V1=1`` y queda cerrada fuera
-de staging. El router no contiene rutas de creación de operadores. En staging,
+La activación requiere ``RTM_ENABLE_OPERATOR_AUTH_V1=1``; desarrollo requiere
+además el contrato local independiente. No contiene creación de operadores.
+En staging y en el perfil local,
 el puente de compatibilidad retira ``POST /ops/login`` para las superficies
 OPS migradas sin alterar los controles propios de Presenter.
 """
@@ -247,7 +248,7 @@ async def operator_auth_status(response: Response) -> dict[str, Any]:
     except OperatorAuthRuntimeMisconfigured:
         available = False
         configuration_valid = False
-    return {
+    payload = {
         "ok": True,
         "version": OPERATOR_AUTH_ROUTES_VERSION,
         "individual_login_enabled": available,
@@ -261,6 +262,15 @@ async def operator_auth_status(response: Response) -> dict[str, Any]:
         "non_staging_legacy_login_unchanged": True,
         "operator_creation_available": False,
     }
+    if configuration_valid and getattr(config, "local_development", False) is True:
+        payload.update(
+            auth_environment="development",
+            auth_profile="local_development",
+            local_only=True,
+            staging_only=False,
+            non_staging_legacy_login_unchanged=False,
+        )
+    return payload
 
 
 @router.post("/login")

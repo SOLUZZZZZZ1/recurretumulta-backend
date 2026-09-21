@@ -31,7 +31,7 @@ _PROTECTED_DOCUMENT_PATHS = (
     re.compile(r"^/cases/intake-draft/?$"),
     re.compile(r"^/cases/[^/]+/append-documents/?$"),
     re.compile(
-        r"^/cases/[^/]+/(?:upload-authorization-signed|authorization-signed|upload-receipt)/?$"
+        r"^/cases/[^/]+/(?:upload-authorization-signed|authorization-signed|rtm-authorization-signed|upload-receipt)/?$"
     ),
     re.compile(r"^/partner/cases/?$"),
     re.compile(r"^/ops/cases/[^/]+/upload-justificante/?$"),

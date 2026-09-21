@@ -31,7 +31,7 @@ from rtm_core.contracts import (
 )
 
 
-REANALYSIS_ADAPTER_VERSION = "rtm_reanalysis_to_validated_facts_v1_0"
+REANALYSIS_ADAPTER_VERSION = "rtm_reanalysis_to_validated_facts_v1_1"
 _SUPPORTED_EXTRACTOR_PREFIX = "traffic_fine_reanalysis_"
 
 # Solo estos campos documentales pueden cruzar el puente. Se excluyen
@@ -93,6 +93,9 @@ _FIELD_ALIASES: dict[str, str] = {
     "payment_term_days": "plazo_pago_dias",
     "fecha_documento": "fecha_documento",
     "fecha_emision": "fecha_documento",
+    "fecha_notificacion": "fecha_notificacion",
+    "notification_date": "fecha_notificacion",
+    "fecha_recepcion": "fecha_notificacion",
     "initiation_document_date": "fecha_documento_incoacion",
     "driver_data_date": "fecha_datos_conductor",
     "verification_date": "fecha_verificacion_metrologica",
@@ -388,7 +391,7 @@ def _source_candidates(
 
 def _document_sources(wrapper: Mapping[str, Any]) -> tuple[list[str], dict[str, Optional[int]]]:
     ids: list[str] = []
-    page_by_document: dict[str, Optional[int]] = {}
+    pages_by_document: dict[str, set[Optional[int]]] = {}
 
     extracted = _mapping(wrapper.get("extracted"))
     storage = _mapping(wrapper.get("storage"))
@@ -414,12 +417,18 @@ def _document_sources(wrapper: Mapping[str, Any]) -> tuple[list[str], dict[str, 
                 ids.append(document_id)
             raw_index = page.get("page_index")
             page_index: Optional[int] = None
-            try:
+            if not isinstance(raw_index, bool) and re.fullmatch(r"[0-9]+", str(raw_index)):
                 parsed = int(raw_index)
-                page_index = max(0, parsed - 1) if parsed > 0 else max(0, parsed)
-            except Exception:
-                pass
-            page_by_document[document_id] = page_index
+                page_index = parsed - 1 if parsed > 0 else 0
+            pages_by_document.setdefault(document_id, set()).add(page_index)
+
+    # El paquete agregado no atribuye cada campo a una página concreta.
+    # Solo una única página conocida permite conservar esa precisión; nunca
+    # adjudicar a todos los hechos la última página de un documento multipágina.
+    page_by_document = {
+        document_id: next(iter(indices)) if len(indices) == 1 else None
+        for document_id, indices in pages_by_document.items()
+    }
 
     return ids, page_by_document
 
@@ -469,8 +478,10 @@ def _explicit_conflicts(event_payload: Mapping[str, Any]) -> dict[str, list[str]
         canonical = _safe_key(item.get("field") or item.get("key"))
         if not canonical:
             continue
-        current = item.get("current_value") or item.get("previous")
-        alternative = item.get("vision_value") or item.get("precision_value") or item.get("candidate")
+        current = next((item[key] for key in ("current_value", "previous")
+                        if key in item and _nonempty(item[key])), None)
+        alternative = next((item[key] for key in ("vision_value", "precision_value", "candidate")
+                            if key in item and _nonempty(item[key])), None)
         description = (
             f"Lecturas distintas para {canonical}: "
             f"{str(current)[:100]!r} frente a {str(alternative)[:100]!r}."
@@ -516,7 +527,7 @@ def _source_references(
     return [
         SourceReference(
             document_id=document_id,
-            page_index=page_by_document.get(document_id),
+            page_index=page_by_document.get(document_id) if len(document_ids) == 1 else None,
             source_type=source_type,
             extraction_method=method,
             evidence=candidate.evidence,
@@ -624,16 +635,26 @@ def build_validated_facts_from_reanalysis(
         ):
             ignored_fields.add(str(raw_key))
 
-    if not candidates:
+    # Las advertencias son datos de revisión aunque no exista ningún valor
+    # candidato. Se conservan tanto las del paquete como las del evento;
+    # ninguna de las dos capas puede silenciar una duda de la otra.
+    unresolved_declared: set[str] = set()
+    conflicts_declared: dict[str, list[str]] = {}
+    for payload in (core, event):
+        unresolved_declared.update(_field_names(payload.get("unresolved_critical_fields")))
+        unresolved_declared.update(_field_names(payload.get("missing_required_fields")))
+        for key, descriptions in _explicit_conflicts(payload).items():
+            existing = conflicts_declared.setdefault(key, [])
+            existing.extend(item for item in descriptions if item not in existing)
+
+    review_fields = set(candidates) | unresolved_declared | set(conflicts_declared)
+    if not review_fields:
         raise HTTPException(
             status_code=422,
             detail="Reanalysis no contiene campos documentales seguros para revisión",
         )
 
-    unresolved_declared = _field_names(event.get("unresolved_critical_fields"))
-    unresolved_declared.update(_field_names(event.get("missing_required_fields")))
-    conflicts_declared = _explicit_conflicts(event)
-    low_handwriting_quality = _quality_is_low(event)
+    low_handwriting_quality = _quality_is_low(event) or _quality_is_low(core)
 
     fact_models: dict[str, ValidatedFact] = {}
     accepted: list[str] = []
@@ -641,8 +662,28 @@ def build_validated_facts_from_reanalysis(
     conflicted: list[str] = []
     global_conflicts: list[str] = []
 
-    for key in sorted(candidates):
-        field_candidates = candidates[key]
+    for key in sorted(review_fields):
+        field_candidates = candidates.get(key, [])
+        if not field_candidates:
+            descriptions = list(conflicts_declared.get(key, []))
+            fact_models[key] = ValidatedFact(
+                value=None,
+                status=FactStatus.CONFLICTED if descriptions else FactStatus.UNRESOLVED,
+                confidence=0.0,
+                sources=[],
+                conflicts=descriptions,
+                notes=[
+                    "Reanalysis declaró un conflicto sin lectura candidata enlazada"
+                    if descriptions else "Reanalysis declaró el campo como ausente o no resuelto",
+                    "Pendiente de revisión documental; no se infieren valor, página ni evidencia",
+                ],
+            )
+            if descriptions:
+                conflicted.append(key)
+                global_conflicts.extend(descriptions)
+            else:
+                unresolved.append(key)
+            continue
         # Elimina duplicados exactos conservando la mejor procedencia.
         best_by_value: dict[str, _Candidate] = {}
         for candidate in field_candidates:

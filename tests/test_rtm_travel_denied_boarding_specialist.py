@@ -150,11 +150,11 @@ class TravelDeniedBoardingSpecialistTest(unittest.TestCase):
         )
         self.assertEqual(
             SPECIALIST_DISPATCH_VERSION,
-            "rtm_specialist_dispatch_v1_3",
+            "rtm_specialist_dispatch_v1_4",
         )
         self.assertEqual(
             SPECIALIST_REGISTRY_VERSION,
-            "rtm_specialist_registry_v1_4",
+            "rtm_specialist_registry_v1_5",
         )
         registered = registered_specialists()
         self.assertIn("travel.denied_boarding", registered)

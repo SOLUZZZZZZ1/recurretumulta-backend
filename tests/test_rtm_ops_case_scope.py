@@ -659,6 +659,10 @@ class OpsCaseScopeWiringContractTest(unittest.TestCase):
         routes = set(_case_route_functions(relative))
         expected = {
             "reanalyze_case",
+            "review_case_deadlines",
+            "get_working_draft",
+            "save_working_draft",
+            "get_working_draft_pdf",
             "get_final_resource",
             "save_final_resource_draft",
             "finalize_resource",
@@ -683,12 +687,25 @@ class OpsCaseScopeWiringContractTest(unittest.TestCase):
                 source = _function_source(relative, function_name)
                 calls = _calls_in_transaction(relative, function_name)
                 self.assertIn("request: Request", source)
-                self.assertIn("load_ops_case_scope", calls)
                 self.assertIn("require_case_in_scope", calls)
-                self.assertLess(
-                    source.index("require_operator_token"),
-                    source.index("get_engine"),
-                )
+                if function_name in {"get_working_draft", "save_working_draft", "get_working_draft_pdf"}:
+                    # These individual-session routes authenticate through a
+                    # shared helper before opening their scoped transaction.
+                    helper = _function_source(relative, "_working_draft_supervisor")
+                    self.assertLess(source.index("_working_draft_supervisor"), source.index("get_engine"))
+                    self.assertLess(helper.index("require_operator_token"), helper.index("load_ops_case_scope"))
+                    for required in ("scope.individual_session", '"rtm.supervisor"', '"ops.supervise"',
+                                     "_reviewer_identity", "operator_id != scope.operator_id"):
+                        self.assertIn(required, helper)
+                elif function_name == "review_case_deadlines":
+                    self.assertLess(source.index("require_operator_token"), source.index("load_ops_case_scope"))
+                    self.assertLess(source.index("load_ops_case_scope"), source.index("get_engine"))
+                    for required in ("scope.individual_session", '"rtm.supervisor"', '"ops.supervise"',
+                                     "_reviewer_identity", "operator_id != scope.operator_id"):
+                        self.assertIn(required, source)
+                else:
+                    self.assertIn("load_ops_case_scope", calls)
+                    self.assertLess(source.index("require_operator_token"), source.index("get_engine"))
 
         for function_name in (
             "override_family_and_regenerate",
@@ -787,7 +804,8 @@ class OpsCaseScopeWiringContractTest(unittest.TestCase):
 
         # This explicit size prevents a newly unmounted or accidentally
         # undecorated family from making the matrix pass vacuously.
-        self.assertEqual(len(matrix), 40, matrix)
+        self.assertEqual(len(matrix), 41, matrix)
+        self.assertIn((os.path.join("rtm_core", "authority_router.py"), "review_case_facts"), matrix)
         for relative, function_name in matrix:
             with self.subTest(relative=relative, function=function_name):
                 source = _function_source(relative, function_name)

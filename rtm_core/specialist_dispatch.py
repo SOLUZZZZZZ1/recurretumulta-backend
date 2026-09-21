@@ -22,6 +22,7 @@ from rtm_core.debt_specialist_registry import (
     registered_debt_specialists,
 )
 from rtm_core.specialist_registry import build_temeraria_preview
+from rtm_core.traffic_parking_specialist import build_parking_preview
 from rtm_core.traffic_specialist_adapters import (
     build_semaforo_preview,
     build_velocity_preview,
@@ -32,10 +33,11 @@ from rtm_core.travel_specialist_registry import (
 )
 
 
-SPECIALIST_REGISTRY_VERSION = "rtm_specialist_registry_v1_4"
-SPECIALIST_DISPATCH_VERSION = "rtm_specialist_dispatch_v1_3"
+SPECIALIST_REGISTRY_VERSION = "rtm_specialist_registry_v1_5"
+SPECIALIST_DISPATCH_VERSION = "rtm_specialist_dispatch_v1_4"
 
 _REGISTRY = {
+    "traffic.estacionamiento": build_parking_preview,
     "administration.enforcement": build_administration_enforcement_preview,
     "traffic.temeraria": build_temeraria_preview,
     "traffic.velocidad": build_velocity_preview,
