@@ -23,6 +23,7 @@ from rtm_core.legacy_guard_router import router as rtm_core_legacy_guard_router
 from rtm_core.intake_router import router as rtm_core_intake_router
 from rtm_core.router import router as rtm_core_router
 from rtm_core.workspace_router import router as rtm_core_workspace_router
+from rtm_core.study_router import router as rtm_core_study_router
 from rtm_core.document_facts_router import router as rtm_core_document_facts_router
 from rtm_core.document_extraction_router import (
     router as rtm_core_document_extraction_router,
@@ -261,6 +262,7 @@ app.include_router(contact_router)
 app.include_router(vehicle_removal_router)
 app.include_router(rtm_core_router)
 app.include_router(rtm_core_workspace_router)
+app.include_router(rtm_core_study_router)
 app.include_router(rtm_core_document_facts_router)
 app.include_router(rtm_core_document_extraction_router)
 app.include_router(rtm_core_reanalysis_execution_router)

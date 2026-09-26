@@ -211,7 +211,7 @@ def is_scoped_operator_read_path(path: str) -> bool:
         and segments[1:4] == ["ops", "core", "cases"]
         and _is_canonical_uuid(segments[4])
     ):
-        return segments[5] in {"workspace", "payment-status"}
+        return segments[5] in {"workspace", "payment-status", "study"}
 
     if (
         len(segments) not in {4, 5}

@@ -209,6 +209,7 @@ class LegacyOpsPathAuditTest(unittest.TestCase):
             f"/ops/cases/{CASE_ID}/ai-overrides",
             f"/ops/core/cases/{CASE_ID}/workspace",
             f"/ops/core/cases/{CASE_ID}/payment-status",
+            f"/ops/core/cases/{CASE_ID}/study",
             "/ops/vehicle-removal",
             f"/ops/vehicle-removal/{CASE_ID}",
         ):
@@ -225,6 +226,7 @@ class LegacyOpsPathAuditTest(unittest.TestCase):
             f"/ops/cases/{CASE_ID}/documents/extra",
             f"/ops/core/cases/{CASE_ID}/workspace/extra",
             f"/ops/core/cases/{CASE_ID}/payment-status/extra",
+            f"/ops/core/cases/{CASE_ID}/study/actions",
             "/ops/core/cases/reanalysis/policy-status",
             "/ops/vehicle-removal/not-a-uuid",
             f"/ops/vehicle-removal-extra/{CASE_ID}",
