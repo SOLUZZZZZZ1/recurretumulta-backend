@@ -21,7 +21,7 @@ from rtm_core.family_dispatch import resolve_family
 from rtm_core.specialist_dispatch import build_legal_preview, registered_specialists
 
 STUDY_VERSION = "rtm_ops_study_v1"
-Action = Literal["freeze_facts", "resolve_family", "lock_family", "build_preview"]
+Action = Literal["freeze_facts", "resolve_family", "lock_family", "build_preview", "reopen_facts"]
 
 
 class StudyActionBody(BaseModel):
@@ -30,6 +30,7 @@ class StudyActionBody(BaseModel):
     expected_state_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     confirmed: bool
     document_review: authority.DocumentReviewAttestation | None = None
+    reason: str | None = Field(default=None, min_length=10, max_length=2000)
 
     @field_validator("document_review", mode="before")
     @classmethod
@@ -46,6 +47,10 @@ class StudyActionBody(BaseModel):
             raise ValueError("Confirma expresamente el paso que vas a realizar")
         if (self.action == "freeze_facts") != (self.document_review is not None):
             raise ValueError("El cierre de hechos requiere su revisión documental")
+        if (self.action == "reopen_facts") != (self.reason is not None):
+            raise ValueError("La nueva revisión requiere su motivo explícito")
+        if self.reason is not None and len(self.reason.strip()) < 10:
+            raise ValueError("Describe el motivo de la nueva revisión")
         return self
 
 
@@ -116,6 +121,16 @@ def load_study(conn, case_id: str, *, for_update=False):
         "next_action": action, "blockers": blockers,
         "facts": _dump(facts), "family": _dump(family), "preview": _dump(preview),
     }
+    from rtm_core.parking_check_review import projection as parking_projection
+    from rtm_core.study_documents import revision_available
+    from rtm_core.traffic_parking_preparation import build_parking_preparation
+    payload["documents"] = documents
+    payload["can_add_document"] = revision_available(payload, facts, preview)
+    payload["can_reopen_facts"] = payload["can_add_document"] and facts.frozen
+    payload["available_actions"] = ([action] if action else []) + (["reopen_facts"] if payload["can_reopen_facts"] else [])
+    payload["parking_review"] = (parking_projection(conn, case_id, facts, family, preview, documents)
+                                 if stage == "preview_available" else None)
+    payload["parking_preparation"] = build_parking_preparation(facts.facts) if facts else None
     payload["state_sha256"] = _digest({
         "projection": payload, "case": dict(meta), "documents": documents,
         "signed_authority_sha256": signed_digest,
@@ -127,7 +142,7 @@ def advance_study(conn, *, case_id: str, body: StudyActionBody, actor: str):
     before, facts, family, previous_preview = load_study(conn, case_id, for_update=True)
     if not hmac.compare_digest(before["state_sha256"], body.expected_state_sha256):
         raise HTTPException(409, "El expediente ha cambiado. Recarga el estudio antes de continuar.")
-    if before["next_action"] != body.action or before["blockers"]:
+    if body.action not in before["available_actions"] or before["blockers"]:
         raise HTTPException(409, "Este paso no está disponible en el estado actual del expediente.")
     review = body.document_review
     if body.action == "freeze_facts":
@@ -141,6 +156,9 @@ def advance_study(conn, *, case_id: str, body: StudyActionBody, actor: str):
             resolution=resolve_family(facts.facts), created_by=actor, validated_facts_id=facts.id)
     elif body.action == "lock_family":
         authority.lock_family_resolution(conn, case_id, family.id, actor)
+    elif body.action == "reopen_facts":
+        from rtm_core.study_documents import replace_facts
+        replace_facts(conn, case_id=case_id, facts=facts, actor=actor, reason=body.reason)
     elif body.action == "build_preview":
         previews.create_preview(conn, case_id=case_id,
             preview=build_legal_preview(facts, family), created_by=actor,
@@ -149,7 +167,7 @@ def advance_study(conn, *, case_id: str, body: StudyActionBody, actor: str):
     authority._append_event(conn, case_id, "rtm_ops_study_advanced", {
         "study_version": STUDY_VERSION, "action": body.action, "actor": actor,
         "previous_state_sha256": before["state_sha256"], "state_sha256": after["state_sha256"],
-        "facts_id": facts.id, "family_resolution_id": after["family"]["id"] if after["family"] else None,
+        "facts_id": facts.id, "new_facts_id": after["facts"]["id"], "family_resolution_id": after["family"]["id"] if after["family"] else None,
         "preview_id": after["preview"]["id"] if after["preview"] else None,
         # Also preserve the personal attestation for non-model synthetic facts.
         "document_review": review.model_dump(mode="json") if review else None,

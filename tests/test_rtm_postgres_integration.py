@@ -1156,5 +1156,147 @@ class PostgresAuthorityIntegrationTest(unittest.TestCase):
             with self.assertRaises(HTTPException): router.get_working_draft(case_id,request,"test")
 
 
+    def _parking_study_fixture(self):
+        from rtm_core import study
+        from rtm_core.traffic_parking_preparation import CHECKS
+        from tests.test_rtm_parking_preparation import snapshot
+        case_id, document_id = str(uuid.uuid4()), str(uuid.uuid4())
+        actor = "operator:" + str(uuid.uuid4())
+        extra = {key: "Dato ficticio contrastado: " + key for check in CHECKS for key, _ in check[3]}
+        extra.update(pago_multa_reducido=False, fotografia_vehiculo_presente=False,
+                     fecha_notificacion="2026-09-22", fecha_limite="2026-10-20",
+                     fecha_infraccion="2026-09-20", hora_infraccion="10:00",
+                     fase_procedimental="denuncia", tipo_documento="notificacion de denuncia")
+        payload = snapshot(**extra).model_dump(mode="python")
+        payload.update(case_id=case_id, source_document_ids=[document_id])
+        for fact in payload["facts"].values():
+            for source in fact["sources"]:
+                source["document_id"] = document_id
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO cases(id,status,payment_status,authorized,department,case_type,category,interested_data,test_mode)
+                VALUES (:id,'facts_validation','paid',TRUE,'traffic','fine','traffic',CAST(:identity AS JSONB),TRUE)
+            """), {"id": case_id, "identity": json.dumps({"full_name": "Persona de prueba", "dni_nie": "12345678Z",
+                                                        "domicilio_notif": "Calle de Prueba 1, Manresa"})})
+            conn.execute(text("""
+                INSERT INTO documents(id,case_id,kind,sha256,mime,size_bytes)
+                VALUES (:id,:case,'original',:sha,'application/pdf',1)
+            """), {"id": document_id, "case": case_id, "sha": "d" * 64})
+            seed_signed_case_authority(conn, case_id)
+            create_validated_facts(conn, case_id=case_id, facts=ValidatedFacts.model_validate(payload), created_by=actor)
+            for action in ("freeze_facts", "resolve_family", "lock_family", "build_preview"):
+                before, facts, *_ = study.load_study(conn, case_id)
+                body = dict(action=action, confirmed=True, expected_state_sha256=before["state_sha256"])
+                if action == "freeze_facts":
+                    body["document_review"] = dict(documents_reviewed=True, facts_reviewed=True,
+                        source_document_ids=[document_id], facts_payload_sha256=facts.payload_sha256,
+                        review_notes="Original sintético completo contrastado para la prueba")
+                state = study.advance_study(conn, case_id=case_id, body=study.StudyActionBody(**body), actor=actor)
+        return case_id, actor, state
+
+    def _save_parking_check(self, case_id, actor, body):
+        from fastapi import Response
+        from types import SimpleNamespace
+        from rtm_core import study_router
+        scope = SimpleNamespace(operator_id=actor[9:])
+        with patch.object(study_router, "get_engine", return_value=self.engine), \
+             patch.object(study_router, "_supervisor_scope", return_value=scope), \
+             patch.object(study_router, "require_case_in_scope", return_value=case_id):
+            return study_router.post_parking_check_review(case_id, body, object(), Response(), None)
+
+    def test_parking_check_review_versions_audit_and_stale_request(self):
+        from rtm_core import parking_check_review as review
+        case_id, actor, state = self._parking_study_fixture()
+        facts_id, family_id = state["facts"]["id"], state["family"]["id"]
+        first_body = None
+        for index, code in enumerate(("procedure", "deadline", "location", "rule", "conditions", "evidence", "payment", "defense"), 1):
+            previous_id = state["preview"]["id"]
+            body = review.CheckReviewBody(expected_state_sha256=state["state_sha256"], check_id=code,
+                result="reviewed", notes="Evidencia sintética revisada para " + code, confirmed=True)
+            first_body = first_body or body
+            state = self._save_parking_check(case_id, actor, body)
+            self.assertEqual(state["parking_review"]["reviewed_count"], index)
+            self.assertEqual(state["preview"]["supersedes_id"], previous_id)
+            self.assertEqual(state["facts"]["id"], facts_id)
+            self.assertEqual(state["family"]["id"], family_id)
+            self.assertEqual(len(state["preview"]["preview"]["missing_items"]), 8 - index)
+            self.assertEqual(state["preview"]["status"], "draft")
+            self.assertEqual(state["preview"]["preview"]["legal_arguments"], [])
+        with self.assertRaises(HTTPException) as stale:
+            self._save_parking_check(case_id, actor, first_body)
+        self.assertEqual(stale.exception.status_code, 409)
+        with self.engine.begin() as conn:
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM rtm_legal_previews WHERE case_id=:id"),
+                                          {"id": case_id}).scalar_one(), 9)
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM events WHERE case_id=:id AND type=:kind"),
+                                          {"id": case_id, "kind": review.EVENT}).scalar_one(), 8)
+            submit_for_review(conn, case_id, state["preview"]["id"], actor)
+            with self.assertRaises(HTTPException):
+                approve_preview(conn, case_id, state["preview"]["id"], actor)
+
+    def test_parking_review_rollback_restores_preview_then_reopen_preserves_facts(self):
+        from rtm_core import study, parking_check_review as review
+        case_id, actor, state = self._parking_study_fixture()
+        body = review.CheckReviewBody(expected_state_sha256=state["state_sha256"], check_id="payment",
+            result="reviewed", notes="Dato de pago ficticio contrastado con el original", confirmed=True)
+        with patch.object(review, "_signed_envelope", side_effect=RuntimeError("Receipt write failed")):
+            with self.assertRaisesRegex(RuntimeError, "Receipt write failed"):
+                self._save_parking_check(case_id, actor, body)
+        with self.engine.begin() as conn:
+            restored, *_ = study.load_study(conn, case_id)
+            self.assertEqual(restored["state_sha256"], state["state_sha256"])
+            self.assertEqual(conn.execute(text("SELECT count(*) FROM rtm_legal_previews WHERE case_id=:id"),
+                                          {"id": case_id}).scalar_one(), 1)
+            opened = study.advance_study(conn, case_id=case_id, actor=actor, body=study.StudyActionBody(
+                action="reopen_facts", confirmed=True, expected_state_sha256=restored["state_sha256"],
+                reason="Nueva revisión documental para contrastar datos adicionales"))
+            self.assertFalse(opened["facts"]["frozen"])
+            self.assertEqual(opened["facts"]["supersedes_id"], state["facts"]["id"])
+            old = get_validated_facts(conn, case_id, state["facts"]["id"])
+            self.assertTrue(old.frozen)
+            self.assertIsNotNone(old.invalidated_at)
+            self.assertEqual(old.payload_sha256, state["facts"]["payload_sha256"])
+            self.assertEqual(opened["facts"]["facts"]["facts"], state["facts"]["facts"]["facts"])
+            self.assertIsNone(opened["family"])
+            self.assertEqual(opened["preview"]["status"], "invalidated")
+
+    def test_study_document_upload_rollback_and_versioned_source(self):
+        from types import SimpleNamespace
+        from rtm_core import study, study_router, study_documents
+        from rtm_core.upload_security import ValidatedUpload
+        case_id, actor, state = self._parking_study_fixture()
+        content = b"%PDF-1.7 synthetic already validated test input"
+        sha = hashlib.sha256(content).hexdigest()
+        validated = ValidatedUpload(filename="test.pdf", mime="application/pdf", extension=".pdf",
+                                    size_bytes=len(content), sha256=sha)
+        body = study_router.StudyDocumentBody(expected_state_sha256=state["state_sha256"],
+                 reason="Incorporación del anexo sintético para una nueva revisión", confirmed=True)
+        scope = SimpleNamespace(operator_id=actor[9:])
+        coordinates = ("synthetic-test-bucket", "cases/" + case_id + "/original/test.pdf")
+        with patch.object(study_router, "get_engine", return_value=self.engine), \
+             patch.object(study_router, "require_case_in_scope", return_value=case_id), \
+             patch("b2_storage.upload_bytes", return_value=coordinates) as upload, \
+             patch("b2_storage.delete_object") as delete:
+            with patch.object(study_documents, "replace_facts", side_effect=RuntimeError("New facts failed")):
+                with self.assertRaisesRegex(RuntimeError, "New facts failed"):
+                    study_router._append_study_document(case_id, scope, body, content, validated)
+            delete.assert_called_once_with(*coordinates)
+            with self.engine.begin() as conn:
+                restored, *_ = study.load_study(conn, case_id)
+                self.assertEqual(restored["state_sha256"], state["state_sha256"])
+                self.assertEqual(conn.execute(text("SELECT count(*) FROM documents WHERE case_id=:id AND sha256=:sha"),
+                                              {"id": case_id, "sha": sha}).scalar_one(), 0)
+            saved = study_router._append_study_document(case_id, scope, body, content, validated)
+            self.assertEqual(saved["added_document"]["sha256"], sha)
+            self.assertEqual(saved["facts"]["supersedes_id"], state["facts"]["id"])
+            self.assertEqual(len(saved["facts"]["facts"]["source_document_ids"]), 2)
+            self.assertEqual(saved["preview"]["status"], "invalidated")
+            self.assertIsNone(saved["family"])
+            self.assertFalse(saved["facts"]["frozen"])
+            with self.assertRaises(HTTPException):
+                study_router._append_study_document(case_id, scope, body, content, validated)
+            self.assertEqual(upload.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
