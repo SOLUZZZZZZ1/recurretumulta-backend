@@ -1231,7 +1231,8 @@ class PostgresAuthorityIntegrationTest(unittest.TestCase):
             self.assertEqual(conn.execute(text("SELECT count(*) FROM events WHERE case_id=:id AND type=:kind"),
                                           {"id": case_id, "kind": review.EVENT}).scalar_one(), 8)
             submit_for_review(conn, case_id, state["preview"]["id"], actor)
-            with self.assertRaises(HTTPException):
+            from pydantic import ValidationError
+            with self.assertRaisesRegex(ValidationError, "Una previa aprobada debe incluir una petición"):
                 approve_preview(conn, case_id, state["preview"]["id"], actor)
 
     def test_parking_review_rollback_restores_preview_then_reopen_preserves_facts(self):
