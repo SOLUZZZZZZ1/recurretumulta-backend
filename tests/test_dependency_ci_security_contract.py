@@ -18,7 +18,7 @@ class DependencyAndCISecurityContractTest(unittest.TestCase):
             "starlette": "1.3.1",
             "python-multipart": "0.0.32",
             "requests": "2.34.2",
-            "pypdf": "6.16.2",
+            "pypdf": "6.19.0",
             "pillow": "12.3.0",
         }
 
