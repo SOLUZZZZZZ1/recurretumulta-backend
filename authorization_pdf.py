@@ -134,6 +134,8 @@ def _authorization_payload_from_case(case_meta: Dict[str, Any], ip: str, version
         "telefono": _safe_str(telefono),
         "ip": _safe_str(ip),
         "version": _safe_str(version or "v1"),
+        "synthetic_rehearsal": "true" if isinstance(interested.get("staging_rehearsal"), dict)
+            and interested["staging_rehearsal"].get("version") == "rtm_staging_radar_20261005_v1" else "",
         "authorized_at": _utcnow_iso(),
     }
 
@@ -158,6 +160,10 @@ def generate_authorization_pdf(data: Dict[str, str]) -> bytes:
     small = ParagraphStyle("small", parent=styles["BodyText"], fontSize=9, leading=12)
 
     content = []
+    if data.get("synthetic_rehearsal") == "true":
+        content.append(Paragraph("ENSAYO RTM - DATOS FICTICIOS - SIN VALIDEZ", title_style))
+        content.append(Paragraph("Este PDF solo prueba el circuito documental. No acredita identidad, firma ni representacion real.", normal))
+        content.append(Spacer(1, 0.3 * cm))
     content.append(Paragraph("AUTORIZACION DE REPRESENTACION", title_style))
     content.append(Spacer(1, 0.4 * cm))
 

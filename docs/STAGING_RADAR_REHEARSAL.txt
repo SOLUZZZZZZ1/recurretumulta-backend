@@ -1,0 +1,48 @@
+ENSAYO RADAR STAGING - 2026-10-06
+
+Entrada /ops/ensayo/radar, dentro de la sesion individual OPS. Requiere supervisor,
+ops.view y ops.supervise. API /ops/rehearsal/radar. Sin claves ni credenciales
+compartidas en el navegador. Las capacidades de expediente solo viajan a rutas
+de caso fijas del mismo origen; el bearer sigue limitado a /api/ops/.
+
+Opt-in: RTM_ENABLE_STAGING_REHEARSAL=1, solo RTM_ENV=staging. Se exige preflight
+safe, B2 aislado, synthetic_only, Stripe test y datos/pagos reales, pagos finales,
+correo y presentacion externos explicitamente deshabilitados.
+
+Un expediente por supervisor y version del supuesto (UUIDv5). Se reutilizan
+los handlers ordinarios de alta, autorizacion y anexado. La marca test_mode nace
+del contexto del servidor tras cotejar todos los campos y bytes, nunca de un
+parametro del cliente. Los reintentos recuperan el caso. El commit usa un lock
+transaccional y compensa objetos especulativos de B2 si hay una carrera o fallo.
+El PDF emitido se recupera sin renovar su autoridad al reintentar antes del pago.
+
+Fixtures internos en rtm_core/fixtures/staging_radar_v1. Identidad completamente
+ficticia. El radar es una transcripcion selectiva de un supuesto aportado por el
+usuario: hecho ficticio 02/10/2026, escrito ficticio 05/10/2026. No contiene la
+imagen original, firma, barcode, foto de vehiculo ni identificadores reales.
+Es una peticion de identificacion de conductor. No demuestra margen omitido y
+no permite deducir importe, puntos, recepcion ni vencimiento. No prueba OCR sobre
+la imagen original ni actualiza la vigencia de normas del documento historico.
+
+El candidato de autorizacion es un PDF derivado del emitido, con anotacion
+determinista SIN VALIDEZ/FIRMA FICTICIA. Solo se admite ese candidato exacto;
+se mantienen binding, SHA, nonce, HMAC y revision humana de los handlers.
+Nunca se registra como firma verificada automaticamente. Los nombres de archivo
+se normalizan a los nombres del fixture despues de comprobar los bytes.
+
+Las rutas publicas de documentos siguen bloqueadas; contact/details tambien se
+cierran en staging para que no puedan introducir datos personales por esa via.
+La extraccion de expedientes sigue bloqueada: esta entrega prepara el alta y
+la documentacion, no habilita implicitamente proveedor IA, pago, aprobacion o
+presentacion. Checkout sigue dependiendo de los controles habituales y Stripe.
+
+Verificacion local: tests backend, frontend y contratos; build; navegador con
+componentes reales y respuestas ficticias. No equivalen a una prueba remota de
+Stripe ni a una revision personal. Las pruebas PostgreSQL usan exclusivamente
+una base local *_test y un esquema unico, y corren en CI.
+
+Pendientes del ensayo remoto: entrar con supervisor, confirmar personalmente
+las casillas, descargar/subir candidato ficticio, subir notificacion, revisar
+autorizacion; despues Checkout y evento emitido por Stripe test. Siguen pendientes
+la entrada de extraccion acotada a estos documentos, fase de identificacion,
+presupuesto/pago final, aprobacion y entrega. No declarar recorrido completo.

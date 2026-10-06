@@ -557,6 +557,7 @@ def _persist_rtm_intake_draft(
     case_record: Dict[str, Any],
     stored_identity: List[tuple[str, str, bytes, ValidatedUpload, str]],
     intake_event: Dict[str, Any],
+    rehearsal=None,
 ) -> List[Dict[str, Any]]:
     """Publica caso, documentos y eventos en una sola transacción SQL."""
 
@@ -564,6 +565,9 @@ def _persist_rtm_intake_draft(
     engine = get_engine()
     with engine.begin() as conn:
         local_test = local_operator_auth_requested()
+        if rehearsal is not None:
+            from rtm_core.staging_rehearsal import lock_new_intake
+            lock_new_intake(conn, rehearsal)
         if local_test:
             from scripts.rtm_local_operator_setup import require_local_database
             require_local_database(conn)
@@ -579,7 +583,7 @@ def _persist_rtm_intake_draft(
                 CAST(:interested AS JSONB), :department, :case_type, :comment, :source,
                 :category, :local_test, NOW(), NOW()
             )
-        """), {"id": case_id, **case_record, "local_test": local_test})
+        """), {"id": case_id, **case_record, "local_test": local_test or rehearsal is not None})
         for bucket, key, content, validated, kind in stored_identity:
             document_row = conn.execute(text("""
                 INSERT INTO documents(
@@ -611,6 +615,8 @@ def _persist_rtm_intake_draft(
                 ),
             })
         _event_on_conn(conn, case_id, "rtm_intake_created", intake_event)
+        if rehearsal is not None:
+            _event_on_conn(conn, case_id, "staging_rehearsal_created", rehearsal.marker)
         _event_on_conn(
             conn,
             case_id,
@@ -645,7 +651,12 @@ async def create_rtm_intake_draft(
     privacy_accepted: bool = Form(...),
     dni_front: UploadFile = File(...),
     dni_back: UploadFile = File(...),
+    request: Request = None,
 ):
+    from rtm_core.staging_rehearsal import (
+        RehearsalAlreadyCreated, existing_case, recovered_intake, trusted_intake_grant,
+    )
+    rehearsal = trusted_intake_grant(request)
     department = _bounded_form_text(
         department, field="department", max_length=32
     ).lower()
@@ -757,7 +768,9 @@ async def create_rtm_intake_draft(
         ),
     ]
 
-    case_id = str(uuid.uuid4())
+    if rehearsal is not None and await run_in_threadpool(existing_case, rehearsal):
+        return await run_in_threadpool(recovered_intake, rehearsal)
+    case_id = rehearsal.case_id if rehearsal is not None else str(uuid.uuid4())
     case_access_token = issue_case_access_token(case_id)
     interested = {
         "full_name": full_name,
@@ -786,6 +799,8 @@ async def create_rtm_intake_draft(
         interested["public_service_family"] = public_service_family
     if local_test:
         interested["local_test"] = {"synthetic": True, "local_only": True}
+    if rehearsal is not None:
+        interested["staging_rehearsal"] = rehearsal.marker
 
     stored_identity: List[tuple[str, str, bytes, ValidatedUpload, str]] = []
     stored_coordinates: List[tuple[str, str]] = []
@@ -828,7 +843,7 @@ async def create_rtm_intake_draft(
         "prejudicial_counsel_requested": bool(
             prejudicial_counsel_requested
         ),
-        "test_mode": local_test,
+        "test_mode": local_test or rehearsal is not None,
     }
     try:
         # Caso, documentos y eventos forman una sola unidad de persistencia. B2
@@ -839,7 +854,11 @@ async def create_rtm_intake_draft(
             case_record,
             stored_identity,
             intake_event,
+            rehearsal,
         )
+    except RehearsalAlreadyCreated:
+        await run_in_threadpool(_cleanup_b2_objects, stored_coordinates)
+        return await run_in_threadpool(recovered_intake, rehearsal)
     except Exception as exc:
         await run_in_threadpool(_cleanup_b2_objects, stored_coordinates)
         raise HTTPException(
@@ -854,7 +873,7 @@ async def create_rtm_intake_draft(
         "case_access_token_header": "X-RTM-Case-Token",
         "status": "authorization_pending",
         "authorized": False,
-        "test_mode": local_test,
+        "test_mode": local_test or rehearsal is not None,
         "next_path": _rtm_next_path(department, case_type),
     }
 
@@ -1450,6 +1469,11 @@ def _authorize_case_transaction(
                 raise HTTPException(status_code=404, detail="Expediente no encontrado")
 
             require_dgt_fine_authority_scope(row[1], row[2])
+            from rtm_core.staging_rehearsal import trusted_intake_grant, recover_authority_if_issued
+            if trusted_intake_grant(request) is not None:
+                recovered = recover_authority_if_issued(conn, case_id)
+                if recovered is not None:
+                    return recovered
             interested = row[0] if isinstance(row[0], dict) else {}
             missing = [
                 field

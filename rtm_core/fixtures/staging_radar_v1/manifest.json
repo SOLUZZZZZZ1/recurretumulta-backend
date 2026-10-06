@@ -1,0 +1,17 @@
+{
+  "identity_front": {
+    "filename": "IDENTIDAD_FICTICIA_FRONT.pdf",
+    "sha256": "03073ac16d8eb9e585a79c28df93f0c38a3e340486760e665fe8b09746eb628c",
+    "size_bytes": 1840
+  },
+  "identity_back": {
+    "filename": "IDENTIDAD_FICTICIA_BACK.pdf",
+    "sha256": "42fb0f7bbc2509680daebbed49f00f9125c53351e39ca778f00d432914b175a9",
+    "size_bytes": 1840
+  },
+  "radar": {
+    "filename": "RADAR_IDENTIFICACION_PRUEBA_2026-10-05.pdf",
+    "sha256": "4c692028bcab145f9f96169c563b0dab7c899b3e83fd0fa6e16d1e7ab22c1e24",
+    "size_bytes": 3536
+  }
+}

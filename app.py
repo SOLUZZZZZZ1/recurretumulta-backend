@@ -92,6 +92,7 @@ from ops_restaurant_reservations import router as ops_restaurant_router
 from cases import router as cases_router
 from rtm_core.generic_authorization_router import router as generic_authorization_router
 from rtm_core.generic_authorization_router import ops_router as local_recovery_router
+from rtm_core.staging_rehearsal_router import router as staging_rehearsal_router
 from partner import router as partner_router
 
 
@@ -286,6 +287,7 @@ app.include_router(ops_restaurant_router)
 app.include_router(cases_router)
 app.include_router(generic_authorization_router)
 app.include_router(local_recovery_router)
+app.include_router(staging_rehearsal_router)
 app.include_router(partner_router)
 
 # Última capa registrada: añade cabeceras también a errores y denegaciones de

@@ -4,8 +4,10 @@ El contrato de entorno valida la configuración antes del arranque. Este módulo
 aplica la misma decisión a la ruta que podría enviar documentos persistidos al
 proveedor externo.
 
-En staging con ``synthetic_only`` la única entrada autorizada es el smoke
-interno ``scripts/rtm_staging_smoke.py``. La ruta OPS de expedientes queda
+En staging con ``synthetic_only`` las rutas públicas permanecen bloqueadas.
+El smoke interno y el adaptador OPS staging_rehearsal_router son entradas
+explícitas distintas; este último exige sesión individual, opt-in y bytes
+ficticios exactos antes de reutilizar los handlers de negocio. La ruta OPS de expedientes queda
 bloqueada aunque el proveedor esté temporalmente habilitado, evitando que un
 archivo subido a PostgreSQL/B2 pueda salir del entorno durante la prueba.
 """
@@ -29,6 +31,7 @@ _PROTECTED_DOCUMENT_PATHS = (
     re.compile(r"^/analyze/expediente/?$"),
     re.compile(r"^/vehicle-removal/verify-registration/?$"),
     re.compile(r"^/cases/intake-draft/?$"),
+    re.compile(r"^/cases/[^/]+/(?:contact|details)/?$"),
     re.compile(r"^/cases/[^/]+/append-documents/?$"),
     re.compile(
         r"^/cases/[^/]+/(?:upload-authorization-signed|authorization-signed|rtm-authorization-signed|upload-receipt)/?$"
