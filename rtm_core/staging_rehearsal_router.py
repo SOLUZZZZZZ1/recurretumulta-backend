@@ -122,6 +122,26 @@ async def profile(request: Request):
             "fixtures": artifacts, "existing_case_id": progress["case_id"], "progress": progress}
 
 
+@router.post("/cases/{case_id}/payment-access")
+async def payment_access(case_id: str, request: Request):
+    """Recover only the owner's verified synthetic trial in a fresh browser tab."""
+    from public_case_access import issue_case_access_token
+
+    grant = require_supervisor(request)
+    if case_id != grant.case_id:
+        raise HTTPException(404, "Expediente de ensayo no encontrado")
+    progress = await run_in_threadpool(rehearsal_progress, grant)
+    if (progress["case_id"] != case_id or progress["step"] != "review"
+            or progress["main_document_received"] is not True
+            or progress["authorization_evidence_status"] != "verified"):
+        raise HTTPException(409, "El ensayo requiere documentacion y autorizacion verificada")
+    return {
+        "ok": True, "version": VERSION, "synthetic_only": True, "case_id": case_id,
+        "case_access_token_header": "X-RTM-Case-Token",
+        "case_access_token": issue_case_access_token(case_id),
+    }
+
+
 @router.get("/fixtures/{kind}")
 async def download_fixture(kind: str, request: Request):
     require_supervisor(request)
