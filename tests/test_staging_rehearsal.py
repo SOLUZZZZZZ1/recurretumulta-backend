@@ -114,6 +114,16 @@ class RehearsalPolicyTests(unittest.TestCase):
         for kind in ("../../cases", "manifest", "real"):
             with self.assertRaises(HTTPException): policy.fixture(kind)
 
+    def test_recovery_accepts_browser_line_endings_but_not_changed_content(self):
+        row = synthetic_row()
+        comment = policy.FORM_FIELDS["customer_comment"]
+        row["interested_data"]["customer_comment"] = comment.replace("\n", "\r\n")
+        policy.verify_case_row(row, GRANT)
+        for invalid in (comment.replace("\n", "\r"), comment + " changed"):
+            row["interested_data"]["customer_comment"] = invalid
+            with self.assertRaises(HTTPException):
+                policy.verify_case_row(row, GRANT)
+
     def test_recovery_rejects_real_modified_or_other_operator_case(self):
         policy.verify_case_row(synthetic_row(), GRANT)
         for field, value in [("test_mode", False), ("department", "claims"), ("case_type", "consumer"),
@@ -173,6 +183,15 @@ class RehearsalHttpTests(unittest.TestCase):
         self.assertEqual(self.storage.call_count, 2)
         self.assertEqual(self.persist.call_args.args[-1], GRANT)
         self.assertIs(self.persist.call_args.args[-2]["test_mode"], True)
+
+    def test_browser_multipart_line_endings_reach_ordinary_intake(self):
+        fields = dict(policy.FORM_FIELDS)
+        fields["customer_comment"] = fields["customer_comment"].replace("\n", "\r\n")
+        response = self.client.post("/ops/rehearsal/radar/intake-draft", data=fields, files=fixture_files())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["case_id"], GRANT.case_id)
+        self.assertEqual(self.storage.call_count, 2)
+        self.assertEqual(self.persist.call_args.args[-1], GRANT)
 
     def test_mismatches_rejected_before_any_storage_or_case_write(self):
         for change in ({"email": "other@example.com"}, {"full_name": "Another person"},

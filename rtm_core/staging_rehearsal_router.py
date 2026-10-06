@@ -15,7 +15,7 @@ import cases
 from public_case_access import require_case_access_token
 from rtm_core.intake_router import append_documents_core
 from rtm_core.staging_rehearsal import (
-    FORM_FIELDS, PRIVATE_HEADERS, PROFILE, VERSION, existing_case, fixture, require_supervisor,
+    FORM_FIELDS, PRIVATE_HEADERS, PROFILE, VERSION, existing_case, fixture, matches_prepared_field, require_supervisor,
 )
 
 def no_store(response: Response):
@@ -57,7 +57,7 @@ async def prepare_intake(request: Request):
     grant = require_supervisor(request)
     form = await request.form()
     exact_fields(form, set(FORM_FIELDS) | {"dni_front", "dni_back"})
-    if any(form[key] != value for key, value in FORM_FIELDS.items()):
+    if any(not matches_prepared_field(key, form[key]) for key in FORM_FIELDS):
         raise HTTPException(422, "Utiliza los datos ficticios preparados y confirma personalmente las casillas del ensayo")
     for field, kind in (("dni_front", "identity_front"), ("dni_back", "identity_back")):
         filename, content = await run_in_threadpool(fixture, kind)

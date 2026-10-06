@@ -99,13 +99,21 @@ def fixture(kind: str) -> tuple[str, bytes]:
     return entry["filename"], content
 
 
+def matches_prepared_field(key: str, value: object) -> bool:
+    """HTML multipart serializes text line breaks as CRLF; content stays fixed."""
+    expected = FORM_FIELDS[key]
+    return value == expected or (
+        key == "customer_comment" and value == expected.replace("\n", "\r\n")
+    )
+
+
 def verify_case_row(row, grant: RehearsalGrant) -> None:
     interested = row["interested_data"]
     expected = {key: FORM_FIELDS[key] for key in ("full_name", "dni_nie", "domicilio_notif", "email", "telefono", "customer_comment")}
     if (str(row["id"]) != grant.case_id or row["test_mode"] is not True
         or row["department"] != "traffic" or row["case_type"] != "fine"
         or not isinstance(interested, dict) or interested.get("staging_rehearsal") != grant.marker
-        or any(interested.get(key) != value for key, value in expected.items())
+        or any(not matches_prepared_field(key, interested.get(key)) for key in expected)
         or row["contact_email"] != PROFILE["email"] or row["contact_name"] != PROFILE["full_name"]):
         raise HTTPException(409, "El expediente no coincide con el ensayo; no se modificara")
 
