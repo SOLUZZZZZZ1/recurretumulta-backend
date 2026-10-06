@@ -8,6 +8,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from sqlalchemy import text
 
 from database import get_engine
+from rtm_core.presenter_access import presenter_available_for_scope
 from rtm_core.security import require_operator_token
 from rtm_core.ops_case_scope import load_ops_case_scope, require_case_in_scope
 from rtm_core.workspace_policy_ext import (
@@ -35,7 +36,11 @@ def get_case_workspace(
             scope=scope,
             case_id=case_id,
         )
-        return build_case_workspace(conn, scoped_case_id)
+        payload = build_case_workspace(conn, scoped_case_id)
+        payload.setdefault("actions", {})["presenter_available"] = presenter_available_for_scope(
+            conn, case_id=scoped_case_id, scope=scope,
+        )
+        return payload
 
 
 @router.get("/{case_id}/payment-status")

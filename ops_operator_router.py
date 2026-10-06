@@ -32,11 +32,7 @@ from b2_storage import (
 from docx_builder import build_docx
 from pdf_builder import build_pdf
 from reanalysis import reanalyze_traffic_fine_case
-from rtm_presenter_policy import (
-    PresenterPolicyError,
-    PresenterRuntimeDisabled,
-    load_presenter_runtime_configuration,
-)
+from rtm_core.presenter_access import presenter_available_for_scope
 from rtm_core.ops_case_scope import (
     load_ops_case_scope,
     require_case_in_scope,
@@ -432,16 +428,6 @@ def _case_or_404(conn, case_id: str):
         "updated_at": row[2],
         "test_mode": bool(row[3]),
     }
-
-
-def _presenter_available(case: Dict[str, Any]) -> bool:
-    if case.get("test_mode") is not True:
-        return False
-    try:
-        load_presenter_runtime_configuration(require_enabled=True)
-    except (PresenterRuntimeDisabled, PresenterPolicyError):
-        return False
-    return True
 
 
 def _get_status(conn, case_id: str) -> str:
@@ -1026,7 +1012,9 @@ def get_case_detail(
             "signed_authority_verified": authority["signed_authority_verified"],
             "post_filing": local_post_filing_projection(conn, case_id),
             "actions": {
-                "presenter_available": _presenter_available(case),
+                "presenter_available": presenter_available_for_scope(
+                    conn, case_id=case_id, scope=scope,
+                ),
             },
         }
 
