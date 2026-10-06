@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import os
 import re
 import unicodedata
@@ -95,6 +96,20 @@ def _append_event_best_effort(
         _append_event(case_id, event_type, payload)
     except Exception:
         pass
+
+
+def _log_reanalysis_failure(exc: Exception, run_id: str, stage: str) -> None:
+    """Log diagnostic metadata only: no exception text, document or response."""
+    status = getattr(exc, "status_code", None)
+    payload = {
+        "event": "reanalysis_internal_failure",
+        "reanalysis_run_id": run_id,
+        "stage": stage,
+        "exception_type": type(exc).__name__,
+    }
+    if type(status) is int and 100 <= status <= 599:
+        payload["provider_status"] = status
+    logging.getLogger(__name__).error(json.dumps(payload, sort_keys=True))
 
 
 def _analyze_page_candidate(
@@ -3752,8 +3767,10 @@ def reanalyze_traffic_fine_case(case_id: str, *, rehearsal_document=None) -> Dic
     budget_guard = model_call_budget(_MAX_REANALYSIS_MODEL_CALLS)
     budget_guard.__enter__()
 
+    stage = "download"
     try:
         for index, doc in enumerate(documents, start=1):
+            stage = "download"
             try:
                 content = download_bytes_limited(
                     doc["bucket"],
@@ -3763,6 +3780,7 @@ def reanalyze_traffic_fine_case(case_id: str, *, rehearsal_document=None) -> Dic
                 )
             except B2ObjectTooLargeError as exc:
                 raise HTTPException(status_code=413, detail=str(exc)) from exc
+            stage = "document_validation"
             if rehearsal_document is not None:
                 rehearsal_document.verify_bytes(content)
             if not content:
@@ -3845,6 +3863,7 @@ def reanalyze_traffic_fine_case(case_id: str, *, rehearsal_document=None) -> Dic
                 },
             )
 
+            stage = "page_extraction"
             wrapper, page_confidence = _analyze_page_candidate(
                 analysis_content,
                 analysis_filename,
@@ -3871,6 +3890,7 @@ def reanalyze_traffic_fine_case(case_id: str, *, rehearsal_document=None) -> Dic
         if not analyzed_pages:
             raise HTTPException(status_code=422, detail="Ningún original pudo ser reanalizado")
 
+        stage = "consolidation"
         consolidated, critical_meta, consolidated_confidence = (
             _consolidate_extraction(case_id, analyzed_pages)
         )
@@ -3952,6 +3972,7 @@ def reanalyze_traffic_fine_case(case_id: str, *, rehearsal_document=None) -> Dic
             "requires_operator_review": bool(core.get("requires_operator_review")),
             "ready_for_generate": bool(critical_meta.get("ready_for_generate")),
         }
+        stage = "persistence"
         _persist_completed_reanalysis(
             case_id,
             wrapper=consolidated,
@@ -4054,6 +4075,7 @@ def reanalyze_traffic_fine_case(case_id: str, *, rehearsal_document=None) -> Dic
         )
         raise
     except Exception as exc:
+        _log_reanalysis_failure(exc, reanalysis_run_id, stage)
         _append_event_best_effort(
             case_id,
             "case_reanalysis_failed",

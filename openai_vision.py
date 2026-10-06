@@ -75,6 +75,21 @@ def _b64_data_url(mime: str, content: bytes) -> str:
 
 
 
+def _document_input(content: bytes, mime: str) -> Dict[str, Any]:
+    """Send validated PDF bytes as a file; image bytes retain image input."""
+    data_url = _b64_data_url(mime, content)
+    if mime == "application/pdf":
+        # A fixed name avoids exposing storage keys or client filenames.
+        return {"type": "input_file", "filename": "document.pdf", "file_data": data_url}
+    return {"type": "input_image", "image_url": data_url}
+
+
+class OCRProviderHTTPError(RuntimeError):
+    def __init__(self, status_code: int) -> None:
+        self.status_code = int(status_code)
+        super().__init__(f"El proveedor OCR devolvio HTTP {self.status_code}")
+
+
 def _is_image_mime(mime: str) -> bool:
     return bool((mime or "").lower().startswith("image/"))
 
@@ -114,7 +129,7 @@ def extract_from_image_bytes(
     api_key = _env("OPENAI_API_KEY")
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
 
-    data_url = _b64_data_url(mime, content)
+    document_input = _document_input(content, mime)
 
     system_text = (
         "Eres un asistente experto en sanciones administrativas en España. "
@@ -154,7 +169,7 @@ def extract_from_image_bytes(
                 "role": "user",
                 "content": [
                     {"type": "input_text", "text": user_text},
-                    {"type": "input_image", "image_url": data_url},
+                    document_input,
                 ],
             },
         ],
@@ -179,7 +194,7 @@ def extract_from_image_bytes(
     )
 
     if not r.ok:
-        raise RuntimeError(f"El proveedor OCR devolvió HTTP {r.status_code}")
+        raise OCRProviderHTTPError(r.status_code)
 
     data = r.json()
 
@@ -233,7 +248,7 @@ def extract_fet_denunciat_focus(
     api_key = _env("OPENAI_API_KEY")
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
     focused_content, focused_mime = _crop_transit_fet_denunciat_bytes(content, mime)
-    data_url = _b64_data_url(focused_mime, focused_content)
+    document_input = _document_input(focused_content, focused_mime)
 
     system_text = (
         "Eres un OCR jurídico especializado en boletines de denuncia de tráfico de Cataluña. "
@@ -272,7 +287,7 @@ def extract_fet_denunciat_focus(
                 "role": "user",
                 "content": [
                     {"type": "input_text", "text": user_text},
-                    {"type": "input_image", "image_url": data_url},
+                    document_input,
                 ],
             },
         ],
@@ -297,7 +312,7 @@ def extract_fet_denunciat_focus(
     )
 
     if not r.ok:
-        raise RuntimeError(f"El proveedor OCR focal devolvió HTTP {r.status_code}")
+        raise OCRProviderHTTPError(r.status_code)
 
     data = r.json()
     output_text = ""
