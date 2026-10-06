@@ -114,6 +114,32 @@ class RehearsalPolicyTests(unittest.TestCase):
         for kind in ("../../cases", "manifest", "real"):
             with self.assertRaises(HTTPException): policy.fixture(kind)
 
+    def test_progress_renews_after_document_invalidation_and_preserves_pending_review(self):
+        import case_authority
+        from rtm_core import repository
+        from unittest.mock import MagicMock
+        engine = MagicMock()
+        for exists, kinds, authorized, status, expected in (
+            (False, (), False, "missing", "intake"),
+            (True, (), True, "pending_review", "intake"),
+            (True, ("original", "authorization_signed_candidate_stale"), False, "missing", "renewal"),
+            (True, ("original", "authorization_signed_candidate"), True, "pending_review", "review"),
+            (True, ("original", "authorization_signed"), True, "verified", "review"),
+            (True, ("original", "authorization_signed_rejected"), True, "rejected", "renewal"),
+        ):
+            with self.subTest(status=status, expected=expected), \
+                 patch.object(policy, "get_engine", return_value=engine), \
+                 patch.object(policy, "existing_case", return_value=exists), \
+                 patch.object(repository, "load_case_review_snapshot", return_value=SimpleNamespace(
+                     document_kinds=kinds, authorized=authorized)), \
+                 patch.object(case_authority, "project_case_authorization_evidence",
+                              return_value={"authorization_evidence_status": status}) as project:
+                result = policy.rehearsal_progress(GRANT)
+                self.assertEqual(result["step"], expected)
+                self.assertEqual(result["case_id"], GRANT.case_id if exists else None)
+                self.assertEqual(result["main_document_received"], "original" in kinds)
+                self.assertEqual(project.call_count, int(exists))
+
     def test_recovery_accepts_browser_line_endings_but_not_changed_content(self):
         row = synthetic_row()
         comment = policy.FORM_FIELDS["customer_comment"]

@@ -15,7 +15,7 @@ import cases
 from public_case_access import require_case_access_token
 from rtm_core.intake_router import append_documents_core
 from rtm_core.staging_rehearsal import (
-    FORM_FIELDS, PRIVATE_HEADERS, PROFILE, VERSION, existing_case, fixture, matches_prepared_field, require_supervisor,
+    FORM_FIELDS, PRIVATE_HEADERS, PROFILE, VERSION, existing_case, fixture, matches_prepared_field, rehearsal_progress, require_supervisor,
 )
 
 def no_store(response: Response):
@@ -117,8 +117,9 @@ async def profile(request: Request):
     for kind in ("identity_front", "identity_back", "radar"):
         name, content = await run_in_threadpool(fixture, kind)
         artifacts[kind] = {"filename": name, "sha256": hashlib.sha256(content).hexdigest(), "size_bytes": len(content)}
+    progress = await run_in_threadpool(rehearsal_progress, grant)
     return {"ok": True, "version": VERSION, "synthetic_only": True, "profile": PROFILE,
-            "fixtures": artifacts, "existing_case_id": grant.case_id if await run_in_threadpool(existing_case, grant) else None}
+            "fixtures": artifacts, "existing_case_id": progress["case_id"], "progress": progress}
 
 
 @router.get("/fixtures/{kind}")

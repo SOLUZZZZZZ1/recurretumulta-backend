@@ -129,6 +129,27 @@ def existing_case(grant: RehearsalGrant, conn=None) -> bool:
     return True
 
 
+def rehearsal_progress(grant: RehearsalGrant) -> dict:
+    """Read the ordinary authority chain; never infer review from uploaded files."""
+    from case_authority import project_case_authorization_evidence
+    from rtm_core.repository import load_case_review_snapshot
+    with get_engine().connect() as conn:
+        if not existing_case(grant, conn):
+            return {"case_id": None, "step": "intake", "main_document_received": False,
+                    "authorization_evidence_status": "missing"}
+        snapshot = load_case_review_snapshot(conn, grant.case_id)
+        evidence = project_case_authorization_evidence(
+            conn, grant.case_id, authorized=snapshot.authorized,
+            document_kinds=snapshot.document_kinds)
+    original = "original" in snapshot.document_kinds
+    status = evidence["authorization_evidence_status"]
+    step = ("intake" if not original else "review"
+            if snapshot.authorized and status in {"pending_review", "verified"}
+            else "renewal")
+    return {"case_id": grant.case_id, "step": step,
+            "main_document_received": original, "authorization_evidence_status": status}
+
+
 class RehearsalAlreadyCreated(Exception):
     """Raised only after the committed row's identity and marker are checked."""
 
