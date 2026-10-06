@@ -119,3 +119,20 @@ class StagingRehearsalPostgresTests(unittest.TestCase):
         self.assertEqual(self.storage.call_count, count)
         with self.engine.begin() as conn:
             self.assertFalse(conn.execute(text("SELECT test_mode FROM cases WHERE id=:id"), {"id": self.grant.case_id}).scalar_one())
+
+    def test_analysis_binds_only_the_owned_original_in_a_real_transaction(self):
+        from rtm_core import staging_rehearsal_analysis as analysis
+        from rtm_core.ops_case_scope import OpsCaseScope
+        self.run_intake()
+        content = policy.fixture("radar")[1]
+        scope = OpsCaseScope(self.grant.operator_id, "rtm.supervisor", ("ops.view", "ops.supervise"), True, True)
+        with self.engine.begin() as conn, patch.object(analysis, "require_profile"):
+            document_id = str(uuid.uuid4())
+            conn.execute(text("INSERT INTO documents(id,case_id,kind,b2_bucket,b2_key,mime,size_bytes,sha256) VALUES (:id,:case,'original','fixture-only','radar.pdf','application/pdf',:size,:sha)"),
+                {"id":document_id,"case":self.grant.case_id,"size":len(content),"sha":policy.RADAR_SHA})
+            bound = analysis.prepare_rehearsal_analysis_document(conn, case_id=self.grant.case_id, grant=self.grant, scope=scope)
+            self.assertEqual(bound.document_id, document_id)
+            bound.verify_bytes(content)
+            conn.execute(text("UPDATE documents SET sha256=:sha WHERE id=:id"),{"id":document_id,"sha":"a"*64})
+            with self.assertRaises(cases.HTTPException):
+                analysis.prepare_rehearsal_analysis_document(conn, case_id=self.grant.case_id, grant=self.grant, scope=scope)

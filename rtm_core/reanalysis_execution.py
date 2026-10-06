@@ -81,7 +81,7 @@ def extraction_policy_status() -> dict[str, Any]:
     }
 
 
-def _case_guard(case_id: str, *, scope: OpsCaseScope) -> Mapping[str, Any]:
+def _case_guard(case_id: str, *, scope: OpsCaseScope, rehearsal_grant=None) -> Mapping[str, Any]:
     engine = get_engine()
     with engine.begin() as conn:
         case_id = require_case_in_scope(conn, scope=scope, case_id=case_id)
@@ -115,7 +115,12 @@ def _case_guard(case_id: str, *, scope: OpsCaseScope) -> Mapping[str, Any]:
             )
         if not bool(meta["authorized"]):
             raise HTTPException(status_code=409, detail="Falta autorización del cliente")
-        if bool(meta["test_mode"]):
+        rehearsal_document = None
+        if rehearsal_grant is not None:
+            from rtm_core.staging_rehearsal_analysis import prepare_rehearsal_analysis_document
+            rehearsal_document = prepare_rehearsal_analysis_document(
+                conn, case_id=case_id, grant=rehearsal_grant, scope=scope)
+        if bool(meta["test_mode"]) and rehearsal_document is None:
             raise HTTPException(
                 status_code=409,
                 detail="El Reanalysis CORE operativo no admite test_mode",
@@ -196,6 +201,11 @@ def _case_guard(case_id: str, *, scope: OpsCaseScope) -> Mapping[str, Any]:
                 detail="El expediente no contiene documentos originales analizables",
             )
         authority = verify_signed_case_authority(conn, case_id)
+        if rehearsal_document is not None:
+            from rtm_core.staging_rehearsal_analysis import previous_rehearsal_analysis
+            previous = previous_rehearsal_analysis(conn, rehearsal_document)
+            if previous is not None:
+                return {"rehearsal_result": previous}
         claimed = conn.execute(
             text(
                 """
@@ -216,6 +226,7 @@ def _case_guard(case_id: str, *, scope: OpsCaseScope) -> Mapping[str, Any]:
         return {
             **dict(meta),
             "prior_status": str(meta["status"]),
+            "rehearsal_document": rehearsal_document,
             "authority_material_sha256": str(
                 authority.get("material_sha256") or ""
             ),
@@ -271,14 +282,23 @@ def run_safe_traffic_reanalysis(
     *,
     actor: str,
     scope: OpsCaseScope,
+    rehearsal_grant=None,
 ) -> dict[str, Any]:
     """Ejecuta Reanalysis; no promueve ni congela hechos automáticamente."""
 
     require_http_capability("document_provider")
-    claim = _case_guard(case_id, scope=scope)
+    claim = (_case_guard(case_id, scope=scope) if rehearsal_grant is None else
+             _case_guard(case_id, scope=scope, rehearsal_grant=rehearsal_grant))
+    if "rehearsal_result" in claim:
+        return {"ok": True, "case_id": case_id, "reused": True,
+                "reanalysis": claim["rehearsal_result"], "persisted_authority": False}
     installation = install_safe_extraction_policy()
     try:
-        result = legacy_reanalysis.reanalyze_traffic_fine_case(case_id)
+        if claim.get("rehearsal_document") is not None:
+            result = legacy_reanalysis.reanalyze_traffic_fine_case(
+                case_id, rehearsal_document=claim["rehearsal_document"])
+        else:
+            result = legacy_reanalysis.reanalyze_traffic_fine_case(case_id)
     except BaseException:
         _reset_failed_claim(case_id, str(claim["prior_status"]))
         raise

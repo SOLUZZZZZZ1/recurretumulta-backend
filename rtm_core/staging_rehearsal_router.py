@@ -142,6 +142,24 @@ async def payment_access(case_id: str, request: Request):
     }
 
 
+@router.post("/cases/{case_id}/analysis")
+async def analyze_rehearsal(case_id: str, request: Request):
+    from rtm_core.ops_case_scope import load_ops_case_scope
+    from rtm_core.reanalysis_execution import run_safe_traffic_reanalysis
+
+    grant = require_supervisor(request)
+    if case_id != grant.case_id:
+        raise HTTPException(404, "Expediente de ensayo no encontrado")
+    if await request.body():
+        raise HTTPException(422, "La lectura del ensayo no admite parametros")
+    result = await run_in_threadpool(
+        run_safe_traffic_reanalysis, case_id, actor="ops:" + grant.operator_id,
+        scope=load_ops_case_scope(request), rehearsal_grant=grant)
+    return {"ok": True, "version": VERSION, "synthetic_only": True,
+            "case_id": case_id, "analysis_status": "completed",
+            "reused": result.get("reused", False), "requires_human_review": True}
+
+
 @router.get("/fixtures/{kind}")
 async def download_fixture(kind: str, request: Request):
     require_supervisor(request)

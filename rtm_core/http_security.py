@@ -601,6 +601,7 @@ DEFAULT_SENSITIVE_RATE_RULES = {
     ("POST", "/ops/automation/tick"): (10, 300),
     ("POST", "/ops/core/cases/*/document-extractions/run"): (5, 600),
     ("POST", "/ops/cases/*/authorization-signature-review"): (12, 600),
+    ("POST", "/ops/rehearsal/radar/cases/*/analysis"): (3, 600),
     ("POST", "/vehicle-removal/verify-registration"): (10, 600),
     ("POST", "/vehicle-removal/create-checkout-session"): (10, 600),
     ("GET", "/vehicle-removal/quote"): (60, 300),

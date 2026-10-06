@@ -3695,7 +3695,7 @@ def _persist_completed_reanalysis(
         )
 
 
-def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
+def reanalyze_traffic_fine_case(case_id: str, *, rehearsal_document=None) -> Dict[str, Any]:
     """Reanaliza los originales YA almacenados de un expediente traffic/fine.
 
     No crea un caso nuevo, no cobra y no modifica los originales de B2.
@@ -3711,6 +3711,11 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
         )
 
     documents = _load_original_documents(case_id)
+    if rehearsal_document is not None:
+        from rtm_core.staging_rehearsal_analysis import RehearsalAnalysisDocument
+        if not isinstance(rehearsal_document, RehearsalAnalysisDocument):
+            raise HTTPException(409, "No se pudo verificar la entrada del ensayo")
+        rehearsal_document.verify_documents(case_id, documents)
     if not documents:
         raise HTTPException(status_code=404, detail="El expediente no tiene documentos originales")
     if len(documents) > _MAX_REANALYSIS_DOCUMENTS:
@@ -3758,6 +3763,8 @@ def reanalyze_traffic_fine_case(case_id: str) -> Dict[str, Any]:
                 )
             except B2ObjectTooLargeError as exc:
                 raise HTTPException(status_code=413, detail=str(exc)) from exc
+            if rehearsal_document is not None:
+                rehearsal_document.verify_bytes(content)
             if not content:
                 _append_event(
                     case_id,
