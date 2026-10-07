@@ -39,7 +39,6 @@ from rtm_core.upload_security import (
 )
 from analyze import (
     _candidate_wrapper,
-    _enrich_with_triage,
     _extract_untrusted_document_bounded,
     _flatten_text,
     _merge_extracted,
@@ -53,7 +52,7 @@ except Exception:  # pragma: no cover
 
 
 _ENGINE_NAME = "rtm_intelligence_core_v1"
-_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_18"
+_EXTRACTOR_VERSION = "traffic_fine_reanalysis_v1_19"
 _SECONDARY_FACTS_VERSION = "velocity_secondary_v1_0"
 _TRAFFIC_FINE_TYPES = {"fine", "multa", "multas", "sanction", "sancion", "sanción"}
 _MAX_REANALYSIS_DOCUMENTS = 8
@@ -188,6 +187,7 @@ def _analyze_page_candidate(
         content,
         meta.mime,
         meta.filename,
+        documentary_only=True,
     )
     return _candidate_wrapper(meta=meta, extracted=extracted_core), confidence
 
@@ -1376,25 +1376,14 @@ def _apply_critical_fields(
             "resolved": resolved,
         })
 
-    measured = out.get("velocidad_medida_kmh")
-    limit = out.get("velocidad_limite_kmh")
-    if isinstance(measured, (int, float)) and isinstance(limit, (int, float)) and measured > limit:
-        out["tipo_infraccion"] = "velocidad"
-        out["familia_resuelta"] = "velocidad"
-        radar = str(out.get("radar_modelo_hint") or "").strip()
-        hecho = f"Circular a {int(measured)} km/h en un tramo limitado a {int(limit)} km/h"
-        if radar:
-            hecho += f", medición efectuada mediante {radar}"
-        out["hecho_imputado"] = hecho
-        out["hecho_para_recurso"] = hecho
-        out["tipo_infraccion_confidence"] = max(float(out.get("tipo_infraccion_confidence") or 0), 0.99)
-
-    required = ["expediente_ref", "matricula", "organismo"]
-    if (out.get("tipo_infraccion") or "").lower() == "velocidad":
-        required += [
-            "velocidad_medida_kmh", "velocidad_limite_kmh",
-            "fecha_infraccion", "lugar_infraccion",
-        ]
+    # Esta función se ejecuta en la ruta de lectura de velocidad. Sus números
+    # no autorizan una clasificación jurídica ni una frase nueva para el recurso.
+    # Se conserva el hecho leído en el documento, incluso si falta.
+    required = [
+        "expediente_ref", "matricula", "organismo",
+        "velocidad_medida_kmh", "velocidad_limite_kmh",
+        "fecha_infraccion", "lugar_infraccion",
+    ]
     missing_required = [k for k in required if out.get(k) in (None, "", [], {})]
 
     organismo_blob = _fold(str(out.get("organismo") or "")).upper()
@@ -3578,7 +3567,8 @@ def _consolidate_extraction(
         combined_core["raw_text_blob"] = combined_blob
         combined_core["vision_raw_text"] = combined_blob[:16000]
 
-    combined_core = _enrich_with_triage(combined_core, combined_blob or _flatten_text(combined_core))
+    # Elegir una lectura profunda desde candidatos documentales, sin añadir
+    # previamente hechos ni apartados inferidos por la clasificación legacy.
     dispatched_family = _resolved_traffic_family(combined_core, combined_blob)
     combined_core["specialist_dispatch"] = dispatched_family
 
@@ -3743,7 +3733,7 @@ def _persist_completed_reanalysis(
                 "id": case_id,
                 "payload": json.dumps(wrapper, ensure_ascii=False),
                 "confidence": confidence,
-                "model": f"{_ENGINE_NAME}+traffic_fine+v1_18",
+                "model": f"{_ENGINE_NAME}+traffic_fine+v1_19",
             },
         )
         conn.execute(

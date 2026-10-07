@@ -3470,6 +3470,8 @@ def _extract_untrusted_document(
     content: bytes,
     mime: str,
     filename: str,
+    *,
+    documentary_only: bool = False,
 ) -> Tuple[Dict[str, Any], str, float]:
     """Run parsers/providers without holding a database transaction.
 
@@ -3533,17 +3535,22 @@ def _extract_untrusted_document(
             extracted_vision["hecho_focus_error"] = "provider_processing_failed"
             extracted_vision["needs_operator_review"] = True
 
-        blob_text = (
-            _flatten_text(extracted_text, text_content=text_content)
-            if extracted_text
-            else (text_content or "")
-        )
-        triaged_text = _enrich_with_triage(extracted_text or {}, blob_text)
-        triaged_vision = _enrich_with_triage(
-            extracted_vision or {},
-            _flatten_text(extracted_vision, text_content=""),
-        )
-        extracted_core = _merge_extracted(triaged_text, triaged_vision)
+        if documentary_only:
+            # Reanalysis conserva lecturas documentales: el triage legacy puede
+            # inventar una frase canónica o un apartado al inferir una familia.
+            extracted_core = _merge_extracted(extracted_text, extracted_vision)
+        else:
+            blob_text = (
+                _flatten_text(extracted_text, text_content=text_content)
+                if extracted_text
+                else (text_content or "")
+            )
+            triaged_text = _enrich_with_triage(extracted_text or {}, blob_text)
+            triaged_vision = _enrich_with_triage(
+                extracted_vision or {},
+                _flatten_text(extracted_vision, text_content=""),
+            )
+            extracted_core = _merge_extracted(triaged_text, triaged_vision)
         extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
         if extracted_text and not _needs_speed_retry(extracted_core):
             model_used = "openai_text"
@@ -3568,8 +3575,9 @@ def _extract_untrusted_document(
     else:  # defensa redundante: validate_document_bytes ya lo impide
         raise UploadSecurityError("Tipo de archivo no soportado")
 
-    blob = _flatten_text(extracted_core, text_content=text_content)
-    extracted_core = _enrich_with_triage(extracted_core, blob)
+    if not documentary_only:
+        blob = _flatten_text(extracted_core, text_content=text_content)
+        extracted_core = _enrich_with_triage(extracted_core, blob)
     extracted_core = _ensure_raw_fields(extracted_core, text_content=text_content)
     return _mark_legacy_analysis_for_review(extracted_core), model_used, confidence
 
@@ -3578,10 +3586,16 @@ def _extract_untrusted_document_bounded(
     content: bytes,
     mime: str,
     filename: str,
+    *,
+    documentary_only: bool = False,
 ) -> Tuple[Dict[str, Any], str, float]:
     """Ejecuta toda la cadena OCR bajo un único presupuesto por documento."""
 
     with model_call_budget(MAX_ANALYZE_MODEL_CALLS):
+        if documentary_only:
+            return _extract_untrusted_document(
+                content, mime, filename, documentary_only=True
+            )
         return _extract_untrusted_document(content, mime, filename)
 
 
