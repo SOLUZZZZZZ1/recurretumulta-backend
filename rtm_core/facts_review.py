@@ -15,14 +15,14 @@ from case_authority import verify_signed_case_authority
 from rtm_core import authority_repository as repository
 from rtm_core.contracts import SourceReference, ValidatedFact, ValidatedFacts, FactStatus
 
-REVIEW_VERSION = "rtm_traffic_facts_review_v1_1"
+REVIEW_VERSION = "rtm_traffic_facts_review_v1_2"
 TEXT_FIELDS = frozenset({
     "organismo", "expediente_ref", "matricula", "hecho_denunciado_literal",
     "lugar_infraccion", "hora_infraccion", "tipo_documento", "fase_procedimental",
     "norma_hint", "articulo_infringido_num", "apartado_infringido_num",
     "ordenanza_aplicable", "senalizacion_estacionamiento", "horario_estacionamiento",
     "autorizacion_estacionamiento", "tipo_denunciante", "prueba_estacionamiento",
-    "contradiccion_estacionamiento",
+    "contradiccion_estacionamiento", "radar_modelo_hint",
 })
 DATE_FIELDS = frozenset({"fecha_notificacion", "fecha_documento", "fecha_infraccion", "fecha_limite"})
 NUMBER_FIELDS = frozenset({"sancion_importe_eur", "importe_reducido_eur", "velocidad_medida_kmh", "velocidad_limite_kmh"})
@@ -34,7 +34,7 @@ REVIEW_FIELDS = TEXT_FIELDS | DATE_FIELDS | NUMBER_FIELDS | INTEGER_FIELDS | BOO
 class FactCorrection(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
     field: str
-    operation: Literal["correct", "add"] = "correct"
+    operation: Literal["correct", "add", "exclude"] = "correct"
     value: Any
     document_id: str
     page_index: int = Field(ge=0, le=9999)
@@ -46,6 +46,10 @@ class FactCorrection(BaseModel):
             raise ValueError("Este campo todavía no admite corrección desde el formulario")
         if str(UUID(self.document_id)) != self.document_id:
             raise ValueError("Identificador documental no canónico")
+        if self.operation == "exclude":
+            if self.value is not None:
+                raise ValueError("Descartar una lectura requiere value=null, sin afirmar otro dato")
+            return self
         if self.field in TEXT_FIELDS:
             if not isinstance(self.value, str) or not 1 <= len(self.value.strip()) <= 4000:
                 raise ValueError("El valor debe ser texto no vacío, de hasta 4000 caracteres")
@@ -84,7 +88,7 @@ def corrected_snapshot(previous, body: ReviewFactsBody) -> ValidatedFacts:
     old_conflicts = set()
     for item in body.changes:
         existing = previous.facts.facts.get(item.field)
-        if item.operation == "correct" and existing is None:
+        if item.operation in {"correct", "exclude"} and existing is None:
             raise HTTPException(409, "El campo no pertenece a esta versión de hechos")
         if item.operation == "add" and existing is not None:
             raise HTTPException(409, "El dato ya existe. Recarga los hechos y utiliza Revisar")
@@ -92,6 +96,13 @@ def corrected_snapshot(previous, body: ReviewFactsBody) -> ValidatedFacts:
             raise HTTPException(409, "El documento no pertenece a la procedencia de esta versión")
         if existing is not None:
             old_conflicts.update(existing.conflicts)
+        if item.operation == "exclude":
+            if existing.status not in {FactStatus.UNRESOLVED, FactStatus.CONFLICTED}:
+                raise HTTPException(409, "Solo se pueden descartar lecturas pendientes, no hechos confirmados")
+            # Keep the proposal in the previous immutable snapshot.
+            # Absence is never promoted to a value (zero, false, date, etc.).
+            del payload["facts"][item.field]
+            continue
         # La lectura de IA se conserva en la versión anterior. La nueva fuente
         # recoge la ubicación contrastada por el operador, no una página inferida.
         payload["facts"][item.field] = ValidatedFact(
@@ -143,5 +154,11 @@ def review_facts(conn, *, case_id: str, facts_id: str, body: ReviewFactsBody, ac
         "reviewed_fields": sorted(item.field for item in body.changes),
         "added_fields": sorted(item.field for item in body.changes if item.operation == "add"),
         "corrected_fields": sorted(item.field for item in body.changes if item.operation == "correct"),
+        "excluded_fields": sorted(item.field for item in body.changes if item.operation == "exclude"),
+        "exclusion_evidence": [
+            {"field": item.field, "document_id": item.document_id, "page_index": item.page_index,
+             "evidence": item.evidence, "reason": body.reason}
+            for item in body.changes if item.operation == "exclude"
+        ],
     })
     return record

@@ -146,4 +146,73 @@ class FactsReviewTests(unittest.TestCase):
         self.assertEqual(result["case_id"], CASE)
 
 
+
+class PendingReadingExclusionTests(unittest.TestCase):
+    def test_radar_model_is_reviewable_with_documentary_provenance(self):
+        old = previous()
+        updated = corrected_snapshot(old, body(field="radar_modelo_hint", operation="add", value="CINEMÓMETRO MULTANOVA"))
+        fact = updated.facts["radar_modelo_hint"]
+        self.assertEqual(fact.value, "CINEMÓMETRO MULTANOVA")
+        self.assertEqual(fact.sources[0].source_type, "operator_document_review")
+        self.assertEqual(fact.sources[0].document_id, DOC)
+
+    def test_exclusion_preserves_the_proposal_in_history_without_inventing_a_value(self):
+        old = previous()
+        before = old.facts.model_dump()
+        updated = corrected_snapshot(old, body(operation="exclude", value=None))
+        self.assertEqual(old.facts.model_dump(), before)
+        self.assertNotIn("fecha_notificacion", updated.facts)
+        self.assertNotIn("fecha_notificacion", updated.unresolved)
+        self.assertEqual(updated.facts["matricula"].model_dump(), old.facts.facts["matricula"].model_dump())
+        self.assertEqual(updated.conflicts, old.facts.conflicts)
+        self.assertFalse(updated.frozen)
+
+    def test_exclusion_removes_only_the_conflicts_of_the_discarded_reading(self):
+        old = previous()
+        updated = corrected_snapshot(old, body(field="matricula", operation="exclude", value=None))
+        self.assertNotIn("matricula", updated.facts)
+        self.assertEqual(updated.conflicts, ["Conflicto global"])
+        self.assertEqual(updated.unresolved, ["fecha_notificacion"])
+
+    def test_exclusion_cannot_delete_confirmed_facts_or_unlisted_sources(self):
+        old = previous()
+        old.facts = corrected_snapshot(old, body())
+        for params in (dict(), dict(field="organismo"), dict(document_id=str(uuid4()))):
+            with self.subTest(params=params), self.assertRaises(HTTPException):
+                corrected_snapshot(old, body(operation="exclude", value=None, **params))
+        for value in ("", False, 0, "No consta"):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                body(operation="exclude", value=value)
+        for params in (dict(evidence=" "), dict(page_index=-1), dict(field="familia_resuelta")):
+            with self.subTest(params=params), self.assertRaises(ValidationError):
+                body(operation="exclude", value=None, **params)
+
+    def test_exclusion_audit_binds_actor_versions_document_page_evidence_and_reason(self):
+        old = previous()
+        request = body(operation="exclude", value=None, evidence="El original no muestra fecha de recepción")
+        new = SimpleNamespace(id=str(uuid4()), payload_sha256="b" * 64)
+        conn = Mock()
+        conn.execute.return_value.fetchall.return_value = [(DOC,)]
+        with patch("rtm_core.facts_review.repository._case_authority_meta", return_value={"department": "traffic", "case_type": "fine"}), \
+             patch("rtm_core.facts_review.repository._require_authority_work_allowed"), \
+             patch("rtm_core.facts_review.verify_signed_case_authority"), \
+             patch("rtm_core.facts_review.repository.latest_validated_facts", return_value=old), \
+             patch("rtm_core.facts_review.repository.invalidate_validated_facts") as invalidate, \
+             patch("rtm_core.facts_review.repository.create_validated_facts", return_value=new) as create, \
+             patch("rtm_core.facts_review.repository._append_event") as event:
+            saved = review_facts(conn, case_id=CASE, facts_id=old.id, body=request, actor="operator:test")
+        self.assertIs(saved, new)
+        invalidate.assert_called_once_with(conn, CASE, old.id, "operator:test", request.reason)
+        self.assertEqual(create.call_args.kwargs["supersedes_id"], old.id)
+        payload = event.call_args.args[3]
+        self.assertEqual(payload["actor"], "operator:test")
+        self.assertEqual(payload["excluded_fields"], ["fecha_notificacion"])
+        self.assertEqual(payload["corrected_fields"], [])
+        self.assertEqual(payload["exclusion_evidence"], [{
+            "field": "fecha_notificacion", "document_id": DOC, "page_index": 1,
+            "evidence": request.changes[0].evidence, "reason": request.reason}])
+        self.assertEqual(payload["previous_facts_id"], old.id)
+        self.assertEqual(payload["facts_id"], new.id)
+
+
 if __name__ == "__main__": unittest.main()
