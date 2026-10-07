@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from fastapi import HTTPException
+from openai import APIStatusError
+from openai_vision import OCRProviderHTTPError
 from sqlalchemy import text
 
 from database import get_engine
@@ -98,6 +100,50 @@ def _append_event_best_effort(
         pass
 
 
+_PROVIDER_QUOTA_CODES = {
+    "insufficient_quota", "credit_balance_exhausted",
+    "billing_hard_limit_reached", "usage_limit_exceeded",
+    "organization_spend_limit_exceeded", "project_spend_limit_exceeded",
+    "organization_usage_limit_exceeded",
+}
+_PROVIDER_RATE_CODES = {"rate_limit_exceeded", "slow_down"}
+
+
+def _provider_rejection(exc: Exception) -> Optional[Dict[str, Any]]:
+    if not isinstance(exc, (APIStatusError, OCRProviderHTTPError)):
+        return None
+    if getattr(exc, "status_code", None) != 429:
+        return None
+    raw_code = getattr(exc, "code", None)
+    code = raw_code if isinstance(raw_code, str) and raw_code in (
+        _PROVIDER_QUOTA_CODES | _PROVIDER_RATE_CODES
+    ) else "unclassified_429"
+    if code == "unclassified_429" and getattr(exc, "type", None) == "insufficient_quota":
+        code = "insufficient_quota"
+    if code in _PROVIDER_QUOTA_CODES:
+        message = (
+            "La lectura IA está detenida por falta de cuota o por un límite de "
+            "facturación de la cuenta API. Revisa el saldo y los límites de OpenAI "
+            "antes de reintentar. El pago del expediente sigue confirmado."
+        )
+        error_code = "reanalysis_provider_quota_unavailable"
+    elif code in _PROVIDER_RATE_CODES:
+        message = (
+            "El proveedor de IA ha limitado temporalmente las solicitudes. "
+            "Espera unos minutos antes de volver a comprobar la lectura. "
+            "El pago del expediente sigue confirmado."
+        )
+        error_code = "reanalysis_provider_rate_limited"
+    else:
+        message = (
+            "El proveedor de IA ha rechazado la lectura por un límite de servicio. "
+            "RTM debe comprobar la cuota y los límites antes de reintentar. "
+            "El pago del expediente sigue confirmado."
+        )
+        error_code = "reanalysis_provider_limit_unclassified"
+    return {"provider_code": code, "error_code": error_code, "message": message}
+
+
 def _log_reanalysis_failure(exc: Exception, run_id: str, stage: str) -> None:
     """Log diagnostic metadata only: no exception text, document or response."""
     status = getattr(exc, "status_code", None)
@@ -109,6 +155,9 @@ def _log_reanalysis_failure(exc: Exception, run_id: str, stage: str) -> None:
     }
     if type(status) is int and 100 <= status <= 599:
         payload["provider_status"] = status
+    rejection = _provider_rejection(exc)
+    if rejection:
+        payload["provider_code"] = rejection["provider_code"]
     logging.getLogger(__name__).error(json.dumps(payload, sort_keys=True))
 
 
@@ -4075,19 +4124,20 @@ def reanalyze_traffic_fine_case(case_id: str, *, rehearsal_document=None) -> Dic
         )
         raise
     except Exception as exc:
+        rejection = _provider_rejection(exc)
         _log_reanalysis_failure(exc, reanalysis_run_id, stage)
         _append_event_best_effort(
             case_id,
             "case_reanalysis_failed",
             {
                 "reanalysis_run_id": reanalysis_run_id,
-                "error_code": "reanalysis_internal_failure",
+                "error_code": rejection["error_code"] if rejection else "reanalysis_internal_failure",
                 "extractor_version": _EXTRACTOR_VERSION,
             },
         )
         raise HTTPException(
-            status_code=500,
-            detail="Error interno durante el reanálisis del expediente",
+            status_code=503 if rejection else 500,
+            detail=rejection["message"] if rejection else "Error interno durante el reanálisis del expediente",
         ) from exc
     finally:
         budget_guard.__exit__(None, None, None)
