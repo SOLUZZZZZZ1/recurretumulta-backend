@@ -28,6 +28,7 @@ FIELDS = {
     "hecho_denunciado_literal": "Hecho denunciado",
 }
 EXTRA_FIELDS = {
+    "radar_modelo_hint": "Modelo de radar indicado",
     "lugar_infraccion": "Lugar de la infracción", "hora_infraccion": "Hora de la infracción",
     "fecha_infraccion": "Fecha de la infracción", "tipo_documento": "Tipo de documento",
     "fase_procedimental": "Fase del procedimiento", "fecha_limite": "Fecha límite documentada",
