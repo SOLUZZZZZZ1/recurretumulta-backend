@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import b2_storage
 
@@ -25,6 +25,86 @@ class _FailingPutS3(_S3):
 
 
 class B2StorageSecurityTest(unittest.TestCase):
+    def test_read_timeout_is_opt_in_and_leaves_default_client_configuration_unchanged(self):
+        configuration = {
+            "B2_ENDPOINT": "https://s3.us-west-000.backblazeb2.com",
+            "B2_KEY_ID": "test-id", "B2_APPLICATION_KEY": "test-key",
+        }
+        with (
+            patch.object(b2_storage, "require_capability") as capability,
+            patch.object(b2_storage._local_storage, "local_document_storage_requested", return_value=False),
+            patch.object(b2_storage, "_env", side_effect=configuration.__getitem__),
+            patch.object(b2_storage.boto3, "client") as client,
+        ):
+            b2_storage.get_s3_client(request_timeout_seconds=5)
+            bounded = client.call_args.kwargs["config"]
+            self.assertEqual(bounded.connect_timeout, 5)
+            self.assertEqual(bounded.read_timeout, 5)
+            self.assertEqual(bounded.retries, {"total_max_attempts": 1})
+            b2_storage.get_s3_client()
+            default = client.call_args.kwargs["config"]
+            for key in ("connect_timeout", "read_timeout", "retries"):
+                self.assertNotIn(key, default._user_provided_options)
+            self.assertEqual(default.signature_version, "s3v4")
+            self.assertEqual(default.s3, {"addressing_style": "path"})
+            self.assertEqual(capability.call_count, 2)
+            capability.assert_called_with("b2")
+
+    def test_download_only_passes_timeout_when_requested_and_preserves_stream_limit(self):
+        for timeout in (None, 5):
+            with self.subTest(timeout=timeout):
+                body = Mock()
+                body.read.return_value = b"pdf"
+                client = Mock()
+                client.get_object.return_value = {"Body": body}
+                with (
+                    patch.object(b2_storage, "local_document_storage_enabled", return_value=False),
+                    patch.object(b2_storage, "get_b2_bucket", return_value="private-bucket"),
+                    patch.object(b2_storage, "get_s3_client", return_value=client) as factory,
+                ):
+                    self.assertEqual(b2_storage.download_bytes_limited(
+                        "private-bucket", "cases/case-1/original/object.pdf", max_bytes=10,
+                        case_id="case-1", **({"request_timeout_seconds": timeout} if timeout is not None else {}),
+                    ), b"pdf")
+                if timeout is None:
+                    factory.assert_called_once_with()
+                else:
+                    factory.assert_called_once_with(request_timeout_seconds=5)
+                client.get_object.assert_called_once_with(Bucket="private-bucket", Key="cases/case-1/original/object.pdf")
+                body.read.assert_called_once_with(11)
+                body.close.assert_called_once_with()
+
+    def test_invalid_timeouts_are_rejected_before_credentials_or_client_construction(self):
+        for value in (0, -1, 5.1, float("inf"), float("nan"), True, "5"):
+            with self.subTest(value=value), patch.object(b2_storage, "_env") as environment, \
+                 patch.object(b2_storage.boto3, "client") as client, \
+                 patch.object(b2_storage, "local_document_storage_enabled") as local:
+                with self.assertRaises(ValueError):
+                    b2_storage.get_s3_client(request_timeout_seconds=value)
+                with self.assertRaises(ValueError):
+                    b2_storage.download_bytes_limited("private-bucket", "cases/case-1/original/object.pdf",
+                        max_bytes=10, case_id="case-1", request_timeout_seconds=value)
+                environment.assert_not_called()
+                client.assert_not_called()
+                local.assert_not_called()
+
+    def test_timed_out_read_closes_the_stream_without_retrying(self):
+        body = Mock()
+        body.read.side_effect = TimeoutError("read timeout")
+        client = Mock()
+        client.get_object.return_value = {"Body": body}
+        with (
+            patch.object(b2_storage, "local_document_storage_enabled", return_value=False),
+            patch.object(b2_storage, "get_b2_bucket", return_value="private-bucket"),
+            patch.object(b2_storage, "get_s3_client", return_value=client),
+        ):
+            with self.assertRaises(TimeoutError):
+                b2_storage.download_bytes_limited("private-bucket", "cases/case-1/original/object.pdf",
+                    max_bytes=10, case_id="case-1", request_timeout_seconds=5)
+        self.assertEqual(client.get_object.call_count, 1)
+        body.read.assert_called_once_with(11)
+        body.close.assert_called_once_with()
+
     def test_presign_forces_safe_attachment_and_binary_content_type(self):
         client = _S3()
         with (

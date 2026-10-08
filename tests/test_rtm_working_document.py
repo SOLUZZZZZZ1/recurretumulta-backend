@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.testclient import TestClient
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 
 from rtm_core import working_document as document
 from rtm_core import study_router
@@ -52,6 +52,16 @@ def reviewed(value, source_type="operator_document_review"):
         document_id=DOC, page_index=0, source_type=source_type,
         extraction_method="ops_document_review_v1" if source_type == "operator_document_review" else "deterministic",
         evidence=str(value), confidence=1.0)], confidence=1.0)
+
+
+def original_document(content, **changes):
+    return {"id": DOC, "case_id": CASE, "kind": "original", "sha256": hashlib.sha256(content).hexdigest(),
+        "size_bytes": len(content), "mime": "application/pdf", "b2_bucket": "test-bucket",
+        "b2_key": f"cases/{CASE}/original/source.pdf", **changes}
+
+
+def fixture_pdf():
+    return (Path(__file__).parents[1] / "rtm_core/fixtures/staging_radar_v1/RADAR_IDENTIFICACION_PRUEBA_2026-10-05.pdf").read_bytes()
 
 
 class WorkingDocumentProjectionTests(unittest.TestCase):
@@ -275,16 +285,22 @@ class WorkingDocumentProjectionTests(unittest.TestCase):
         self.assertIsNone(source["evidence"])
         self.assertIsNone(source["evidence_kind"])
 
-    def test_historical_v18_shape_and_real_fixture_text_yield_an_anchored_draft_without_false_facts(self):
-        fixture = Path(__file__).parents[1] / "rtm_core/fixtures/staging_radar_v1/RADAR_IDENTIFICACION_PRUEBA_2026-10-05.pdf"
-        original_text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(fixture.read_bytes())).pages)
+    def test_historical_v18_without_raw_anchors_from_original_bytes_without_false_facts(self):
+        content = fixture_pdf()
+        with patch.object(document.storage, "get_b2_bucket", return_value="test-bucket"), \
+             patch.object(document.storage, "download_bytes_limited", return_value=content) as downloaded:
+            originals, issues = document._load_original_pdf_texts(CASE, [original_document(content)], [DOC])
+        self.assertFalse(issues)
+        downloaded.assert_called_once_with("test-bucket", f"cases/{CASE}/original/source.pdf",
+            max_bytes=document._MAX_ORIGINAL_PDF_BYTES, case_id=CASE, request_timeout_seconds=5)
         wrapper = {"pages": [{"document_id": DOC, "page_index": 1}], "extracted": {
             "extractor_version": "traffic_fine_reanalysis_v1_18", "source_document_ids": [DOC],
-            "raw_text_blob": "===== PÁGINA 1 =====\n" + original_text,
+            "document_title": "Petición de datos al titular para identificación del conductor",
             "familia_resuelta": "semaforo", "tipo_infraccion": "semaforo",
             "hecho_imputado": "No respetar la luz roja no intermitente de un semáforo",
             "velocidad_medida_kmh": 177, "velocidad_limite_kmh": 120,
             "expediente_ref": "RTM-RADAR-TEST-001", "matricula": None,
+            "fecha_documento": "2026-10-05", "radar_modelo_hint": "multanova", "articulo_infringido_num": "48",
             "apartado_infringido_num": "8"}}
         record = facts_record({key: ValidatedFact(value=None, status="unresolved",
             notes=["Lectura candidata no consolidada: esto nunca es fuente de datos"])
@@ -293,7 +309,7 @@ class WorkingDocumentProjectionTests(unittest.TestCase):
                         "hora_infraccion", "lugar_infraccion", "articulo_infringido_num", "radar_modelo_hint")})
         original_facts = record.facts.model_dump(mode="json")
         result = self.compose(wrapper=wrapper, event={}, facts_record=record,
-            identity={**IDENTITY, "matricula": None}, excluded_fields={"apartado_infringido_num"})
+            identity={**IDENTITY, "matricula": None}, excluded_fields={"apartado_infringido_num"}, original_texts=originals)
         self.assertEqual(result["document_kind"], "driver_identification")
         self.assertIn("RTM-RADAR-TEST-001", result["content"])
         self.assertNotIn("semáforo", result["content"])
@@ -306,19 +322,49 @@ class WorkingDocumentProjectionTests(unittest.TestCase):
         self.assertEqual(reference["status"], "candidate")
         self.assertEqual(reference["sources"][0]["page_index"], 0)
         self.assertIn("RTM-RADAR-TEST-001", reference["sources"][0]["evidence"])
-        self.assertEqual(reference["sources"][0]["extraction_method"], "rtm_stored_text_anchor_v1")
+        self.assertEqual(reference["sources"][0]["extraction_method"], "rtm_original_pdf_literal_anchor_v1")
+        self.assertEqual(reference["sources"][0]["document_sha256"], hashlib.sha256(content).hexdigest())
+        anchored = [field["key"] for field in result["fields"] if field["status"] == "candidate"
+            and any(source.get("evidence_kind") == "document_excerpt" for source in field["sources"])]
+        self.assertEqual(set(anchored), {"expediente_ref", "fecha_documento", "radar_modelo_hint",
+            "velocidad_limite_kmh", "velocidad_medida_kmh", "articulo_infringido_num", "titulo_documento"})
+        date_source = fields["fecha_documento"]["sources"][0]
+        self.assertIn("05/10/2026", date_source["evidence"])
+        self.assertEqual(fields["fecha_documento"]["value"], "2026-10-05")
         pdf_text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(
             document.working_document_pdf(result, result["source_sha256"]))).pages)
         self.assertIn("RTM-RADAR-TEST-001", pdf_text)
         self.assertNotIn("semáforo", pdf_text)
 
-    def test_saved_text_anchor_refuses_multiple_occurrences_pages_and_numeric_substrings(self):
-        wrapper = {"pages": [{"document_id": DOC, "page_index": 1}],
-            "extracted": {"raw_text_blob": "===== PÁGINA 1 =====\nREF-PRUEBA\nREF-PRUEBA\nArtículo 48"}}
-        self.assertIsNone(document._anchor_saved_reading(wrapper, "expediente_ref", "REF-PRUEBA"))
-        self.assertIsNone(document._anchor_saved_reading(wrapper, "apartado_infringido_num", "8"))
-        wrapper["extracted"]["raw_text_blob"] = "===== PÁGINA 2 =====\nREF-PRUEBA"
-        self.assertIsNone(document._anchor_saved_reading(wrapper, "expediente_ref", "REF-PRUEBA"))
+    def test_original_text_anchor_refuses_multiple_occurrences_and_numeric_substrings(self):
+        originals = [{"document_id": DOC, "sha256": "a" * 64, "text": "REF-PRUEBA\nREF-PRUEBA\nArtículo 48"}]
+        self.assertIsNone(document._anchor_original_text(originals, "expediente_ref", "REF-PRUEBA"))
+        self.assertIsNone(document._anchor_original_text(originals, "apartado_infringido_num", "8"))
+        originals[0]["text"] = "Fecha del escrito: 05/10/2026\nFecha del escrito: 05/10/2026"
+        self.assertIsNone(document._anchor_original_text(originals, "fecha_documento", "2026-10-05"))
+
+    def test_model_evidence_and_flattened_raw_never_become_document_excerpts(self):
+        wrapper, _ = reading()
+        wrapper["extracted"]["raw_text_blob"] = "===== PÁGINA 1 =====\nexpediente_ref: REF-PRUEBA"
+        result = self.compose(wrapper=wrapper)
+        self.assertTrue(all(source["evidence"] is None and source["evidence_kind"] is None
+            for field in result["fields"] for source in field["sources"]))
+        human = self.compose(facts_record=facts_record({"expediente_ref": reviewed("REF-REVISADA")}))
+        source = next(f for f in human["fields"] if f["key"] == "expediente_ref")["sources"][0]
+        self.assertEqual(source["evidence_kind"], "document_excerpt")
+        self.assertEqual(source["evidence"], "REF-REVISADA")
+        originals = [{"document_id": DOC, "sha256": "a" * 64, "text": "Referencia: REF-PRUEBA"}]
+        anchored = self.compose(wrapper=wrapper, original_texts=originals)
+        self.assertNotEqual(anchored["source_sha256"], result["source_sha256"])
+
+    def test_date_anchor_requires_its_own_documentary_role(self):
+        original = {"document_id": DOC, "sha256": "a" * 64, "text": "Fecha del hecho: 05/10/2026"}
+        self.assertIsNone(document._anchor_original_text([original], "fecha_documento", "2026-10-05"))
+        self.assertIsNone(document._anchor_original_text([original], "fecha_notificacion", "2026-10-05"))
+        actual_fact_date = document._anchor_original_text([original], "fecha_infraccion", "2026-10-05")
+        self.assertEqual(actual_fact_date["evidence"], "Fecha del hecho: 05/10/2026")
+        original["text"] = "05/10/2026"
+        self.assertIsNone(document._anchor_original_text([original], "fecha_documento", "2026-10-05"))
 
     def test_pdf_is_marked_draft_matches_text_and_refuses_stale_source(self):
         result = self.compose()
@@ -343,17 +389,125 @@ class WorkingDocumentProjectionTests(unittest.TestCase):
 
     def test_loader_has_no_writes_and_reuses_saved_reading(self):
         conn = Mock()
-        conn.execute.return_value.fetchall.return_value = [SimpleNamespace(_mapping={"id": DOC, "sha256": "d" * 64})]
+        conn.execute.return_value.fetchall.return_value = [SimpleNamespace(_mapping=original_document(fixture_pdf()))]
         with patch.object(document.authority, "_case_authority_meta", return_value={"department": "traffic", "case_type": "fine"}), \
              patch.object(document.authority, "_require_authority_work_allowed"), \
              patch.object(document, "verify_signed_case_authority"), \
              patch.object(document, "load_case_review_snapshot", return_value=SimpleNamespace(interested_data=IDENTITY)), \
              patch.object(document.authority, "latest_validated_facts", return_value=None), \
+             patch.object(document, "_load_original_pdf_texts", return_value=([], [])), \
              patch.object(document.adapter, "load_latest_reanalysis_snapshot", return_value=reading()) as saved:
             result = document.load_working_document(conn, CASE)
         saved.assert_called_once_with(conn, CASE)
         self.assertFalse(result["persisted"])
         self.assertTrue(all(str(call.args[0]).lstrip().upper().startswith("SELECT") for call in conn.execute.call_args_list))
+
+    def test_loader_does_not_anchor_a_snapshot_outside_current_facts_sources(self):
+        conn = Mock()
+        conn.execute.return_value.fetchall.return_value = [SimpleNamespace(_mapping=original_document(fixture_pdf()))]
+        current = facts_record({})
+        current.facts.source_document_ids = [ACTOR]
+        with patch.object(document.authority, "_case_authority_meta", return_value={"department": "traffic", "case_type": "fine"}), \
+             patch.object(document.authority, "_require_authority_work_allowed"), \
+             patch.object(document, "verify_signed_case_authority"), \
+             patch.object(document, "load_case_review_snapshot", return_value=SimpleNamespace(interested_data=IDENTITY)), \
+             patch.object(document.authority, "latest_validated_facts", return_value=current), \
+             patch.object(document.adapter, "load_latest_reanalysis_snapshot", return_value=reading()), \
+             patch.object(document, "_excluded_fields", return_value=set()), \
+             patch.object(document, "_load_original_pdf_texts") as originals:
+            result = document.load_working_document(conn, CASE)
+        originals.assert_not_called()
+        self.assertIn("original_literal_text_unavailable", {issue["code"] for issue in result["issues"]})
+
+
+class OriginalPdfLiteralTests(unittest.TestCase):
+    def load(self, content, *, row=None, source_ids=None):
+        with patch.object(document.storage, "get_b2_bucket", return_value="test-bucket"), \
+             patch.object(document.storage, "download_bytes_limited", return_value=content):
+            return document._load_original_pdf_texts(CASE, [row or original_document(content)], source_ids or [DOC])
+
+    def test_native_literal_parser_does_not_apply_ocr_corrections_or_remove_admin_lines(self):
+        content = document.build_pdf("PRUEBA", "CLASIFICACION: DATO VISIBLE\nS. NO\nTrombo")
+        expected = PdfReader(BytesIO(content)).pages[0].extract_text()
+        result = document.run_parser_isolated("extract_single_page_pdf_literal", {"data": content})
+        self.assertEqual(result, {"page_count": 1, "text": expected})
+        self.assertIn("CLASIFICACION", result["text"])
+        self.assertIn("S. NO", result["text"])
+        self.assertIn("Trombo", result["text"])
+
+    def test_hash_and_size_mismatches_stop_before_parser(self):
+        content = fixture_pdf()
+        for changes in ({"sha256": "0" * 64}, {"size_bytes": len(content) - 1}, {"size_bytes": len(content) + 1}):
+            with self.subTest(changes=changes), patch.object(document, "run_parser_isolated") as parser:
+                with self.assertRaises(HTTPException) as caught:
+                    self.load(content, row=original_document(content, **changes))
+                self.assertEqual(caught.exception.status_code, 409)
+                parser.assert_not_called()
+
+    def test_foreign_case_id_kind_namespace_or_bucket_never_downloads(self):
+        content = fixture_pdf()
+        for changes in ({"case_id": ACTOR}, {"id": ACTOR}, {"kind": "authorization_signed"},
+                {"b2_key": f"cases/{ACTOR}/original/source.pdf"},
+                {"b2_key": f"cases/{CASE}/original/../source.pdf"}, {"b2_bucket": "foreign-bucket"}):
+            with self.subTest(changes=changes), patch.object(document.storage, "get_b2_bucket", return_value="test-bucket"), \
+                 patch.object(document.storage, "download_bytes_limited") as download:
+                with self.assertRaises(HTTPException) as caught:
+                    document._load_original_pdf_texts(CASE, [original_document(content, **changes)], [DOC])
+                self.assertEqual(caught.exception.status_code, 409)
+                download.assert_not_called()
+
+    def test_oversized_non_pdf_or_multiple_originals_remain_pending_without_download(self):
+        content = fixture_pdf()
+        for row, ids in ((original_document(content, size_bytes=document._MAX_ORIGINAL_PDF_BYTES + 1), [DOC]),
+                         (original_document(content, mime="image/jpeg"), [DOC]),
+                         (original_document(content), [DOC, ACTOR])):
+            with self.subTest(ids=ids, mime=row["mime"]), patch.object(document.storage, "download_bytes_limited") as download:
+                originals, issues = document._load_original_pdf_texts(CASE, [row], ids)
+                self.assertEqual(originals, [])
+                self.assertEqual(issues[0]["code"], "original_literal_text_unavailable")
+                download.assert_not_called()
+
+    def test_multipage_and_blank_originals_do_not_guess_a_page_or_run_fallback(self):
+        multi = PdfWriter()
+        reader = PdfReader(BytesIO(fixture_pdf()))
+        multi.add_page(reader.pages[0])
+        multi.add_page(reader.pages[0])
+        multi_bytes = BytesIO()
+        multi.write(multi_bytes)
+        blank = PdfWriter()
+        blank.add_blank_page(width=100, height=100)
+        blank_bytes = BytesIO()
+        blank.write(blank_bytes)
+        for content in (multi_bytes.getvalue(), blank_bytes.getvalue()):
+            with self.subTest(size=len(content)):
+                originals, issues = self.load(content)
+                self.assertEqual(originals, [])
+                self.assertEqual(issues[0]["code"], "original_literal_text_unavailable")
+
+    def test_invalid_pdf_is_rejected_by_actual_isolated_parser(self):
+        with self.assertRaises(HTTPException) as caught:
+            self.load(b"This is not a PDF")
+        self.assertEqual(caught.exception.status_code, 409)
+
+    def test_parser_failure_never_falls_back_to_model_text(self):
+        from rtm_core.parser_isolation import ParserIsolationTimeout
+        for error, status in ((ParserIsolationTimeout("timeout"), 503),
+                              (document.ParserIsolationError("crash"), 503),
+                              (document.ParserRejected("rejected", 422), 409)):
+            with self.subTest(error=type(error).__name__), patch.object(document, "run_parser_isolated", side_effect=error):
+                with self.assertRaises(HTTPException) as caught:
+                    self.load(fixture_pdf())
+                self.assertEqual(caught.exception.status_code, status)
+
+    def test_literal_size_limit_refuses_truncation_that_could_hide_ambiguity(self):
+        from rtm_core import parser_isolation
+        from rtm_core.upload_security import UploadSecurityError
+        reader = Mock()
+        reader.pages = [Mock()]
+        reader.pages[0].extract_text.return_value = "x" * (document._MAX_ORIGINAL_TEXT_CHARS + 1)
+        with patch("rtm_core.upload_security.validate_pdf_document"), patch("pypdf.PdfReader", return_value=reader):
+            with self.assertRaises(UploadSecurityError):
+                parser_isolation._execute_operation("extract_single_page_pdf_literal", {"data": b"mocked"}, limits={}, test_hooks=False)
 
 
 class WorkingDocumentRouteTests(unittest.TestCase):
