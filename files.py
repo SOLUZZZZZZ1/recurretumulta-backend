@@ -73,6 +73,7 @@ def presign(
                     WHERE d.case_id = :case_id
                       AND d.id = CAST(:document_id AS UUID)
                       AND COALESCE(d.kind, '') <> 'external_revision'
+                      AND COALESCE(d.kind, '') <> 'rtm_working_document_pdf'
                     LIMIT 1
                 """),
                 {"case_id": case_id, "document_id": document_id},
