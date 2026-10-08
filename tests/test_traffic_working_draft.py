@@ -31,6 +31,19 @@ class WorkingDraftTests(unittest.TestCase):
         self.assertNotIn("None", rendered)
         self.assertIn("PENDIENTE DE REVISION JURIDICA", rendered)
 
+        # Optional documentary identity is shown under its own labels without
+        # replacing the fixture's declared identity or implying who drove.
+        state["reviewed_facts"].extend([
+            {"key": "document_subject_name", "label": draft.EXTRA_FIELDS["document_subject_name"], "value": "PRUEBA"},
+            {"key": "document_subject_id", "label": draft.EXTRA_FIELDS["document_subject_id"], "value": "RTMTEST"},
+        ])
+        content = draft.render_draft(state, body(), 1)
+        rendered = " ".join(page.extract_text() for page in PdfReader(io.BytesIO(draft.build_pdf("BORRADOR", content))).pages)
+        self.assertIn("Nombre de la persona interesada en el documento: PRUEBA", rendered)
+        self.assertIn("Identificador de la persona interesada en el documento: RTMTEST", rendered)
+        self.assertIn("PERSONA FICTICIA: PRUEBA", rendered)
+        self.assertNotIn("conductor", rendered.lower())
+
     def test_explicit_acknowledgment_strict_text_and_no_client_authority(self):
         for value in ({"draft_acknowledged": False}, {"draft_acknowledged": "true"},
             {"actor": "operator:forged"}, {"approved": True}, {"case_id": str(uuid4())},

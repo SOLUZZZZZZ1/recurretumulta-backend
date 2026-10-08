@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from datetime import datetime
 from typing import Any, Mapping, Optional
 
@@ -25,7 +26,7 @@ from rtm_core.contracts import FactStatus, PreviewStatus
 from rtm_core.preview_repository import get_preview
 
 
-GENERATION_GATEWAY_VERSION = "rtm_generate_gateway_v1_0"
+GENERATION_GATEWAY_VERSION = "rtm_generate_gateway_v1_1"
 _TERMINAL_CASE_STATUSES = {
     "submitted",
     "closed",
@@ -245,6 +246,53 @@ def _clean_text(value: str) -> str:
     return value.strip()
 
 
+def _identity_marker(value: str, *, identifier: bool = False) -> str:
+    value = " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+    # Formatting differences are harmless; letters, accents and leading zeros
+    # are material. In particular, never conflate Peña/Pena or O/0.
+    return re.sub(r"[\s.\-]", "", value) if identifier else value
+
+
+def _require_document_subject_consistency(facts_record, case_meta: Mapping[str, Any]) -> None:
+    """Reject known identity contradictions before rendering or reusing a final.
+
+    These fields explicitly denote the interested person in the document.
+    A creditor, representative, owner or driver is not interchangeable with
+    that role. Missing subject fields provide no positive identity assurance;
+    they are not reconstructed from narrative text or an old classifier.
+    """
+    interested = case_meta.get("interested_data")
+    if not isinstance(interested, dict):
+        interested = {}
+    facts = facts_record.facts.facts
+    problems = []
+    for key, aliases, identifier in (
+        ("document_subject_name", ("full_name", "name"), False),
+        ("document_subject_id", ("dni_nie", "dni", "identity_number"), True),
+    ):
+        fact = facts.get(key)
+        if fact is None:
+            continue
+        value = fact.value
+        declared = _value(interested, *aliases)
+        if (
+            fact.status is not FactStatus.VALIDATED
+            or fact.conflicts
+            or not isinstance(value, str)
+            or not value.strip()
+            or not declared
+        ):
+            problems.append({"field": key, "reason": "identity_unresolved"})
+        elif _identity_marker(value, identifier=identifier) != _identity_marker(declared, identifier=identifier):
+            problems.append({"field": key, "reason": "identity_mismatch"})
+    if problems:
+        raise HTTPException(status_code=409, detail={
+            "message": "La identidad de la persona interesada no concuerda o sigue pendiente. Revisa los datos del formulario y del documento antes de generar o aprobar el escrito.",
+            "code": "document_subject_consistency_required",
+            "items": problems,
+        })
+
+
 def render_legal_preview(preview, case_meta: Mapping[str, Any]) -> str:
     """Render determinista: usa exclusivamente previa + identidad persistida."""
 
@@ -399,6 +447,7 @@ def generate_from_frozen_preview(
         preview_id,
         for_update=True,
     )
+    _require_document_subject_consistency(facts_record, case)
 
     existing = conn.execute(
         text(
@@ -552,12 +601,13 @@ def approve_resource_for_submission(
     if resource.status != "final_ready":
         raise HTTPException(status_code=409, detail="El recurso no está listo para aprobar")
 
-    preview_record, _, _ = _authority_chain(
+    preview_record, facts_record, _ = _authority_chain(
         conn,
         case_id,
         resource.legal_preview_id,
         for_update=True,
     )
+    _require_document_subject_consistency(facts_record, case)
     if resource.preview_payload_sha256 != preview_record.payload_sha256:
         raise HTTPException(status_code=409, detail="El recurso no corresponde a la previa vigente")
 

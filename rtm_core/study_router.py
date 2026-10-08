@@ -1,9 +1,10 @@
 """Individual, scoped OPS continuation; no actor supplied by the browser."""
 import hmac
+import hashlib
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException, Request, Response, File, Form, UploadFile
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, File, Form, UploadFile
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import text
@@ -15,6 +16,7 @@ from database import get_engine
 from rtm_core.ops_case_scope import load_ops_case_scope, require_case_in_scope
 from rtm_core.security import require_operator_token
 from rtm_core.study import StudyActionBody, advance_study, load_study
+from rtm_core.working_document import load_working_document, working_document_pdf
 
 router = APIRouter(prefix="/ops/core/cases", tags=["rtm-core-study"])
 
@@ -64,6 +66,35 @@ def _supervisor_scope(request, token):
     if not scope.individual_session or not scope.scope_all or not scope.operator_id:
         raise HTTPException(403, "Se requiere una sesión individual de supervisor.")
     return scope
+
+
+@router.get("/{case_id}/study/working-document")
+def get_working_document(case_id: str, request: Request, response: Response,
+                         x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token")):
+    scope = _supervisor_scope(request, x_operator_token)
+    response.headers["Cache-Control"] = "no-store, private"
+    with get_engine().begin() as conn:
+        case_id = require_case_in_scope(conn, scope=scope, case_id=case_id)
+        return load_working_document(conn, case_id)
+
+
+@router.get("/{case_id}/study/working-document/pdf")
+def get_working_document_pdf(case_id: str, request: Request,
+        source_sha256: str = Query(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$"),
+        x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token")):
+    scope = _supervisor_scope(request, x_operator_token)
+    with get_engine().begin() as conn:
+        case_id = require_case_in_scope(conn, scope=scope, case_id=case_id)
+        projection = load_working_document(conn, case_id)
+    content = working_document_pdf(projection, source_sha256)
+    return Response(content, media_type="application/pdf", headers={
+        "Cache-Control": "no-store, private", "Pragma": "no-cache",
+        "Content-Disposition": 'inline; filename="rtm-borrador.pdf"',
+        "X-Content-Type-Options": "nosniff",
+        "X-RTM-Source-SHA256": projection["source_sha256"],
+        "X-RTM-Document-SHA256": hashlib.sha256(content).hexdigest(),
+        "Access-Control-Expose-Headers": "X-RTM-Source-SHA256, X-RTM-Document-SHA256",
+    })
 
 
 @router.post("/{case_id}/study/check-reviews")
