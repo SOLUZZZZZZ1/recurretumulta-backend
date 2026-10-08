@@ -4,7 +4,8 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from rtm_core.contracts import LegalArgument, LegalPreview
+from fastapi import HTTPException
+from rtm_core.contracts import LegalArgument, LegalPreview, SourceReference, ValidatedFact
 from rtm_core import generation_gateway
 from rtm_core.generation_gateway import (
     GENERATION_GATEWAY_VERSION,
@@ -47,7 +48,7 @@ def _preview() -> LegalPreview:
 
 class GenerationGatewayTest(unittest.TestCase):
     def test_gateway_version_is_explicit(self):
-        self.assertEqual(GENERATION_GATEWAY_VERSION, "rtm_generate_gateway_v1_0")
+        self.assertEqual(GENERATION_GATEWAY_VERSION, "rtm_generate_gateway_v1_1")
 
     def test_render_is_deterministic_and_uses_preview_content(self):
         preview = _preview()
@@ -113,7 +114,7 @@ class GenerationGatewayTest(unittest.TestCase):
             preview=_preview(),
             payload_sha256="p" * 64,
         )
-        facts_record = SimpleNamespace(id="facts-id")
+        facts_record = SimpleNamespace(id="facts-id", facts=SimpleNamespace(facts={}))
         family_record = SimpleNamespace(id="family-id")
         case = {
             "_active_case_authority": {
@@ -190,6 +191,86 @@ class GenerationGatewayTest(unittest.TestCase):
         event_payload = event_insert.args[1]["payload"]
         self.assertIn(expected_text_hash, event_payload)
         self.assertIn(expected_pdf_hash, event_payload)
+
+
+class GenerationIdentityBoundaryTest(unittest.TestCase):
+    def setUp(self):
+        self.case = {"status": "final_ready", "interested_data": {
+            "full_name": "PERSONA DE PRUEBA PEÑA", "dni_nie": "00000001R",
+            "domicilio_notif": "DOMICILIO DE PRUEBA",
+        }}
+
+    def record(self, **values):
+        facts = {key: ValidatedFact(value=value, status="validated", confidence=1.0,
+            sources=[SourceReference(document_id="document-identity", page_index=0,
+                source_type="operator_document_review", extraction_method="ops_document_review_v1",
+                evidence=str(value), confidence=1.0)])
+            for key, value in values.items()}
+        return SimpleNamespace(id="facts-id", facts=SimpleNamespace(facts=facts))
+
+    def test_formatting_and_renderer_identity_aliases_are_supported(self):
+        record = self.record(document_subject_name="  persona de prueba PEÑA  ", document_subject_id="00.000.001-R")
+        case = {"interested_data": {"name": "PERSONA DE PRUEBA PEÑA", "identity_number": "00000001R"}}
+        generation_gateway._require_document_subject_consistency(record, case)
+
+    def test_different_identifier_or_material_name_is_rejected_without_exposing_values(self):
+        for field, value in (("document_subject_id", "00000002W"),
+                             ("document_subject_name", "PERSONA DE PRUEBA PENA")):
+            with self.subTest(field=field):
+                with self.assertRaises(HTTPException) as caught:
+                    generation_gateway._require_document_subject_consistency(self.record(**{field: value}), self.case)
+                self.assertEqual(caught.exception.status_code, 409)
+                self.assertEqual(caught.exception.detail["items"], [{"field": field, "reason": "identity_mismatch"}])
+                self.assertNotIn(value, str(caught.exception.detail))
+
+    def test_recorded_but_unresolved_identity_cannot_be_finalized(self):
+        record = self.record(document_subject_id="00000001R")
+        record.facts.facts["document_subject_id"] = ValidatedFact(value=None, status="unresolved")
+        with self.assertRaises(HTTPException) as caught:
+            generation_gateway._require_document_subject_consistency(record, self.case)
+        self.assertEqual(caught.exception.detail["items"][0]["reason"], "identity_unresolved")
+
+    def test_other_roles_and_missing_document_identity_are_not_assumed_to_be_the_applicant(self):
+        record = self.record(conductor_nombre="OTRA PERSONA", acreedor="ENTIDAD DE PRUEBA", deudor="TERCERA PERSONA")
+        generation_gateway._require_document_subject_consistency(record, self.case)
+        self.assertNotIn("document_subject_name", record.facts.facts)
+
+    def test_mismatch_stops_generation_before_render_upload_or_existing_resource_lookup(self):
+        record = self.record(document_subject_id="00000002W")
+        connection = mock.MagicMock()
+        # A previous generated row must not let a contradictory case bypass the guard.
+        connection.execute.return_value.fetchone.return_value = {"id": "previous-resource"}
+        with (
+            mock.patch.object(generation_gateway, "_case_meta", return_value=self.case),
+            mock.patch.object(generation_gateway, "_authority_chain",
+                return_value=(SimpleNamespace(preview=_preview()), record, SimpleNamespace(id="family-id"))),
+            mock.patch.object(generation_gateway, "render_legal_preview") as render,
+            mock.patch.object(generation_gateway, "build_pdf") as pdf,
+            mock.patch.object(generation_gateway, "build_docx") as docx,
+            mock.patch.object(generation_gateway, "upload_bytes") as upload,
+            mock.patch.object(generation_gateway, "_insert_document") as insert,
+            self.assertRaises(HTTPException),
+        ):
+            generation_gateway.generate_from_frozen_preview(connection, case_id="case-id",
+                preview_id="preview-id", generated_by="operator-id")
+        connection.execute.assert_not_called()
+        for operation in (render, pdf, docx, upload, insert):
+            operation.assert_not_called()
+
+    def test_previously_generated_resource_with_identity_conflict_cannot_be_approved(self):
+        record = self.record(document_subject_id="00000002W")
+        resource = SimpleNamespace(status="final_ready", legal_preview_id="preview-id")
+        connection = mock.MagicMock()
+        with (
+            mock.patch.object(generation_gateway, "_case_meta", return_value=self.case),
+            mock.patch.object(generation_gateway, "get_generated_resource", return_value=resource),
+            mock.patch.object(generation_gateway, "_authority_chain",
+                return_value=(SimpleNamespace(preview=_preview()), record, SimpleNamespace(id="family-id"))),
+            self.assertRaises(HTTPException),
+        ):
+            generation_gateway.approve_resource_for_submission(connection, case_id="case-id",
+                resource_id="resource-id", approved_by="operator-id")
+        connection.execute.assert_not_called()
 
 
 if __name__ == "__main__":

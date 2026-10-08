@@ -23,6 +23,7 @@ TEXT_FIELDS = frozenset({
     "ordenanza_aplicable", "senalizacion_estacionamiento", "horario_estacionamiento",
     "autorizacion_estacionamiento", "tipo_denunciante", "prueba_estacionamiento",
     "contradiccion_estacionamiento", "radar_modelo_hint",
+    "document_subject_name", "document_subject_id",
 })
 DATE_FIELDS = frozenset({"fecha_notificacion", "fecha_documento", "fecha_infraccion", "fecha_limite"})
 NUMBER_FIELDS = frozenset({"sancion_importe_eur", "importe_reducido_eur", "velocidad_medida_kmh", "velocidad_limite_kmh"})

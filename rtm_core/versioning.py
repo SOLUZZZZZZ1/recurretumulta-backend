@@ -94,7 +94,7 @@ DECLARED_COMPONENT_VERSIONS = {
     "ops_workspace": "rtm_ops_workspace_v1_2",
     "ops_workspace_policy": "rtm_ops_workspace_policy_v1_3",
     "legacy_generator": "traffic_generate_v1_7",
-    "core_generation_gateway": "rtm_generate_gateway_v1_0",
+    "core_generation_gateway": "rtm_generate_gateway_v1_1",
     "submission_automation": "rtm_submission_automation_v1_0",
     "velocity_legal": "velocity_legal_v1_2",
     "semaforo_legal": "semaforo_legal_v1_0",

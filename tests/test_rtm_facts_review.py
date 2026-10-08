@@ -31,6 +31,28 @@ def previous():
 
 
 class FactsReviewTests(unittest.TestCase):
+    def test_document_identity_fields_use_existing_original_document_review_contract(self):
+        for field, value in (("document_subject_name", "PERSONA FICTICIA"), ("document_subject_id", "TEST001")):
+            with self.subTest(field=field):
+                old = previous(); before = old.facts.model_dump()
+                updated = corrected_snapshot(old, body(field=field, value=value, operation="add",
+                    page_index=0, evidence=f"Dato de la persona en el original: {value}"))
+                fact = updated.facts[field]
+                self.assertEqual(fact.value, value)
+                self.assertEqual(fact.status.value, "validated")
+                self.assertEqual((fact.sources[0].document_id, fact.sources[0].page_index), (DOC, 0))
+                self.assertEqual(fact.sources[0].source_type, "operator_document_review")
+                self.assertEqual(old.facts.model_dump(), before)
+                self.assertFalse(updated.frozen)
+
+    def test_document_identity_correction_rejects_foreign_document_and_non_text(self):
+        for field in ("document_subject_name", "document_subject_id"):
+            with self.subTest(field=field):
+                with self.assertRaises(HTTPException):
+                    corrected_snapshot(previous(), body(field=field, value="TEST001", operation="add", document_id=str(uuid4())))
+                with self.assertRaises(ValidationError):
+                    body(field=field, value=123, operation="add")
+
     def test_addition_requires_explicit_operation_and_preserves_previous_snapshot(self):
         old = previous(); before = old.facts.model_dump()
         updated = corrected_snapshot(old, body(field="lugar_infraccion", value="Calle ficticia 1", operation="add"))

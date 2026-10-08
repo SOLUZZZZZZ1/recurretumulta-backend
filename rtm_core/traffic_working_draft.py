@@ -28,6 +28,10 @@ FIELDS = {
     "hecho_denunciado_literal": "Hecho denunciado",
 }
 EXTRA_FIELDS = {
+    # Documentary subject data stays optional and separate from the fixture's
+    # declared identity; it does not identify the driver.
+    "document_subject_name": "Nombre de la persona interesada en el documento",
+    "document_subject_id": "Identificador de la persona interesada en el documento",
     "radar_modelo_hint": "Modelo de radar indicado",
     "lugar_infraccion": "Lugar de la infracción", "hora_infraccion": "Hora de la infracción",
     "fecha_infraccion": "Fecha de la infracción", "tipo_documento": "Tipo de documento",
