@@ -9,15 +9,18 @@ import hashlib
 import json
 import re
 import unicodedata
+from datetime import date
 from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import text
 
+import b2_storage as storage
 from case_authority import verify_signed_case_authority
 from pdf_builder import build_pdf
 from rtm_core import authority_repository as authority
 from rtm_core import reanalysis_adapter as adapter
+from rtm_core.parser_isolation import ParserIsolationError, ParserRejected, run_parser_isolated
 from rtm_core.repository import load_case_review_snapshot
 
 VERSION = "rtm_working_document_v1"
@@ -37,6 +40,9 @@ LABELS = {
     "domicilio_notif": "Domicilio aportado",
 }
 _HUMAN_SOURCE = "operator_document_review"
+_MAX_ORIGINAL_PDF_BYTES = 8 * 1024 * 1024
+_MAX_ORIGINAL_TEXT_DOCUMENTS = 1
+_MAX_ORIGINAL_TEXT_CHARS = 250_000
 _MISSING_VALUES = {"none", "null", "nan", "undefined", "unknown", "desconocido", "n/a", "sin dato", "no consta"}
 
 
@@ -79,9 +85,10 @@ def _display(value: Any) -> str:
 
 
 def _source(source: dict) -> dict:
-    # A JSON observation envelope or a candidate note is not a documentary quote.
+    # Model evidence and raw_text_blob can be reconstructed field summaries.
+    # Only a recorded human review can reuse a quote without the original bytes.
     evidence = source.get("evidence")
-    quoted = isinstance(evidence, str) and bool(evidence.strip()) and not (
+    quoted = source.get("source_type") == _HUMAN_SOURCE and isinstance(evidence, str) and bool(evidence.strip()) and not (
         evidence.lstrip().startswith(("{", "[")) or "candidate_only" in evidence
         or evidence.startswith("Lectura candidata no consolidada"))
     return {"document_id": source.get("document_id"), "page_index": source.get("page_index"),
@@ -108,30 +115,21 @@ def _observations(wrapper: dict, event: dict) -> dict[str, list]:
     return result
 
 
-def _anchor_saved_reading(wrapper: dict, key: str, value: Any) -> dict | None:
-    """Locate an existing value in one explicitly mapped saved page, without OCR.
-
-    This is evidence for a proposal, not proof that the model read the original
-    correctly. Ambiguous pages and unsupported numeric contexts stay unresolved.
-    """
-    raw = adapter._mapping(wrapper.get("extracted")).get("raw_text_blob")
-    if not isinstance(raw, str) or not raw.strip() or len(raw) > 250_000:
-        return None
-    page_map = {}
-    for page in wrapper.get("pages") or []:
-        if not isinstance(page, dict) or type(page.get("page_index")) is not int:
-            continue
-        index = page["page_index"]
-        if index < 1 or not page.get("document_id"):
-            continue
-        page_map.setdefault(index, set()).add(str(page["document_id"]))
-    pieces = re.split(r"(?im)^=+\s*P[ÁA]GINA\s+(\d+)\s*=+[^\S\n]*$", raw)
-    if len(pieces) < 3:
-        return None
+def _anchor_original_text(original_texts: list[dict], key: str, value: Any) -> dict | None:
+    """Anchor a candidate to verified native PDF text, never model/raw output."""
     displayed = _display(value)
     if isinstance(value, bool) or len(displayed) < 2:
         return None
     escaped = r"\s+".join(re.escape(part) for part in displayed.split())
+    if key in {"fecha_documento", "fecha_infraccion", "fecha_notificacion"} and re.fullmatch(r"\d{4}-\d{2}-\d{2}", displayed):
+        try:
+            parsed_date = date.fromisoformat(displayed)
+        except ValueError:
+            return None
+        # Only formatting changes: the source quote keeps its original date.
+        day = f"0?{parsed_date.day}" if parsed_date.day < 10 else str(parsed_date.day)
+        month = f"0?{parsed_date.month}" if parsed_date.month < 10 else str(parsed_date.month)
+        escaped = rf"(?:{escaped}|{day}/{month}/{parsed_date.year})"
     if key in {"velocidad_medida_kmh", "velocidad_limite_kmh"}:
         pattern = rf"(?<!\w){escaped}\s*km\s*/?\s*h(?!\w)"
     elif key == "articulo_infringido_num":
@@ -148,23 +146,30 @@ def _anchor_saved_reading(wrapper: dict, key: str, value: Any) -> dict | None:
         context_pattern = rf"(?m)^[^\n]{{0,30}}\b{label}\b[^\n]{{0,80}}(?:\n[ \t]*)?{escaped}(?!\w)"
     elif key == "velocidad_medida_kmh":
         context_pattern = rf"\b(?:circular\s+a|velocidad\s+(?:medida|registrada|consignada)\s*[:·]?)\s*{escaped}\s*km\s*/?\s*h(?!\w)"
-    if context_pattern and re.search(context_pattern, raw, re.IGNORECASE):
-        pattern = context_pattern
+    elif key in {"fecha_documento", "fecha_infraccion", "fecha_notificacion"}:
+        label = {"fecha_documento": r"fecha\s+(?:del\s+documento|del\s+escrito)",
+            "fecha_infraccion": r"fecha\s+(?:del\s+hecho|de\s+la\s+infracci[óo]n)",
+            "fecha_notificacion": r"fecha\s+(?:de\s+(?:notificaci[óo]n|recepci[óo]n))"}[key]
+        context_pattern = rf"(?m)^[^\n]{{0,30}}\b{label}\b[^\n]{{0,80}}(?:\n[ \t]*)?{escaped}(?!\w)"
     matches = []
-    for offset in range(1, len(pieces), 2):
-        index, page_text = int(pieces[offset]), pieces[offset + 1]
-        documents = page_map.get(index, set())
-        if len(documents) != 1:
+    for original in original_texts:
+        page_text = original["text"]
+        has_context = bool(context_pattern and re.search(context_pattern, page_text, re.IGNORECASE))
+        if key in {"fecha_documento", "fecha_infraccion", "fecha_notificacion"} and not has_context:
+            # An equal date with another role (or no label) cannot establish
+            # which procedural date the document actually states.
             continue
-        for match in re.finditer(pattern, page_text, re.IGNORECASE):
+        selected_pattern = context_pattern if has_context else pattern
+        for match in re.finditer(selected_pattern, page_text, re.IGNORECASE):
             start = max(page_text.rfind("\n", 0, match.start()) + 1, match.start() - 100)
             end = page_text.find("\n", match.end())
             if end < 0:
                 end = len(page_text)
             quote = page_text[start:min(end, match.end() + 140)].strip()
-            matches.append({"document_id": next(iter(documents)), "page_index": index - 1,
+            matches.append({"document_id": original["document_id"], "page_index": 0,
                 "evidence": quote, "evidence_kind": "document_excerpt",
-                "source_type": "stored_document_reading", "extraction_method": "rtm_stored_text_anchor_v1"})
+                "document_sha256": original["sha256"],
+                "source_type": "original_pdf_text", "extraction_method": "rtm_original_pdf_literal_anchor_v1"})
     # Multiple occurrences or pages can have different roles; do not choose one.
     return matches[0] if len(matches) == 1 else None
 
@@ -174,7 +179,7 @@ def _issue(code: str, message: str, keys=(), severity="review") -> dict:
 
 
 def compose_working_document(*, case_id: str, identity: dict, wrapper: dict, event: dict,
-        facts_record=None, excluded_fields=(), documents=()) -> dict:
+        facts_record=None, excluded_fields=(), documents=(), original_texts=(), original_text_issues=()) -> dict:
     """Pure, deterministic proposal; reviewed facts and exclusions take precedence."""
     observations = _observations(wrapper, event)
     document_ids, pages = adapter._document_sources(wrapper)
@@ -189,7 +194,7 @@ def compose_working_document(*, case_id: str, identity: dict, wrapper: dict, eve
         for entry in payload.get("critical_conflicts_resolved") or []:
             if isinstance(entry, dict) and entry.get("source") == "current_run_no_explicit_issuer":
                 issuer_withdrawn = True
-    fields, issues = [], []
+    fields, issues = [], list(original_text_issues)
     declared_keys = {"matricula"} if not _missing_observation(identity.get("matricula")) else set()
     for key in sorted((set(observations) | set(current) | declared_keys) - excluded):
         if key not in LABELS:
@@ -221,7 +226,7 @@ def compose_working_document(*, case_id: str, identity: dict, wrapper: dict, eve
             sources = [_source(s.model_dump(mode="json")) for s in
                        adapter._source_references(document_ids, pages, chosen)]
             if not any(s["evidence"] for s in sources):
-                anchor = _anchor_saved_reading(wrapper, key, value)
+                anchor = _anchor_original_text(original_texts, key, value)
                 if anchor:
                     sources = [anchor]
         elif key == "matricula" and not _missing_observation(identity.get(key)):
@@ -388,6 +393,66 @@ def _excluded_fields(conn, case_id, facts_id) -> set[str]:
     return excluded
 
 
+def _load_original_pdf_texts(case_id: str, documents: list[dict], source_ids: list[str]) -> tuple[list[dict], list[dict]]:
+    """Read bounded original bytes; no OCR, provider, fallback or persistence."""
+    def pending(message):
+        return [], [_issue("original_literal_text_unavailable", message, severity="review")]
+
+    if not source_ids:
+        return pending("La lectura guardada no identifica un original al que anclar los fragmentos.")
+    if len(source_ids) > _MAX_ORIGINAL_TEXT_DOCUMENTS:
+        return pending("La lectura reúne varios originales; esta vista requiere un único PDF para atribuir sus fragmentos con certeza.")
+    by_id = {str(doc.get("id")): doc for doc in documents}
+    selected = []
+    for document_id in source_ids:
+        doc = by_id.get(document_id)
+        if not doc or str(doc.get("case_id")) != case_id or doc.get("kind") != "original":
+            raise HTTPException(409, "La fuente de texto no es un original del expediente autorizado")
+        if doc.get("mime") != "application/pdf":
+            return pending("El original no dispone de lectura literal PDF compatible; no se convierte una observación del modelo en cita.")
+        size = doc.get("size_bytes")
+        digest = str(doc.get("sha256") or "").lower()
+        key = str(doc.get("b2_key") or "")
+        if (type(size) is not int or size < 1 or not re.fullmatch(r"[a-f0-9]{64}", digest)
+                or not key.startswith(f"cases/{case_id}/original/")):
+            raise HTTPException(409, "La integridad o procedencia del PDF original no es verificable")
+        if size > _MAX_ORIGINAL_PDF_BYTES:
+            return pending("El PDF original supera el límite de lectura de fragmentos de esta vista.")
+        try:
+            bucket, key = storage.validate_b2_object_coordinate(str(doc.get("b2_bucket") or ""), key, case_id=case_id)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(409, "El PDF original no está en el almacén del expediente autorizado") from exc
+        selected.append((document_id, doc, digest, bucket, key))
+
+    originals = []
+    for document_id, doc, digest, bucket, key in selected:
+        try:
+            data = storage.download_bytes_limited(bucket, key, max_bytes=_MAX_ORIGINAL_PDF_BYTES,
+                case_id=case_id, request_timeout_seconds=5)
+        except (storage.B2ObjectTooLargeError, ValueError) as exc:
+            raise HTTPException(409, "La integridad o procedencia del PDF original no es verificable") from exc
+        except Exception as exc:
+            raise HTTPException(502, "No se pudo recuperar el PDF original para contrastar los fragmentos") from exc
+        if len(data) != doc["size_bytes"] or hashlib.sha256(data).hexdigest() != digest:
+            raise HTTPException(409, "El tamaño o hash del PDF original no coincide con el documento registrado")
+        try:
+            parsed = run_parser_isolated("extract_single_page_pdf_literal", {"data": data})
+        except ParserRejected as exc:
+            raise HTTPException(409, "El PDF original no supera la lectura literal segura") from exc
+        except ParserIsolationError as exc:
+            raise HTTPException(503, "El lector seguro de fragmentos está temporalmente indisponible") from exc
+        if (not isinstance(parsed, dict) or type(parsed.get("page_count")) is not int
+                or not 1 <= parsed["page_count"] <= 100 or not isinstance(parsed.get("text"), str)
+                or len(parsed["text"]) > _MAX_ORIGINAL_TEXT_CHARS):
+            raise HTTPException(503, "El lector seguro devolvió una respuesta no verificable")
+        if parsed["page_count"] != 1:
+            return pending("El original tiene varias páginas; esta vista no atribuye fragmentos a una página sin lectura individual verificada.")
+        if not parsed["text"].strip():
+            return pending("El PDF original no contiene una capa textual utilizable; las propuestas siguen pendientes de contraste, sin ejecutar OCR ni IA.")
+        originals.append({"document_id": document_id, "sha256": digest, "text": parsed["text"]})
+    return originals, []
+
+
 def load_working_document(conn, case_id: str) -> dict:
     meta = authority._case_authority_meta(conn, case_id)
     authority._require_authority_work_allowed(meta)
@@ -398,11 +463,20 @@ def load_working_document(conn, case_id: str) -> dict:
     facts = authority.latest_validated_facts(conn, case_id, active_only=True)
     wrapper, event = adapter.load_latest_reanalysis_snapshot(conn, case_id)
     docs = [dict(row._mapping) for row in conn.execute(text(
-        "SELECT id::text AS id,sha256 FROM documents WHERE case_id=:case_id AND kind='original' ORDER BY id"
+        "SELECT id::text AS id,case_id::text AS case_id,kind,sha256,size_bytes,mime,b2_bucket,b2_key "
+        "FROM documents WHERE case_id=:case_id AND kind='original' ORDER BY id"
     ), {"case_id": case_id}).fetchall()]
+    source_ids, _ = adapter._document_sources(wrapper)
+    if facts and set(source_ids) - set(facts.facts.source_document_ids):
+        original_texts, original_text_issues = [], [_issue("original_literal_text_unavailable",
+            "Las fuentes de la lectura y la versión actual de hechos no coinciden; hay que revisar su procedencia.")]
+    else:
+        original_texts, original_text_issues = _load_original_pdf_texts(case_id, docs, source_ids)
     return compose_working_document(case_id=case_id, identity=dict(case.interested_data),
         wrapper=wrapper, event=event, facts_record=facts,
-        excluded_fields=_excluded_fields(conn, case_id, facts.id if facts else None), documents=docs)
+        excluded_fields=_excluded_fields(conn, case_id, facts.id if facts else None),
+        documents=[{key: doc[key] for key in ("id", "sha256", "size_bytes", "mime")} for doc in docs],
+        original_texts=original_texts, original_text_issues=original_text_issues)
 
 
 def working_document_pdf(projection: dict, expected_source_sha256: str) -> bytes:

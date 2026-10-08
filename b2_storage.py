@@ -102,7 +102,16 @@ def validate_b2_object_coordinate(
     return clean_bucket, clean_key
 
 
-def get_s3_client():
+def _validated_request_timeout(value: float | None) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= 5:
+        raise ValueError("El timeout B2 debe ser un número mayor que 0 y no superior a 5 segundos")
+    return float(value)
+
+
+def get_s3_client(*, request_timeout_seconds: float | None = None):
+    request_timeout_seconds = _validated_request_timeout(request_timeout_seconds)
     # En staging/producción B2 es opt-in. La comprobación se hace antes de
     # leer credenciales o construir un cliente con capacidad de red.
     require_capability("b2")
@@ -114,7 +123,11 @@ def get_s3_client():
     key_id = _env("B2_KEY_ID")
     app_key = _env("B2_APPLICATION_KEY")
 
-    cfg = Config(signature_version="s3v4", s3={"addressing_style": "path"})
+    options = {"signature_version": "s3v4", "s3": {"addressing_style": "path"}}
+    if request_timeout_seconds is not None:
+        options.update(connect_timeout=request_timeout_seconds, read_timeout=request_timeout_seconds,
+                       retries={"total_max_attempts": 1})
+    cfg = Config(**options)
 
     return boto3.client(
         "s3",
@@ -222,9 +235,15 @@ def download_bytes_limited(
     *,
     max_bytes: int,
     case_id: str | None = None,
+    request_timeout_seconds: float | None = None,
 ) -> bytes:
-    """Descarga como máximo ``max_bytes + 1`` y aborta el stream al excederlo."""
+    """Descarga como máximo ``max_bytes + 1`` y aborta el stream al excederlo.
 
+    El timeout opt-in limita conexión y lecturas de red a un único intento;
+    no representa un deadline de pared para la operación completa.
+    """
+
+    request_timeout_seconds = _validated_request_timeout(request_timeout_seconds)
     if local_document_storage_enabled():
         try:
             return _local_storage.download_bytes_limited(
@@ -237,7 +256,8 @@ def download_bytes_limited(
     clean_bucket, clean_key = validate_b2_object_coordinate(
         bucket, key, case_id=case_id
     )
-    s3 = get_s3_client()
+    s3 = (get_s3_client() if request_timeout_seconds is None else
+          get_s3_client(request_timeout_seconds=request_timeout_seconds))
     obj = s3.get_object(Bucket=clean_bucket, Key=clean_key)
     body = obj.get("Body")
     if body is None:

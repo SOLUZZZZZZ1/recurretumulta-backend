@@ -36,6 +36,7 @@ _OPERATIONS = frozenset(
     {
         "validate_document",
         "extract_pdf_text",
+        "extract_single_page_pdf_literal",
         "extract_docx_text",
         "pdf_page_count",
         "canonicalize_image",
@@ -535,6 +536,22 @@ def _execute_operation(
         from text_extractors import _extract_text_from_pdf_bytes_local
 
         return _extract_text_from_pdf_bytes_local(bytes(payload["data"]))
+    if operation == "extract_single_page_pdf_literal":
+        import io
+
+        from pypdf import PdfReader
+        from rtm_core.upload_security import UploadSecurityError, validate_pdf_document
+
+        data = bytes(payload["data"])
+        validate_pdf_document(data)
+        reader = PdfReader(io.BytesIO(data), strict=False)
+        count = len(reader.pages)
+        # A document index is not a PDF page number. Only a verified one-page
+        # original can supply page 0 until per-page extraction is supported.
+        literal = (reader.pages[0].extract_text() or "") if count == 1 else ""
+        if len(literal) > 250_000:
+            raise UploadSecurityError("El texto literal del PDF supera el límite permitido")
+        return {"page_count": count, "text": literal}
     if operation == "extract_docx_text":
         from text_extractors import _extract_text_from_docx_bytes_local
 
