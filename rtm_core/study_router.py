@@ -18,7 +18,10 @@ from rtm_core.security import require_operator_token
 from rtm_core.study import StudyActionBody, advance_study, load_study
 from rtm_core.working_document import load_working_document, working_document_pdf
 
+from rtm_core.working_document_versions_router import router as working_versions_router
+
 router = APIRouter(prefix="/ops/core/cases", tags=["rtm-core-study"])
+router.include_router(working_versions_router)
 
 
 @router.get("/{case_id}/study")
