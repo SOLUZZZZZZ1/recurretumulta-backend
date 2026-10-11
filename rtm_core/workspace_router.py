@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request, Response
 from sqlalchemy import text
 
 from database import get_engine
@@ -26,7 +26,10 @@ def get_case_workspace(
     case_id: str,
     request: Request,
     x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+    response: Response = None,
 ):
+    if response is not None:
+        response.headers.update({"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"})
     require_operator_token(x_operator_token)
     engine = get_engine()
     with engine.begin() as conn:
