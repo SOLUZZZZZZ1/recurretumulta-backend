@@ -23,6 +23,7 @@ from rtm_core.workspace_policy import determine_workspace_stage
 
 
 WORKSPACE_VERSION = "rtm_ops_workspace_v1_0"
+SAVED_CASE_DATA_VERSION = "rtm_ops_saved_case_data_v1"
 
 
 def _value(obj: Any, name: str, default: Any = None) -> Any:
@@ -137,29 +138,48 @@ def _timeline(conn, case_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def _saved_text(value: Any) -> str | None:
+    """Keep stored strings verbatim; never manufacture missing identifiers."""
+    return value if isinstance(value, str) else None
+
+
 def _identity_projection(case_payload: Mapping[str, Any]) -> dict[str, Any]:
     interested = case_payload.get("interested_data")
     if not isinstance(interested, dict):
         interested = {}
+    address = interested.get("address")
+    address_parts = address if isinstance(address, dict) else {}
     return {
-        "full_name": (
-            interested.get("full_name")
-            or interested.get("name")
-            or case_payload.get("contact_name")
-        ),
+        "full_name": _saved_text(interested.get("full_name")) or _saved_text(interested.get("name")),
         "dni_nie": (
-            interested.get("dni_nie")
-            or interested.get("dni")
-            or interested.get("identity_number")
+            _saved_text(interested.get("dni_nie"))
+            or _saved_text(interested.get("dni"))
+            or _saved_text(interested.get("identity_number"))
         ),
         "address": (
-            interested.get("domicilio_notif")
-            or interested.get("domicilio")
-            or interested.get("address")
+            _saved_text(interested.get("domicilio_notif"))
+            or _saved_text(interested.get("domicilio"))
+            or _saved_text(address)
         ),
-        "email": interested.get("email") or case_payload.get("contact_email"),
-        "phone": interested.get("telefono") or interested.get("phone"),
-        "matricula": interested.get("matricula") or interested.get("plate"),
+        "address_parts": {
+            key: _saved_text(address_parts.get(key))
+            for key in ("street", "street_number", "floor", "door", "postal_code", "city", "province")
+        },
+        "matricula": _saved_text(interested.get("matricula")) or _saved_text(interested.get("plate")),
+    }
+
+
+def _contact_projection(case_payload: Mapping[str, Any]) -> dict[str, Any]:
+    interested = case_payload.get("interested_data")
+    if not isinstance(interested, dict):
+        interested = {}
+    # Contact columns can be updated independently of the interested person.
+    # Never replace missing current contact with an older JSON/browser copy.
+    return {
+        "name": _saved_text(case_payload.get("contact_name")),
+        "email": _saved_text(case_payload.get("contact_email")),
+        "phone": _saved_text(interested.get("telefono")) or _saved_text(interested.get("phone")),
+        "preferred_contact": _saved_text(interested.get("preferred_contact")),
     }
 
 
@@ -277,6 +297,10 @@ def build_case_workspace(conn, case_id: str) -> dict[str, Any]:
             "organismo": case_payload.get("organismo"),
             "expediente_ref": case_payload.get("expediente_ref"),
             "identity": _identity_projection(case_payload),
+            "contact": _contact_projection(case_payload),
+            "saved_data_version": SAVED_CASE_DATA_VERSION,
+            "customer_comment": _saved_text(case_payload.get("customer_comment")),
+            "public_service_family": _saved_text(interested.get("public_service_family")),
         },
         "readiness": readiness.model_dump(mode="json"),
         "documents": documents,
