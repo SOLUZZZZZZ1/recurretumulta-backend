@@ -143,6 +143,45 @@ async def read_upload_limited(upload: Any, *, max_bytes: int) -> bytes:
     return data
 
 
+MAX_DRAFT_TEXT_BYTES = 64 * 1024
+
+
+def validate_draft_text(value: str) -> str:
+    """Plain text only; preserve every character, including CRLF and whitespace."""
+    try:
+        encoded = value.encode("utf-8")
+    except (UnicodeError, AttributeError) as exc:
+        raise UploadSecurityError("El borrador debe ser texto UTF-8", status_code=422) from exc
+    if not value.strip() or len(encoded) > MAX_DRAFT_TEXT_BYTES:
+        raise UploadSecurityError("El borrador está vacío o supera 64 KiB", status_code=413)
+    if any((ord(c) < 32 and c not in "\r\n\t") or 127 <= ord(c) <= 159
+           or c in "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069" for c in value):
+        raise UploadSecurityError("El borrador contiene caracteres de control", status_code=422)
+    return value
+
+
+def validate_draft_correction(data: bytes, *, filename: str, declared_mime: str,
+                              case_id: str, based_on_id: str) -> tuple[str, ValidatedUpload]:
+    """An explicit TXT case/version binding; never parse HTML, office files or PDF."""
+    name = safe_filename(filename)
+    if (not name.lower().endswith(".txt") or declared_mime.split(";")[0].lower()
+            not in {"", "text/plain", "application/octet-stream"}):
+        raise UploadSecurityError("La corrección debe ser un archivo .txt UTF-8")
+    if not data or len(data) > MAX_DRAFT_TEXT_BYTES:
+        raise UploadSecurityError("La corrección está vacía o supera 64 KiB", status_code=413)
+    try:
+        raw = data.decode("utf-8", errors="strict")
+    except UnicodeError as exc:
+        raise UploadSecurityError("La corrección no es UTF-8 válido", status_code=422) from exc
+    lines = raw.splitlines(keepends=True)
+    if (len(lines) < 4 or lines[0].rstrip("\r\n") != f"RTM-CASE: {case_id}"
+            or lines[1].rstrip("\r\n") != f"RTM-VERSION: {based_on_id}"
+            or lines[2].rstrip("\r\n") != ""):
+        raise UploadSecurityError("La corrección no identifica este expediente y su versión de origen", status_code=409)
+    content = validate_draft_text("".join(lines[3:]))
+    return content, ValidatedUpload(name, "text/plain", ".txt", len(data), hashlib.sha256(data).hexdigest())
+
+
 def _looks_like_docx(data: bytes) -> bool:
     if not data.startswith(b"PK"):
         return False
