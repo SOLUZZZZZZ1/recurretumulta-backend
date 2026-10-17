@@ -2,7 +2,7 @@
 import hmac
 import hashlib
 import logging
-from typing import Optional
+from typing import Optional, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, File, Form, UploadFile
 
@@ -73,11 +73,18 @@ def _supervisor_scope(request, token):
 
 @router.get("/{case_id}/study/working-document")
 def get_working_document(case_id: str, request: Request, response: Response,
-                         x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token")):
+                         x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+                         mode: Literal["case_preparation"] | None = Query(default=None)):
     scope = _supervisor_scope(request, x_operator_token)
     response.headers["Cache-Control"] = "no-store, private"
     with get_engine().begin() as conn:
         case_id = require_case_in_scope(conn, scope=scope, case_id=case_id)
+        from rtm_core.local_operator_auth import local_operator_auth_requested
+        if mode == "case_preparation":
+            if not local_operator_auth_requested():
+                raise HTTPException(404, "El borrador de preparación solo está disponible en el perfil local")
+            from rtm_core.case_working_document import load_case_document, local_grant
+            return load_case_document(conn, case_id, local_grant(scope))
         return load_working_document(conn, case_id)
 
 
@@ -86,6 +93,9 @@ def get_working_document_pdf(case_id: str, request: Request,
         source_sha256: str = Query(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$"),
         x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token")):
     scope = _supervisor_scope(request, x_operator_token)
+    from rtm_core.local_operator_auth import local_operator_auth_requested
+    if local_operator_auth_requested():
+        raise HTTPException(403, "La exportación documental por operadores no está autorizada")
     with get_engine().begin() as conn:
         case_id = require_case_in_scope(conn, scope=scope, case_id=case_id)
         projection = load_working_document(conn, case_id)

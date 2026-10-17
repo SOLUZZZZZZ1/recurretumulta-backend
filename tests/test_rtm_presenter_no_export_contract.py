@@ -290,6 +290,9 @@ def _load_ops_operator_router_module():
     )
     case_authority.build_reviewed_signed_authority_attestation = lambda *args, **kwargs: None
     case_authority.build_rejected_authorization_signature_attestation = lambda *args, **kwargs: None
+    # post_filing_deadlines imports this helper even though this test never uses it.
+    case_authority._verify_envelope = mock.Mock(side_effect=AssertionError("Unexpected authority verification in no-export fixture"))
+    case_authority._signed_envelope = mock.Mock(side_effect=AssertionError("Unexpected authority signing in no-export fixture"))
 
     generate = types.ModuleType("generate")
 
