@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 
 from database import get_engine
+from ops_auth import require_operator as _require_operator
 from b2_storage import upload_bytes
 
 router = APIRouter(prefix="/ops", tags=["ops"])
@@ -19,13 +20,6 @@ def _env(name: str) -> str:
     if not v:
         raise RuntimeError(f"Falta variable de entorno: {name}")
     return v
-
-
-def _require_operator(x_operator_token: Optional[str]):
-    token = (x_operator_token or "").strip()
-    expected = _env("OPERATOR_TOKEN")
-    if not token or token != expected:
-        raise HTTPException(status_code=401, detail="Unauthorized operator")
 
 
 # =========================================================
