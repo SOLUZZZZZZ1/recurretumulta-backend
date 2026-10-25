@@ -564,6 +564,10 @@
     {
       "path": "workspace_router.py",
       "sha256_git_bytes": "e749803bc804bc0e7e20a317c645050951af19a50601aea8168f96bfce2a1f32"
+    },
+    {
+      "path": "migrations/20261024_paid_casework_candidate.sql",
+      "sha256_git_bytes": "a0619f4ebcdf4ba9fe1c957301a26b64ba4a29c594eebfc600a0514e1a5b9e7a"
     }
   ]
 }

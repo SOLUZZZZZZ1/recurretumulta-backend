@@ -9,7 +9,7 @@ RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod 755 /usr/sbi
  && printf 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main\n' > /etc/apt/sources.list.d/pgdg.list \
  && mkdir -p /etc/postgresql-common \
  && printf 'create_main_cluster = false\n' > /etc/postgresql-common/createcluster.conf \
- && apt-get update && apt-get install -y --no-install-recommends postgresql-17 \
+ && apt-get update && apt-get install -y --no-install-recommends postgresql-18 \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --uid 10001 --create-home runner
 COPY source /opt/rtm/source

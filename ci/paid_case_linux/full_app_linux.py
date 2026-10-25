@@ -1,4 +1,4 @@
-"""Full candidate app.py, real HTTP and disposable PG17, offline Linux only.
+"""Full candidate app.py, real HTTP and disposable PG18, offline Linux only.
 
 Not a repetition of logout regression, B2 integration, or production acceptance.
 No router substitution, monkeypatch, inherited credentials or business fixtures.
@@ -25,7 +25,7 @@ from shutdown_contract import evaluate_shutdown
 ROOT = Path('/opt/rtm/source')
 OUT = Path('/results')
 STATE = Path('/state')
-PG = Path('/usr/lib/postgresql/17/bin')
+PG = Path('/usr/lib/postgresql/18/bin')
 DATA = STATE / 'pgdata'
 record = {'candidate': '976a810c523a98c86abbc26a3c4df7eb6866b4dd',
           'scope': 'Linux installation and full app.py startup; empty disposable PostgreSQL and synthetic renderer input',
@@ -125,7 +125,7 @@ try:
         config.write(f"\nlisten_addresses='127.0.0.1'\nport={pg_port}\nunix_socket_directories='/state'\nlog_statement='none'\nlog_min_error_statement='panic'\n")
     code = pg_control('start')
     # Cleanup below inspects postmaster.pid even if this call failed/timed out.
-    check('PG17 starts', code == 0)
+    check('PG18 starts', code == 0)
     pid_lines = (DATA / 'postmaster.pid').read_text().splitlines()
     pid = int(pid_lines[0])
     pg_started_identity = (pid, process_start_ticks(pid))
@@ -134,7 +134,30 @@ try:
         conn.execute('CREATE DATABASE isolated_app')
         version = conn.execute('SHOW server_version').fetchone()[0]
         record['postgres_version'] = version
-        check('PostgreSQL 17', version.startswith('17.'))
+        check('PostgreSQL 18 matches production major version', version.startswith('18.'))
+    phase = 'candidate_schema_on_disposable_pg18'
+    migration = ROOT / 'migrations/20261024_paid_casework_candidate.sql'
+    record['migration_sha256'] = hashlib.sha256(migration.read_bytes()).hexdigest()
+    expected_tables = {'rtm_operator_roles','rtm_operators','rtm_operator_sessions',
+                       'rtm_operator_devices','rtm_operator_access_events',
+                       'rtm_operator_access_evidence','rtm_study_assessments'}
+    with psycopg.connect(host='127.0.0.1',port=pg_port,user='isolated_admin',password=generated,dbname='isolated_app',autocommit=True) as conn:
+        # Existing-case fixture provides only the FK target. No personal data,
+        # accounts, payment or document rows are created by this schema check.
+        conn.execute('CREATE TABLE cases(id uuid PRIMARY KEY)')
+        conn.execute(migration.read_text(),prepare=False)
+        tables = {r[0] for r in conn.execute("SELECT tablename FROM pg_tables WHERE schemaname='public'")}
+        check('Exact unchanged migration creates seven additive tables on PG18',tables==expected_tables|{'cases'})
+        check('Schema-only trial creates no operators or assessments',
+              conn.execute('SELECT (SELECT count(*) FROM rtm_operators),(SELECT count(*) FROM rtm_study_assessments)').fetchone()==(0,0))
+        try:
+            conn.execute(migration.read_text(),prepare=False)
+        except psycopg.errors.RaiseException:
+            conn.execute('ROLLBACK')
+            check('Existing-schema guard refuses repeat without changing objects',
+                  {r[0] for r in conn.execute("SELECT tablename FROM pg_tables WHERE schemaname='public'")}==tables)
+        else:
+            raise AssertionError('Repeated migration unexpectedly accepted')
     phase = 'native_document_renderer'
     from reportlab.pdfgen import canvas
     buffer = io.BytesIO()
