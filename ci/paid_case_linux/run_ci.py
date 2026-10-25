@@ -38,7 +38,7 @@ try:
     run(['docker', 'build', '--progress=plain', '--build-arg', 'PYTHON_IMAGE=' + state['python_base_digests'][0], '-t', image, 'ci-build-context'], 'build', 720)
     state['image_id'] = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', image], text=True).strip()
     # Resolve the actual base digest used; apt and wheel versions are recorded too.
-    run(['docker', 'create', '--name', name, '--network', 'none', '--read-only',
+    run(['docker', 'create', '--init', '--name', name, '--network', 'none', '--read-only',
          '--cap-drop=ALL', '--security-opt=no-new-privileges', '--memory=2g', '--cpus=2', '--pids-limit=256',
          '--tmpfs', '/state:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700',
          '--tmpfs', '/tmp:rw,nosuid,nodev,mode=1777',

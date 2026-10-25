@@ -231,11 +231,27 @@ finally:
         closed_process = pg_started_identity is None
         if pg_started_identity:
             pid, ticks = pg_started_identity
-            closed_process = not Path(f'/proc/{pid}').exists() or process_start_ticks(pid) != ticks
+            # Docker --init reaps adopted postgres children. Observe the exact
+            # process until it disappears; do not call a lingering zombie clean.
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    same_process = process_start_ticks(pid) == ticks
+                    proc_state = Path(f'/proc/{pid}/stat').read_text().split(') ', 1)[1].split()[0]
+                except FileNotFoundError:
+                    same_process, proc_state = False, 'absent'
+                closed_process = not same_process
+                record['pg_process_after_stop'] = {'pid':pid,'same_process':same_process,'state':proc_state}
+                if closed_process or time.monotonic() >= deadline:
+                    break
+                time.sleep(.05)
         with socket.socket() as probe:
             probe.settimeout(1)
             closed_port = 'pg_port' not in globals() or probe.connect_ex(('127.0.0.1', pg_port)) != 0
-        record['pg_closed'] = not pidfile.exists() and closed_process and closed_port
+        record['pg_pidfile_absent'] = not pidfile.exists()
+        record['pg_exact_process_exited'] = closed_process
+        record['pg_port_closed'] = closed_port
+        record['pg_closed'] = record['pg_pidfile_absent'] and closed_process and closed_port
     except Exception as error:
         record['pg_closed'] = False
         record['cleanup_error'] = {'message': safe(error), 'traceback': safe(traceback.format_exc())}
