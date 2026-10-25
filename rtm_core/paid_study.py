@@ -8,7 +8,7 @@ import hashlib
 import hmac
 import json
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -110,6 +110,54 @@ def read_history(conn, case_id):
                         'sha256':v['sha256']} for v in values], 'truncated':len(rows)>100}
 
 
+def cancelled_operation(conn, case_id, operation_id, author_id):
+    """Immutable no-content receipt; protected by the same case lock as saves."""
+    rows = conn.execute(text('''SELECT operator_id, metadata FROM rtm_operator_access_events
+        WHERE event_type='study.operation_cancelled' AND request_id=:operation_id'''),
+        {'operation_id':str(operation_id)}).mappings().all()
+    for row in rows:
+        meta = row['metadata']
+        if isinstance(meta,str):
+            meta = json.loads(meta)
+        if meta.get('case_id') == case_id:
+            if str(row['operator_id']) != author_id:
+                raise HTTPException(409, {'code':'STUDY_OPERATION_MISMATCH'})
+            return True
+    return False
+
+
+def reconcile_operation(conn, case_id, session, operation_id):
+    """Return the committed operation or fence it against a delayed first POST.
+
+    A 404 GET alone cannot prove no write is still in flight. This explicit
+    reconciliation serializes with save_assessment and preserves a terminal
+    receipt in the existing append-only audit table. No business data changes.
+    """
+    suffix = ' FOR UPDATE' if conn.dialect.name == 'postgresql' else ''
+    case = conn.execute(text('SELECT id FROM cases WHERE id=:case_id' + suffix),
+                        {'case_id':case_id}).first()
+    if not case:
+        raise HTTPException(404, {'code':'CASEWORK_CASE_NOT_FOUND'})
+    prior = conn.execute(text('''SELECT operation_id, revision, snapshot, snapshot_sha256, author_id
+        FROM rtm_study_assessments WHERE case_id=:case_id AND operation_id=:operation_id'''),
+        {'case_id':case_id,'operation_id':str(operation_id)}).mappings().one_or_none()
+    if prior:
+        if str(prior['author_id']) != session.operator_id:
+            raise HTTPException(409, {'code':'STUDY_OPERATION_MISMATCH'})
+        return {'status':'committed', **checked(prior,case_id)}
+    if not cancelled_operation(conn,case_id,operation_id,session.operator_id):
+        metadata = canonical({'case_id':case_id,'operation_id':str(operation_id),
+                              'contract':'rtm_study_reconciliation_v1'})
+        param = 'CAST(:metadata AS jsonb)' if conn.dialect.name == 'postgresql' else ':metadata'
+        conn.execute(text('''INSERT INTO rtm_operator_access_events
+            (id,operator_id,event_type,result,request_id,metadata)
+            VALUES (:id,:author,'study.operation_cancelled','noop',:operation_id,''' + param + ')'),
+            {'id':str(uuid4()),'author':session.operator_id,
+             'operation_id':str(operation_id),'metadata':metadata})
+    return {'status':'cancelled','case_id':case_id,'operation_id':str(operation_id),
+            'contract':'rtm_study_reconciliation_v1'}
+
+
 def save_assessment(conn, case_id, session, submitted):
     request_data = submitted.model_dump(mode='json')
     request_hash = digest(request_data)
@@ -126,6 +174,8 @@ def save_assessment(conn, case_id, session, submitted):
         if str(prior['author_id']) != session.operator_id or not hmac.compare_digest(prior['request_sha256'],request_hash):
             raise HTTPException(409, {'code':'STUDY_OPERATION_MISMATCH'})
         return checked(prior,case_id)
+    if cancelled_operation(conn,case_id,submitted.operation_id,session.operator_id):
+        raise HTTPException(409, {'code':'STUDY_OPERATION_CANCELLED'})
     if case['payment_status'] != 'paid' or case['product_code'] != 'REVIEW_BASIC':
         raise HTTPException(409, {'code':'STUDY_PAYMENT_NOT_CONFIRMED'})
     if case['authorized'] not in (True,1):

@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine,text
-from rtm_core.paid_study import StudyInput, FACT_KEYS, save_assessment,read_history,read_operation
+from rtm_core.paid_study import StudyInput, FACT_KEYS, save_assessment,read_history,read_operation,reconcile_operation
 
 
 class StudyTest(unittest.TestCase):
@@ -20,6 +20,8 @@ class StudyTest(unittest.TestCase):
         self.conn.execute(text('''CREATE TABLE rtm_study_assessments(case_id TEXT,operation_id TEXT,revision INTEGER,
             author_id TEXT,request_sha256 TEXT,snapshot TEXT,snapshot_sha256 TEXT,
             PRIMARY KEY(case_id,operation_id),UNIQUE(case_id,revision))'''))
+        self.conn.execute(text('''CREATE TABLE rtm_operator_access_events(id TEXT PRIMARY KEY,
+            operator_id TEXT,event_type TEXT,result TEXT,request_id TEXT,metadata TEXT)'''))
         self.rows={str(uuid4()):{'kind':k,'mime':'application/pdf','size_bytes':3} for k in ['original','identity_front','authorization_signed']}
         self.sha=hashlib.sha256(b'pdf').hexdigest()
         self.data={'operation_id':str(uuid4()),'expected_revision':0,'state':'in_progress',
@@ -79,3 +81,33 @@ class StudyTest(unittest.TestCase):
     def test_no_actor_injection_or_pretend_completion(self):
         for changes in [{'author':'fake'},{'state':'completed'},{'state':'blocked','missing':''}]:
             with self.assertRaises(ValueError):StudyInput.model_validate({**self.data,**changes})
+
+    def test_reconcile_committed_after_lost_response_preserves_exact_content(self):
+        saved=self.save();self.conn.commit()
+        recovered=reconcile_operation(self.conn,self.case,self.actor,self.data['operation_id'])
+        self.assertEqual(recovered,{'status':'committed',**saved})
+        self.assertEqual(self.conn.execute(text('SELECT count(*) FROM rtm_operator_access_events')).scalar(),0)
+
+    def test_reconcile_absence_fences_late_post_and_is_idempotent(self):
+        first=reconcile_operation(self.conn,self.case,self.actor,self.data['operation_id']);self.conn.commit()
+        self.assertEqual(first['status'],'cancelled')
+        self.assertEqual(reconcile_operation(self.conn,self.case,self.actor,self.data['operation_id']),first)
+        with self.assertRaises(HTTPException) as ctx:self.save()
+        self.assertEqual(ctx.exception.detail['code'],'STUDY_OPERATION_CANCELLED')
+        self.assertEqual(read_history(self.conn,self.case)['revision'],0)
+        self.assertEqual(self.conn.execute(text('SELECT count(*) FROM rtm_operator_access_events')).scalar(),1)
+        self.assertNotIn('assessment',self.conn.execute(text('SELECT metadata FROM rtm_operator_access_events')).scalar())
+
+    def test_reconciliation_is_scoped_to_case_and_author(self):
+        self.save()
+        other=SimpleNamespace(operator_id=str(uuid4()),display_name='OTHER')
+        with self.assertRaises(HTTPException):reconcile_operation(self.conn,self.case,other,self.data['operation_id'])
+        with self.assertRaises(HTTPException):reconcile_operation(self.conn,str(uuid4()),self.actor,self.data['operation_id'])
+        new_id=str(uuid4());reconcile_operation(self.conn,self.case,self.actor,new_id)
+        with self.assertRaises(HTTPException):reconcile_operation(self.conn,self.case,other,new_id)
+
+    def test_reconciled_own_version_does_not_change_latest_writer(self):
+        first=self.save()
+        second=self.save({**self.data,'operation_id':str(uuid4()),'expected_revision':1,'assessment':'B newer'})
+        self.assertEqual(reconcile_operation(self.conn,self.case,self.actor,self.data['operation_id'])['snapshot'],first['snapshot'])
+        self.assertEqual(read_history(self.conn,self.case)['latest'],second)

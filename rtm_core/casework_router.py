@@ -18,7 +18,7 @@ from database import get_engine
 from rtm_core.document_viewer import document_row, read_custody, render
 from rtm_core.operator_auth_router import load_operator_session_with_device_possession, _runtime_config
 from rtm_core.production_casework import load_policy, permits_case
-from rtm_core.paid_study import StudyInput, read_history, read_operation, save_assessment
+from rtm_core.paid_study import StudyInput, read_history, read_operation, save_assessment, reconcile_operation
 from workspace_read import build_workspace, scalar, MissingCase
 from sqlalchemy import text
 import hashlib
@@ -172,6 +172,11 @@ def read_study_operation(operation_id: UUID, context=Depends(require_casework)):
 @router.post('/{case_id}/study')
 def save_study(payload:StudyInput, context=Depends(require_casework)):
     return {'ok':True, **save_assessment(context.conn,context.case_id,context.session,payload)}
+
+
+@router.post('/{case_id}/study/operations/{operation_id}/reconcile')
+def reconcile_study_operation(operation_id: UUID, context=Depends(require_casework)):
+    return {'ok':True, **reconcile_operation(context.conn,context.case_id,context.session,operation_id)}
 
 
 @router.get('/{case_id}/documents/{document_id}/view')
