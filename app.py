@@ -32,6 +32,9 @@ from cases import router as cases_router
 from partner import router as partner_router
 from ops_override import router as ops_override_router
 from workspace_router import router as workspace_read_router
+from rtm_core.operator_auth_router import router as individual_operator_router
+from rtm_core.casework_router import router as paid_casework_router
+from rtm_core.case_mail_router import router as case_mail_router
 
 
 app = FastAPI(title="RecurreTuMulta Backend", version="0.1.0")
@@ -74,6 +77,9 @@ app.include_router(cases_router)
 app.include_router(partner_router)
 app.include_router(ops_override_router)
 app.include_router(workspace_read_router)
+app.include_router(individual_operator_router)
+app.include_router(paid_casework_router)
+app.include_router(case_mail_router)
 
 @app.get("/health", response_model=HealthResponse)
 def health():
