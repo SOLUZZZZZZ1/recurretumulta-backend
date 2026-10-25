@@ -1,0 +1,569 @@
+{
+  "commit": "976a810c523a98c86abbc26a3c4df7eb6866b4dd",
+  "files": [
+    {
+      "path": "admin_migrate.py",
+      "sha256_git_bytes": "c08458f778c4b72dade7ecaa993fe4fb85d405110891e5839b7b69162e46aae2"
+    },
+    {
+      "path": "admin_migrate_payments.py",
+      "sha256_git_bytes": "daefb5c66d6e9c7777cab9d3c9293f92f747043be9552c3915240b10a9a21b9e"
+    },
+    {
+      "path": "ai/__init__.py",
+      "sha256_git_bytes": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "ai/expediente_engine.py",
+      "sha256_git_bytes": "55af0a931090fa9783c5fa6abfe1c70fa383faccb874930e3d6cec66d69ef205"
+    },
+    {
+      "path": "ai/infractions/__init__.py",
+      "sha256_git_bytes": "3fb22463296cd4b9b53e308d7b920f2400ccd17bad40cb7aea8959cc93965cf2"
+    },
+    {
+      "path": "ai/infractions/adr.py",
+      "sha256_git_bytes": "901749e1ae701e838f497ec0208e7af84e7ece47c0176610e85718f080a17150"
+    },
+    {
+      "path": "ai/infractions/alcohol.py",
+      "sha256_git_bytes": "8b8e98c05fa5e3411a27e36bb5217a86f26ff0c3de87d11bda7ecad258714b91"
+    },
+    {
+      "path": "ai/infractions/atencion.py",
+      "sha256_git_bytes": "30851ec1730806f23a9d7d1d70213f370347101c08e5ad39e79629122fd84945"
+    },
+    {
+      "path": "ai/infractions/auriculares.py",
+      "sha256_git_bytes": "2e69ed84cecfdbf92baf0a907a36503d41767997b123825714b286b2a66ef1a6"
+    },
+    {
+      "path": "ai/infractions/carril.py",
+      "sha256_git_bytes": "d57e0b4aebbd5f87a1e83097e00486d89a18fd39c75a5047bce57e4c66a5a285"
+    },
+    {
+      "path": "ai/infractions/casco.py",
+      "sha256_git_bytes": "a1a664f049f8b0632be886e5e82e6cbe8506fdb60cf86e0ac1f1b743dbbb40c4"
+    },
+    {
+      "path": "ai/infractions/cinturon.py",
+      "sha256_git_bytes": "9a92296bcdcf4cbb2f91b5bed0c5fda54a586663302761158f86b1fc48d9a1b6"
+    },
+    {
+      "path": "ai/infractions/condiciones_vehiculo.py",
+      "sha256_git_bytes": "7d1fd62d297035fc894735fbbf1c1958df30424a6304c6e10cdd70d51cd6ff5d"
+    },
+    {
+      "path": "ai/infractions/dispatch.py",
+      "sha256_git_bytes": "fe4440ee6f32c97cb18655abded07f2d299dc720296bbe97a01e29ab055ec183"
+    },
+    {
+      "path": "ai/infractions/distracciones.py",
+      "sha256_git_bytes": "6a8ef44d85f684958250dbd0dc977e504177e7f59b6c8b6ec541b9a5937c17b6"
+    },
+    {
+      "path": "ai/infractions/documentacion_transporte.py",
+      "sha256_git_bytes": "fa15746ab6771e669709d0faf057e51cb94bde54467ab25b29d3a6cafd59b6ad"
+    },
+    {
+      "path": "ai/infractions/estiba.py",
+      "sha256_git_bytes": "aea23e8983fb3fb24665d4a5bb44693969c82bbeb37d9d38e651d12a21f0c0d6"
+    },
+    {
+      "path": "ai/infractions/generic.py",
+      "sha256_git_bytes": "3df4b758afe5ea450f58c7264b3523581050fa5564785e516c7fdd525d9fc9b6"
+    },
+    {
+      "path": "ai/infractions/helpers.py",
+      "sha256_git_bytes": "93fe4779194f3c709facc65caeab0ca2c739715e0ca17313e59b63f817b10f7a"
+    },
+    {
+      "path": "ai/infractions/itv.py",
+      "sha256_git_bytes": "9b8273846cf55f08f98bf9c8f754f7f52f12b00595f74b84bcb748502ef64a78"
+    },
+    {
+      "path": "ai/infractions/limitador_velocidad.py",
+      "sha256_git_bytes": "863b0221a993a166b0a2c1c9cd97c73ceb6759fa90c02cfccdc546fa5b223b9c"
+    },
+    {
+      "path": "ai/infractions/marcas_viales.py",
+      "sha256_git_bytes": "7628b0c5034e8ba8162d0dd02dc32383f02ee821d31c5344773cf99732028233"
+    },
+    {
+      "path": "ai/infractions/movil.py",
+      "sha256_git_bytes": "c63c8c26ca0f71782ce2c1e8102c35bac7dab4478bf01c03efbc144c808f0567"
+    },
+    {
+      "path": "ai/infractions/municipal_generic.py",
+      "sha256_git_bytes": "fb3628853816432994b3f41722d817673081c0dcbb79ad98de162d326cdc71cb"
+    },
+    {
+      "path": "ai/infractions/municipal_semaforo.py",
+      "sha256_git_bytes": "ba70680eba520481be22972dd730f2c21d531daf6f438e213a34495fa0fb9237"
+    },
+    {
+      "path": "ai/infractions/municipal_sentido_contrario.py",
+      "sha256_git_bytes": "bd336f3553d62af3be60e5fe48e9a2525db15924949d46440a265899da366601"
+    },
+    {
+      "path": "ai/infractions/neumaticos.py",
+      "sha256_git_bytes": "02562b67de579834447412a18484b851253f29cf9b8ae06caddfc5395075862e"
+    },
+    {
+      "path": "ai/infractions/peso.py",
+      "sha256_git_bytes": "570efdc722b0dadfe2f18f950b6dd7949f71b5436de4e914e0c46620ff0a011d"
+    },
+    {
+      "path": "ai/infractions/seguro.py",
+      "sha256_git_bytes": "977df2d81814cd2e9ef9116b172b11e258d73d27127f0a63eeabf43122efae05"
+    },
+    {
+      "path": "ai/infractions/semaforo.py",
+      "sha256_git_bytes": "138222183183a010fc8b81bbdb39526ac7a6c33c6af45cb9ee0a37320413e985"
+    },
+    {
+      "path": "ai/infractions/tacografo.py",
+      "sha256_git_bytes": "535a646e43fcef2e72c3a5e082d6ec94a75d28d72ea01c66b352a653ccd32e47"
+    },
+    {
+      "path": "ai/infractions/temeraria.py",
+      "sha256_git_bytes": "3cf83192d8b1e0c65a3347c3e2e3f1ee288ca7aa725c021518ba1dab44a1320a"
+    },
+    {
+      "path": "ai/infractions/velocidad.py",
+      "sha256_git_bytes": "476a83baa89e6121bb498cbc59b99b5e43a28cdd2dd40e5df735f09e74a09ce9"
+    },
+    {
+      "path": "ai/ops_operator_router.py",
+      "sha256_git_bytes": "5402bbb1d7b78fccc126caf7cfc8cd648cad2dc0c33d33b022c5671641bd6dfa"
+    },
+    {
+      "path": "ai/prompts/__init__.py",
+      "sha256_git_bytes": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "ai/prompts/admissibility_guard.py",
+      "sha256_git_bytes": "0eb6d214396aecf19d439c59d540e8a7208f8ef2665112c1504343d3e4b52cb3"
+    },
+    {
+      "path": "ai/prompts/classify_documents.py",
+      "sha256_git_bytes": "0552b6bd40ac51c3389a14311a541656eabf01d19f9f5356be21622db641accc"
+    },
+    {
+      "path": "ai/prompts/draft_recurso.py",
+      "sha256_git_bytes": "2f2062a37bc03c2bfdf44c75a8329c0be43515b55f8a93c0971b852c5c2e26d1"
+    },
+    {
+      "path": "ai/prompts/draft_recurso_v2.py",
+      "sha256_git_bytes": "b0c851bc429abb7ac3c56c3af6a07c61116f2a9b72eaa8663f34f1eddc3d91b1"
+    },
+    {
+      "path": "ai/prompts/draft_recurso_v3_1.py",
+      "sha256_git_bytes": "440f5dcdf1e80a25a3be9d71794e821a98783d80fe7c0433b6a296438fb9afec"
+    },
+    {
+      "path": "ai/prompts/draft_recurso_v3_2.py",
+      "sha256_git_bytes": "73a50948e23c56260bcbae630f034c0318af6e9fb3b7cc8856e64d7328fa7180"
+    },
+    {
+      "path": "ai/prompts/module_semaforo.py",
+      "sha256_git_bytes": "189e3b08ffcf882d579859ac0a9841abf7cf253a43039df6c2207ee6ee6649eb"
+    },
+    {
+      "path": "ai/prompts/procedure_phase.py",
+      "sha256_git_bytes": "146220dfe4fe84d5a67ddcdb82097dbc5ce865dfc48c39f456111c3e7a13c4c0"
+    },
+    {
+      "path": "ai/prompts/rtm_attack_selector_v1.py",
+      "sha256_git_bytes": "a15e100109b985fc9d4032a367e71618dd0b50eb4a08e589a3c4acc0982c9fb0"
+    },
+    {
+      "path": "ai/prompts/rtm_legal_strategy_v1.py",
+      "sha256_git_bytes": "5dbc8b530fed1abf8d58c1742164f4f84190a67c54dfe35972ad1c9dc72079d6"
+    },
+    {
+      "path": "ai/prompts/timeline_builder.py",
+      "sha256_git_bytes": "90b3934b21d4df6f54ff3c30339fb734b8defb9588ceae2b07993078b469818a"
+    },
+    {
+      "path": "ai/text_loader.py",
+      "sha256_git_bytes": "6a4be80596920df6b96ef82989f8aecc1fc2305bac7d523355f8a59ef056f656"
+    },
+    {
+      "path": "ai/velocity_decision.py",
+      "sha256_git_bytes": "35b74182ce262b7f8b7705d44c2712b48a3e13a5607611f566613abb9ecf79b7"
+    },
+    {
+      "path": "ai/velocity_decision_v1.py",
+      "sha256_git_bytes": "09c91024c554641a87d339aa1ec8f6a67ad47bcb78cb574c608b7ce578cb09c5"
+    },
+    {
+      "path": "ai/velocity_pro_engine_v3.py",
+      "sha256_git_bytes": "873aa516a1bd07182ee825244e38855a4c3c2db70956f60d300db917c826ddc6"
+    },
+    {
+      "path": "ai/velocity_score_v3.py",
+      "sha256_git_bytes": "4d8f081683b94a6519af473d89fee1529d3c123b09c7cc5381df17dc8d126c90"
+    },
+    {
+      "path": "ai/velocity_tipicity_v3.py",
+      "sha256_git_bytes": "f0f030673f1b2b35e37c75d065efc92c4ba5133154cb3e6eea444f86add031b5"
+    },
+    {
+      "path": "ai_router.py",
+      "sha256_git_bytes": "3ce8bf3ea890d9cdc955831d15dcf0d7c08a614420382963c019861bb0f59ff6"
+    },
+    {
+      "path": "analyze.py",
+      "sha256_git_bytes": "bb589e24d0ca387fc829119c3c81bb49430f18c0f51db4cb9d212de67496cd96"
+    },
+    {
+      "path": "analyze_expediente.py",
+      "sha256_git_bytes": "e74d4263da7688a2be1f1946c0a1392dc7b62be8c50dd608bd8771b46602b358"
+    },
+    {
+      "path": "app.py",
+      "sha256_git_bytes": "ba87c2c9c14c5845941579745845745a2541e081e7db982880cc69b51fbd8285"
+    },
+    {
+      "path": "app_include_snippet.py",
+      "sha256_git_bytes": "ec3d51f2cf4fcbf0decf191e949a85c5f75f81e72b566d39bcc4ef0e6dbe2ecf"
+    },
+    {
+      "path": "authorization_pdf.py",
+      "sha256_git_bytes": "17bcc6586ec52a6fee81a7f3eb8eb2084096c2d906a5d9ff37b6ce914a36195d"
+    },
+    {
+      "path": "authorize.py",
+      "sha256_git_bytes": "3c6898cfe72bc7aebe3ddcddcb2b1c587bcaa692536e2bfd4583db72313a8b14"
+    },
+    {
+      "path": "b2_storage.py",
+      "sha256_git_bytes": "62c90ea55110ae4722d903a413d74129f799a2bdcf44bed9d9bd0c9052cd3bc7"
+    },
+    {
+      "path": "b2_storage_patched.py",
+      "sha256_git_bytes": "62c90ea55110ae4722d903a413d74129f799a2bdcf44bed9d9bd0c9052cd3bc7"
+    },
+    {
+      "path": "billing.py",
+      "sha256_git_bytes": "7b4c2458cd272b5f664afea5657016b7cb312f19f648aab3a11c0fec960fd43a"
+    },
+    {
+      "path": "billing_dynamic.py",
+      "sha256_git_bytes": "e30e315e8b24a408b172fb7e1fb1d5924eb0a9ea8dd298d05e6d1e2d298ff7d8"
+    },
+    {
+      "path": "cases.py",
+      "sha256_git_bytes": "66f7ba71ed73fda74a2b0bed042e521aa68502940593fa250f78ffb39f8b30cf"
+    },
+    {
+      "path": "contact_backend_fastapi.py",
+      "sha256_git_bytes": "f82601399d08dc36f4f6700745661d2a3752e5825ba00aa017629c44ff1f4a5b"
+    },
+    {
+      "path": "database.py",
+      "sha256_git_bytes": "36cd8c18dc48fd4a21745fc1d04b275643482df7edef82ff5f0de8545d45d694"
+    },
+    {
+      "path": "debug_generate_preview.py",
+      "sha256_git_bytes": "d71e9f86ad339b8083ae4356687183853f5d976b6032736823d3c37e01e97f4d"
+    },
+    {
+      "path": "debug_test_classifier.py",
+      "sha256_git_bytes": "05cd978773261673f12f3ea31edc86c24be8ea709e343d2b30f310ae121be740"
+    },
+    {
+      "path": "destination_resolver.py",
+      "sha256_git_bytes": "6640f00d916a8689ed1d6724d91773d871f96774fb58573d3a51e573e00f6e7b"
+    },
+    {
+      "path": "dgt_client.py",
+      "sha256_git_bytes": "c911dc71978eaa4a077d54aea0b83fb2eaf9a7acd6a4df55fcdad36d360e6d3a"
+    },
+    {
+      "path": "dgt_templates.py",
+      "sha256_git_bytes": "6401b912d407172024115e29513d60763367dd62c6ab14496769b818779cdeeb"
+    },
+    {
+      "path": "dgt_test.py",
+      "sha256_git_bytes": "8a83bb4f6352805b570f34cce67961be782a87a87b812d2050a7fc5e8a0cc069"
+    },
+    {
+      "path": "docx_builder.py",
+      "sha256_git_bytes": "f09d8ffc4757aa98635ca3f4c7b31cf2e5aebc85d478a3a0d7028fcd13d70a23"
+    },
+    {
+      "path": "draft_recurso.py",
+      "sha256_git_bytes": "5743e06a38cbb6ad442f44d2658fe60b2f4e7e9e5a56e3e4bf485b76a6910b3b"
+    },
+    {
+      "path": "draft_recurso_v2.py",
+      "sha256_git_bytes": "ba4a6d66c58998e8815d003eaabbcfc65b55d090e3b9d2fe295281658f90ca4f"
+    },
+    {
+      "path": "email_utils.py",
+      "sha256_git_bytes": "84f642a726f0963cba55822de8608cfdaa448e4bd4ece8ad3e5e12abb903b896"
+    },
+    {
+      "path": "extract_destination.py",
+      "sha256_git_bytes": "7a5bf246086255677244edfa3eb5d708166856f70e553e741e8333473763d738"
+    },
+    {
+      "path": "extract_organismo.py",
+      "sha256_git_bytes": "16fd9db613ee34f9a814373180e6aa75df4f8b62b4ca4e678ede19068e49ec1d"
+    },
+    {
+      "path": "files.py",
+      "sha256_git_bytes": "d0aac030ea007f58d3950d23a6ac8de40e4f169b641dc810e5dec7ce05383e3f"
+    },
+    {
+      "path": "generate.py",
+      "sha256_git_bytes": "d7cbc7972046f820e03437912f3143b79772ec1f91e8cb61067696a41e70a954"
+    },
+    {
+      "path": "hecho_imputado_engine.py",
+      "sha256_git_bytes": "ae09bba0efcf391d17e1f28e6cb8d63cfb918ddfe428f7c8fc6761c34a22e6d6"
+    },
+    {
+      "path": "infraction_classifier_clean.py",
+      "sha256_git_bytes": "73fac8388fec1a4dae2c2779d8ef6e31e83765e9287cddbb7418274c0410e370"
+    },
+    {
+      "path": "jurisprudencia_base.py",
+      "sha256_git_bytes": "47ab758889eeeeb2de7a9be7ec47fbdd86b2767fef511043bc7d082666a503df"
+    },
+    {
+      "path": "openai_text.py",
+      "sha256_git_bytes": "a7595c08658c97aa74c18b0db5c52db80f24588e07fd1d2bc048220453be030e"
+    },
+    {
+      "path": "openai_vision.py",
+      "sha256_git_bytes": "fd21db74becbf337b8f3b8df3c255c65e04003ce72b4a2623081f2829de3153d"
+    },
+    {
+      "path": "ops.py",
+      "sha256_git_bytes": "2abbd3c30a1d2e79b66e3dd2539f8671ffcc60405075f76b66dd4b86333ca59b"
+    },
+    {
+      "path": "ops_auth.py",
+      "sha256_git_bytes": "b77459e6bbcc84c9c3234825023c1b3b4ee137d03991fc7a2ab106816659ff8e"
+    },
+    {
+      "path": "ops_automation.py",
+      "sha256_git_bytes": "7fc8401d3e8af9d4953802c25b32b6df033548e6cc24fe43734d4bc54a4ed668"
+    },
+    {
+      "path": "ops_automation_router.py",
+      "sha256_git_bytes": "e43ecbd6b71244fc378aa43c67253ffd3619874bc749719a65d53bd10fafa387"
+    },
+    {
+      "path": "ops_operator_router.py",
+      "sha256_git_bytes": "9cc4afd917c4f7cbcebd5e6af864e13ae5ce082a9fd5960bf1d74a5606a58152"
+    },
+    {
+      "path": "ops_operator_submit_router.py",
+      "sha256_git_bytes": "26ef85b6b97b084c6f8d1c0bc5c08034ad7c4b4ca65f2e80742e4c3e374ffae2"
+    },
+    {
+      "path": "ops_override.py",
+      "sha256_git_bytes": "f1f7c44efd63bf21a172dc98a2a4736bbf0217ed37ffeea2b174acaaa84db54a"
+    },
+    {
+      "path": "ops_patched.py",
+      "sha256_git_bytes": "086f1ff1a403282b7962b72877452ceb1865018d6d91a4212c90440fb5722034"
+    },
+    {
+      "path": "ops_queue_smart.py",
+      "sha256_git_bytes": "ce4beed016d1db893ab7343a86312a5d496dc54be1d750c50d520ef2e26909b6"
+    },
+    {
+      "path": "ops_restaurant_reservations.py",
+      "sha256_git_bytes": "25543649f5859b28c76b0874f23ab11170195904a89383f8db6d0a3d137cc3c0"
+    },
+    {
+      "path": "ops_vehicle_removal_router.py",
+      "sha256_git_bytes": "b6b6ff26d4cb8dd9d4e71c8e20f78c82250d483f3aee6e63c2f2905ca3b83da8"
+    },
+    {
+      "path": "partner.py",
+      "sha256_git_bytes": "9765475b4fd76eabfd1bcb8f81220ed5a47e208d0ef5535089d3b1469d0c03f5"
+    },
+    {
+      "path": "partner_cases.py",
+      "sha256_git_bytes": "fe5f18a4dd9c2ee5d6f69f4f0c0709c7e68f0a933ee926e4431324fb1625e6a1"
+    },
+    {
+      "path": "payment_authorization_guard.py",
+      "sha256_git_bytes": "be5ff9542ba334ff396f598cb0ec63fe0d81677573666baf8f124e53b7599c20"
+    },
+    {
+      "path": "pdf_builder.py",
+      "sha256_git_bytes": "3648bf57c0d74a611e7b5dae351b18dafb5d2abdde6bcae63938453098c8110d"
+    },
+    {
+      "path": "reanalysis.py",
+      "sha256_git_bytes": "f5ae88d56ced6fed3f1c2266c19c8529d4d4dddc60f8b9b41eb1a8c0f5fb8f67"
+    },
+    {
+      "path": "requirements.txt",
+      "sha256_git_bytes": "4fae77705efa0331fd6044822c432243f5c3001ee11881283fe6ce82455babb8"
+    },
+    {
+      "path": "router_ops_regenerate.py",
+      "sha256_git_bytes": "f14c1720de9c4324c8f3053f0f80ea103be903c2133104f5ff3c5f2c69c1a406"
+    },
+    {
+      "path": "rtm_core/__init__.py",
+      "sha256_git_bytes": "0009f52bac16ddbdfb220f67180b73ae6d2ac17298084cf2d2485f9d7cf631a7"
+    },
+    {
+      "path": "rtm_core/case_mail.py",
+      "sha256_git_bytes": "f89a80756093301c24e09ce95399290f94f935fa37164ee7ba67f80910b2441c"
+    },
+    {
+      "path": "rtm_core/case_mail_repository.py",
+      "sha256_git_bytes": "fd3ae5e2541217a59b80fd15c9978dcb28feb31940b3858cbc7b9794c76ef8e8"
+    },
+    {
+      "path": "rtm_core/case_mail_router.py",
+      "sha256_git_bytes": "150ae0728119d7b604036efcfa5be1a0a1e2af0aeda06513d22e176469b530ff"
+    },
+    {
+      "path": "rtm_core/case_mail_runtime.py",
+      "sha256_git_bytes": "b71bd8c75aa084db8e3b90d72e56a30599f8fc8b2f6d8d219926ffb0ef76068d"
+    },
+    {
+      "path": "rtm_core/case_mail_worker.py",
+      "sha256_git_bytes": "21f3b36bbde4b0e359352d5cd568ef7a3453cf97779aff8e8ca4f291479132bc"
+    },
+    {
+      "path": "rtm_core/casework_router.py",
+      "sha256_git_bytes": "a87174b1bb3f2649acf560c245f6c144e46106eda3328293c22284f5f23334aa"
+    },
+    {
+      "path": "rtm_core/contracts.py",
+      "sha256_git_bytes": "28c8e766edf49830383861159a6e214950e0b54c307accd75bd35d8f8dc6ab6d"
+    },
+    {
+      "path": "rtm_core/document_render_worker.py",
+      "sha256_git_bytes": "8b73c0de49cb4a854a3678d344069785f7d5117c06499095041a8c53479827c3"
+    },
+    {
+      "path": "rtm_core/document_viewer.py",
+      "sha256_git_bytes": "86c3e07a081cbf35b85605d3c899d3808f519ce728a32b8d788028e04e2fd8c2"
+    },
+    {
+      "path": "rtm_core/environment_contract.py",
+      "sha256_git_bytes": "da5265db4ddb4b6f8fc5bf5270166d2dca70a0162923b3bd86f791db0814db2f"
+    },
+    {
+      "path": "rtm_core/http_security.py",
+      "sha256_git_bytes": "22b220160c357b8fd0617f6c8733561e796e72ffd2277118c5c9bc45201b68ec"
+    },
+    {
+      "path": "rtm_core/local_operator_auth.py",
+      "sha256_git_bytes": "d24d9cbe1dc2d4d9cd148bf041fa9645e3745087def36a5bcfc1c697eec4cb43"
+    },
+    {
+      "path": "rtm_core/operator_access_runtime_repository.py",
+      "sha256_git_bytes": "441a3f969576f9556dd5a84c789738f5a7ac86fa8cc0cdc5040eeee4ecf24a4c"
+    },
+    {
+      "path": "rtm_core/operator_auth_crypto.py",
+      "sha256_git_bytes": "4870f34e2e43a017cde32095e92d24186d5b8bf8b7fe050f7a3c2caa3bab367e"
+    },
+    {
+      "path": "rtm_core/operator_auth_repository.py",
+      "sha256_git_bytes": "5008daa01774b1f88e20348ca7cb4f65deea00d0ddea92ecd10d16996defb248"
+    },
+    {
+      "path": "rtm_core/operator_auth_request.py",
+      "sha256_git_bytes": "53703bf725c7f8c1e9517791afc0a6ff5949fbe458c88023dc66bca9a2d6fb22"
+    },
+    {
+      "path": "rtm_core/operator_auth_router.py",
+      "sha256_git_bytes": "69b00442de73fb3ca059247833ebaa836f4b2a229d2e238fec78599acf8b1a15"
+    },
+    {
+      "path": "rtm_core/operator_auth_service.py",
+      "sha256_git_bytes": "8a8070a392201c170eb8519a00488a08e9a71ba2cd9b41ad4ff58e593e747b84"
+    },
+    {
+      "path": "rtm_core/operator_device_logout.py",
+      "sha256_git_bytes": "7b7e44ab9f5cc779b6e7e0155f3b69a7272102970f0dfa6e6119c2b85bd5ad8c"
+    },
+    {
+      "path": "rtm_core/operator_private_activation.py",
+      "sha256_git_bytes": "bccbbb9060ffc97f44e53d5aaa7d3e210483c7c65a49e5f7305e1cf851f7835d"
+    },
+    {
+      "path": "rtm_core/paid_study.py",
+      "sha256_git_bytes": "4cb8fc80ad98d792cc99a1b0f4f44d8ceec8afc04ea901a4e829bae5703f4898"
+    },
+    {
+      "path": "rtm_core/production_casework.py",
+      "sha256_git_bytes": "dc8442b31c4cfa019cba8cd06321b05935792ce59c44b343996a61589ed75e0c"
+    },
+    {
+      "path": "rtm_core/trusted_origins.py",
+      "sha256_git_bytes": "f9e319ccf9a5e2f01d2eaef57f216338f525577683f7cb68ef4ffb53cd5fc55e"
+    },
+    {
+      "path": "schemas.py",
+      "sha256_git_bytes": "75ad46c74b109b8d8cad997c8bdd5440182fca1f008499c7857cc8b5ef1e6c3c"
+    },
+    {
+      "path": "schemas_regenerate.py",
+      "sha256_git_bytes": "96849c12b9500005668c86ade02b3a722bd30cb2ca4cdc865f78e203eba0d008"
+    },
+    {
+      "path": "scoring.py",
+      "sha256_git_bytes": "3c62f655b76506a9bfff1a62ca4343c50205a9f3d76efa4a9b105c1b3e793af9"
+    },
+    {
+      "path": "service_regenerate.py",
+      "sha256_git_bytes": "e7529554f5bdfc49c0473dc9648dc88b33d2a34238fd896d1597d1f4f96b5b13"
+    },
+    {
+      "path": "submitter_dgt.py",
+      "sha256_git_bytes": "bf423302cf558ca002f70d345b506cddbac95cc5d42c501562297dbfadeed0e3"
+    },
+    {
+      "path": "submitters/__init__.py",
+      "sha256_git_bytes": "8863f65353b39fedcd0e63d9623f8be7b6a7cc3fa16c6a4aca829933814d33ef"
+    },
+    {
+      "path": "submitters/base.py",
+      "sha256_git_bytes": "3f20d69fc6b0679ea4462996f1c5a01d4a98060b25962e01d613d2e9a7ec5859"
+    },
+    {
+      "path": "submitters/dgt.py",
+      "sha256_git_bytes": "6bd9df5912b21ef99a15a60460a7545328e9a86a82394dc6fe42f56d4b91b96f"
+    },
+    {
+      "path": "submitters/registro.py",
+      "sha256_git_bytes": "8ddc8866fdf7dbbbeebaabdb43c7ba1217518c873ddd29c38d219bc32282228d"
+    },
+    {
+      "path": "text_extractors.py",
+      "sha256_git_bytes": "be1491245ceb03157da61782e3fde42d6c7e8a1a7a617c50e1715996b418fb87"
+    },
+    {
+      "path": "tools/activate_ops_private.py",
+      "sha256_git_bytes": "ba272efb4bb2c262dd5ef120e38aa4a5138a583c816e3c66d457387d14c465ae"
+    },
+    {
+      "path": "vehicle_removal_router.py",
+      "sha256_git_bytes": "6cfa46759440c585a54c08e0300d7f0401f168d2029d32623c3e4c4e22ef138a"
+    },
+    {
+      "path": "workspace_read.py",
+      "sha256_git_bytes": "862cf2f1f9c3fade327850a52a39d9de50a8f90dbb6d4f3e16ea0099ddb1bb10"
+    },
+    {
+      "path": "workspace_router.py",
+      "sha256_git_bytes": "e749803bc804bc0e7e20a317c645050951af19a50601aea8168f96bfce2a1f32"
+    }
+  ]
+}

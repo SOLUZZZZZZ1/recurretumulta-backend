@@ -1,0 +1,25 @@
+name: RTM paid case full app Linux (isolated)
+on:
+  push:
+    branches: [rtm-ci-paid-case-linux-20261025]
+permissions:
+  contents: read
+jobs:
+  full-app:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Export exact candidate and run isolated full entrypoint
+        run: python3 ci/paid_case_linux/run_ci.py
+      - name: Preserve sanitized results, including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: paid-case-full-app-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: linux-results/
+          if-no-files-found: error
+          retention-days: 7
