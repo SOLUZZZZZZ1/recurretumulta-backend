@@ -206,6 +206,8 @@ def sync_folder(engine,config,folder,storage,*,imap_factory=imaplib.IMAP4_SSL,se
 
 def tick(engine,*,source=None,storage=None,sender_verifier=None):
     config=configuration(source);storage=storage or B2MailStorage(config.mailbox)
+    from rtm_core.case_mail_attachments import retry_pending
+    retry_pending(engine,config.mailbox,storage)
     if sender_verifier is None:
         from rtm_core.case_mail_authentication import authenticated_sender
         sender_verifier=authenticated_sender

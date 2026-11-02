@@ -40,6 +40,7 @@ def public_message(row):
     return {'id':str(row['id']),'case_id':str(row['case_id']) if row['case_id'] else None,
         'direction':row['direction'],'state':row['state'],'message':payload,
         'relation':relation,'author_id':str(row['author_id']) if row['author_id'] else None,
+        'request_sha256':row['request_sha256'] if relation.get('type')!='client_access' else None,
         'created_at':str(row['created_at'])}
 
 

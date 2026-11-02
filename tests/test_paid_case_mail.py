@@ -33,7 +33,9 @@ def fixture_tables(conn):
           started_at TEXT,finished_at TEXT)''',
         '''CREATE TABLE rtm_case_mail_events(id TEXT,message_id TEXT,state TEXT,actor_id TEXT,evidence TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP)''',
         '''CREATE TABLE rtm_case_mail_sync(mailbox TEXT,folder TEXT,uidvalidity INTEGER,last_uid INTEGER,last_attempt_at TEXT,
-          last_success_at TEXT,error_code TEXT,PRIMARY KEY(mailbox,folder))''']:
+          last_success_at TEXT,error_code TEXT,PRIMARY KEY(mailbox,folder))''',
+        '''CREATE TABLE rtm_case_mail_attachment_checks(message_id TEXT,part INTEGER,sha256 TEXT,state TEXT,scanner TEXT,
+          scanned_at TEXT DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(message_id,part,sha256))''']:
         conn.execute(text(ddl))
 
 
@@ -155,3 +157,33 @@ class MailTest(unittest.TestCase):
         with self.engine.begin() as c:
             s=c.execute(text('SELECT * FROM rtm_case_mail_sync')).mappings().one()
             self.assertEqual(s['last_uid'],2);self.assertEqual(s['last_success_at'],'2026-10-24T10:00:00Z');self.assertEqual(s['error_code'],'MAIL_SYNC_FAILED')
+
+    def test_attachment_custody_failure_is_recovered_without_importing_twice(self):
+        from rtm_core.case_mail_attachments import scan_message,retry_pending
+        with self.engine.begin() as c:
+            first=self.prepare(c)
+            mid=ingest(c,self.reply(first['message']['original_id']),folder='INBOX',uidvalidity=1,uid=10,
+                direction='incoming',trusted_sender=True,storage=self.store)
+        class Offline:
+            def get(self,*args):raise ConnectionError('temporary custody outage')
+        with self.assertRaises(ConnectionError):scan_message(self.engine,mid,Offline())
+        with self.engine.begin() as c:
+            self.assertEqual(c.execute(text('SELECT state FROM rtm_case_mail_attachment_checks')).scalar(),'unavailable')
+            self.assertEqual(c.execute(text('SELECT COUNT(*) FROM rtm_case_messages')).scalar(),2)
+        self.assertEqual(retry_pending(self.engine,MAILBOX,self.store),{'attempted':1,'completed':1,'unavailable':0})
+        self.assertEqual(retry_pending(self.engine,MAILBOX,self.store)['attempted'],0)
+        with self.engine.begin() as c:
+            self.assertEqual(c.execute(text('SELECT state FROM rtm_case_mail_attachment_checks')).scalar(),'clean')
+            self.assertEqual(c.execute(text('SELECT COUNT(*) FROM rtm_case_messages')).scalar(),2)
+
+    def test_rejected_attachment_does_not_become_a_retry_or_clean_result(self):
+        from rtm_core.case_mail_attachments import scan_message,retry_pending
+        with self.engine.begin() as c:
+            first=self.prepare(c)
+            raw=self.reply(first['message']['original_id']).replace(b'QURKVU5UTyBJTk9DVU8gREUgUFJVRUJB',b'AE5PIEVKRUNVVEFS')
+            # Base64 decodes to a NUL-prefixed text: never execute or display it.
+            self.assertIn(b'AE5PIEVKRUNVVEFS',raw)
+            mid=ingest(c,raw,folder='INBOX',uidvalidity=1,uid=11,direction='incoming',trusted_sender=True,storage=self.store)
+        scan_message(self.engine,mid,self.store)
+        self.assertEqual(retry_pending(self.engine,MAILBOX,self.store)['attempted'],0)
+        with self.engine.begin() as c:self.assertEqual(c.execute(text('SELECT state FROM rtm_case_mail_attachment_checks')).scalar(),'rejected')
