@@ -126,10 +126,10 @@ def queue(conn,case_id,message_id,session):
     return public_message(message_for_case(conn,case_id,message_id))
 
 
-def claim(conn,mailbox=MAILBOX):
+def claim(conn,mailbox=MAILBOX,case_id=None):
     lock=' FOR UPDATE SKIP LOCKED' if conn.dialect.name=='postgresql' else ''
     row=conn.execute(text("SELECT message_id FROM rtm_case_mail_jobs WHERE state='queued' AND message_id IN "
-        "(SELECT id FROM rtm_case_messages WHERE mailbox=:mailbox) ORDER BY message_id LIMIT 1"+lock),{'mailbox':mailbox}).mappings().one_or_none()
+        "(SELECT id FROM rtm_case_messages WHERE mailbox=:mailbox"+(' AND case_id=:case' if case_id else '')+") ORDER BY message_id LIMIT 1"+lock),{'mailbox':mailbox,**({'case':case_id} if case_id else {})}).mappings().one_or_none()
     if not row:return None
     token=str(uuid4());mid=str(row['message_id'])
     conn.execute(text("UPDATE rtm_case_mail_jobs SET state='sending',lease_token=:token,lease_until=:until,started_at=:now WHERE message_id=:id AND state='queued'"),{'token':token,'until':now()+timedelta(minutes=2),'now':now(),'id':mid})
@@ -147,13 +147,14 @@ def finish(conn,message_id,lease_token,state,code):
     return True
 
 
-def expire_leases(conn):
-    rows=conn.execute(text("SELECT message_id,lease_token FROM rtm_case_mail_jobs WHERE state='sending' AND lease_until<:now"),{'now':now()}).mappings().all()
+def expire_leases(conn,mailbox=None,case_id=None):
+    scope=" AND message_id IN (SELECT id FROM rtm_case_messages WHERE mailbox=:mailbox"+(' AND case_id=:case' if case_id else '')+")" if mailbox else ''
+    rows=conn.execute(text("SELECT message_id,lease_token FROM rtm_case_mail_jobs WHERE state='sending' AND lease_until<:now"+scope),{'now':now(),**({'mailbox':mailbox} if mailbox else {}),**({'case':case_id} if case_id else {})}).mappings().all()
     for row in rows:finish(conn,str(row['message_id']),str(row['lease_token']),'unknown','WORKER_INTERRUPTED_RECONCILE_REQUIRED')
     return len(rows)
 
 
-def ingest(conn,raw,*,folder,uidvalidity,uid,direction,trusted_sender,storage,mailbox=MAILBOX,trusted_delivery=False):
+def ingest(conn,raw,*,folder,uidvalidity,uid,direction,trusted_sender,storage,mailbox=MAILBOX,trusted_delivery=False,allowed_case_id=None):
     source=f'{mailbox}:{folder}:{uidvalidity}:{uid}'
     if conn.execute(text('SELECT id FROM rtm_case_mail_originals WHERE source_key=:source'),{'source':source}).scalar():return 'duplicate'
     message=parse_original(raw)
@@ -171,6 +172,9 @@ def ingest(conn,raw,*,folder,uidvalidity,uid,direction,trusted_sender,storage,ma
         target=delivery_target(conn,report,mailbox)
         if target:case_id,reason=str(target['case_id']),'verified_provider_delivery_report'
     existing=conn.execute(text('SELECT * FROM rtm_case_messages WHERE mailbox=:mailbox AND original_id=:original_id'),{'mailbox':mailbox,'original_id':message['original_id']}).mappings().one_or_none()
+    referenced={known[ref] for ref in message['references'] if ref in known}
+    if allowed_case_id and ((case_id and case_id!=allowed_case_id) or referenced-{allowed_case_id} or (existing and existing['case_id'] and str(existing['case_id'])!=allowed_case_id)):
+        return 'outside_pilot_scope'
     if existing:
         # A sent-folder copy confirms provider acceptance only if exact semantic
         # content and verified recipients match; never equates this with delivery.

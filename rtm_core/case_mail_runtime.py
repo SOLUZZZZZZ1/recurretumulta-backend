@@ -29,6 +29,7 @@ class MailConfig:
     smtp_tls:str='implicit'
     authserv_id:str=''
     delivery_senders:tuple[str,...]=()
+    case_id:str|None=None
 
 
 def configured_mailbox(source=None):
@@ -43,7 +44,8 @@ def configuration(source=None):
     source=os.environ if source is None else source
     if source.get('RTM_ENABLE_CASE_MAIL')!='1' or source.get('RTM_CASE_MAIL_WORKER_ENABLED')!='1':
         raise MailRejected('MAIL_WORKER_NOT_ENABLED')
-    if not load_policy(source):raise MailRejected('MAIL_CASEWORK_PROFILE_REQUIRED')
+    policy=load_policy(source,service_name='rtm-case-mail-pilot')
+    if not policy:raise MailRejected('MAIL_CASEWORK_PROFILE_REQUIRED')
     mailbox=configured_mailbox(source)
     if source.get('RTM_CASE_MAIL_DEDICATED_CONFIRMED')!='1':
         raise MailRejected('MAILBOX_SCOPE_NOT_CONFIRMED')
@@ -70,7 +72,7 @@ def configuration(source=None):
     # The trusted receiving boundary must be verified against the real provider.
     authserv=source.get('RTM_CASE_MAIL_AUTHSERV_ID','').strip().lower()
     reports=tuple(address(v) for v in source.get('RTM_CASE_MAIL_DELIVERY_SENDERS','').split(',') if v)
-    return MailConfig(hosts[0],hosts[1],secret,recipients,folders,mailbox,username,port,tls,authserv,reports)
+    return MailConfig(hosts[0],hosts[1],secret,recipients,folders,mailbox,username,port,tls,authserv,reports,policy.case_ids[0])
 
 
 class B2MailStorage:
@@ -132,7 +134,7 @@ def send_original(config,raw,recipient,*,smtp_factory=None):
 
 def send_one(engine,config,storage,*,transport=send_original):
     with engine.begin() as conn:
-        expire_leases(conn);job=claim(conn,config.mailbox)
+        expire_leases(conn,config.mailbox,config.case_id);job=claim(conn,config.mailbox,config.case_id)
     if not job:return False
     mid,token=job
     try:
@@ -219,9 +221,13 @@ def sync_folder(engine,config,folder,storage,*,imap_factory=imaplib.IMAP4_SSL,se
             else:delivery_verified=bool(delivery_verifier(raw))
             try:
                 with engine.begin() as conn:
-                    ingest(conn,raw,folder=folder,uidvalidity=cursor['uidvalidity'],uid=uid,
-                        direction=direction,trusted_sender=verified,storage=storage,mailbox=config.mailbox,trusted_delivery=delivery_verified)
+                    result=ingest(conn,raw,folder=folder,uidvalidity=cursor['uidvalidity'],uid=uid,
+                        direction=direction,trusted_sender=verified,storage=storage,mailbox=config.mailbox,trusted_delivery=delivery_verified,allowed_case_id=config.case_id)
+                    if result=='outside_pilot_scope':raise MailRejected('MAIL_OUTSIDE_PILOT_RETAINED_REMOTE')
                     advance_cursor(conn,config,folder,uid)
+            except MailRejected as exc:
+                if str(exc)!='MAIL_OUTSIDE_PILOT_RETAINED_REMOTE':raise
+                quarantine_uid(engine,config,folder,cursor['uidvalidity'],uid,size,str(exc),storage)
             except HTTPException as exc:
                 if exc.status_code!=409 or exc.detail!={'code':'MAIL_MESSAGE_ID_COLLISION'}:raise
                 quarantine_uid(engine,config,folder,cursor['uidvalidity'],uid,size,'MAIL_MESSAGE_ID_COLLISION',storage,raw)
@@ -253,7 +259,7 @@ def tick(engine,*,source=None,storage=None,sender_verifier=None):
         except Exception:
             result['ok']=False;result['folders'][folder]={'ok':False,'code':'MAIL_SYNC_INCOMPLETE'}
     try:
-        result['attachments']=retry_pending(engine,config.mailbox,storage)
+        result['attachments']=retry_pending(engine,config.mailbox,storage,case_id=config.case_id)
         if result['attachments']['unavailable']:result['ok']=False
     except Exception:result['ok']=False;result['attachments']={'code':'MAIL_VALIDATION_INCOMPLETE'}
     try:result['outgoing']=send_one(engine,config,storage)

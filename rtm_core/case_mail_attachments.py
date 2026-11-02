@@ -65,13 +65,13 @@ def scan_message(engine,message_id,storage):
     return count
 
 
-def retry_pending(engine,mailbox,storage):
+def retry_pending(engine,mailbox,storage,*,case_id=None):
     """Oldest unresolved validation first; bounded and independent of IMAP UID."""
     with engine.begin() as conn:
         pending=conn.execute(text("SELECT a.message_id FROM rtm_case_mail_attachment_checks a "
             "JOIN rtm_case_messages m ON m.id=a.message_id WHERE a.state='unavailable' "
-            "AND m.case_id IS NOT NULL AND m.mailbox=:mailbox GROUP BY a.message_id "
-            "ORDER BY MIN(a.scanned_at),a.message_id LIMIT 25"),{'mailbox':mailbox}).scalars().all()
+            "AND m.case_id IS NOT NULL AND m.mailbox=:mailbox "+('AND m.case_id=:case ' if case_id else '')+"GROUP BY a.message_id "
+            "ORDER BY MIN(a.scanned_at),a.message_id LIMIT 25"),{'mailbox':mailbox,**({'case':case_id} if case_id else {})}).scalars().all()
     result={'attempted':len(pending),'completed':0,'unavailable':0}
     for mid in pending:
         try:
