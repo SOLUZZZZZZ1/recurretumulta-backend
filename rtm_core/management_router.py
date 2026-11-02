@@ -25,6 +25,7 @@ from rtm_core.case_mail_runtime import B2MailStorage,configured_mailbox
 from rtm_core.case_mail import MailRejected
 from rtm_core.paid_study import read_history
 from rtm_core import management_client_access as client
+from rtm_core.trusted_origins import PUBLIC_CASEWORK_ORIGINS
 
 
 class ManagementRoute(APIRoute):
@@ -171,8 +172,8 @@ class LogoutInput(BaseModel):
 def logout_client(body:LogoutInput,request:Request):
     # Revocation remains possible when new sales/access have been disabled or
     # the pilot expires. It cannot create a session or extend any permission.
-    if (request.headers.get('origin')!='https://www.recurretumulta.eu' or
-            os.environ.get('RTM_CASEWORK_PUBLIC_ORIGIN')!='https://www.recurretumulta.eu'):
+    configured_origin=os.environ.get('RTM_CASEWORK_PUBLIC_ORIGIN')
+    if (configured_origin not in PUBLIC_CASEWORK_ORIGINS or request.headers.get('origin')!=configured_origin):
         raise ManagementRejected('CLIENT_ORIGIN_DENIED',403)
     with connection() as conn:return client.logout(conn,token=request.cookies.get(client.COOKIE),expected_ref=body.session_ref)
 

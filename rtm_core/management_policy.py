@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import os
 from rtm_core.production_casework import load_policy
+from rtm_core.trusted_origins import PUBLIC_CASEWORK_ORIGINS
 from rtm_core.management_contract import ManagementRejected
 
 
@@ -44,7 +45,7 @@ def configuration(source=None, *, for_notification=False, mode=None):
         except ValueError:
             raise ManagementRejected('MANAGEMENT_CASE_SCOPE_INVALID', 503) from None
         origin = source.get('RTM_CASEWORK_PUBLIC_ORIGIN')
-    if origin != 'https://www.recurretumulta.eu':
+    if origin not in PUBLIC_CASEWORK_ORIGINS:
         raise ManagementRejected('MANAGEMENT_ORIGIN_INVALID', 503)
     account = source.get('RTM_MANAGEMENT_STRIPE_ACCOUNT_ID', '')
     key = source.get('RTM_MANAGEMENT_STRIPE_TEST_KEY', '') if selected == 'test' else source.get('STRIPE_SECRET_KEY', '')
