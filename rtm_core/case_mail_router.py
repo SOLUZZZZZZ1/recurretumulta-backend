@@ -8,7 +8,7 @@ from sqlalchemy import text
 from fastapi.responses import Response
 from rtm_core.casework_router import CaseworkRoute,require_casework
 from rtm_core.case_mail import MailRejected,extract_attachment
-from rtm_core.case_mail_repository import conversation,prepare,queue,message_for_case,public_message,obj
+from rtm_core.case_mail_repository import conversation,prepare,queue,message_for_case,public_message,obj,assign_pending
 from rtm_core.case_mail_runtime import B2MailStorage,configured_mailbox
 from rtm_core.document_viewer import render
 
@@ -31,6 +31,17 @@ class Approval(BaseModel):
     model_config=ConfigDict(extra='forbid')
     approve_exact_message:Literal[True]
     original_sha256:str=Field(pattern=r'^[0-9a-f]{64}$')
+
+class Assignment(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    original_sha256:str=Field(pattern=r'^[0-9a-f]{64}$')
+    independently_verified:Literal[True]
+    evidence:str=Field(min_length=20,max_length=2000)
+
+@router.post('/{case_id}/communications/{message_id}/assign')
+def assign_message(message_id:UUID,payload:Assignment,context=Depends(enabled)):
+    return {'ok':True,**assign_pending(context.conn,context.case_id,str(message_id),context.session,
+        payload.evidence,payload.original_sha256)}
 
 @router.get('/{case_id}/communications')
 def read_conversation(q:str=Query('',max_length=200),context=Depends(enabled)):

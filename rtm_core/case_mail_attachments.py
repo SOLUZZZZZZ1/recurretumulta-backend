@@ -11,6 +11,14 @@ from rtm_core.document_viewer import render
 SCANNER='rtm_passive_view_validation_v1'
 
 
+def schedule_checks(conn,message_id,payload):
+    """Caller commits these markers together with the message and its IMAP UID."""
+    for part in payload['attachments']:
+        conn.execute(text('INSERT INTO rtm_case_mail_attachment_checks(message_id,part,sha256,state,scanner) '
+            "VALUES (:id,:part,:sha,'unavailable',:scanner) ON CONFLICT(message_id,part,sha256) DO NOTHING"),
+            {'id':message_id,'part':part['part'],'sha':part['sha256'],'scanner':SCANNER})
+
+
 def inspect(data,mime):
     if mime=='text/plain':
         if len(data)>65536:raise MailRejected('MAIL_TEXT_TOO_LARGE')
@@ -35,10 +43,7 @@ def scan_message(engine,message_id,storage):
     # Commit retry markers before fetching custody. An IMAP cursor may already
     # have advanced; an interrupted fetch must remain discoverable after restart.
     with engine.begin() as conn:
-        for part in payload['attachments']:
-            conn.execute(text('INSERT INTO rtm_case_mail_attachment_checks(message_id,part,sha256,state,scanner) '
-                "VALUES (:id,:part,:sha,'unavailable',:scanner) ON CONFLICT(message_id,part,sha256) DO NOTHING"),
-                {'id':message_id,'part':part['part'],'sha':part['sha256'],'scanner':SCANNER})
+        schedule_checks(conn,message_id,payload)
         conn.execute(text("UPDATE rtm_case_mail_attachment_checks SET scanned_at=:now WHERE message_id=:id AND state='unavailable'"),
             {'now':now(),'id':message_id})
     if not original:raise MailRejected('MAIL_ORIGINAL_UNAVAILABLE')

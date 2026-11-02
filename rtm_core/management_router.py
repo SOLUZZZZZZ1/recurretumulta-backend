@@ -209,11 +209,19 @@ class AcceptanceInput(BaseModel):
     quote_id:UUID
     quote_sha256:str=Field(pattern=r'^[a-f0-9]{64}$')
     accept_exact_version:Literal[True]
+    expected_session_ref:str=Field(pattern=r'^[a-f0-9]{64}$')
+
+
+def exact_client_session(body,grant):
+    import hmac
+    if not hmac.compare_digest(body.expected_session_ref,grant['session_ref']):
+        raise ManagementRejected('CLIENT_SESSION_CHANGED_REVIEW_REQUIRED',403)
 
 
 @router.post(CLIENT+'/cases/{case_id}/accept')
 def accept(body:AcceptanceInput,access=Depends(client_context)):
     conn,grant,_,case_id=access
+    exact_client_session(body,grant)
     return {'ok':True,**accept_quote(conn,case_id=case_id,quote_id=str(body.quote_id),expected_sha=body.quote_sha256,
         operation_id=str(body.operation_id),recipient_hash=grant['recipient_hash'],confirmed=body.accept_exact_version)}
 
@@ -222,6 +230,7 @@ class CheckoutInput(BaseModel):
     model_config=ConfigDict(extra='forbid')
     quote_id:UUID
     quote_sha256:str=Field(pattern=r'^[a-f0-9]{64}$')
+    expected_session_ref:str=Field(pattern=r'^[a-f0-9]{64}$')
 
 
 def reconcile_provider(policy,row,*,create=False,retire=False):
@@ -240,6 +249,7 @@ def reconcile_provider(policy,row,*,create=False,retire=False):
 @router.post(CLIENT+'/cases/{case_id}/checkout')
 def checkout(body:CheckoutInput,access=Depends(client_context)):
     conn,grant,policy,case_id=access
+    exact_client_session(body,grant)
     row=reserve(conn,case_id=case_id,quote_id=str(body.quote_id),expected_sha=body.quote_sha256,
                 recipient_hash=grant['recipient_hash'],policy=policy)
     conn.commit()  # Durable reservation BEFORE any external creation; no DB lock during Stripe.

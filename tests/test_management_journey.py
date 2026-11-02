@@ -30,13 +30,14 @@ def sqlite_schema(conn):
         'CREATE TABLE rtm_study_assessments(case_id TEXT,operation_id TEXT,revision INTEGER,author_id TEXT,request_sha256 TEXT,snapshot TEXT,snapshot_sha256 TEXT,PRIMARY KEY(case_id,operation_id))',
         'CREATE TABLE ops_final_resources(id TEXT PRIMARY KEY,case_id TEXT,version INTEGER,content TEXT)']:
         conn.execute(text(sql))
-    for name in ('20261025_case_mail_candidate.sql','20261102_management_journey_candidate.sql'):
+    for name in ('20261025_case_mail_candidate.sql','20261102_management_journey_candidate.sql','20261102_mail_ingestion_recovery_candidate.sql'):
         source=(Path(__file__).parents[1]/'migrations'/name).read_text(encoding='utf-8')
         source='\n'.join(line for line in source.splitlines() if not line.strip().startswith('--')).split('CREATE FUNCTION')[0]
         for piece in source.split(';'):
             sql='\n'.join(line for line in piece.splitlines() if not line.strip().startswith('--')).strip()
             if sql.startswith(('CREATE TABLE','CREATE INDEX')):
                 sql=sql.replace("'{}'::jsonb","'{}'").replace('DEFAULT NOW()','DEFAULT CURRENT_TIMESTAMP')
+                sql=sql.replace("raw_sha256 ~ '^[a-f0-9]{64}$'","raw_sha256 REGEXP '^[a-f0-9]{64}$'")
                 conn.execute(text(sql))
 
 

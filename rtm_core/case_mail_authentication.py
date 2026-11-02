@@ -8,7 +8,7 @@ from email.parser import BytesParser
 from rtm_core.case_mail import parse_original
 
 
-def authenticated_sender(raw,*,dnsfunc=None):
+def authenticated_sender(raw,*,dnsfunc=None,delivery=False):
     try:
         import dkim
         projection=parse_original(raw)
@@ -19,7 +19,8 @@ def authenticated_sender(raw,*,dnsfunc=None):
         required={'from','to','subject','date','message-id'}
         for header in ('cc','in-reply-to','references'):
             if message.get_all(header):required.add(header)
-        if not required.intersection({'in-reply-to','references'}):return False
+        if delivery:required.update({'content-type','mime-version'})
+        elif not required.intersection({'in-reply-to','references'}):return False
         if any(len(message.get_all(h,[]))>1 for h in required):return False
         for index,signature in enumerate(signatures):
             tags={}
@@ -36,3 +37,11 @@ def authenticated_sender(raw,*,dnsfunc=None):
         return False
     except Exception:
         return False
+
+
+def authenticated_delivery_report(raw,approved_senders,*,dnsfunc=None):
+    from rtm_core.case_mail import delivery_report
+    try:
+        return bool(approved_senders and parse_original(raw)['sender'] in approved_senders
+            and delivery_report(raw) and authenticated_sender(raw,dnsfunc=dnsfunc,delivery=True))
+    except Exception:return False

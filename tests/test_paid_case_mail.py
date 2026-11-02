@@ -35,7 +35,10 @@ def fixture_tables(conn):
         '''CREATE TABLE rtm_case_mail_sync(mailbox TEXT,folder TEXT,uidvalidity INTEGER,last_uid INTEGER,last_attempt_at TEXT,
           last_success_at TEXT,error_code TEXT,PRIMARY KEY(mailbox,folder))''',
         '''CREATE TABLE rtm_case_mail_attachment_checks(message_id TEXT,part INTEGER,sha256 TEXT,state TEXT,scanner TEXT,
-          scanned_at TEXT DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(message_id,part,sha256))''']:
+          scanned_at TEXT DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(message_id,part,sha256))''',
+        '''CREATE TABLE rtm_case_mail_ingest_issues(mailbox TEXT,folder TEXT,uidvalidity INTEGER,uid INTEGER,
+          code TEXT,disposition TEXT,size_bytes INTEGER,raw_sha256 TEXT,custody_key TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(mailbox,folder,uidvalidity,uid))''']:
         conn.execute(text(ddl))
 
 

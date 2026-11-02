@@ -9,6 +9,7 @@ import os
 import re
 import smtplib
 import ssl
+from fastapi import HTTPException
 from sqlalchemy import text
 from rtm_core.case_mail import MAILBOX,MAX_MESSAGE,MailRejected,sha,parse_original
 from rtm_core.case_mail_repository import claim,finish,expire_leases,ingest,now,obj
@@ -27,6 +28,7 @@ class MailConfig:
     smtp_port:int=465
     smtp_tls:str='implicit'
     authserv_id:str=''
+    delivery_senders:tuple[str,...]=()
 
 
 def configured_mailbox(source=None):
@@ -67,7 +69,8 @@ def configuration(source=None):
     if not username or any(c in username for c in '\r\n\0'):raise MailRejected('MAIL_USERNAME_INVALID')
     # The trusted receiving boundary must be verified against the real provider.
     authserv=source.get('RTM_CASE_MAIL_AUTHSERV_ID','').strip().lower()
-    return MailConfig(hosts[0],hosts[1],secret,recipients,folders,mailbox,username,port,tls,authserv)
+    reports=tuple(address(v) for v in source.get('RTM_CASE_MAIL_DELIVERY_SENDERS','').split(',') if v)
+    return MailConfig(hosts[0],hosts[1],secret,recipients,folders,mailbox,username,port,tls,authserv,reports)
 
 
 class B2MailStorage:
@@ -158,7 +161,25 @@ def send_one(engine,config,storage,*,transport=send_original):
     return True
 
 
-def sync_folder(engine,config,folder,storage,*,imap_factory=imaplib.IMAP4_SSL,sender_verifier=None):
+def advance_cursor(conn,config,folder,uid):
+    conn.execute(text('UPDATE rtm_case_mail_sync SET last_uid=:uid WHERE mailbox=:mailbox AND folder=:folder AND last_uid<:uid'),
+        {'uid':uid,'mailbox':config.mailbox,'folder':folder})
+
+
+def quarantine_uid(engine,config,folder,validity,uid,size,code,storage,raw=None):
+    # Size rejections retain the source in the read-only remote mailbox; no body
+    # download. Bounded malformed originals are retained privately before commit.
+    key=storage.put(raw) if raw is not None else None
+    with engine.begin() as conn:
+        conn.execute(text('''INSERT INTO rtm_case_mail_ingest_issues
+            (mailbox,folder,uidvalidity,uid,code,disposition,size_bytes,raw_sha256,custody_key)
+            VALUES (:m,:f,:v,:u,:c,:d,:s,:h,:k) ON CONFLICT(mailbox,folder,uidvalidity,uid) DO NOTHING'''),
+            {'m':config.mailbox,'f':folder,'v':validity,'u':uid,'c':code,'s':size,
+             'd':'quarantined' if raw is not None else 'remote_retained','h':sha(raw) if raw is not None else None,'k':key})
+        advance_cursor(conn,config,folder,uid)
+
+
+def sync_folder(engine,config,folder,storage,*,imap_factory=imaplib.IMAP4_SSL,sender_verifier=None,delivery_verifier=None):
     with engine.begin() as conn:
         cursor=conn.execute(text('SELECT * FROM rtm_case_mail_sync WHERE mailbox=:mailbox AND folder=:folder'),{'mailbox':config.mailbox,'folder':folder}).mappings().one_or_none()
         if not cursor:raise MailRejected('MAIL_SYNC_BASELINE_REQUIRED')
@@ -176,20 +197,36 @@ def sync_folder(engine,config,folder,storage,*,imap_factory=imaplib.IMAP4_SSL,se
         for uid in uids:
             status,size_data=connection.uid('fetch',str(uid),'(RFC822.SIZE)')
             match=re.search(rb'RFC822.SIZE (\d+)',b' '.join(v for v in size_data if isinstance(v,bytes)))
-            if status!='OK' or not match or int(match[1])>MAX_MESSAGE:raise MailRejected('MAIL_MESSAGE_SIZE_UNAVAILABLE')
+            if status!='OK' or not match:raise MailRejected('MAIL_MESSAGE_SIZE_UNAVAILABLE')
+            size=int(match[1])
+            if not 0<size<=MAX_MESSAGE:
+                quarantine_uid(engine,config,folder,cursor['uidvalidity'],uid,size,'MAIL_SIZE_REJECTED',storage)
+                continue
             status,body_data=connection.uid('fetch',str(uid),'(BODY.PEEK[])')
             raws=[part[1] for part in body_data if isinstance(part,tuple) and isinstance(part[1],bytes)]
             if status!='OK' or len(raws)!=1:raise MailRejected('MAIL_FETCH_FAILED')
             raw=raws[0]
+            if len(raw)!=size:raise MailRejected('MAIL_FETCH_SIZE_MISMATCH')
+            try:parse_original(raw)
+            except MailRejected as exc:
+                quarantine_uid(engine,config,folder,cursor['uidvalidity'],uid,size,str(exc),storage,raw)
+                continue
             verified=bool(sender_verifier and sender_verifier(raw))
             direction='incoming' if folder.upper()=='INBOX' else 'outgoing_external'
-            with engine.begin() as conn:
-                ingested=ingest(conn,raw,folder=folder,uidvalidity=cursor['uidvalidity'],uid=uid,
-                    direction=direction,trusted_sender=verified,storage=storage,mailbox=config.mailbox)
-                conn.execute(text('UPDATE rtm_case_mail_sync SET last_uid=:uid WHERE mailbox=:mailbox AND folder=:folder'),{'uid':uid,'mailbox':config.mailbox,'folder':folder})
-            if ingested not in {'duplicate','outside_dedicated_mailbox_scope'}:
-                from rtm_core.case_mail_attachments import scan_message
-                scan_message(engine,ingested,storage)
+            if delivery_verifier is None:
+                from rtm_core.case_mail_authentication import authenticated_delivery_report
+                delivery_verified=authenticated_delivery_report(raw,config.delivery_senders)
+            else:delivery_verified=bool(delivery_verifier(raw))
+            try:
+                with engine.begin() as conn:
+                    ingest(conn,raw,folder=folder,uidvalidity=cursor['uidvalidity'],uid=uid,
+                        direction=direction,trusted_sender=verified,storage=storage,mailbox=config.mailbox,trusted_delivery=delivery_verified)
+                    advance_cursor(conn,config,folder,uid)
+            except HTTPException as exc:
+                if exc.status_code!=409 or exc.detail!={'code':'MAIL_MESSAGE_ID_COLLISION'}:raise
+                quarantine_uid(engine,config,folder,cursor['uidvalidity'],uid,size,'MAIL_MESSAGE_ID_COLLISION',storage,raw)
+            # Heavy validation is a separate, durable phase. Its markers already
+            # committed with import/cursor; an interruption here cannot lose work.
         with engine.begin() as conn:
             conn.execute(text('UPDATE rtm_case_mail_sync SET last_success_at=:now,error_code=NULL WHERE mailbox=:mailbox AND folder=:folder'),{'now':now(),'mailbox':config.mailbox,'folder':folder})
         return len(uids)
@@ -207,9 +244,18 @@ def sync_folder(engine,config,folder,storage,*,imap_factory=imaplib.IMAP4_SSL,se
 def tick(engine,*,source=None,storage=None,sender_verifier=None):
     config=configuration(source);storage=storage or B2MailStorage(config.mailbox)
     from rtm_core.case_mail_attachments import retry_pending
-    retry_pending(engine,config.mailbox,storage)
+    result={'ok':True,'folders':{},'attachments':None,'outgoing':None}
     if sender_verifier is None:
         from rtm_core.case_mail_authentication import authenticated_sender
         sender_verifier=authenticated_sender
-    for folder in config.folders:sync_folder(engine,config,folder,storage,sender_verifier=sender_verifier)
-    return send_one(engine,config,storage)
+    for folder in config.folders:
+        try:result['folders'][folder]={'ok':True,'processed':sync_folder(engine,config,folder,storage,sender_verifier=sender_verifier)}
+        except Exception:
+            result['ok']=False;result['folders'][folder]={'ok':False,'code':'MAIL_SYNC_INCOMPLETE'}
+    try:
+        result['attachments']=retry_pending(engine,config.mailbox,storage)
+        if result['attachments']['unavailable']:result['ok']=False
+    except Exception:result['ok']=False;result['attachments']={'code':'MAIL_VALIDATION_INCOMPLETE'}
+    try:result['outgoing']=send_one(engine,config,storage)
+    except Exception:result['ok']=False;result['outgoing']={'code':'MAIL_OUTBOX_INCOMPLETE'}
+    return result
