@@ -92,7 +92,7 @@ def parse_original(raw):
         'automation_authority':False,'read_by_client':None}
 
 
-def correlate(message, known_threads, participants, *, direction, trusted_sender=False):
+def correlate(message, known_threads, participants, *, direction, trusted_sender=False, mailbox=MAILBOX):
     """Headers AND approved participants AND trusted reception evidence required.
 
     trusted_sender must come from the receiver's verified authentication result,
@@ -105,15 +105,16 @@ def correlate(message, known_threads, participants, *, direction, trusted_sender
     case_id=next(iter(candidates));allowed=set(participants.get(case_id,()))
     if direction=='incoming':
         if not trusted_sender:return None,'sender_authentication_unverified'
-        if message['sender'] not in allowed or MAILBOX not in message['recipients']:
+        if message['sender'] not in allowed or mailbox not in message['recipients']:
             return None,'participants_do_not_match'
-    elif message['sender']!=MAILBOX or not message['recipients'] or not set(message['recipients']).issubset(allowed):
+    elif message['sender']!=mailbox or not message['recipients'] or not set(message['recipients']).issubset(allowed):
         return None,'participants_do_not_match'
     return case_id,'thread_and_participants_verified'
 
 
-def prepare_original(*, operation_id, recipient, subject, body, reply_to_id=None, references=(), now=None):
+def prepare_original(*, operation_id, recipient, subject, body, reply_to_id=None, references=(), now=None, mailbox=MAILBOX):
     operation=str(UUID(str(operation_id)));recipient=address(recipient)
+    mailbox=address(mailbox)
     if not isinstance(subject,str) or not 1<=len(subject)<=200 or any(c in subject for c in '\r\n\0'):
         raise MailRejected('MAIL_SUBJECT_INVALID')
     if not isinstance(body,str) or not 1<=len(body)<=50000 or '\0' in body:
@@ -122,9 +123,9 @@ def prepare_original(*, operation_id, recipient, subject, body, reply_to_id=None
     if reply_to_id:refs.append(reply_to_id)
     if any(not MESSAGE_ID.fullmatch(ref) for ref in refs):raise MailRejected('MAIL_REFERENCE_INVALID')
     msg=EmailMessage(policy=policy.SMTP)
-    msg['From']=f'{DISPLAY_NAME} <{MAILBOX}>';msg['To']=recipient
+    msg['From']=f'{DISPLAY_NAME} <{mailbox}>';msg['To']=recipient
     msg['Subject']=subject;msg['Date']=format_datetime(now or datetime.now(timezone.utc))
-    msg['Message-ID']=f'<rtm.{operation}@resuelvetusmovidas.es>'
+    msg['Message-ID']=f'<rtm.{operation}@{mailbox.split("@")[1]}>'
     if reply_to_id:msg['In-Reply-To']=reply_to_id
     if refs:msg['References']=' '.join(dict.fromkeys(refs))
     msg.set_content(body)

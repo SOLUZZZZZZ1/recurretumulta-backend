@@ -442,11 +442,30 @@ async def stripe_webhook(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Webhook inválido")
 
-    if event["type"] == "checkout.session.completed":
+    if event["type"] in {"checkout.session.completed", "checkout.session.async_payment_succeeded"}:
         session = event["data"]["object"]
+        # The independently versioned balance contract has its own verified
+        # webhook and ledger. It must never replace the initial study payment or
+        # invoke the legacy post-payment automation, even if Stripe delivers it
+        # to both configured endpoints.
+        if session.get("metadata", {}).get("contract") == "rtm_management_balance_v1":
+            return {"ok": True, "handled_by": "management_balance_webhook"}
+        if session.get("payment_status") != "paid":
+            return {"ok": True, "payment_confirmation_pending": True}
         case_id = session["metadata"]["case_id"]
         engine = get_engine()
         with engine.begin() as conn:
+            # A repeated or late INITIAL notification must also preserve the
+            # recorded receipt and the study already being worked on.
+            recorded = conn.execute(text("SELECT payment_status,stripe_session_id,stripe_payment_intent "
+                "FROM cases WHERE id=:id FOR UPDATE"), {"id":case_id}).mappings().one_or_none()
+            if not recorded:
+                raise HTTPException(status_code=404, detail="case_id no existe")
+            if recorded["payment_status"] == "paid":
+                if (recorded["stripe_session_id"] == session["id"]
+                        and recorded["stripe_payment_intent"] == session.get("payment_intent")):
+                    return {"ok": True, "already_recorded": True}
+                raise HTTPException(status_code=409, detail="Pago anterior diferente; reconciliación necesaria")
             conn.execute(
                 text(
                     """

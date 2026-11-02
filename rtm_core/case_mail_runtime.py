@@ -22,6 +22,19 @@ class MailConfig:
     password:str
     allowed_recipients:tuple[str,...]
     folders:tuple[str,...]
+    mailbox:str=MAILBOX
+    username:str=MAILBOX
+    smtp_port:int=465
+    smtp_tls:str='implicit'
+    authserv_id:str=''
+
+
+def configured_mailbox(source=None):
+    source=os.environ if source is None else source
+    from rtm_core.case_mail import address
+    if source.get('RTM_CASE_MAIL_DEDICATED_CONFIRMED')!='1':
+        raise MailRejected('MAILBOX_SCOPE_NOT_CONFIRMED')
+    return address(source.get('RTM_CASE_MAIL_ADDRESS',''))
 
 
 def configuration(source=None):
@@ -29,8 +42,7 @@ def configuration(source=None):
     if source.get('RTM_ENABLE_CASE_MAIL')!='1' or source.get('RTM_CASE_MAIL_WORKER_ENABLED')!='1':
         raise MailRejected('MAIL_WORKER_NOT_ENABLED')
     if not load_policy(source):raise MailRejected('MAIL_CASEWORK_PROFILE_REQUIRED')
-    if source.get('RTM_CASE_MAIL_ADDRESS')!=MAILBOX:
-        raise MailRejected('MAIL_DEDICATED_MAILBOX_REQUIRED')
+    mailbox=configured_mailbox(source)
     if source.get('RTM_CASE_MAIL_DEDICATED_CONFIRMED')!='1':
         raise MailRejected('MAILBOX_SCOPE_NOT_CONFIRMED')
     hosts=[]
@@ -48,21 +60,29 @@ def configuration(source=None):
     folders=tuple(source.get('RTM_CASE_MAIL_FOLDERS','').split(','))
     if not 1<=len(folders)<=3 or any(not re.fullmatch(r'[A-Za-z0-9_. /-]{1,80}',f) for f in folders):
         raise MailRejected('MAIL_FOLDERS_NOT_CONFIGURED')
-    return MailConfig(hosts[0],hosts[1],secret,recipients,folders)
+    tls=source.get('RTM_CASE_MAIL_SMTP_TLS','implicit')
+    if tls not in {'implicit','starttls'}:raise MailRejected('MAIL_TLS_CONFIGURATION_INVALID')
+    port=465 if tls=='implicit' else 587
+    username=source.get('RTM_CASE_MAIL_USERNAME',mailbox).strip()
+    if not username or any(c in username for c in '\r\n\0'):raise MailRejected('MAIL_USERNAME_INVALID')
+    # The trusted receiving boundary must be verified against the real provider.
+    authserv=source.get('RTM_CASE_MAIL_AUTHSERV_ID','').strip().lower()
+    return MailConfig(hosts[0],hosts[1],secret,recipients,folders,mailbox,username,port,tls,authserv)
 
 
 class B2MailStorage:
-    def __init__(self):
+    def __init__(self,mailbox=None):
         from b2_storage import get_b2_bucket,get_s3_client
         self.bucket=get_b2_bucket();self.client=get_s3_client()
+        self.mailbox=mailbox or configured_mailbox()
     def put(self,raw):
         if not 0<len(raw)<=MAX_MESSAGE:raise MailRejected('MAIL_SIZE_REJECTED')
-        key='case-mail/'+sha(MAILBOX.encode())+'/'+sha(raw)+'.eml'
+        key='case-mail/'+sha(self.mailbox.encode())+'/'+sha(raw)+'.eml'
         # Content-addressed: retries can only write identical bytes to this key.
         self.client.put_object(Bucket=self.bucket,Key=key,Body=raw,ContentType='message/rfc822')
         return key
     def get(self,key,expected):
-        prefix='case-mail/'+sha(MAILBOX.encode())+'/'
+        prefix='case-mail/'+sha(self.mailbox.encode())+'/'
         if key!=prefix+expected+'.eml':raise MailRejected('MAIL_CUSTODY_SCOPE_INVALID')
         body=None
         try:
@@ -75,16 +95,21 @@ class B2MailStorage:
             if body is not None:body.close()
 
 
-def send_original(config,raw,recipient,*,smtp_factory=smtplib.SMTP_SSL):
+def send_original(config,raw,recipient,*,smtp_factory=None):
     if recipient not in config.allowed_recipients:return 'failed','RECIPIENT_OUTSIDE_CONTROLLED_PILOT'
     message=parse_original(raw)
-    if message['sender']!=MAILBOX or message['recipients']!=[recipient] or message['attachments']:
+    if message['sender']!=config.mailbox or message['recipients']!=[recipient] or message['attachments']:
         return 'failed','OUTGOING_MESSAGE_SCOPE_INVALID'
     smtp=None;data_started=False;accepted=False
     try:
-        smtp=smtp_factory(config.smtp_host,465,timeout=20,context=ssl.create_default_context())
-        smtp.ehlo();smtp.login(MAILBOX,config.password)
-        if smtp.mail(MAILBOX)[0]!=250:return 'failed','SMTP_MAIL_REJECTED'
+        if config.smtp_tls=='starttls':
+            smtp=(smtp_factory or smtplib.SMTP)(config.smtp_host,config.smtp_port,timeout=20)
+            smtp.ehlo();smtp.starttls(context=ssl.create_default_context());smtp.ehlo()
+        else:
+            smtp=(smtp_factory or smtplib.SMTP_SSL)(config.smtp_host,config.smtp_port,timeout=20,context=ssl.create_default_context())
+            smtp.ehlo()
+        smtp.login(config.username,config.password)
+        if smtp.mail(config.mailbox)[0]!=250:return 'failed','SMTP_MAIL_REJECTED'
         if smtp.rcpt(recipient)[0] not in {250,251}:return 'failed','SMTP_RECIPIENT_REJECTED'
         data_started=True
         code,_=smtp.data(raw)
@@ -104,7 +129,7 @@ def send_original(config,raw,recipient,*,smtp_factory=smtplib.SMTP_SSL):
 
 def send_one(engine,config,storage,*,transport=send_original):
     with engine.begin() as conn:
-        expire_leases(conn);job=claim(conn)
+        expire_leases(conn);job=claim(conn,config.mailbox)
     if not job:return False
     mid,token=job
     try:
@@ -112,6 +137,15 @@ def send_one(engine,config,storage,*,transport=send_original):
             row=conn.execute(text('SELECT * FROM rtm_case_messages WHERE id=:id'),{'id':mid}).mappings().one()
             recipient=obj(row['payload'])['recipients'][0]
             approved=conn.execute(text('SELECT id FROM rtm_case_mail_participants WHERE case_id=:case_id AND email=:email AND active=true'),{'case_id':str(row['case_id']),'email':recipient}).scalar()
+            relation=obj(row['relation'])
+            if relation.get('type')=='management_quote':
+                from rtm_core.management_store import quote_row
+                current=quote_row(conn,str(row['case_id']))
+                approved=approved and current and str(current['id'])==relation['quote_id'] and current['state'] in {'communicated','accepted','settled'}
+            elif relation.get('type')=='client_access':
+                import time
+                approved=approved and bool(conn.execute(text('SELECT verifier FROM rtm_client_links WHERE verifier=:v AND consumed_at IS NULL AND expires_at>:now'),
+                    {'v':relation['link_verifier'],'now':int(time.time())}).scalar())
             original=conn.execute(text('SELECT custody_key,sha256 FROM rtm_case_mail_originals WHERE source_key=:source'),{'source':'prepared:'+mid}).mappings().one()
         if not approved:result,code='failed','RECIPIENT_VERIFICATION_REVOKED'
         else:
@@ -126,13 +160,13 @@ def send_one(engine,config,storage,*,transport=send_original):
 
 def sync_folder(engine,config,folder,storage,*,imap_factory=imaplib.IMAP4_SSL,sender_verifier=None):
     with engine.begin() as conn:
-        cursor=conn.execute(text('SELECT * FROM rtm_case_mail_sync WHERE mailbox=:mailbox AND folder=:folder'),{'mailbox':MAILBOX,'folder':folder}).mappings().one_or_none()
+        cursor=conn.execute(text('SELECT * FROM rtm_case_mail_sync WHERE mailbox=:mailbox AND folder=:folder'),{'mailbox':config.mailbox,'folder':folder}).mappings().one_or_none()
         if not cursor:raise MailRejected('MAIL_SYNC_BASELINE_REQUIRED')
-        conn.execute(text('UPDATE rtm_case_mail_sync SET last_attempt_at=:now WHERE mailbox=:mailbox AND folder=:folder'),{'now':now(),'mailbox':MAILBOX,'folder':folder})
+        conn.execute(text('UPDATE rtm_case_mail_sync SET last_attempt_at=:now WHERE mailbox=:mailbox AND folder=:folder'),{'now':now(),'mailbox':config.mailbox,'folder':folder})
     connection=None
     try:
         connection=imap_factory(config.imap_host,993,ssl_context=ssl.create_default_context(),timeout=20)
-        connection.login(MAILBOX,config.password)
+        connection.login(config.username,config.password)
         if connection.select('"'+folder+'"',readonly=True)[0]!='OK':raise MailRejected('MAIL_FOLDER_UNAVAILABLE')
         validity=connection.response('UIDVALIDITY')[1]
         if not validity or int(validity[0])!=cursor['uidvalidity']:raise MailRejected('MAIL_UIDVALIDITY_CHANGED_REVIEW_REQUIRED')
@@ -150,16 +184,19 @@ def sync_folder(engine,config,folder,storage,*,imap_factory=imaplib.IMAP4_SSL,se
             verified=bool(sender_verifier and sender_verifier(raw))
             direction='incoming' if folder.upper()=='INBOX' else 'outgoing_external'
             with engine.begin() as conn:
-                ingest(conn,raw,folder=folder,uidvalidity=cursor['uidvalidity'],uid=uid,
-                    direction=direction,trusted_sender=verified,storage=storage)
-                conn.execute(text('UPDATE rtm_case_mail_sync SET last_uid=:uid WHERE mailbox=:mailbox AND folder=:folder'),{'uid':uid,'mailbox':MAILBOX,'folder':folder})
+                ingested=ingest(conn,raw,folder=folder,uidvalidity=cursor['uidvalidity'],uid=uid,
+                    direction=direction,trusted_sender=verified,storage=storage,mailbox=config.mailbox)
+                conn.execute(text('UPDATE rtm_case_mail_sync SET last_uid=:uid WHERE mailbox=:mailbox AND folder=:folder'),{'uid':uid,'mailbox':config.mailbox,'folder':folder})
+            if ingested not in {'duplicate','outside_dedicated_mailbox_scope'}:
+                from rtm_core.case_mail_attachments import scan_message
+                scan_message(engine,ingested,storage)
         with engine.begin() as conn:
-            conn.execute(text('UPDATE rtm_case_mail_sync SET last_success_at=:now,error_code=NULL WHERE mailbox=:mailbox AND folder=:folder'),{'now':now(),'mailbox':MAILBOX,'folder':folder})
+            conn.execute(text('UPDATE rtm_case_mail_sync SET last_success_at=:now,error_code=NULL WHERE mailbox=:mailbox AND folder=:folder'),{'now':now(),'mailbox':config.mailbox,'folder':folder})
         return len(uids)
     except Exception as exc:
         code=str(exc) if isinstance(exc,MailRejected) else 'MAIL_SYNC_FAILED'
         with engine.begin() as conn:
-            conn.execute(text('UPDATE rtm_case_mail_sync SET error_code=:code WHERE mailbox=:mailbox AND folder=:folder'),{'code':code,'mailbox':MAILBOX,'folder':folder})
+            conn.execute(text('UPDATE rtm_case_mail_sync SET error_code=:code WHERE mailbox=:mailbox AND folder=:folder'),{'code':code,'mailbox':config.mailbox,'folder':folder})
         raise MailRejected(code) from None
     finally:
         if connection:
@@ -168,6 +205,9 @@ def sync_folder(engine,config,folder,storage,*,imap_factory=imaplib.IMAP4_SSL,se
 
 
 def tick(engine,*,source=None,storage=None,sender_verifier=None):
-    config=configuration(source);storage=storage or B2MailStorage()
+    config=configuration(source);storage=storage or B2MailStorage(config.mailbox)
+    if sender_verifier is None:
+        from rtm_core.case_mail_authentication import authenticated_sender
+        sender_verifier=authenticated_sender
     for folder in config.folders:sync_folder(engine,config,folder,storage,sender_verifier=sender_verifier)
     return send_one(engine,config,storage)
