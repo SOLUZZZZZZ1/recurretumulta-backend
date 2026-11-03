@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from database import get_engine
+from rtm_core.trusted_origins import trusted_frontend_origin
 
 router = APIRouter(prefix="/billing", tags=["billing-dynamic"])
 
@@ -23,7 +24,7 @@ def _require_env(name: str) -> str:
     return v
 
 def _frontend_base() -> str:
-    return _env("FRONTEND_BASE_URL", "https://www.recurretumulta.eu").rstrip("/")
+    return trusted_frontend_origin()
 
 def _count_docs(case_id: str) -> int:
     engine = get_engine()

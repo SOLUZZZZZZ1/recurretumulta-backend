@@ -1,6 +1,6 @@
 import os
-import smtplib
 from email.message import EmailMessage
+from smtp_transport import smtp_connection, smtp_password
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr, Field
@@ -10,7 +10,7 @@ router = APIRouter()
 SMTP_HOST = os.getenv("SMTP_HOST")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "info@recurretumulta.eu")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+SMTP_PASSWORD = smtp_password()
 SMTP_FROM = os.getenv("SMTP_FROM", "info@recurretumulta.eu")
 CONTACT_TO = os.getenv("CONTACT_TO", "info@recurretumulta.eu")
 SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
@@ -50,9 +50,7 @@ def send_contact_email(payload: ContactRequest):
     msg.set_content(body)
 
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
-            if SMTP_USE_TLS:
-                server.starttls()
+        with smtp_connection(SMTP_HOST, SMTP_PORT, starttls=SMTP_USE_TLS, timeout=30) as server:
             server.login(SMTP_USER, SMTP_PASSWORD)
             server.send_message(msg)
     except Exception:
