@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Mapping
 from uuid import UUID
+from rtm_core.trusted_origins import PUBLIC_CASEWORK_ORIGINS
 
 FLAG = 'RTM_ENABLE_PRODUCTION_CASEWORK'
 _OFF = {'', '0', 'false', 'off', 'no'}
@@ -51,7 +52,7 @@ def load_policy(source: Mapping[str, str], *, now=None) -> CaseworkPolicy | None
     if source.get('RENDER_SERVICE_NAME') != 'recurretumulta-backend':
         raise CaseworkConfigurationError('Public backend identity mismatch')
     origin = source.get('RTM_CASEWORK_PUBLIC_ORIGIN')
-    if origin != 'https://www.recurretumulta.eu':
+    if origin not in PUBLIC_CASEWORK_ORIGINS:
         raise CaseworkConfigurationError('Public frontend identity mismatch')
     try:
         expiry = datetime.fromisoformat(str(source.get('RTM_CASEWORK_EXPIRES_AT') or '').replace('Z', '+00:00'))
