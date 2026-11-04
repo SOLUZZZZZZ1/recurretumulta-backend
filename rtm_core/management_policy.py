@@ -1,8 +1,7 @@
 """An explicit extension of the existing per-case, time-limited OPS profile."""
 from dataclasses import dataclass
 import os
-from rtm_core.production_casework import load_policy
-from rtm_core.trusted_origins import PUBLIC_CASEWORK_ORIGINS
+from rtm_core.casework_policy import load_policy, origin_allowed
 from rtm_core.management_contract import ManagementRejected
 
 
@@ -19,7 +18,7 @@ class ManagementPolicy:
     agreed_total_cents: int | None
 
 
-def configuration(source=None, *, for_notification=False, mode=None):
+def configuration(source=None, *, for_notification=False, mode=None, for_worker=False):
     source = os.environ if source is None else source
     enabled=source.get('RTM_ENABLE_MANAGEMENT_JOURNEY')=='1'
     reconciliation=source.get('RTM_ENABLE_MANAGEMENT_RECONCILIATION')=='1'
@@ -32,7 +31,7 @@ def configuration(source=None, *, for_notification=False, mode=None):
     # they never create a checkout, extend access, generate or submit a resource.
     if not for_notification:
         try:
-            existing = load_policy(source)
+            existing = load_policy(source, service_name='rtm-case-mail-pilot' if for_worker else 'recurretumulta-backend')
         except ValueError:
             raise ManagementRejected('MANAGEMENT_ACCESS_NOT_ACTIVE', 403) from None
         if not existing:
@@ -45,7 +44,7 @@ def configuration(source=None, *, for_notification=False, mode=None):
         except ValueError:
             raise ManagementRejected('MANAGEMENT_CASE_SCOPE_INVALID', 503) from None
         origin = source.get('RTM_CASEWORK_PUBLIC_ORIGIN')
-    if origin not in PUBLIC_CASEWORK_ORIGINS:
+    if not origin_allowed(source, origin, worker=for_worker):
         raise ManagementRejected('MANAGEMENT_ORIGIN_INVALID', 503)
     account = source.get('RTM_MANAGEMENT_STRIPE_ACCOUNT_ID', '')
     key = source.get('RTM_MANAGEMENT_STRIPE_TEST_KEY', '') if selected == 'test' else source.get('STRIPE_SECRET_KEY', '')

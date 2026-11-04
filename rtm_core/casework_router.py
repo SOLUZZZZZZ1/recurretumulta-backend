@@ -17,7 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from database import get_engine
 from rtm_core.document_viewer import document_row, read_custody, render
 from rtm_core.operator_auth_router import load_operator_session_with_device_possession, _runtime_config
-from rtm_core.production_casework import load_policy, permits_case
+from rtm_core.casework_policy import load_policy, permits_case
 from rtm_core.paid_study import StudyInput, read_history, read_operation, save_assessment, reconcile_operation
 from workspace_read import build_workspace, scalar, MissingCase
 from sqlalchemy import text

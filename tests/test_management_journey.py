@@ -30,13 +30,15 @@ def sqlite_schema(conn):
         'CREATE TABLE rtm_study_assessments(case_id TEXT,operation_id TEXT,revision INTEGER,author_id TEXT,request_sha256 TEXT,snapshot TEXT,snapshot_sha256 TEXT,PRIMARY KEY(case_id,operation_id))',
         'CREATE TABLE ops_final_resources(id TEXT PRIMARY KEY,case_id TEXT,version INTEGER,content TEXT)']:
         conn.execute(text(sql))
-    for name in ('20261025_case_mail_candidate.sql','20261102_management_journey_candidate.sql','20261102_mail_ingestion_recovery_candidate.sql'):
+    for name in ('20261025_case_mail_candidate.sql','20261102_management_journey_candidate.sql','20261102_mail_ingestion_recovery_candidate.sql','20261104_management_generation_candidate.sql'):
         source=(Path(__file__).parents[1]/'migrations'/name).read_text(encoding='utf-8')
         source='\n'.join(line for line in source.splitlines() if not line.strip().startswith('--')).split('CREATE FUNCTION')[0]
         for piece in source.split(';'):
             sql='\n'.join(line for line in piece.splitlines() if not line.strip().startswith('--')).strip()
             if sql.startswith(('CREATE TABLE','CREATE INDEX')):
                 sql=sql.replace("'{}'::jsonb","'{}'").replace('DEFAULT NOW()','DEFAULT CURRENT_TIMESTAMP')
+                if sql.startswith('CREATE TABLE rtm_management_draft_versions'):
+                    sql=sql.replace('author_id UUID NOT NULL','author_id UUID')
                 sql=sql.replace("raw_sha256 ~ '^[a-f0-9]{64}$'","raw_sha256 REGEXP '^[a-f0-9]{64}$'")
                 conn.execute(text(sql))
 
@@ -78,7 +80,7 @@ class JourneyTest(unittest.TestCase):
 
     def quote(self,total=3900,previous=None):
         body=QuoteInput(operation_id=str(uuid4()),expected_quote_id=previous,study_operation_id=self.studyid,study_sha256=digest(self.study),
-            review_confirmed=True,title='Actuación sintética',scope='Preparación y revisión de un escrito sintético en una fase.',
+            review_confirmed=True,document_type='Alegaciones',title='Actuación sintética',scope='Preparación y revisión de un escrito sintético en una fase.',
             exclusions='Sin firma ni presentación.',client_summary='Explicación sintética autorizada para el cliente.',total_cents=total,
             expires_at=(datetime.now(timezone.utc)+timedelta(days=2)).isoformat())
         result=save_quote(self.conn,case_id=self.case,author=self.actor,body=body,receipt=self.proof,policy=self.policy)

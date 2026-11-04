@@ -25,7 +25,8 @@ from rtm_core.case_mail_runtime import B2MailStorage,configured_mailbox
 from rtm_core.case_mail import MailRejected
 from rtm_core.paid_study import read_history
 from rtm_core import management_client_access as client
-from rtm_core.trusted_origins import PUBLIC_CASEWORK_ORIGINS
+from rtm_core.casework_policy import origin_allowed
+from rtm_core.management_generation import projection as generation_projection, retry as retry_generation
 
 
 class ManagementRoute(APIRoute):
@@ -75,6 +76,7 @@ def overview(access=Depends(individual)):
             'amount_cents':initial['amount_cents'] if initial else None,'currency':'eur','mode':policy.mode},
         'balance':public_payment(obligation(context.conn,case_id=context.case_id,quote_id=str(quote['id'])) if quote else None),
         'drafts':versions(context.conn,context.case_id),'draft_requirements':requirements(context.conn,context.case_id,policy),
+        'generation':generation_projection(context.conn,context.case_id),
         'study_requirements':study_requirements(read_history(context.conn,context.case_id)['latest']),
         'verified_recipient':recipient,'agreed_total_cents':policy.agreed_total_cents,
         'tax_basis_points':policy.tax_basis_points,'tax_label':policy.tax_label,'presented':False}
@@ -117,6 +119,12 @@ def read_draft(version_id:UUID,access=Depends(individual)):
     context,_=access;result=version(context.conn,context.case_id,str(version_id))
     if not result:raise ManagementRejected('DRAFT_NOT_FOUND_IN_CASE',404)
     return {'ok':True,'version':result}
+
+
+@router.post(OPS+'/generation/{job_id}/retry')
+def resume_generation(job_id:UUID,access=Depends(individual)):
+    context,policy=access
+    return {'ok':True,'generation':retry_generation(context.conn,context.case_id,str(job_id),policy,context.session.operator_id)}
 
 
 @router.post(OPS+'/operations/{kind}/{operation_id}/reconcile')
@@ -173,7 +181,7 @@ def logout_client(body:LogoutInput,request:Request):
     # Revocation remains possible when new sales/access have been disabled or
     # the pilot expires. It cannot create a session or extend any permission.
     configured_origin=os.environ.get('RTM_CASEWORK_PUBLIC_ORIGIN')
-    if (configured_origin not in PUBLIC_CASEWORK_ORIGINS or request.headers.get('origin')!=configured_origin):
+    if (not origin_allowed(os.environ, configured_origin) or request.headers.get('origin')!=configured_origin):
         raise ManagementRejected('CLIENT_ORIGIN_DENIED',403)
     with connection() as conn:return client.logout(conn,token=request.cookies.get(client.COOKIE),expected_ref=body.session_ref)
 
@@ -195,13 +203,14 @@ def read_client(access=Depends(client_context)):
         # document custody coordinates, provider IDs or pending private drafts.
         q=quote['snapshot']
         quote={'id':q['id'],'revision':q['revision'],'sha256':quote['sha256'],'state':row['state'],
-            **{k:q[k] for k in ('title','scope','exclusions','client_summary','economics','expires_at','mode')}}
+            **{k:q[k] for k in ('title','scope','exclusions','client_summary','economics','expires_at','mode')},
+            'document_type':q.get('document_type')}
     initial=receipt(conn,case_id,policy.mode,'initial_study')
     return {'ok':True,'case_id':case_id,'session_ref':grant['session_ref'],'expires_at':grant['expires_at'],
         'quote':quote,'initial_study':{'state':'provider_verified' if initial else 'verification_required',
             'amount_cents':initial['amount_cents'] if initial else None,'currency':'eur'},
         'balance':public_payment(obligation(conn,case_id=case_id,quote_id=str(row['id'])) if quote else None),
-        'presented':False}
+        'generation':generation_projection(conn,case_id,public=True),'presented':False}
 
 
 class AcceptanceInput(BaseModel):

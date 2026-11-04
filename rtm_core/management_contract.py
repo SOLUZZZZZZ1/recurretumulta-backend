@@ -48,6 +48,7 @@ class QuoteInput(BaseModel):
     study_operation_id: str
     study_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
     review_confirmed: Literal[True]
+    document_type: Literal['Alegaciones', 'Recurso de reposición', 'Recurso de alzada']
     title: str = Field(min_length=5, max_length=200)
     scope: str = Field(min_length=20, max_length=12000)
     exclusions: str = Field(min_length=5, max_length=4000)
@@ -147,7 +148,7 @@ def offer(body, *, case_id, author, study, receipt, mode, account_id, revision,
         'created_at': now.isoformat(), 'expires_at': expiry.isoformat(),
         'expiry_meaning': 'commercial_offer_only', 'study_operation_id': body.study_operation_id,
         'study_sha256': body.study_sha256, 'review_confirmed_by': author.operator_id,
-        'title': body.title, 'scope': body.scope, 'exclusions': body.exclusions,
+        'title': body.title, 'document_type': body.document_type, 'scope': body.scope, 'exclusions': body.exclusions,
         'client_summary': body.client_summary, 'economics': economics, 'mode': mode,
         'study_receipt_id': receipt['id'], 'study_receipt_sha256': receipt['evidence_sha256'],
         'submission_authorized': False}

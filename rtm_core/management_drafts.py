@@ -121,6 +121,8 @@ def save(conn,*,case_id,author,body,policy):
     if body.action=='prepare':
         if current or legacy:raise ManagementRejected('EXISTING_RESOURCE_MUST_BE_RECOVERED')
         if not body.reviewed or body.content is not None:raise ManagementRejected('REVIEWED_LEGAL_INPUT_REQUIRED',422)
+        if quote['snapshot'].get('document_type') != body.reviewed.document_type:
+            raise ManagementRejected('DRAFT_CONTRACT_PHASE_MISMATCH')
         from types import SimpleNamespace
         facts=study['snapshot']['study']['facts']
         review=body.reviewed.model_dump()
@@ -152,7 +154,8 @@ def save(conn,*,case_id,author,body,policy):
         'sources':study['snapshot']['sources'],'reviewed_legal_inputs':reviewed,'legacy_source':legacy_ref,
         'content':content,'content_sha256':hashlib.sha256(content.encode()).hexdigest(),
         'author':{'id':author.operator_id,'name':author.display_name},'created_at':datetime.now(timezone.utc).isoformat(),
-        'correction_reason':body.correction_reason,'status':'working_draft','signed':False,'approved':False,'presented':False}
+        'correction_reason':body.correction_reason,'status':'working_draft','signed':False,'approved':False,'presented':False,
+        'generation':current['snapshot'].get('generation') if current else None}
     sha=digest(snapshot)
     conn.execute(text('INSERT INTO rtm_management_draft_versions '
         '(id,case_id,operation_id,revision,previous_id,based_on_id,quote_id,author_id,snapshot,snapshot_sha256) '

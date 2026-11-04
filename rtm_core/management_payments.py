@@ -180,7 +180,10 @@ def apply_provider_read(conn, row, session, *, provider_account_id, event_id=Non
     if event_id:
         conn.execute(text('INSERT INTO rtm_management_webhooks(event_id,mode,account_id,obligation_id) VALUES (:event,:mode,:account,:id)'),
             {'event':event_id,'mode':row['mode'],'account':row['account_id'],'id':row['id']})
-    result=public_payment(obligation(conn,obligation_id=row['id']))
+    settled=obligation(conn,obligation_id=row['id'])
+    from rtm_core.management_generation import enqueue
+    enqueue(conn,settled)
+    result=public_payment(settled)
     if url:result['checkout_url']=url
     return result
 

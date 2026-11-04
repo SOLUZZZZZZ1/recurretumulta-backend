@@ -24,7 +24,7 @@ from rtm_core.local_operator_auth import (
     local_operator_auth_requested,
 )
 from rtm_core.operator_auth_crypto import hmac_identifier
-from rtm_core.production_casework import (
+from rtm_core.casework_policy import (
     CaseworkConfigurationError, load_policy as load_casework_policy,
     requested as production_casework_requested,
 )
@@ -70,6 +70,7 @@ class OperatorAuthRuntimeConfig:
     )
     local_development: bool = False
     production_casework: bool = False
+    provider_test_casework: bool = False
     allowed_operator_ids: tuple[str, ...] = ()
 
     @property
@@ -266,7 +267,8 @@ def load_operator_auth_runtime_config(
         evidence_retention_days=retention_days,
         reauthentication_max_age_seconds=reauthentication_max_age_seconds,
         local_development=local_development,
-        production_casework=production_policy is not None,
+        production_casework=production_policy is not None and environment == 'production',
+        provider_test_casework=production_policy is not None and environment == 'staging',
         allowed_operator_ids=production_policy.operator_ids if production_policy else (),
     )
     if require_enabled and not enabled:

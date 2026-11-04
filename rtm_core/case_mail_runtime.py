@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from rtm_core.case_mail import MAILBOX,MAX_MESSAGE,MailRejected,sha,parse_original
 from rtm_core.case_mail_repository import claim,finish,expire_leases,ingest,now,obj
-from rtm_core.production_casework import load_policy
+from rtm_core.casework_policy import load_policy
 
 
 @dataclass(frozen=True,repr=False)
