@@ -28,6 +28,7 @@ from vehicle_removal_router import router as vehicle_removal_router
 # ✅ AÑADIDO: OPS (operador)
 from ops import router as ops_router
 from ops_restaurant_reservations import router as ops_restaurant_router
+from case_recovery import router as case_recovery_router
 from cases import router as cases_router
 from partner import router as partner_router
 from ops_override import router as ops_override_router
@@ -35,6 +36,7 @@ from workspace_router import router as workspace_read_router
 from rtm_core.operator_auth_router import router as individual_operator_router
 from rtm_core.casework_router import router as paid_casework_router
 from rtm_core.case_mail_router import router as case_mail_router
+from rtm_core.management_router import router as management_router
 
 
 app = FastAPI(title="RecurreTuMulta Backend", version="0.1.0")
@@ -73,6 +75,7 @@ app.include_router(vehicle_removal_router)
 # ✅ NUEVO: router de operador (/ops/*)
 app.include_router(ops_router)
 app.include_router(ops_restaurant_router)
+app.include_router(case_recovery_router)
 app.include_router(cases_router)
 app.include_router(partner_router)
 app.include_router(ops_override_router)
@@ -80,6 +83,7 @@ app.include_router(workspace_read_router)
 app.include_router(individual_operator_router)
 app.include_router(paid_casework_router)
 app.include_router(case_mail_router)
+app.include_router(management_router)
 
 @app.get("/health", response_model=HealthResponse)
 def health():

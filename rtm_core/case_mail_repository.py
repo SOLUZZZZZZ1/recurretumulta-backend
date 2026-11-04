@@ -1,6 +1,7 @@
 """Persistent conversation/outbox. Caller owns transactions; never sends inline."""
 from datetime import datetime,timezone,timedelta
 import json
+import re
 from uuid import uuid4
 from sqlalchemy import text
 from fastapi import HTTPException
@@ -19,9 +20,27 @@ def event(conn,message_id,state,actor=None,evidence=None):
 
 
 def public_message(row):
+    payload=dict(obj(row['payload']));relation=dict(obj(row['relation']))
+    if relation.get('type')=='client_access':
+        payload['body']='Acceso privado solicitado por el cliente. El enlace de identificación no se muestra en OPS.'
+        payload['credential_redacted']=True
+        relation.pop('link_verifier',None)
+    # Replies may quote a still-live identification link. The protected original
+    # remains exact; the OPS text projection must not expose that credential.
+    def redact(value):
+        if isinstance(value,str):
+            return re.sub(r'([?&]enlace=)[A-Za-z0-9_-]{43}',r'\1[credencial privada]',value)
+        if isinstance(value,list):return [redact(item) for item in value]
+        if isinstance(value,dict):return {key:redact(item) for key,item in value.items()}
+        return value
+    clean=redact(payload)
+    if clean!=payload:clean['credential_redacted']=True
+    payload=clean
+    relation=redact(relation)
     return {'id':str(row['id']),'case_id':str(row['case_id']) if row['case_id'] else None,
-        'direction':row['direction'],'state':row['state'],'message':obj(row['payload']),
-        'relation':obj(row['relation']),'author_id':str(row['author_id']) if row['author_id'] else None,
+        'direction':row['direction'],'state':row['state'],'message':payload,
+        'relation':relation,'author_id':str(row['author_id']) if row['author_id'] else None,
+        'request_sha256':row['request_sha256'] if relation.get('type')!='client_access' else None,
         'created_at':str(row['created_at'])}
 
 
@@ -31,21 +50,27 @@ def message_for_case(conn,case_id,message_id):
     return row
 
 
-def conversation(conn,case_id,query=''):
+def conversation(conn,case_id,query='',*,mailbox=MAILBOX):
     if len(query)>200:raise HTTPException(422,{'code':'MAIL_SEARCH_TOO_LONG'})
-    # Parameterized, literal LIKE search. No message contents in application logs.
-    term=query.replace('!','!!').replace('%','!%').replace('_','!_')
-    rows=conn.execute(text("SELECT * FROM rtm_case_messages WHERE case_id=:case_id AND LOWER(CAST(payload AS TEXT)) LIKE :query ESCAPE '!' ORDER BY created_at,id LIMIT 201"),{'case_id':case_id,'query':'%'+term.lower()+'%'}).mappings().all()
+    # Search ONLY the redacted projection. Searching the private raw payload
+    # would let repeated prefix queries infer a client credential through hits.
+    # Bound work and report truncation instead of claiming a complete archive.
+    rows=conn.execute(text('SELECT * FROM rtm_case_messages WHERE case_id=:case_id ORDER BY created_at DESC,id DESC LIMIT 501'),{'case_id':case_id}).mappings().all()
+    projected=[public_message(r) for r in rows[:500]]
+    matched=[p for p in projected if query.casefold() in canonical(p['message']).casefold()]
     participants=conn.execute(text('SELECT email FROM rtm_case_mail_participants WHERE case_id=:case_id AND active=true ORDER BY email'),{'case_id':case_id}).scalars().all()
-    sync=conn.execute(text('SELECT folder,last_attempt_at,last_success_at,error_code FROM rtm_case_mail_sync WHERE mailbox=:mailbox'),{'mailbox':MAILBOX}).mappings().all()
-    return {'ok':True,'case_id':case_id,'messages':[public_message(r) for r in rows[:200]],
-        'truncated':len(rows)>200,'verified_recipients':list(participants),
+    sync=conn.execute(text('SELECT folder,last_attempt_at,last_success_at,error_code FROM rtm_case_mail_sync WHERE mailbox=:mailbox'),{'mailbox':mailbox}).mappings().all()
+    issues=conn.execute(text('SELECT code,COUNT(*) AS total FROM rtm_case_mail_ingest_issues WHERE mailbox=:mailbox GROUP BY code'),{'mailbox':mailbox}).mappings().all()
+    return {'ok':True,'case_id':case_id,'messages':list(reversed(matched[:200])),
+        'truncated':len(rows)>500 or len(matched)>200,'search_scan_limit':500,'verified_recipients':list(participants),
         'sync':{'state':'unconfigured' if not sync else ('error' if any(r['error_code'] for r in sync) else 'observed'),
                 'folders':[{k:str(v) if v is not None else None for k,v in r.items()} for r in sync]},
-        'mailbox':MAILBOX,'client_read_receipt':False}
+        'mailbox':mailbox,'client_read_receipt':False,
+        'ingestion_issues':[{'code':r['code'],'count':r['total']} for r in issues],
+        'pending_assignment':pending_assignment(conn,case_id,mailbox)}
 
 
-def prepare(conn,*,case_id,session,operation_id,recipient,subject,body,reply_id,storage,relation=None):
+def prepare(conn,*,case_id,session,operation_id,recipient,subject,body,reply_id,storage,relation=None,mailbox=MAILBOX):
     request={'case_id':case_id,'recipient':recipient,'subject':subject,'body':body,'reply_id':reply_id,'relation':relation or {}}
     request_sha=digest(request)
     lock=' FOR UPDATE' if conn.dialect.name=='postgresql' else ''
@@ -61,20 +86,22 @@ def prepare(conn,*,case_id,session,operation_id,recipient,subject,body,reply_id,
     reply=None
     if reply_id:reply=message_for_case(conn,case_id,reply_id)
     if relation:
-        # Public callers cannot invent a budget/review approval or delivery link.
-        raise HTTPException(409,{'code':'MAIL_VERSION_ADAPTER_REQUIRED'})
+        # Only this server adapter can bind an exact saved quote. The generic
+        # compose HTTP schema has no relation field and cannot forge an approval.
+        from rtm_core.management_mail import validate_relation
+        validate_relation(conn,case_id,relation)
     raw=prepare_original(operation_id=operation_id,recipient=allowed,subject=subject,body=body,
         reply_to_id=reply['original_id'] if reply else None,
-        references=obj(reply['payload'])['references'] if reply else ())
+        references=obj(reply['payload'])['references'] if reply else (),mailbox=mailbox)
     projection=parse_original(raw);key=storage.put(raw)
     message_id=operation_id
     conn.execute(text('''INSERT INTO rtm_case_messages
         (id,case_id,mailbox,direction,original_id,operation_id,request_sha256,state,payload,relation,author_id)
         VALUES (:id,:case_id,:mailbox,'outgoing',:original_id,:operation_id,:request_sha,'prepared','''+
         jvalue(conn,'payload')+','+jvalue(conn,'relation')+',:author_id)'),
-        {'id':message_id,'case_id':case_id,'mailbox':MAILBOX,'original_id':projection['original_id'],
+        {'id':message_id,'case_id':case_id,'mailbox':mailbox,'original_id':projection['original_id'],
          'operation_id':operation_id,'request_sha':request_sha,'payload':canonical(projection),
-         'relation':'{}','author_id':session.operator_id})
+         'relation':canonical(relation or {}),'author_id':session.operator_id})
     conn.execute(text('''INSERT INTO rtm_case_mail_originals(id,message_id,sha256,custody_key,source_key,size_bytes)
         VALUES (:id,:message_id,:sha,:key,:source,:size)'''),
         {'id':str(uuid4()),'message_id':message_id,'sha':sha(raw),'key':key,
@@ -99,9 +126,10 @@ def queue(conn,case_id,message_id,session):
     return public_message(message_for_case(conn,case_id,message_id))
 
 
-def claim(conn):
+def claim(conn,mailbox=MAILBOX,case_id=None):
     lock=' FOR UPDATE SKIP LOCKED' if conn.dialect.name=='postgresql' else ''
-    row=conn.execute(text("SELECT message_id FROM rtm_case_mail_jobs WHERE state='queued' ORDER BY message_id LIMIT 1"+lock)).mappings().one_or_none()
+    row=conn.execute(text("SELECT message_id FROM rtm_case_mail_jobs WHERE state='queued' AND message_id IN "
+        "(SELECT id FROM rtm_case_messages WHERE mailbox=:mailbox"+(' AND case_id=:case' if case_id else '')+") ORDER BY message_id LIMIT 1"+lock),{'mailbox':mailbox,**({'case':case_id} if case_id else {})}).mappings().one_or_none()
     if not row:return None
     token=str(uuid4());mid=str(row['message_id'])
     conn.execute(text("UPDATE rtm_case_mail_jobs SET state='sending',lease_token=:token,lease_until=:until,started_at=:now WHERE message_id=:id AND state='queued'"),{'token':token,'until':now()+timedelta(minutes=2),'now':now(),'id':mid})
@@ -119,26 +147,34 @@ def finish(conn,message_id,lease_token,state,code):
     return True
 
 
-def expire_leases(conn):
-    rows=conn.execute(text("SELECT message_id,lease_token FROM rtm_case_mail_jobs WHERE state='sending' AND lease_until<:now"),{'now':now()}).mappings().all()
+def expire_leases(conn,mailbox=None,case_id=None):
+    scope=" AND message_id IN (SELECT id FROM rtm_case_messages WHERE mailbox=:mailbox"+(' AND case_id=:case' if case_id else '')+")" if mailbox else ''
+    rows=conn.execute(text("SELECT message_id,lease_token FROM rtm_case_mail_jobs WHERE state='sending' AND lease_until<:now"+scope),{'now':now(),**({'mailbox':mailbox} if mailbox else {}),**({'case':case_id} if case_id else {})}).mappings().all()
     for row in rows:finish(conn,str(row['message_id']),str(row['lease_token']),'unknown','WORKER_INTERRUPTED_RECONCILE_REQUIRED')
     return len(rows)
 
 
-def ingest(conn,raw,*,folder,uidvalidity,uid,direction,trusted_sender,storage):
-    source=f'{MAILBOX}:{folder}:{uidvalidity}:{uid}'
+def ingest(conn,raw,*,folder,uidvalidity,uid,direction,trusted_sender,storage,mailbox=MAILBOX,trusted_delivery=False,allowed_case_id=None):
+    source=f'{mailbox}:{folder}:{uidvalidity}:{uid}'
     if conn.execute(text('SELECT id FROM rtm_case_mail_originals WHERE source_key=:source'),{'source':source}).scalar():return 'duplicate'
     message=parse_original(raw)
-    if direction=='incoming' and MAILBOX not in message['recipients']:
+    if direction=='incoming' and mailbox not in message['recipients']:
         return 'outside_dedicated_mailbox_scope'
-    if direction=='outgoing_external' and message['sender']!=MAILBOX:
+    if direction=='outgoing_external' and message['sender']!=mailbox:
         return 'outside_dedicated_mailbox_scope'
-    known={r['original_id']:str(r['case_id']) for r in conn.execute(text('SELECT original_id,case_id FROM rtm_case_messages WHERE case_id IS NOT NULL')).mappings()}
+    known={r['original_id']:str(r['case_id']) for r in conn.execute(text('SELECT original_id,case_id FROM rtm_case_messages WHERE case_id IS NOT NULL AND mailbox=:m'),{'m':mailbox}).mappings()}
     participants={}
     for row in conn.execute(text('SELECT case_id,email FROM rtm_case_mail_participants WHERE active=true')).mappings():
         participants.setdefault(str(row['case_id']),[]).append(row['email'])
-    case_id,reason=correlate(message,known,participants,direction=direction,trusted_sender=trusted_sender)
-    existing=conn.execute(text('SELECT * FROM rtm_case_messages WHERE mailbox=:mailbox AND original_id=:original_id'),{'mailbox':MAILBOX,'original_id':message['original_id']}).mappings().one_or_none()
+    case_id,reason=correlate(message,known,participants,direction=direction,trusted_sender=trusted_sender,mailbox=mailbox)
+    report=delivery_report(raw) if direction=='incoming' and trusted_delivery else None
+    if report:
+        target=delivery_target(conn,report,mailbox)
+        if target:case_id,reason=str(target['case_id']),'verified_provider_delivery_report'
+    existing=conn.execute(text('SELECT * FROM rtm_case_messages WHERE mailbox=:mailbox AND original_id=:original_id'),{'mailbox':mailbox,'original_id':message['original_id']}).mappings().one_or_none()
+    referenced={known[ref] for ref in message['references'] if ref in known}
+    if allowed_case_id and ((case_id and case_id!=allowed_case_id) or referenced-{allowed_case_id} or (existing and existing['case_id'] and str(existing['case_id'])!=allowed_case_id)):
+        return 'outside_pilot_scope'
     if existing:
         # A sent-folder copy confirms provider acceptance only if exact semantic
         # content and verified recipients match; never equates this with delivery.
@@ -154,21 +190,29 @@ def ingest(conn,raw,*,folder,uidvalidity,uid,direction,trusted_sender,storage):
         mid=str(uuid4());state='received' if case_id else 'pending_assignment'
         conn.execute(text('''INSERT INTO rtm_case_messages(id,case_id,mailbox,direction,original_id,state,payload,relation)
             VALUES (:id,:case_id,:mailbox,:direction,:original_id,:state,'''+jvalue(conn,'payload')+','+jvalue(conn,'relation')+')'),
-            {'id':mid,'case_id':case_id,'mailbox':MAILBOX,'direction':direction,'original_id':message['original_id'],
+            {'id':mid,'case_id':case_id,'mailbox':mailbox,'direction':direction,'original_id':message['original_id'],
              'state':state,'payload':canonical(message),'relation':canonical({'link_reason':reason})})
         event(conn,mid,state,evidence={'link_reason':reason,'no_legal_or_payment_effect':True})
     key=storage.put(raw)
     conn.execute(text('''INSERT INTO rtm_case_mail_originals(id,message_id,sha256,custody_key,source_key,size_bytes)
         VALUES (:id,:mid,:sha,:key,:source,:size)'''),{'id':str(uuid4()),'mid':mid,'sha':sha(raw),'key':key,'source':source,'size':len(raw)})
+    from rtm_core.case_mail_attachments import schedule_checks
+    schedule_checks(conn,mid,message)
+    if report:record_delivery_claim(conn,raw,trusted_provider=True,mailbox=mailbox)
     return mid
 
 
-def record_delivery_claim(conn,raw,*,trusted_provider=False):
+def delivery_target(conn,report,mailbox):
+    row=conn.execute(text("SELECT * FROM rtm_case_messages WHERE mailbox=:mailbox AND original_id=:id AND direction='outgoing'"),
+        {'mailbox':mailbox,'id':report['original_id']}).mappings().one_or_none()
+    return row if row and obj(row['payload'])['recipients']==[report['recipient']] else None
+
+
+def record_delivery_claim(conn,raw,*,trusted_provider=False,mailbox=MAILBOX):
     report=delivery_report(raw)
     if not report or not trusted_provider:return False
-    row=conn.execute(text("SELECT * FROM rtm_case_messages WHERE mailbox=:mailbox AND original_id=:id AND direction='outgoing'"),
-        {'mailbox':MAILBOX,'id':report['original_id']}).mappings().one_or_none()
-    if not row or obj(row['payload'])['recipients']!=[report['recipient']]:return False
+    row=delivery_target(conn,report,mailbox)
+    if not row:return False
     if row['state'] not in {'provider_accepted','unknown','sending'}:return False
     conn.execute(text('UPDATE rtm_case_messages SET state=:state WHERE id=:id'),{'state':report['state'],'id':str(row['id'])})
     conn.execute(text("UPDATE rtm_case_mail_jobs SET state='closed',finished_at=:now WHERE message_id=:id"),{'now':now(),'id':str(row['id'])})
@@ -176,20 +220,42 @@ def record_delivery_claim(conn,raw,*,trusted_provider=False):
     return True
 
 
-def pending_assignment(conn):
-    rows=conn.execute(text("SELECT * FROM rtm_case_messages WHERE mailbox=:mailbox AND case_id IS NULL AND state='pending_assignment' ORDER BY created_at,id LIMIT 101"),{'mailbox':MAILBOX}).mappings().all()
-    return {'ok':True,'messages':[public_message(r) for r in rows[:100]],'truncated':len(rows)>100}
+def pending_in_case_scope(conn,row,case_id):
+    """Never expose a cross-case thread through a single-case operator profile."""
+    if row['case_id'] is not None or row['state']!='pending_assignment':return False
+    message=obj(row['payload']);candidates=set()
+    for ref in message['references']:
+        matches=conn.execute(text('SELECT case_id FROM rtm_case_messages WHERE mailbox=:m AND original_id=:r AND case_id IS NOT NULL'),{'m':row['mailbox'],'r':ref}).scalars().all()
+        candidates.update(str(v) for v in matches)
+    if candidates!={case_id}:return False
+    allowed=set(conn.execute(text('SELECT email FROM rtm_case_mail_participants WHERE case_id=:c AND active=true'),{'c':case_id}).scalars())
+    if row['direction']=='incoming':return message['sender'] in allowed and row['mailbox'] in message['recipients']
+    return message['sender']==row['mailbox'] and bool(message['recipients']) and set(message['recipients']).issubset(allowed)
 
 
-def assign_pending(conn,case_id,message_id,session,evidence):
+def pending_assignment(conn,case_id,mailbox=MAILBOX):
+    rows=conn.execute(text("SELECT * FROM rtm_case_messages WHERE mailbox=:mailbox AND case_id IS NULL AND state='pending_assignment' ORDER BY created_at,id LIMIT 101"),{'mailbox':mailbox}).mappings().all()
+    return {'ok':True,'messages':[public_message(r) for r in rows[:100] if pending_in_case_scope(conn,r,case_id)],'truncated':len(rows)>100,
+        'scope':'Only single-case thread candidates. Unlinked or multi-case messages require a separately scoped review.'}
+
+
+def assign_pending(conn,case_id,message_id,session,evidence,expected_sha):
     lock=' FOR UPDATE' if conn.dialect.name=='postgresql' else ''
     row=conn.execute(text('SELECT * FROM rtm_case_messages WHERE id=:id'+lock),{'id':message_id}).mappings().one_or_none()
     if not row:raise HTTPException(404,{'code':'MAIL_PENDING_NOT_FOUND'})
-    if row['case_id'] is not None or row['state']!='pending_assignment':raise HTTPException(409,{'code':'MAIL_ASSIGNMENT_CHANGED'})
+    if row['case_id'] is not None:
+        prior=obj(row['relation'])
+        if str(row['case_id'])==case_id and prior.get('assigned_by')==session.operator_id and prior.get('verification')==evidence and obj(row['payload'])['raw_sha256']==expected_sha:return public_message(row)
+        raise HTTPException(409,{'code':'MAIL_ASSIGNMENT_CHANGED'})
+    if not pending_in_case_scope(conn,row,case_id):raise HTTPException(404,{'code':'MAIL_PENDING_NOT_IN_SCOPE'})
+    if obj(row['payload'])['raw_sha256']!=expected_sha:raise HTTPException(409,{'code':'MAIL_ASSIGNMENT_CONTENT_CHANGED'})
+    if not isinstance(evidence,str) or not 20<=len(evidence.strip())<=2000:raise HTTPException(422,{'code':'MAIL_INDEPENDENT_VERIFICATION_REQUIRED'})
     message=obj(row['payload']);participant=message['sender'] if row['direction']=='incoming' else message['recipients'][0]
     if not conn.execute(text('SELECT id FROM rtm_case_mail_participants WHERE case_id=:case_id AND email=:email AND active=true'),{'case_id':case_id,'email':participant}).scalar():
         raise HTTPException(409,{'code':'MAIL_PARTICIPANT_REQUIRES_VERIFICATION'})
-    relation={'link_reason':'operator_verified_assignment','verification':evidence}
+    relation={'link_reason':'operator_verified_assignment','verification':evidence,'assigned_by':session.operator_id}
     conn.execute(text("UPDATE rtm_case_messages SET case_id=:case_id,state='received',relation="+jvalue(conn,'relation')+' WHERE id=:id'),{'case_id':case_id,'relation':canonical(relation),'id':message_id})
     event(conn,message_id,'assigned',session.operator_id,{'case_id':case_id,'verification':evidence,'no_legal_or_payment_effect':True})
+    from rtm_core.case_mail_attachments import schedule_checks
+    schedule_checks(conn,message_id,message)
     return public_message(message_for_case(conn,case_id,message_id))
