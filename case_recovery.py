@@ -114,4 +114,3 @@ def continue_lookup(
             "authorized": bool(row[4]),
             "has_email": bool(public_email),
         }
-
