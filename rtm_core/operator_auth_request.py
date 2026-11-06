@@ -24,6 +24,10 @@ from rtm_core.local_operator_auth import (
     local_operator_auth_requested,
 )
 from rtm_core.operator_auth_crypto import hmac_identifier
+from rtm_core.casework_policy import (
+    CaseworkConfigurationError, load_policy as load_casework_policy,
+    requested as production_casework_requested,
+)
 
 
 OPERATOR_AUTH_REQUEST_VERSION = "rtm_operator_auth_request_v1_0"
@@ -65,12 +69,16 @@ class OperatorAuthRuntimeConfig:
         DEFAULT_OPERATOR_REAUTH_MAX_AGE_SECONDS
     )
     local_development: bool = False
+    production_casework: bool = False
+    provider_test_casework: bool = False
+    allowed_operator_ids: tuple[str, ...] = ()
 
     @property
     def available(self) -> bool:
         return self.enabled and (
             self.environment == "staging"
             or (self.environment == "development" and self.local_development)
+            or (self.environment == "production" and self.production_casework)
         )
 
 
@@ -124,6 +132,12 @@ def operator_auth_environment_mode(
     """
 
     source = environ if environ is not None else os.environ
+    if production_casework_requested(source):
+        try:
+            load_casework_policy(source)
+        except CaseworkConfigurationError:
+            return OPERATOR_AUTH_MODE_FAIL_CLOSED
+        return OPERATOR_AUTH_MODE_INDIVIDUAL
     if local_operator_auth_requested(source):
         try:
             assert_local_operator_auth_ready(source)
@@ -167,6 +181,10 @@ def load_operator_auth_runtime_config(
     require_enabled: bool = True,
 ) -> OperatorAuthRuntimeConfig:
     source = environ if environ is not None else os.environ
+    try:
+        production_policy = load_casework_policy(source)
+    except CaseworkConfigurationError as exc:
+        raise OperatorAuthRuntimeMisconfigured(str(exc)) from exc
     environment = str(source.get("RTM_ENV") or "").strip().lower()
     local_development = local_operator_auth_requested(source)
     if local_development:
@@ -249,11 +267,14 @@ def load_operator_auth_runtime_config(
         evidence_retention_days=retention_days,
         reauthentication_max_age_seconds=reauthentication_max_age_seconds,
         local_development=local_development,
+        production_casework=production_policy is not None and environment == 'production',
+        provider_test_casework=production_policy is not None and environment == 'staging',
+        allowed_operator_ids=production_policy.operator_ids if production_policy else (),
     )
     if require_enabled and not enabled:
         raise OperatorAuthRoutesDisabled("Autenticación individual desactivada")
     if enabled:
-        if environment != "staging" and not local_development:
+        if environment != "staging" and not local_development and production_policy is None:
             raise OperatorAuthRuntimeMisconfigured(
                 "La primera publicación de rutas solo está autorizada en staging"
             )

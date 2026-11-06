@@ -11,9 +11,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
+from uuid import UUID
+import os
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.engine import Connection
 
@@ -42,10 +46,12 @@ from rtm_core.operator_auth_service import (
     reauthenticate_operator,
     record_reauthentication_denial,
 )
+from rtm_core.casework_policy import (
+    CaseworkConfigurationError, load_policy, requested, permits_session,
+)
 
 
 OPERATOR_AUTH_ROUTES_VERSION = "rtm_operator_auth_routes_v1_3"
-router = APIRouter(prefix="/ops/auth", tags=["ops-operator-auth"])
 _NO_STORE_HEADERS = {
     "Cache-Control": "no-store, max-age=0",
     "Pragma": "no-cache",
@@ -60,6 +66,33 @@ _DEVICE_COOKIE_ATTRIBUTES = {
 }
 
 
+class PrivateOperatorRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+        async def private(request):
+            try:
+                if requested(os.environ) and request.method not in {'GET', 'HEAD', 'OPTIONS'}:
+                    policy = load_policy(os.environ)
+                    if request.headers.get('origin') != policy.origin:
+                        raise HTTPException(403, 'Origen no autorizado')
+                response = await handler(request)
+            except RequestValidationError:
+                # Password input must never appear in validation errors or logs.
+                response = JSONResponse({'detail': 'Solicitud de acceso no válida'}, status_code=422)
+            except HTTPException as exc:
+                response = JSONResponse({'detail': exc.detail}, status_code=exc.status_code,
+                                        headers=exc.headers)
+            except Exception:
+                response = JSONResponse({'detail': 'Acceso individual no disponible'}, status_code=503)
+            response.headers.update(_NO_STORE_HEADERS)
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+            return response
+        return private
+
+
+router = APIRouter(prefix="/ops/auth", tags=["ops-operator-auth"], route_class=PrivateOperatorRoute)
+
+
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -71,6 +104,10 @@ class OperatorLoginRequest(_StrictModel):
 
 class OperatorReauthenticationRequest(_StrictModel):
     password: str = Field(min_length=1, max_length=256, repr=False)
+
+
+class OperatorDeviceLogoutRequest(_StrictModel):
+    operation_id: UUID
 
 
 def _purge_legacy_device_cookie(response: Response) -> None:
@@ -91,9 +128,13 @@ def _clear_operator_device_cookies(response: Response) -> None:
 
 
 async def operator_auth_connection() -> AsyncIterator[Connection]:
+    _runtime_config()
     engine = get_engine()
-    with engine.begin() as conn:
-        yield conn
+    try:
+        with engine.begin() as conn:
+            yield conn
+    finally:
+        engine.dispose()
 
 
 def _runtime_config():
@@ -192,6 +233,13 @@ def load_operator_session_with_device_possession(
             break
     if not session:
         return None
+    if requested(os.environ):
+        try:
+            policy = load_policy(os.environ)
+        except CaseworkConfigurationError:
+            raise HTTPException(503, 'Acceso individual no disponible', headers=_NO_STORE_HEADERS) from None
+        if not permits_session(policy, session):
+            return None
     if touch:
         touch_operator_session(conn, session.session_id)
     return session
@@ -270,6 +318,14 @@ async def operator_auth_status(response: Response) -> dict[str, Any]:
             staging_only=False,
             non_staging_legacy_login_unchanged=False,
         )
+    if configuration_valid and getattr(config, "production_casework", False) is True:
+        payload.update(auth_environment='production', auth_profile='production_casework',
+                       local_only=False, staging_only=False, casework_only=True,
+                       shared_ops_login_accepted=False, device_logout_contract='rtm_device_logout_v1')
+    if configuration_valid and getattr(config, 'provider_test_casework', False) is True:
+        payload.update(auth_environment='staging', auth_profile='provider_test_casework',
+                       payment_mode='test', local_only=False, staging_only=True, casework_only=True,
+                       shared_ops_login_accepted=False, device_logout_contract='rtm_device_logout_v1')
     return payload
 
 
@@ -564,12 +620,28 @@ async def operator_logout(
             detail="Sesión no válida",
             headers=_NO_STORE_HEADERS,
         )
-    _clear_operator_device_cookies(response)
+    # A device identity is not the session. A delayed response must not remove
+    # the possession factor from a newer session in this browser. Session
+    # revocation above and cookie possession checks remain mandatory.
+    if not (config.production_casework or config.provider_test_casework):
+        _clear_operator_device_cookies(response)
     return {
         "ok": True,
         "status": "closed",
         "request_id": context.request_id,
     }
+
+
+@router.post('/device-logout')
+async def operator_device_logout(payload: OperatorDeviceLogoutRequest, request: Request,
+                                 rtm_presenter_device: str | None = Cookie(default=None, alias=_DEVICE_COOKIE),
+                                 conn: Connection = Depends(operator_auth_connection)):
+    from rtm_core.operator_device_logout import close_device_sessions
+    config = _runtime_config()
+    # Only revokes this device's allowed OPS sessions. The cookie alone cannot
+    # log in, read a case, or authorize any business operation.
+    return close_device_sessions(conn, device_cookie=rtm_presenter_device,
+        operation_id=payload.operation_id, context=_fingerprint(request, config), config=config)
 
 
 __all__ = [

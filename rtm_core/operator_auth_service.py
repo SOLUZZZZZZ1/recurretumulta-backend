@@ -153,7 +153,8 @@ def login_operator(
         return _failure()
 
     operator = find_operator_for_login(conn, normalized_email)
-    if not operator:
+    if not operator or ((config.production_casework or getattr(config, 'provider_test_casework', False))
+                        and str(operator['id']) not in config.allowed_operator_ids):
         verify_operator_password(_dummy_password_hash(), password)
         record_operator_access_event(
             conn,
@@ -263,6 +264,9 @@ def login_operator(
             device_flags.append("invalid_device_token")
 
     device_hash = hash_device_secret(supplied_device)
+    if config.production_casework or getattr(config, 'provider_test_casework', False):
+        from rtm_core.operator_device_logout import lock_device
+        lock_device(conn, device_hash)
     device = upsert_operator_device(
         conn,
         operator_id=operator_id,

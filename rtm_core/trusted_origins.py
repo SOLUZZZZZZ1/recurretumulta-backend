@@ -5,11 +5,19 @@ from __future__ import annotations
 import os
 from urllib.parse import urlsplit
 
+# Both explicitly approved brands may be deployed during the migration. The
+# active casework origin is still ONE configured origin, never a request Host.
+PUBLIC_CASEWORK_ORIGINS = frozenset({
+    'https://www.recurretumulta.eu',
+    'https://www.resuelvetusmovidas.es',
+})
+
 
 # The verified branch alias has no staging marker; classify it by exact host.
 STAGING_FRONTEND_HOSTS = frozenset(
     {
         "staging.recurretumulta.eu",
+        "rtm-journey-test-ui.onrender.com",
         "recurretumulta-frontendweb3-8-26-git-r-cbbb3a-soluzzzs-projects.vercel.app",
     }
 )
@@ -17,6 +25,8 @@ _TRUSTED_FRONTEND_HOSTS = STAGING_FRONTEND_HOSTS | frozenset(
     {
         "recurretumulta.eu",
         "www.recurretumulta.eu",
+        "resuelvetusmovidas.es",
+        "www.resuelvetusmovidas.es",
         "recurretumulta.vercel.app",
     }
 )

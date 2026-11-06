@@ -374,7 +374,7 @@ class OperatorAuthAppHardeningTest(unittest.TestCase):
         response = Response()
         connection = Mock()
         with (
-            patch.object(auth_router, "_runtime_config", return_value=object()),
+            patch.object(auth_router, "_runtime_config", return_value=SimpleNamespace(production_casework=False, provider_test_casework=False)),
             patch.object(
                 auth_router,
                 "load_operator_session_with_device_possession",

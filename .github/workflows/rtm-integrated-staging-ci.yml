@@ -1,0 +1,67 @@
+name: Integrated staging verification
+
+on:
+  push:
+    branches: [rtm-staging-integrated-20261105]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integrated-staging-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  staging:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: synthetic-fixture-only
+          POSTGRES_DB: rtm_staging_fixture
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d rtm_staging_fixture"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      OPENAI_API_KEY: synthetic-no-provider
+      AWS_EC2_METADATA_DISABLED: 'true'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      PIP_NO_INPUT: '1'
+      PYTHONPATH: .:tests
+      RTM_CI_LOCAL_POSTGRES: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install exact application requirements
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip check
+      - name: Scan source and compile
+        run: |
+          python scripts/rtm_secret_scan.py
+          python -m compileall -q .
+      - name: Integrated routes, auth, billing, custody and queues
+        run: >-
+          python -m unittest -v
+          test_staging_journey_integration test_embedded_test_worker
+          test_existing_staging_policy test_provider_test_policy
+          test_rtm_http_security test_rtm_document_input_policy
+          test_rtm_legacy_ops_session_bridge test_rtm_operator_auth_request
+          test_rtm_operator_auth_routes_contract test_rtm_operator_auth_device_possession
+          test_rtm_operator_reauthentication test_rtm_environment_contract
+          test_billing_core_guard test_billing_checkout_state_machine
+          test_billing_vehicle_removal_settlement test_b2_storage_security
+          test_management_journey test_management_generation
+          test_management_mail_authentication test_paid_case_mail
+          test_mail_recovery_adverse test_mail_assignment_delivery
+      - name: Real Linux startup and parser readiness
+        run: python scripts/verify_integrated_staging_startup.py

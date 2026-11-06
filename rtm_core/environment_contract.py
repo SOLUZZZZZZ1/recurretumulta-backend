@@ -40,6 +40,8 @@ _PRODUCTION_CONFIRMATION = "RTM_PRODUCTION_LIVE"
 _DEFAULT_PRODUCTION_FRONTEND_HOSTS = {
     "recurretumulta.eu",
     "www.recurretumulta.eu",
+    "resuelvetusmovidas.es",
+    "www.resuelvetusmovidas.es",
     "recurretumulta.vercel.app",
 }
 _TRUSTED_FRONTEND_HOSTS = frozenset(

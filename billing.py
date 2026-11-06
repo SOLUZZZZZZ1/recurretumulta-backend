@@ -1621,6 +1621,11 @@ async def stripe_webhook(request: Request):
     data_object = _object_value(event, "data") or {}
     stripe_object = _object_value(data_object, "object") or {}
 
+    # Management balances have their own signed receiver and ledger. They must
+    # never enter the existing initial-study settlement/reversal handlers.
+    if _payload_dict(_object_value(stripe_object, "metadata") or {}).get("contract") == "rtm_management_balance_v1":
+        return {"ok": True, "handled_by": "management_balance_webhook"}
+
     if event_type in _PAYMENT_REVERSAL_EVENTS:
         return _reconcile_payment_reversal(
             event_type=event_type,

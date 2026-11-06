@@ -60,6 +60,7 @@ _SENSITIVE_COOKIE_NAMES = frozenset(
         # La cookie anterior ya no autentica, pero también se rechaza ambigua
         # mientras las respuestas de login/logout la purgan del navegador.
         b"rtm_presenter_device",
+        b"__Host-rtm_client_session",
     }
 )
 

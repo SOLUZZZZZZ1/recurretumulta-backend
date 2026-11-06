@@ -94,6 +94,9 @@ from rtm_core.generic_authorization_router import router as generic_authorizatio
 from rtm_core.generic_authorization_router import ops_router as local_recovery_router
 from rtm_core.staging_rehearsal_router import router as staging_rehearsal_router
 from partner import router as partner_router
+from rtm_core.casework_router import router as paid_casework_router
+from rtm_core.case_mail_router import router as case_mail_router
+from rtm_core.management_router import router as management_router
 
 
 # El selector de lectura profunda se instala al arrancar la aplicación. De este
@@ -129,6 +132,18 @@ def validate_deployed_environment() -> None:
         assert_environment_ready()
         extraction_limits()
         assert_parser_isolation_ready()
+
+
+@app.on_event("startup")
+def start_staging_queues() -> None:
+    from rtm_core.embedded_test_worker import start
+    start()
+
+
+@app.on_event("shutdown")
+def stop_staging_queues() -> None:
+    from rtm_core.embedded_test_worker import stop
+    stop()
 
 # Cota dura previa al parseo de JSON/multipart. Los routers mantienen además
 # sus límites específicos, normalmente mucho menores.
@@ -289,6 +304,9 @@ app.include_router(generic_authorization_router)
 app.include_router(local_recovery_router)
 app.include_router(staging_rehearsal_router)
 app.include_router(partner_router)
+app.include_router(paid_casework_router)
+app.include_router(case_mail_router)
+app.include_router(management_router)
 
 # Última capa registrada: añade cabeceras también a errores y denegaciones de
 # los gates interiores. El límite de cuerpo sigue actuando antes de los parsers.
@@ -308,6 +326,9 @@ def health_live():
 @app.get("/health/ready", response_model=HealthResponse)
 def health():
     try:
+        from rtm_core.embedded_test_worker import healthy
+        if not healthy():
+            raise RuntimeError("Embedded staging queues unavailable")
         engine = get_engine()
         ping_db(engine)
         return HealthResponse(ok=True)

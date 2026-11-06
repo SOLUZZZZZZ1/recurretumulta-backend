@@ -280,6 +280,9 @@ async def legacy_ops_individual_session_bridge(
     """Autoriza OPS legacy mediante la sesión individual existente."""
 
     path = request.url.path
+    from rtm_core.journey_routes import is_individually_guarded_journey
+    if is_individually_guarded_journey(request.scope):
+        return await call_next(request)
     if not is_legacy_ops_path(path) or request.method == "OPTIONS":
         return await call_next(request)
 
