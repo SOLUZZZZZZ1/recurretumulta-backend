@@ -52,7 +52,7 @@ jobs:
       - name: Integrated routes, auth, billing, custody and queues
         run: >-
           python -m unittest -v
-          test_staging_journey_integration test_embedded_test_worker
+          test_staging_journey_integration test_embedded_test_worker test_journey_runtime_readonly
           test_existing_staging_policy test_provider_test_policy
           test_rtm_http_security test_rtm_document_input_policy
           test_rtm_legacy_ops_session_bridge test_rtm_operator_auth_request

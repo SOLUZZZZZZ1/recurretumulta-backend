@@ -37,6 +37,9 @@ def child_environment(source):
     if child.get('RTM_MANAGEMENT_GENERATION_WORKER_ENABLED') == '1':
         from rtm_core.management_policy import configuration
         configuration(child, for_worker=True)
+        model=child.get('RTM_MANAGEMENT_GENERATION_MODEL') or child.get('OPENAI_MODEL')
+        if not str(model or '').strip() or not str(child.get('OPENAI_API_KEY') or '').strip():
+            raise CaseworkConfigurationError('Generation provider and model must be configured before worker startup')
     return child
 
 

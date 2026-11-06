@@ -32,6 +32,18 @@ class EmbeddedTestWorkerTest(unittest.TestCase):
                 worker.start()
             popen.assert_not_called()
 
+    def test_missing_generation_provider_aborts_before_process(self):
+        env={**environment(), 'RTM_PROVIDER_TEST_WORKER_MODE':'embedded',
+             'RTM_MANAGEMENT_GENERATION_WORKER_ENABLED':'1'}
+        for configured in ({}, {'OPENAI_API_KEY':'synthetic-unusable'},
+                           {'RTM_MANAGEMENT_GENERATION_MODEL':'synthetic-model'}):
+            with self.subTest(configured=tuple(configured)),patch.dict(os.environ,{**env,**configured},clear=True),patch.object(worker.subprocess,'Popen') as popen:
+                with self.assertRaises(CaseworkConfigurationError):worker.start()
+                popen.assert_not_called()
+        child=worker.child_environment({**env,'OPENAI_API_KEY':'synthetic-unusable',
+                                       'RTM_MANAGEMENT_GENERATION_MODEL':'synthetic-model'})
+        self.assertEqual(child['RTM_PROVIDER_TEST_EMBEDDED_CHILD'],'1')
+
     def test_child_ownership_shutdown_and_readiness(self):
         env = {'RTM_PROVIDER_TEST_WORKER_MODE':'embedded','RTM_MANAGEMENT_GENERATION_WORKER_ENABLED':'1'}
         child = Mock()
