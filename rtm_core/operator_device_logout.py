@@ -26,7 +26,7 @@ def lock_device(conn, digest):
 
 
 def close_device_sessions(conn, *, device_cookie, operation_id, context, config):
-    if not config.production_casework:
+    if not (config.production_casework or getattr(config, 'provider_test_casework', False)):
         raise HTTPException(404, {'code': 'DEVICE_LOGOUT_NOT_ENABLED'})
     operation_id = str(UUID(str(operation_id)))
     device = normalize_device_token(device_cookie)

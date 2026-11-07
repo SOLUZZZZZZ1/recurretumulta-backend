@@ -17,6 +17,7 @@ PUBLIC_CASEWORK_ORIGINS = frozenset({
 STAGING_FRONTEND_HOSTS = frozenset(
     {
         "staging.recurretumulta.eu",
+        "rtm-journey-test-ui.onrender.com",
         "recurretumulta-frontendweb3-8-26-git-r-cbbb3a-soluzzzs-projects.vercel.app",
     }
 )

@@ -17,6 +17,7 @@ httpx==0.27.2
 argon2-cffi==25.1.0
 pypdfium2==5.14.0
 Pillow==12.3.0
+dkimpy==1.1.8
 
 
 

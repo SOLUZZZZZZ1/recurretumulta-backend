@@ -1,4 +1,7 @@
 """Domain compatibility on the published OPS application; synthetic data only."""
+from contextlib import contextmanager
+from rtm_core.management_router import logout_client, LogoutInput
+from rtm_core.management_contract import ManagementRejected
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -91,6 +94,16 @@ class PublicDomainTest(unittest.TestCase):
                         self.assertEqual(caught.exception.status_code, 403)
                         self.assertEqual(caught.exception.detail['code'], 'CASEWORK_ORIGIN_DENIED')
 
+    def test_logout_accepts_only_configured_origin_even_after_expiry(self):
+        origin='https://www.resuelvetusmovidas.es';body=LogoutInput(session_ref='a'*64)
+        @contextmanager
+        def connection():yield None
+        with patch.dict('os.environ',{'RTM_CASEWORK_PUBLIC_ORIGIN':origin}),patch('rtm_core.management_router.connection',connection),patch('rtm_core.management_router.client.logout',return_value={'ok':True}) as revoke:
+            request=Request({'type':'http','headers':[(b'origin',origin.encode())]})
+            self.assertTrue(logout_client(body,request)['ok']);self.assertEqual(revoke.call_count,1)
+            request=Request({'type':'http','headers':[(b'origin',b'https://www.recurretumulta.eu')]})
+            with self.assertRaises(ManagementRejected):logout_client(body,request)
+            self.assertEqual(revoke.call_count,1)
 
 if __name__ == '__main__':
     unittest.main()

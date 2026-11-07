@@ -11,7 +11,8 @@ def main():
         if hasattr(signal,name):signal.signal(getattr(signal,name),lambda *_:stop.set())
     try:
         while not stop.is_set():
-            try:tick(engine)
+            try:
+                if not tick(engine)['ok']:print('CASE_MAIL_CYCLE_INCOMPLETE',flush=True)
             except Exception:
                 # Synchronization details are persisted by the adapter, never raw
                 # credentials/provider responses or message bodies in process logs.
