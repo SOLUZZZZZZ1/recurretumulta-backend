@@ -58,6 +58,10 @@ class RehearsalGrant:
     operator_id: str
 
     @property
+    def form_fields(self) -> dict:
+        return FORM_FIELDS
+
+    @property
     def case_id(self) -> str:
         return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{VERSION}/{self.operator_id}"))
 
@@ -79,7 +83,10 @@ def trusted_intake_grant(request: Request | None) -> RehearsalGrant | None:
     grant = getattr(getattr(request, "state", None), "rtm_rehearsal_grant", None)
     if grant is None:
         return None
-    if not isinstance(grant, RehearsalGrant) or require_supervisor(request) != grant:
+    from rtm_core.staging_client import ClientRehearsalGrant, require_client_pass
+    verified = (require_client_pass(request) if isinstance(grant, ClientRehearsalGrant)
+                else require_supervisor(request))
+    if not isinstance(grant, RehearsalGrant) or verified != grant:
         raise HTTPException(403, "Entrada de ensayo no verificable")
     return grant
 
@@ -109,12 +116,12 @@ def matches_prepared_field(key: str, value: object) -> bool:
 
 def verify_case_row(row, grant: RehearsalGrant) -> None:
     interested = row["interested_data"]
-    expected = {key: FORM_FIELDS[key] for key in ("full_name", "dni_nie", "domicilio_notif", "email", "telefono", "customer_comment")}
+    expected = {key: grant.form_fields[key] for key in ("full_name", "dni_nie", "domicilio_notif", "email", "telefono", "customer_comment")}
     if (str(row["id"]) != grant.case_id or row["test_mode"] is not True
         or row["department"] != "traffic" or row["case_type"] != "fine"
         or not isinstance(interested, dict) or interested.get("staging_rehearsal") != grant.marker
-        or any(not matches_prepared_field(key, interested.get(key)) for key in expected)
-        or row["contact_email"] != PROFILE["email"] or row["contact_name"] != PROFILE["full_name"]):
+        or any(interested.get(key) not in {value, value.replace("\n", "\r\n")} for key, value in expected.items())
+        or row["contact_email"] != expected["email"] or row["contact_name"] != expected["full_name"]):
         raise HTTPException(409, "El expediente no coincide con el ensayo; no se modificara")
 
 

@@ -109,7 +109,13 @@ def list_permitted_cases(request: Request, conn=Depends(casework_connection)):
     # Same individual authorization as the detail; no legacy shared token.
     case_id = policy.case_ids[0]
     context = require_casework(case_id, request, conn)
-    workspace = build_workspace(conn, context.case_id)
+    try:
+        workspace = build_workspace(conn, context.case_id)
+    except MissingCase:
+        from rtm_core.staging_client import configured_grant
+        if configured_grant().case_id == context.case_id:
+            return {'ok':True, 'cases':[]}
+        raise HTTPException(404, {'code':'CASEWORK_CASE_NOT_FOUND'}) from None
     return {'ok':True, 'cases':[{'id':case_id, 'case':workspace['case']}]}
 
 

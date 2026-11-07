@@ -135,7 +135,8 @@ def _authorization_payload_from_case(case_meta: Dict[str, Any], ip: str, version
         "ip": _safe_str(ip),
         "version": _safe_str(version or "v1"),
         "synthetic_rehearsal": "true" if isinstance(interested.get("staging_rehearsal"), dict)
-            and interested["staging_rehearsal"].get("version") == "rtm_staging_radar_20261005_v1" else "",
+            and interested["staging_rehearsal"].get("version") in {
+                "rtm_staging_radar_20261005_v1", "rtm_client_rehearsal_20261106_v1"} else "",
         "authorized_at": _utcnow_iso(),
     }
 

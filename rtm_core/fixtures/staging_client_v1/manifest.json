@@ -1,0 +1,17 @@
+{
+  "identity_front": {
+    "filename": "IDENTIDAD_FICTICIA_FRONT.pdf",
+    "sha256": "03073ac16d8eb9e585a79c28df93f0c38a3e340486760e665fe8b09746eb628c",
+    "size_bytes": 1840
+  },
+  "identity_back": {
+    "filename": "IDENTIDAD_FICTICIA_BACK.pdf",
+    "sha256": "42fb0f7bbc2509680daebbed49f00f9125c53351e39ca778f00d432914b175a9",
+    "size_bytes": 1840
+  },
+  "original": {
+    "filename": "NOTIFICACION_FICTICIA_RTM_20261106.pdf",
+    "sha256": "440a8ac59849ecca181702f91a079575cf10868b3fa3dc2f2152e1f4f6bc53d4",
+    "size_bytes": 3002
+  }
+}
