@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 SERVICE = 'srv-d5fu32hr0fns73c3oa0g'
 DB_HOST = 'dpg-d5ftkbqli9vc7390hni0-a'
+FRONTEND_ORIGIN = 'https://www.resuelvetusmovidas.es'
 FLAGS = (
     'RTM_ENABLE_PRODUCTION_CASEWORK', 'RTM_ENABLE_MANAGEMENT_JOURNEY',
     'RTM_ENABLE_MANAGEMENT_RECONCILIATION', 'RTM_ENABLE_CASE_MAIL',
@@ -52,9 +53,9 @@ def inspect(source=None):
     out['stripe_key_is_live'] = source.get('STRIPE_SECRET_KEY', '').startswith(('sk_live_', 'rk_live_'))
     out['management_mode_is_live'] = source.get('RTM_MANAGEMENT_PAYMENT_MODE') == 'live'
     out['live_webhook_prefix_valid'] = source.get('RTM_MANAGEMENT_STRIPE_LIVE_WEBHOOK_SECRET', '').startswith('whsec_')
-    out['management_account_matches_known_business'] = source.get('RTM_MANAGEMENT_STRIPE_ACCOUNT_ID') == 'acct_1SLgSlGv82bS4KLY'
+    out['management_account_id_configured'] = source.get('RTM_MANAGEMENT_STRIPE_ACCOUNT_ID', '').startswith('acct_')
     out['production_bucket_matches'] = source.get('B2_BUCKET') == 'recurretumulta-prod'
-    out['origin_matches'] = {key: source.get(key) == 'https://www.recurretumulta.eu'
+    out['origin_matches'] = {key: source.get(key) == FRONTEND_ORIGIN
                              for key in ('FRONTEND_URL', 'RTM_CASEWORK_PUBLIC_ORIGIN')}
     try:
         expiry = datetime.fromisoformat(source.get('RTM_CASEWORK_EXPIRES_AT', '').replace('Z', '+00:00'))
