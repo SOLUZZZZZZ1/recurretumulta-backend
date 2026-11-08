@@ -46,7 +46,7 @@ from rtm_core.operator_auth_service import (
     reauthenticate_operator,
     record_reauthentication_denial,
 )
-from rtm_core.production_casework import (
+from rtm_core.casework_policy import (
     CaseworkConfigurationError, load_policy, requested, permits_session,
 )
 
@@ -321,6 +321,10 @@ async def operator_auth_status(response: Response) -> dict[str, Any]:
     if configuration_valid and getattr(config, "production_casework", False) is True:
         payload.update(auth_environment='production', auth_profile='production_casework',
                        local_only=False, staging_only=False, casework_only=True,
+                       shared_ops_login_accepted=False, device_logout_contract='rtm_device_logout_v1')
+    if configuration_valid and getattr(config, 'provider_test_casework', False) is True:
+        payload.update(auth_environment='staging', auth_profile='provider_test_casework',
+                       payment_mode='test', local_only=False, staging_only=True, casework_only=True,
                        shared_ops_login_accepted=False, device_logout_contract='rtm_device_logout_v1')
     return payload
 
@@ -619,7 +623,7 @@ async def operator_logout(
     # A device identity is not the session. A delayed response must not remove
     # the possession factor from a newer session in this browser. Session
     # revocation above and cookie possession checks remain mandatory.
-    if not config.production_casework:
+    if not (config.production_casework or config.provider_test_casework):
         _clear_operator_device_cookies(response)
     return {
         "ok": True,

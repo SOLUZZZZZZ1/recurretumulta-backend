@@ -40,7 +40,7 @@ class CaseworkPolicy:
     expires_at: datetime
 
 
-def load_policy(source: Mapping[str, str], *, now=None) -> CaseworkPolicy | None:
+def load_policy(source: Mapping[str, str], *, now=None, service_name='recurretumulta-backend') -> CaseworkPolicy | None:
     if not requested(source):
         return None
     if str(source.get(FLAG) or '').strip() != '1':
@@ -49,7 +49,7 @@ def load_policy(source: Mapping[str, str], *, now=None) -> CaseworkPolicy | None
         raise CaseworkConfigurationError('Production identity required')
     if str(source.get('RTM_ENABLE_LOCAL_OPERATOR_AUTH') or '').strip().lower() not in _OFF:
         raise CaseworkConfigurationError('Local and production profiles cannot coexist')
-    if source.get('RENDER_SERVICE_NAME') != 'recurretumulta-backend':
+    if service_name not in {'recurretumulta-backend','rtm-case-mail-pilot'} or source.get('RENDER_SERVICE_NAME') != service_name:
         raise CaseworkConfigurationError('Public backend identity mismatch')
     origin = source.get('RTM_CASEWORK_PUBLIC_ORIGIN')
     if origin not in PUBLIC_CASEWORK_ORIGINS:

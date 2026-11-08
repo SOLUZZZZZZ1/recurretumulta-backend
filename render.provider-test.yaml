@@ -1,0 +1,414 @@
+{
+  "previews": {
+    "generation": "off"
+  },
+  "projects": [
+    {
+      "name": "RTM Journey Test",
+      "environments": [
+        {
+          "name": "test",
+          "services": [
+            {
+              "type": "web",
+              "name": "rtm-journey-test-api",
+              "runtime": "python",
+              "region": "oregon",
+              "plan": "1c-2g",
+              "repo": "https://github.com/SOLUZZZZZZ1/recurretumulta-backend",
+              "branch": "rtm-full-journey-20261104",
+              "autoDeployTrigger": "off",
+              "buildCommand": "pip install -r requirements.txt",
+              "startCommand": "uvicorn provider_test_app:app --host 0.0.0.0 --port $PORT --no-proxy-headers",
+              "healthCheckPath": "/health",
+              "numInstances": 1,
+              "envVars": [
+                {
+                  "fromGroup": "rtm-journey-test-common"
+                },
+                {
+                  "key": "DATABASE_URL",
+                  "fromDatabase": {
+                    "name": "rtm-journey-test-db",
+                    "property": "connectionString"
+                  }
+                },
+                {
+                  "key": "RTM_PROVIDER_TEST_DATABASE_HOST",
+                  "fromDatabase": {
+                    "name": "rtm-journey-test-db",
+                    "property": "host"
+                  }
+                },
+                {
+                  "key": "STRIPE_SECRET_KEY",
+                  "sync": false
+                },
+                {
+                  "key": "STRIPE_WEBHOOK_SECRET",
+                  "sync": false
+                },
+                {
+                  "key": "RTM_MANAGEMENT_STRIPE_TEST_KEY",
+                  "sync": false
+                },
+                {
+                  "key": "RTM_MANAGEMENT_STRIPE_TEST_WEBHOOK_SECRET",
+                  "sync": false
+                },
+                {
+                  "key": "STRIPE_PRICE_ID_REVIEW_BASIC",
+                  "sync": false
+                },
+                {
+                  "key": "STRIPE_PRICE_ID_ADMIN",
+                  "sync": false
+                },
+                {
+                  "key": "B2_BUCKET",
+                  "sync": false
+                },
+                {
+                  "key": "RTM_PROVIDER_TEST_B2_BUCKET",
+                  "sync": false
+                },
+                {
+                  "key": "RTM_PRODUCTION_B2_BUCKET",
+                  "sync": false
+                },
+                {
+                  "key": "B2_ENDPOINT",
+                  "sync": false
+                },
+                {
+                  "key": "B2_KEY_ID",
+                  "sync": false
+                },
+                {
+                  "key": "B2_APPLICATION_KEY",
+                  "sync": false
+                },
+                {
+                  "key": "OPENAI_API_KEY",
+                  "sync": false
+                },
+                {
+                  "key": "RTM_OPERATOR_ACCESS_HMAC_KEY",
+                  "generateValue": true
+                }
+              ]
+            },
+            {
+              "type": "worker",
+              "name": "rtm-journey-test-mail",
+              "runtime": "python",
+              "region": "oregon",
+              "plan": "0.5c-512mb",
+              "repo": "https://github.com/SOLUZZZZZZ1/recurretumulta-backend",
+              "branch": "rtm-full-journey-20261104",
+              "autoDeployTrigger": "off",
+              "buildCommand": "pip install -r requirements.txt",
+              "startCommand": "python -m rtm_core.provider_test_worker",
+              "numInstances": 1,
+              "envVars": [
+                {
+                  "fromGroup": "rtm-journey-test-common"
+                },
+                {
+                  "key": "DATABASE_URL",
+                  "fromDatabase": {
+                    "name": "rtm-journey-test-db",
+                    "property": "connectionString"
+                  }
+                },
+                {
+                  "key": "RTM_PROVIDER_TEST_DATABASE_HOST",
+                  "fromDatabase": {
+                    "name": "rtm-journey-test-db",
+                    "property": "host"
+                  }
+                },
+                {
+                  "key": "STRIPE_SECRET_KEY",
+                  "fromService": {
+                    "type": "web",
+                    "name": "rtm-journey-test-api",
+                    "envVarKey": "STRIPE_SECRET_KEY"
+                  }
+                },
+                {
+                  "key": "RTM_MANAGEMENT_STRIPE_TEST_KEY",
+                  "fromService": {
+                    "type": "web",
+                    "name": "rtm-journey-test-api",
+                    "envVarKey": "RTM_MANAGEMENT_STRIPE_TEST_KEY"
+                  }
+                },
+                {
+                  "key": "RTM_MANAGEMENT_STRIPE_TEST_WEBHOOK_SECRET",
+                  "fromService": {
+                    "type": "web",
+                    "name": "rtm-journey-test-api",
+                    "envVarKey": "RTM_MANAGEMENT_STRIPE_TEST_WEBHOOK_SECRET"
+                  }
+                },
+                {
+                  "key": "B2_BUCKET",
+                  "fromService": {
+                    "type": "web",
+                    "name": "rtm-journey-test-api",
+                    "envVarKey": "B2_BUCKET"
+                  }
+                },
+                {
+                  "key": "RTM_PROVIDER_TEST_B2_BUCKET",
+                  "fromService": {
+                    "type": "web",
+                    "name": "rtm-journey-test-api",
+                    "envVarKey": "RTM_PROVIDER_TEST_B2_BUCKET"
+                  }
+                },
+                {
+                  "key": "RTM_PRODUCTION_B2_BUCKET",
+                  "fromService": {
+                    "type": "web",
+                    "name": "rtm-journey-test-api",
+                    "envVarKey": "RTM_PRODUCTION_B2_BUCKET"
+                  }
+                },
+                {
+                  "key": "B2_ENDPOINT",
+                  "fromService": {
+                    "type": "web",
+                    "name": "rtm-journey-test-api",
+                    "envVarKey": "B2_ENDPOINT"
+                  }
+                },
+                {
+                  "key": "B2_KEY_ID",
+                  "fromService": {
+                    "type": "web",
+                    "name": "rtm-journey-test-api",
+                    "envVarKey": "B2_KEY_ID"
+                  }
+                },
+                {
+                  "key": "B2_APPLICATION_KEY",
+                  "fromService": {
+                    "type": "web",
+                    "name": "rtm-journey-test-api",
+                    "envVarKey": "B2_APPLICATION_KEY"
+                  }
+                },
+                {
+                  "key": "OPENAI_API_KEY",
+                  "fromService": {
+                    "type": "web",
+                    "name": "rtm-journey-test-api",
+                    "envVarKey": "OPENAI_API_KEY"
+                  }
+                },
+                {
+                  "key": "RTM_CASE_MAIL_PASSWORD",
+                  "sync": false
+                },
+                {
+                  "key": "RTM_MANAGEMENT_GENERATION_MODEL",
+                  "sync": false
+                }
+              ]
+            },
+            {
+              "type": "web",
+              "name": "rtm-journey-test-ui",
+              "runtime": "static",
+              "repo": "https://github.com/SOLUZZZZZZ1/recurretumulta-frontendweb3-8-26",
+              "branch": "rtm-full-journey-20261104",
+              "autoDeployTrigger": "off",
+              "buildCommand": "npm ci && npm run build",
+              "staticPublishPath": "dist",
+              "routes": [
+                {
+                  "type": "rewrite",
+                  "source": "/api/*",
+                  "destination": "https://rtm-journey-test-api.onrender.com/*"
+                },
+                {
+                  "type": "rewrite",
+                  "source": "/*",
+                  "destination": "/index.html"
+                }
+              ],
+              "headers": [
+                {
+                  "path": "/*",
+                  "name": "X-Robots-Tag",
+                  "value": "noindex, nofollow"
+                }
+              ]
+            }
+          ],
+          "databases": [
+            {
+              "name": "rtm-journey-test-db",
+              "databaseName": "rtm_journey_test",
+              "user": "rtm_journey_test",
+              "region": "oregon",
+              "plan": "0.1c-256mb",
+              "diskSizeGB": 1,
+              "storageAutoscalingEnabled": false,
+              "postgresMajorVersion": "17",
+              "ipAllowList": [],
+              "highAvailability": {
+                "enabled": false
+              }
+            }
+          ],
+          "envVarGroups": [
+            {
+              "name": "rtm-journey-test-common",
+              "envVars": [
+                {
+                  "key": "RTM_ENV",
+                  "value": "staging"
+                },
+                {
+                  "key": "RTM_ENVIRONMENT_CONFIRMATION",
+                  "value": "RTM_STAGING_ISOLATED"
+                },
+                {
+                  "key": "RTM_SIDE_EFFECT_POLICY",
+                  "value": "isolated"
+                },
+                {
+                  "key": "RTM_DOCUMENT_INPUT_POLICY",
+                  "value": "synthetic_only"
+                },
+                {
+                  "key": "RTM_ALLOW_REAL_CUSTOMER_DATA",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_INSTANCE_ID",
+                  "value": "rtm-journey-staging"
+                },
+                {
+                  "key": "RTM_DATA_NAMESPACE",
+                  "value": "rtm-journey-staging"
+                },
+                {
+                  "key": "RTM_EXPECTED_BRANCH",
+                  "value": "rtm-full-journey-20261104"
+                },
+                {
+                  "key": "RTM_ENABLE_PRODUCTION_CASEWORK",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_ENABLE_PROVIDER_TEST_CASEWORK",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_ENABLE_LOCAL_OPERATOR_AUTH",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_ENABLE_OPERATOR_AUTH_V1",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_PROVIDER_TEST_HTTP_ENABLED",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_ENABLE_MANAGEMENT_JOURNEY",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_ENABLE_MANAGEMENT_RECONCILIATION",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_ENABLE_CASE_MAIL",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_CASE_MAIL_WORKER_ENABLED",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_MANAGEMENT_GENERATION_WORKER_ENABLED",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_ENABLE_OUTBOUND_EMAIL",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_ENABLE_EXTERNAL_SUBMISSION",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_ENABLE_FINAL_PAYMENTS",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_STRIPE_MODE",
+                  "value": "test"
+                },
+                {
+                  "key": "RTM_MANAGEMENT_PAYMENT_MODE",
+                  "value": "test"
+                },
+                {
+                  "key": "RTM_MANAGEMENT_DRAFT_READY",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_MANAGEMENT_MAIL_VERIFIED",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_MANAGEMENT_STRIPE_ACCOUNT_ID",
+                  "value": "acct_1SLgSyGX7wFWIdP2"
+                },
+                {
+                  "key": "FRONTEND_URL",
+                  "value": "https://rtm-journey-test-ui.onrender.com"
+                },
+                {
+                  "key": "RTM_CASEWORK_PUBLIC_ORIGIN",
+                  "value": "https://rtm-journey-test-ui.onrender.com"
+                },
+                {
+                  "key": "ALLOWED_ORIGINS",
+                  "value": "https://rtm-journey-test-ui.onrender.com"
+                },
+                {
+                  "key": "RTM_TRUST_PROXY_HEADERS",
+                  "value": "0"
+                },
+                {
+                  "key": "RTM_CASE_MAIL_ADDRESS",
+                  "value": "expedientes@resuelvetusmovidas.es"
+                },
+                {
+                  "key": "RTM_CASE_MAIL_DEDICATED_CONFIRMED",
+                  "value": "0"
+                },
+                {
+                  "key": "AWS_EC2_METADATA_DISABLED",
+                  "value": "true"
+                },
+                {
+                  "key": "PYTHONDONTWRITEBYTECODE",
+                  "value": "1"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
