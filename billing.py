@@ -408,6 +408,7 @@ def create_checkout(req: CheckoutRequest):
     session = stripe.checkout.Session.create(
         mode="payment",
         customer_email=req.email,
+        payment_intent_data={"receipt_email": str(req.email)},
         line_items=[{"price": price_id, "quantity": 1}],
         success_url=success_url,
         cancel_url=cancel_url,

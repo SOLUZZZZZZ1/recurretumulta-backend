@@ -131,13 +131,21 @@ class StripeAdapter:
         metadata=obligation_metadata(row)
         expected_items=[{'quantity':1,'price_data':{'currency':'eur','unit_amount':row['amount_cents'],
             'product_data':{'name':params.get('line_items',[{}])[0].get('price_data',{}).get('product_data',{}).get('name','')}}}]
+        payment_intent_data=params.get('payment_intent_data')
+        receipt_email=params.get('customer_email')
+        old_provider_shape=(set(params)=={'line_items','metadata','payment_intent_data','client_reference_id',
+            'mode','payment_method_types','success_url','cancel_url','expires_at'}
+            and payment_intent_data=={'metadata':metadata})
+        receipt_provider_shape=(set(params)=={'line_items','metadata','payment_intent_data','customer_email',
+            'client_reference_id','mode','payment_method_types','success_url','cancel_url','expires_at'}
+            and isinstance(receipt_email,str) and '@' in receipt_email
+            and payment_intent_data=={'metadata':metadata,'receipt_email':receipt_email})
         if (digest(params)!=reservation.get('provider_parameters_sha256') or
                 params.get('line_items')!=expected_items or params.get('metadata')!=metadata or
-                params.get('payment_intent_data')!={'metadata':metadata} or params.get('client_reference_id')!=row['id'] or
+                not (old_provider_shape or receipt_provider_shape) or params.get('client_reference_id')!=row['id'] or
                 params.get('mode')!='payment' or params.get('payment_method_types')!=['card'] or
                 params.get('success_url')!=self.config.origin+'/#/cliente/expediente/'+row['case_id']+'?pago=consultar' or
-                params.get('cancel_url')!=self.config.origin+'/#/cliente/expediente/'+row['case_id']+'?pago=volver' or
-                set(params)!={'line_items','metadata','payment_intent_data','client_reference_id','mode','payment_method_types','success_url','cancel_url','expires_at'}):
+                params.get('cancel_url')!=self.config.origin+'/#/cliente/expediente/'+row['case_id']+'?pago=volver'):
             raise ManagementRejected('CHECKOUT_RESERVATION_INTEGRITY_FAILED',503)
         try:
             session=plain(self.sdk.checkout.Session.create(api_key=self.config.api_key,

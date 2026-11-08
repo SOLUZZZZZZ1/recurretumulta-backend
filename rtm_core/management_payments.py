@@ -10,6 +10,7 @@ from sqlalchemy import text
 from rtm_core.management_contract import ManagementRejected, canonical, digest, timestamp
 from rtm_core.management_store import (obj, jparam, lock_case, event, quote_row,
     quote_projection, current_client_quote)
+from rtm_core.management_mail import verified_recipient
 from rtm_core.management_stripe import check_session, obligation_metadata, checkout_url
 
 
@@ -83,6 +84,10 @@ def reserve(conn, *, case_id, quote_id, expected_sha, recipient_hash, policy, no
         {'id':quote_id,'recipient':recipient_hash}).mappings().one_or_none()
     if not accepted or obj(accepted['snapshot']).get('quote_sha256')!=expected_sha:
         raise ManagementRejected('EXACT_QUOTE_ACCEPTANCE_REQUIRED')
+    receipt_email=verified_recipient(conn,case_id)
+    from rtm_core.management_client_access import verifier
+    if verifier(receipt_email)!=recipient_hash:
+        raise ManagementRejected('CLIENT_RECIPIENT_CHANGED_REVIEW_REQUIRED')
     initial=receipt(conn,case_id,policy.mode,'initial_study')
     if (not initial or initial['id']!=snapshot['study_receipt_id']
             or initial['evidence_sha256']!=snapshot['study_receipt_sha256']):
@@ -107,7 +112,8 @@ def reserve(conn, *, case_id, quote_id, expected_sha, recipient_hash, policy, no
          'stripe_session_id':None,'state':'reserved'}
     metadata=obligation_metadata(row)
     params={'mode':'payment','payment_method_types':['card'],'client_reference_id':oid,
-        'metadata':metadata,'payment_intent_data':{'metadata':metadata},'expires_at':expiry,
+        'customer_email':receipt_email,'metadata':metadata,
+        'payment_intent_data':{'metadata':metadata,'receipt_email':receipt_email},'expires_at':expiry,
         'success_url':policy.origin+'/#/cliente/expediente/'+case_id+'?pago=consultar',
         'cancel_url':policy.origin+'/#/cliente/expediente/'+case_id+'?pago=volver',
         'line_items':[{'quantity':1,'price_data':{'currency':'eur','unit_amount':amount,
