@@ -130,7 +130,11 @@ def _process(engine,config,row):
     fiscal=row['fiscal_data']
     province=' '.join(str(fiscal.get('province','')).casefold().split())
     special_regions=('canarias','tenerife','gran canaria','las palmas','santa cruz','ceuta','melilla')
-    if fiscal.get('country')!='ES' or any(term in province for term in special_regions):
+    postal_code=''.join(char for char in str(fiscal.get('postal_code','')) if char.isdigit())
+    special_postal_prefixes=('35','38','51','52')
+    if (fiscal.get('country')!='ES'
+            or any(term in province for term in special_regions)
+            or postal_code.startswith(special_postal_prefixes)):
         raise ProviderError('TAX_JURISDICTION_REVIEW_REQUIRED')
     if row['provider_invoice_id']:
         invoice_id=row['provider_invoice_id']
