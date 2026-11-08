@@ -58,12 +58,12 @@ def configuration(source=None, *, for_notification=False, mode=None, for_worker=
     try:
         tax = int(source['RTM_MANAGEMENT_TAX_BASIS_POINTS'])
         label = source['RTM_MANAGEMENT_TAX_LABEL'].strip()
-        agreed = int(source['RTM_MANAGEMENT_AGREED_TOTAL_CENTS']) if source.get('RTM_MANAGEMENT_AGREED_TOTAL_CENTS') else None
-        if not 0 <= tax <= 10000 or not label or (agreed is not None and agreed < 3900):
+        agreed = None  # Each immutable quote carries its own operator-approved total.
+        if not 0 <= tax <= 10000 or not label:
             raise ValueError()
     except (ValueError, KeyError):
         raise ManagementRejected('MANAGEMENT_TAX_OR_TOTAL_UNVERIFIED', 503) from None
-    # The agreed production case is never eligible for synthetic TEST obligations.
-    if case_id == '2af6f88a-f72a-46f9-9fd7-f3c6d44c6aee' and (selected != 'live' or agreed != 3900):
+    # The live pilot case may use LIVE only; each quote sets its own total.
+    if case_id == '2af6f88a-f72a-46f9-9fd7-f3c6d44c6aee' and selected != 'live':
         raise ManagementRejected('EXISTING_LIVE_CASE_CONTRACT_MISMATCH', 503)
     return ManagementPolicy(selected, account, key, secret, case_id, origin, tax, label, agreed)
