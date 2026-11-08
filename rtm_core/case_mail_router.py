@@ -1,13 +1,13 @@
 """Individual, case-scoped conversation API; no inline SMTP or public attachments."""
 import os
-from uuid import UUID
+from uuid import UUID,uuid4
 from typing import Literal
 from fastapi import APIRouter,Depends,HTTPException,Query,Request,Header
 from pydantic import BaseModel,ConfigDict,Field
 from sqlalchemy import text
 from fastapi.responses import Response
 from rtm_core.casework_router import CaseworkRoute,require_casework
-from rtm_core.case_mail import MailRejected,extract_attachment
+from rtm_core.case_mail import MailRejected,address,extract_attachment
 from rtm_core.case_mail_repository import conversation,prepare,queue,message_for_case,public_message,obj,assign_pending
 from rtm_core.case_mail_runtime import B2MailStorage,configured_mailbox
 from rtm_core.document_viewer import render
@@ -37,6 +37,46 @@ class Assignment(BaseModel):
     original_sha256:str=Field(pattern=r'^[0-9a-f]{64}$')
     independently_verified:Literal[True]
     evidence:str=Field(min_length=20,max_length=2000)
+
+class ParticipantVerification(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    email:str=Field(min_length=3,max_length=254)
+    independently_verified:Literal[True]
+    verification_reference:str=Field(min_length=20,max_length=500)
+
+@router.post('/{case_id}/communications/participants/verify')
+def verify_participant(payload:ParticipantVerification,context=Depends(require_casework)):
+    # This audited supervisor action is separate from enabling mail transport.
+    # The address must match both the saved case contact and the controlled pilot.
+    if os.environ.get('RTM_CASE_MAIL_DEDICATED_CONFIRMED')!='1':
+        raise HTTPException(503,{'code':'MAILBOX_SCOPE_NOT_CONFIRMED'})
+    try:email=address(payload.email)
+    except MailRejected:raise HTTPException(422,{'code':'MAIL_ADDRESS_INVALID'}) from None
+    reference=payload.verification_reference.strip()
+    if len(reference)<20:raise HTTPException(422,{'code':'MAIL_VERIFICATION_REFERENCE_REQUIRED'})
+    allowed={value.strip().lower() for value in os.environ.get('RTM_CASE_MAIL_ALLOWED_RECIPIENTS','').split(',') if value.strip()}
+    if email not in allowed:raise HTTPException(403,{'code':'MAIL_RECIPIENT_OUTSIDE_CONTROLLED_PILOT'})
+    row=context.conn.execute(text('SELECT contact_email,payment_status,paid_at,authorized FROM cases WHERE id=:case'),
+        {'case':context.case_id}).mappings().one_or_none()
+    if not row:raise HTTPException(404,{'code':'CASEWORK_CASE_NOT_FOUND'})
+    try:saved=address(row['contact_email'] or '')
+    except MailRejected:raise HTTPException(409,{'code':'CASE_CONTACT_EMAIL_INVALID'}) from None
+    if email!=saved:raise HTTPException(409,{'code':'MAIL_RECIPIENT_NOT_CASE_CONTACT'})
+    if row['payment_status']!='paid' or row['paid_at'] is None or not bool(row['authorized']):
+        raise HTTPException(409,{'code':'MAIL_PARTICIPANT_CASE_PREREQUISITES_NOT_MET'})
+    lock=' FOR UPDATE' if context.conn.dialect.name=='postgresql' else ''
+    current=context.conn.execute(text('SELECT id,active FROM rtm_case_mail_participants WHERE case_id=:case AND email=:email'+lock),
+        {'case':context.case_id,'email':email}).mappings().one_or_none()
+    if current:
+        if current['active']:
+            return {'ok':True,'case_id':context.case_id,'email':email,'already_verified':True}
+        raise HTTPException(409,{'code':'MAIL_PARTICIPANT_INACTIVE_REVIEW_REQUIRED'})
+    context.conn.execute(text('''INSERT INTO rtm_case_mail_participants
+        (id,case_id,email,verified_at,verified_by,verification_reference,active)
+        VALUES (:id,:case,:email,CURRENT_TIMESTAMP,:operator,:reference,true)'''),
+        {'id':str(uuid4()),'case':context.case_id,'email':email,
+         'operator':context.session.operator_id,'reference':reference})
+    return {'ok':True,'case_id':context.case_id,'email':email,'already_verified':False}
 
 @router.post('/{case_id}/communications/{message_id}/assign')
 def assign_message(message_id:UUID,payload:Assignment,context=Depends(enabled)):
@@ -111,3 +151,4 @@ def read_attachment_page(message_id:UUID,part:int,page:int,
     if if_match!='"'+meta['sha256']+'"':raise HTTPException(412,{'code':'MAIL_ATTACHMENT_HASH_MISMATCH'})
     return Response(render(data,meta['mime'],page=page),media_type='image/png',
         headers={'Content-Disposition':f'inline; filename="attachment-page-{page}.png"'})
+
