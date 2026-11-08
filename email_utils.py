@@ -3,9 +3,9 @@
 # Usa las variables SMTP_* que ya tienes en Render.
 
 import os
-import smtplib
 from email.message import EmailMessage
 from typing import Optional
+from smtp_transport import smtp_connection, smtp_password as configured_smtp_password
 
 
 def _env(name: str, default: str = "") -> str:
@@ -29,7 +29,7 @@ def send_email(
 ) -> bool:
     smtp_host = _env("SMTP_HOST")
     smtp_user = _env("SMTP_USER")
-    smtp_password = _env("SMTP_PASSWORD")
+    smtp_password = configured_smtp_password()
     smtp_from = _env("SMTP_FROM") or smtp_user
     smtp_use_tls = _env("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes", "si", "sí")
 
@@ -46,9 +46,7 @@ def send_email(
 
     msg.set_content(body)
 
-    with smtplib.SMTP(smtp_host, _smtp_port(), timeout=20) as smtp:
-        if smtp_use_tls:
-            smtp.starttls()
+    with smtp_connection(smtp_host, _smtp_port(), starttls=smtp_use_tls, timeout=20) as smtp:
         smtp.login(smtp_user, smtp_password)
         smtp.send_message(msg)
 

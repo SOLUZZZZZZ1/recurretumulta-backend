@@ -511,7 +511,7 @@ class PartnerSignupRequest(BaseModel):
 @router.post("/signup")
 def partner_signup(payload: PartnerSignupRequest):
     try:
-        import smtplib
+        from smtp_transport import smtp_connection, smtp_password
         from email.message import EmailMessage
 
         msg = EmailMessage()
@@ -535,12 +535,11 @@ Mensaje:
 
         msg.set_content(body)
 
-        with smtplib.SMTP(os.getenv("SMTP_HOST"), int(os.getenv("SMTP_PORT", "587"))) as server:
-            server.starttls()
-            server.login(os.getenv("SMTP_USER"), os.getenv("SMTP_PASS"))
+        with smtp_connection(os.getenv("SMTP_HOST"), int(os.getenv("SMTP_PORT", "587"))) as server:
+            server.login(os.getenv("SMTP_USER"), smtp_password())
             server.send_message(msg)
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error enviando email: {e}")
+    except Exception:
+        raise HTTPException(status_code=500, detail="No se pudo enviar la solicitud. Inténtelo de nuevo más tarde.")
 
     return {"ok": True}

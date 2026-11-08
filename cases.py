@@ -1,6 +1,5 @@
 import json
 import os
-import smtplib
 import uuid
 from email.message import EmailMessage
 from typing import Any, Dict, List, Optional
@@ -11,6 +10,8 @@ from sqlalchemy import text
 
 from database import get_engine
 from b2_storage import upload_bytes
+from smtp_transport import smtp_connection, smtp_password
+from rtm_core.trusted_origins import trusted_frontend_origin
 
 # Import interno del engine (Modo Dios)
 from ai.expediente_engine import run_expediente_ai
@@ -29,7 +30,7 @@ def _env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
 def _case_link(case_id: str) -> str:
-    base = _env("FRONTEND_BASE_URL", "https://www.recurretumulta.eu").rstrip("/")
+    base = trusted_frontend_origin()
     return f"{base}/#/resumen?case={case_id}"
 
 def _smtp_ok() -> bool:
@@ -42,7 +43,7 @@ def _send_email(to_email: str, subject: str, body: str) -> None:
     host = _env("SMTP_HOST")
     port = int(_env("SMTP_PORT", "587") or "587")
     user = _env("SMTP_USER")
-    pwd = _env("SMTP_PASS")
+    pwd = smtp_password()
     from_addr = _env("SMTP_FROM")
 
     msg = EmailMessage()
@@ -52,20 +53,10 @@ def _send_email(to_email: str, subject: str, body: str) -> None:
     msg.set_content(body)
 
     try:
-        if port == 465:
-            with smtplib.SMTP_SSL(host, port, timeout=20) as s:
-                if user and pwd:
-                    s.login(user, pwd)
-                s.send_message(msg)
-        else:
-            with smtplib.SMTP(host, port, timeout=20) as s:
-                try:
-                    s.starttls()
-                except Exception:
-                    pass
-                if user and pwd:
-                    s.login(user, pwd)
-                s.send_message(msg)
+        with smtp_connection(host, port, timeout=20) as s:
+            if user and pwd:
+                s.login(user, pwd)
+            s.send_message(msg)
     except Exception:
         pass
 
