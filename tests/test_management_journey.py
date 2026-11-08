@@ -28,7 +28,8 @@ def sqlite_schema(conn):
         'CREATE TABLE cases(id TEXT PRIMARY KEY,payment_status TEXT,product_code TEXT,stripe_session_id TEXT,stripe_payment_intent TEXT,authorized BOOLEAN,contact_email TEXT,interested_data TEXT,expediente_ref TEXT)',
         'CREATE TABLE rtm_operators(id TEXT PRIMARY KEY)',
         'CREATE TABLE rtm_study_assessments(case_id TEXT,operation_id TEXT,revision INTEGER,author_id TEXT,request_sha256 TEXT,snapshot TEXT,snapshot_sha256 TEXT,PRIMARY KEY(case_id,operation_id))',
-        'CREATE TABLE ops_final_resources(id TEXT PRIMARY KEY,case_id TEXT,version INTEGER,content TEXT)']:
+        'CREATE TABLE ops_final_resources(id TEXT PRIMARY KEY,case_id TEXT,version INTEGER,content TEXT)',
+        'CREATE TABLE rtm_invoice_requests(id TEXT PRIMARY KEY,case_id TEXT NOT NULL,stage TEXT NOT NULL,reference_id TEXT NOT NULL,fiscal_data TEXT NOT NULL,recipient_email TEXT NOT NULL,amount_cents INTEGER,currency TEXT NOT NULL,state TEXT NOT NULL,stripe_session_id TEXT,payment_intent_id TEXT,paid_at TEXT,provider_contact_id TEXT,provider_invoice_id TEXT,provider_invoice_number TEXT,provider_invoice_url TEXT,provider_payment_recorded_at TEXT,provider_sent_at TEXT,attempt_started_at TEXT,attempts INTEGER NOT NULL DEFAULT 0,last_error_code TEXT,issued_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(case_id,stage,reference_id))']:
         conn.execute(text(sql))
     for name in ('20261025_case_mail_candidate.sql','20261102_management_journey_candidate.sql','20261102_mail_ingestion_recovery_candidate.sql','20261104_management_generation_candidate.sql'):
         source=(Path(__file__).parents[1]/'migrations'/name).read_text(encoding='utf-8')
