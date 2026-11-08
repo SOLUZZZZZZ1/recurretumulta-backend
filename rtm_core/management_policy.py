@@ -64,6 +64,6 @@ def configuration(source=None, *, for_notification=False, mode=None, for_worker=
     except (ValueError, KeyError):
         raise ManagementRejected('MANAGEMENT_TAX_OR_TOTAL_UNVERIFIED', 503) from None
     # The agreed production case is never eligible for synthetic TEST obligations.
-    if case_id == '2af6f88a-f72a-46f9-9fd7-f3c6d44c6aee' and (selected != 'live' or agreed != 3900):
+    if case_id == '2af6f88a-f72a-46f9-9fd7-f3c6d44c6aee' and (selected != 'live' or agreed != 8000):
         raise ManagementRejected('EXISTING_LIVE_CASE_CONTRACT_MISMATCH', 503)
     return ManagementPolicy(selected, account, key, secret, case_id, origin, tax, label, agreed)
