@@ -12,6 +12,8 @@ from rtm_core.management_store import (obj, jparam, lock_case, event, quote_row,
     quote_projection, current_client_quote)
 from rtm_core.management_mail import verified_recipient
 from rtm_core.management_stripe import check_session, obligation_metadata, checkout_url
+from rtm_core.invoice_requests import (mark_paid as mark_invoice_paid,
+    link_checkout_session as link_invoice_checkout, unlink_expired_session as unlink_invoice_checkout)
 
 
 def receipt(conn, case_id, mode, stage):
@@ -154,6 +156,8 @@ def apply_provider_read(conn, row, session, *, provider_account_id, event_id=Non
             'provider_status':'succeeded','refunded_cents':0,'disputed':False,
             'verified_at':datetime.now(timezone.utc).isoformat()}
         record_receipt(conn,{**proof,'evidence_sha256':digest(proof)})
+        mark_invoice_paid(conn,case_id=row['case_id'],stage='management_balance',reference_id=row['quote_id'],
+                          session_id=session['id'],payment_intent_id=intent['id'],amount_cents=row['amount_cents'])
         quote=quote_row(conn,row['case_id'],row['quote_id']);latest=quote_row(conn,row['case_id'])
         # A real late/stale payment is recorded, never called cancelled and never
         # automatically authorizes a superseded legal instruction.
@@ -176,8 +180,12 @@ def apply_provider_read(conn, row, session, *, provider_account_id, event_id=Non
         pass
     elif session.get('status')=='expired' and session.get('payment_status')=='unpaid':
         state='expired'
+        unlink_invoice_checkout(conn,case_id=row['case_id'],stage='management_balance',
+            reference_id=row['quote_id'],session_id=session['id'])
     elif session.get('status')=='open' and session.get('payment_status')=='unpaid':
         state='retiring' if state=='retiring' else 'open'
+        link_invoice_checkout(conn,case_id=row['case_id'],stage='management_balance',
+            reference_id=row['quote_id'],session_id=session['id'])
         if state=='open':url=checkout_url(session)
     else:
         state='unknown'

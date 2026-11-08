@@ -9,6 +9,10 @@ from sqlalchemy import text
 from database import get_engine
 from ai.expediente_engine import run_expediente_ai
 from email_utils import send_email, build_vehicle_removal_paid_email
+from rtm_core.invoice_requests import (InvoiceDetails, record_request as record_invoice_request,
+    cancel_request as cancel_invoice_request, mark_paid as mark_invoice_paid,
+    link_checkout_session as link_invoice_checkout, unlink_expired_session as unlink_invoice_checkout)
+from rtm_core.management_contract import ManagementRejected
 
 router = APIRouter(tags=["billing"])
 
@@ -26,6 +30,8 @@ class CheckoutRequest(BaseModel):
     email: EmailStr
     locale: str | None = "es"
     payment_stage: str | None = "review"
+    invoice_requested: bool = False
+    invoice_data: InvoiceDetails | None = None
 
 
 def _normalize_code(value: str | None) -> str:
@@ -356,6 +362,8 @@ def _run_post_payment_modo_dios(conn, case_id: str):
 @router.post("/billing/checkout")
 @router.post("/checkout")
 def create_checkout(req: CheckoutRequest):
+    if req.invoice_requested != (req.invoice_data is not None):
+        raise HTTPException(status_code=422, detail="Datos de factura incompletos")
     stripe.api_key = _env("STRIPE_SECRET_KEY")
     frontend_url = _env("FRONTEND_URL").rstrip("/")
 
@@ -372,6 +380,18 @@ def create_checkout(req: CheckoutRequest):
                 "already_paid": True,
                 "redirect": f"{frontend_url}/#/resumen?case={req.case_id}",
             }
+
+        if req.invoice_requested:
+            try:
+                record_invoice_request(conn,case_id=req.case_id,stage='initial_study',reference_id='initial',
+                                       data=req.invoice_data.model_dump(),recipient_email=req.email)
+            except ManagementRejected as exc:
+                raise HTTPException(status_code=exc.status,detail={'code':exc.code}) from None
+        else:
+            try:
+                cancel_invoice_request(conn,case_id=req.case_id,stage='initial_study',reference_id='initial')
+            except ManagementRejected as exc:
+                raise HTTPException(status_code=exc.status,detail={'code':exc.code}) from None
 
         conn.execute(
             text(
@@ -421,6 +441,9 @@ def create_checkout(req: CheckoutRequest):
         },
         locale=req.locale or "es",
     )
+    if req.invoice_requested:
+        with engine.begin() as conn:
+            link_invoice_checkout(conn,case_id=req.case_id,stage='initial_study',reference_id='initial',session_id=session.id)
 
     return {
         "ok": True,
@@ -482,6 +505,9 @@ async def stripe_webhook(request: Request):
                 {"id": case_id, "sid": session["id"], "pi": session.get("payment_intent")},
             )
             _append_event(conn, case_id, "paid_ok", {"session": session["id"]})
+            mark_invoice_paid(conn,case_id=case_id,stage='initial_study',reference_id='initial',
+                              session_id=session['id'],payment_intent_id=str(session.get('payment_intent') or ''),
+                              amount_cents=session.get('amount_total'))
 
             # Activación operativa: solo tras pago confirmado por Stripe.
             # El análisis inicial puede haber dejado el expediente como pending_client_data.
@@ -500,6 +526,15 @@ async def stripe_webhook(request: Request):
             )
 
             _run_post_payment_modo_dios(conn, case_id)
+
+    elif event["type"] == "checkout.session.expired":
+        session=event["data"]["object"]
+        metadata=session.get('metadata') or {}
+        if metadata.get('case_id') and session.get('payment_status')=='unpaid':
+            engine=get_engine()
+            with engine.begin() as conn:
+                unlink_invoice_checkout(conn,case_id=metadata['case_id'],stage='initial_study',
+                    reference_id='initial',session_id=session['id'])
 
     return {"ok": True}
 
