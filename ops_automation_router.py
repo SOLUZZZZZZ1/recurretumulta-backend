@@ -2,6 +2,7 @@
 import os
 from typing import Optional
 from fastapi import APIRouter, Header, HTTPException, Query
+from sqlalchemy import text
 
 from ops_automation import tick  # tu archivo actual con tick()
 
@@ -32,7 +33,8 @@ def automation_tick(
     queue_results = {}
     generation_enabled = os.getenv("RTM_MANAGEMENT_GENERATION_WORKER_ENABLED") == "1"
     mail_enabled = os.getenv("RTM_CASE_MAIL_WORKER_ENABLED") == "1"
-    if generation_enabled or mail_enabled:
+    invoice_enabled = os.getenv("RTM_INVOICE_WORKER_ENABLED") == "1"
+    if generation_enabled or mail_enabled or invoice_enabled:
         from database import get_engine
 
         engine = get_engine()
@@ -51,9 +53,39 @@ def automation_tick(
                     queue_results["case_mail"] = "processed" if mail_result.get("ok") else "incomplete"
                 except Exception:
                     queue_results["case_mail"] = "incomplete"
+            if invoice_enabled:
+                from rtm_core.invoice_provider import tick as invoice_tick
+                try:
+                    invoice_result=invoice_tick(engine,limit=min(limit,20))
+                    queue_results["invoice"]="processed" if invoice_result.get("ok") else "incomplete"
+                except Exception:
+                    queue_results["invoice"]="incomplete"
         finally:
             engine.dispose()
 
     if queue_results:
         result["rtm_queues"] = queue_results
     return result
+
+
+@router.get("/invoices")
+def invoice_status(
+    x_operator_token: Optional[str] = Header(default=None, alias="X-Operator-Token"),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """Accounting status only: no fiscal identity or payment credentials."""
+    _require_operator(x_operator_token)
+    from database import get_engine
+    engine=get_engine()
+    try:
+        with engine.begin() as conn:
+            rows=conn.execute(text("""
+                SELECT id,case_id,stage,state,amount_cents,currency,stripe_session_id,
+                       provider_invoice_number,provider_invoice_url,provider_payment_recorded_at,
+                       provider_sent_at,issued_at,paid_at,last_error_code,created_at
+                FROM rtm_invoice_requests
+                ORDER BY created_at DESC LIMIT :limit
+            """),{'limit':limit}).mappings().all()
+        return {'ok':True,'invoices':[dict(row) for row in rows]}
+    finally:
+        engine.dispose()

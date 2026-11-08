@@ -27,6 +27,8 @@ from rtm_core.paid_study import read_history
 from rtm_core import management_client_access as client
 from rtm_core.casework_policy import origin_allowed
 from rtm_core.management_generation import projection as generation_projection, retry as retry_generation
+from rtm_core.invoice_requests import (InvoiceDetails, record_request as record_invoice_request,
+    cancel_request as cancel_invoice_request)
 
 
 class ManagementRoute(APIRoute):
@@ -241,6 +243,8 @@ class CheckoutInput(BaseModel):
     quote_id:UUID
     quote_sha256:str=Field(pattern=r'^[a-f0-9]{64}$')
     expected_session_ref:str=Field(pattern=r'^[a-f0-9]{64}$')
+    invoice_requested:bool=False
+    invoice_data:InvoiceDetails|None=None
 
 
 def reconcile_provider(policy,row,*,create=False,retire=False):
@@ -260,8 +264,15 @@ def reconcile_provider(policy,row,*,create=False,retire=False):
 def checkout(body:CheckoutInput,access=Depends(client_context)):
     conn,grant,policy,case_id=access
     exact_client_session(body,grant)
+    if body.invoice_requested!=(body.invoice_data is not None):
+        raise ManagementRejected('INVOICE_DETAILS_INVALID',422)
     row=reserve(conn,case_id=case_id,quote_id=str(body.quote_id),expected_sha=body.quote_sha256,
                 recipient_hash=grant['recipient_hash'],policy=policy)
+    if body.invoice_requested:
+        record_invoice_request(conn,case_id=case_id,stage='management_balance',reference_id=str(body.quote_id),
+                               data=body.invoice_data.model_dump(),recipient_email=verified_recipient(conn,case_id))
+    else:
+        cancel_invoice_request(conn,case_id=case_id,stage='management_balance',reference_id=str(body.quote_id))
     conn.commit()  # Durable reservation BEFORE any external creation; no DB lock during Stripe.
     if row['state'] in {'confirmed','review_required','expired','retiring'}:
         return {'ok':True,'balance':public_payment(row)}
