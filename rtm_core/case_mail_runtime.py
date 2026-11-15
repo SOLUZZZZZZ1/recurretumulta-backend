@@ -30,6 +30,7 @@ class MailConfig:
     authserv_id:str=''
     delivery_senders:tuple[str,...]=()
     case_id:str|None=None
+    delivery_arc_domains:tuple[str,...]=()
 
 
 def configured_mailbox(source=None):
@@ -72,7 +73,10 @@ def configuration(source=None):
     # The trusted receiving boundary must be verified against the real provider.
     authserv=source.get('RTM_CASE_MAIL_AUTHSERV_ID','').strip().lower()
     reports=tuple(address(v) for v in source.get('RTM_CASE_MAIL_DELIVERY_SENDERS','').split(',') if v)
-    return MailConfig(hosts[0],hosts[1],secret,recipients,folders,mailbox,username,port,tls,authserv,reports,policy.case_ids[0])
+    arc_domains=tuple(dict.fromkeys(v.strip().lower() for v in source.get('RTM_CASE_MAIL_DELIVERY_ARC_DOMAINS','').split(',') if v.strip()))
+    if len(arc_domains)>3 or any(not re.fullmatch(r'[a-z0-9.-]+\.[a-z]{2,63}',v) for v in arc_domains):
+        raise MailRejected('MAIL_ARC_DOMAINS_INVALID')
+    return MailConfig(hosts[0],hosts[1],secret,recipients,folders,mailbox,username,port,tls,authserv,reports,policy.case_ids[0],arc_domains)
 
 
 class B2MailStorage:
@@ -219,10 +223,14 @@ def sync_folder(engine,config,folder,storage,*,imap_factory=imaplib.IMAP4_SSL,se
                 from rtm_core.case_mail_authentication import authenticated_delivery_report
                 delivery_verified=authenticated_delivery_report(raw,config.delivery_senders)
             else:delivery_verified=bool(delivery_verifier(raw))
+            notice=None
+            if direction=='incoming' and not delivery_verified and config.delivery_arc_domains:
+                from rtm_core.case_mail_authentication import sealed_delivery_notice
+                notice=sealed_delivery_notice(raw,config.delivery_senders,config.delivery_arc_domains,mailbox=config.mailbox)
             try:
                 with engine.begin() as conn:
                     result=ingest(conn,raw,folder=folder,uidvalidity=cursor['uidvalidity'],uid=uid,
-                        direction=direction,trusted_sender=verified,storage=storage,mailbox=config.mailbox,trusted_delivery=delivery_verified,allowed_case_id=config.case_id)
+                        direction=direction,trusted_sender=verified,storage=storage,mailbox=config.mailbox,trusted_delivery=delivery_verified,allowed_case_id=config.case_id,provider_notice=notice)
                     if result=='outside_pilot_scope':raise MailRejected('MAIL_OUTSIDE_PILOT_RETAINED_REMOTE')
                     advance_cursor(conn,config,folder,uid)
             except MailRejected as exc:

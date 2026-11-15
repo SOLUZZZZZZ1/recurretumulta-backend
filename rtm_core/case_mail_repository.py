@@ -21,6 +21,13 @@ def event(conn,message_id,state,actor=None,evidence=None):
 
 def public_message(row):
     payload=dict(obj(row['payload']));relation=dict(obj(row['relation']))
+    notice=relation.get('delivery_notice')
+    if notice:
+        # A returned original can contain private links or internal attachments.
+        # Show only the structured claim; retain the exact bytes in custody.
+        payload.update(subject='Aviso de entrega del proveedor',
+            body=f"El proveedor comunica un fallo de entrega para {notice['recipient']} (código {notice['status']}). Pendiente de verificar.",
+            text_available=True,attachments=[],returned_original_redacted=True)
     if relation.get('type')=='client_access':
         payload['body']='Acceso privado solicitado por el cliente. El enlace de identificación no se muestra en OPS.'
         payload['credential_redacted']=True
@@ -154,7 +161,7 @@ def expire_leases(conn,mailbox=None,case_id=None):
     return len(rows)
 
 
-def ingest(conn,raw,*,folder,uidvalidity,uid,direction,trusted_sender,storage,mailbox=MAILBOX,trusted_delivery=False,allowed_case_id=None):
+def ingest(conn,raw,*,folder,uidvalidity,uid,direction,trusted_sender,storage,mailbox=MAILBOX,trusted_delivery=False,allowed_case_id=None,provider_notice=None):
     source=f'{mailbox}:{folder}:{uidvalidity}:{uid}'
     if conn.execute(text('SELECT id FROM rtm_case_mail_originals WHERE source_key=:source'),{'source':source}).scalar():return 'duplicate'
     message=parse_original(raw)
@@ -171,6 +178,10 @@ def ingest(conn,raw,*,folder,uidvalidity,uid,direction,trusted_sender,storage,ma
     if report:
         target=delivery_target(conn,report,mailbox)
         if target:case_id,reason=str(target['case_id']),'verified_provider_delivery_report'
+    notice_target=None
+    if direction=='incoming' and not trusted_delivery and provider_notice:
+        notice_target=delivery_notice_target(conn,raw,provider_notice,mailbox)
+        if notice_target:case_id,reason=str(notice_target['case_id']),'provider_sealed_delivery_notice'
     existing=conn.execute(text('SELECT * FROM rtm_case_messages WHERE mailbox=:mailbox AND original_id=:original_id'),{'mailbox':mailbox,'original_id':message['original_id']}).mappings().one_or_none()
     referenced={known[ref] for ref in message['references'] if ref in known}
     if allowed_case_id and ((case_id and case_id!=allowed_case_id) or referenced-{allowed_case_id} or (existing and existing['case_id'] and str(existing['case_id'])!=allowed_case_id)):
@@ -178,6 +189,8 @@ def ingest(conn,raw,*,folder,uidvalidity,uid,direction,trusted_sender,storage,ma
     if existing:
         # A sent-folder copy confirms provider acceptance only if exact semantic
         # content and verified recipients match; never equates this with delivery.
+        if notice_target and obj(existing['payload'])['raw_sha256']!=message['raw_sha256']:
+            raise HTTPException(409,{'code':'MAIL_MESSAGE_ID_COLLISION'})
         old=obj(existing['payload'])
         matches=all(message[k]==old[k] for k in ('sender','recipients','subject','body','attachments'))
         if not matches:raise HTTPException(409,{'code':'MAIL_MESSAGE_ID_COLLISION'})
@@ -188,10 +201,16 @@ def ingest(conn,raw,*,folder,uidvalidity,uid,direction,trusted_sender,storage,ma
             event(conn,mid,'provider_accepted',evidence={'source':'matching_sent_folder_copy','delivery_confirmed':False})
     else:
         mid=str(uuid4());state='received' if case_id else 'pending_assignment'
+        relation={'link_reason':reason}
+        if notice_target:
+            relation['delivery_notice']={
+                'state':'pending_verification','authentication':'arc_seal',
+                'sealer':provider_notice['sealer'],'outgoing_message_id':str(notice_target['id']),
+                'recipient':provider_notice['recipient'],'status':provider_notice['status']}
         conn.execute(text('''INSERT INTO rtm_case_messages(id,case_id,mailbox,direction,original_id,state,payload,relation)
             VALUES (:id,:case_id,:mailbox,:direction,:original_id,:state,'''+jvalue(conn,'payload')+','+jvalue(conn,'relation')+')'),
             {'id':mid,'case_id':case_id,'mailbox':mailbox,'direction':direction,'original_id':message['original_id'],
-             'state':state,'payload':canonical(message),'relation':canonical({'link_reason':reason})})
+             'state':state,'payload':canonical(message),'relation':canonical(relation)})
         event(conn,mid,state,evidence={'link_reason':reason,'no_legal_or_payment_effect':True})
     key=storage.put(raw)
     conn.execute(text('''INSERT INTO rtm_case_mail_originals(id,message_id,sha256,custody_key,source_key,size_bytes)
@@ -206,6 +225,27 @@ def delivery_target(conn,report,mailbox):
     row=conn.execute(text("SELECT * FROM rtm_case_messages WHERE mailbox=:mailbox AND original_id=:id AND direction='outgoing'"),
         {'mailbox':mailbox,'id':report['original_id']}).mappings().one_or_none()
     return row if row and obj(row['payload'])['recipients']==[report['recipient']] else None
+
+
+def delivery_notice_target(conn,raw,notice,mailbox):
+    """Bind a verified seal to an exact stored outgoing, without confirming it."""
+    from email import policy
+    from email.parser import BytesParser
+    try:
+        report=delivery_report(raw)
+        if (not report or notice.get('authentication')!='arc_seal'
+                or notice.get('sender_authenticated') is not False
+                or any(notice.get(k)!=v for k,v in report.items())):return None
+        row=delivery_target(conn,report,mailbox)
+        if not row or not row['case_id'] or row['state'] not in {'provider_accepted','unknown','sending'}:return None
+        message=BytesParser(policy=policy.default).parsebytes(raw)
+        originals=[embedded for part in message.walk() if part.get_content_type()=='message/rfc822' for embedded in part.get_payload()]
+        if len(originals)!=1:return None
+        embedded=parse_original(originals[0].as_bytes(policy=policy.SMTP))
+        saved=obj(row['payload'])
+        if any(embedded[k]!=saved[k] for k in ('original_id','sender','recipients','subject','body','attachments')):return None
+        return row
+    except (ValueError,KeyError,TypeError):return None
 
 
 def record_delivery_claim(conn,raw,*,trusted_provider=False,mailbox=MAILBOX):
