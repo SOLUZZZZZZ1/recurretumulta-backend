@@ -1,0 +1,66 @@
+Provider-sealed delivery notices
+
+Problem
+Arsys returns multipart/report DSNs without an outer DKIM signature. A real
+sample verified with ARC under serviciodecorreo.es. The original outgoing
+message also had valid DKIM, but that does not authenticate the bounce claim.
+
+Behavior
+Verified DKIM delivery reports retain their existing behavior. An explicitly
+configured ARC seal can now produce a pending delivery notice in the matching
+case. It cannot set bounced/delivered, close a job, retry, or send a message.
+Matching requires an attempted stored outgoing with identical Message-ID,
+sender, recipients, subject, body and attachment projection. An unrelated or
+out-of-scope report is not disclosed in the case. Source bytes stay in custody;
+OPS receives a safe structured summary without the returned original or its
+attachments. Repeated copies do not duplicate the displayed notice.
+
+Configuration
+RTM_CASE_MAIL_DELIVERY_ARC_DOMAINS=serviciodecorreo.es
+RTM_CASE_MAIL_DELIVERY_SENDERS must also include the exact observed system
+sender: mailer-daemon@llsk282-a17.servidoresdns.net
+Preserve any other approved senders. Do not use a domain wildcard.
+
+The ARC setting defaults to empty and does not enable transport. Existing
+dedicated-mailbox, TLS, host, recipient, case, operator and expiry settings
+remain required. No schema migration is needed. Other sender hosts or sealers
+require a new observed sample and review, rather than automatically widening
+the list. Currently only a single complete ARC set is supported.
+
+Validation
+Run the focused mail suites including tests.test_mail_provider_notices and
+tests.test_mail_worker_profile. The tests use generated keys, stub DNS, fake
+IMAP and SQLite. Install requirements.txt (authres is needed for ARC).
+
+The private real .eml and its DNS evidence are not committed. A local replay
+verified the exact supplied bytes with captured public keys and imported them
+twice via fake IMAP into an isolated repository seeded with their original.
+This is not evidence of a live outgoing or live mailbox synchronization.
+
+Publication
+Deploy backend and matching OPS frontend, confirm configuration in the running
+service without exposing secrets, and perform one separately authorized
+controlled send/receive test tied to an actual RTM outgoing. Keep the current
+mailbox cursor: do not reset it to import old unrelated messages. The manual
+webmail sample has no established live RTM outgoing match.
+
+The existing authenticated OPS cron may run the mail queue in the exact
+production web service srv-d5fu32hr0fns73c3oa0g. All mailbox, expiry, case and
+activation guards still apply. The separate worker/TEST identities remain
+unchanged; another web-service ID cannot opt into the embedded queue.
+
+With the current scope valid, run:
+python -B scripts/rtm_case_mail_preflight.py --connect
+This checks TLS logins and EXAMINE metadata only. It never sends email,
+downloads message bodies, starts a queue or writes the database. The two
+activation flags are only overridden in an in-memory configuration copy;
+the running process/environment is unchanged. Output contains no credentials.
+Baseline candidates are observations, not applied cursors. For a mailbox
+without existing cursors, review and initialize these before activating sync;
+never reset an existing cursor.
+
+Trust boundary
+A valid ARC seal authenticates the sealer and signed content, not necessarily
+the sender claimed by the original message. Do not promote these notices to
+automatic confirmed delivery merely because ARC passes.
+https://www.rfc-editor.org/rfc/rfc8617.html

@@ -117,6 +117,8 @@ def queue_message(message_id:UUID,payload:Approval,context=Depends(enabled)):
 
 def checked_attachment(message_id,part,context):
     row=message_for_case(context.conn,context.case_id,str(message_id))
+    if obj(row['relation']).get('delivery_notice'):
+        raise HTTPException(404,{'code':'MAIL_ATTACHMENT_NOT_FOUND'})
     attachment=next((a for a in obj(row['payload'])['attachments'] if a['part']==part),None)
     if not attachment:raise HTTPException(404,{'code':'MAIL_ATTACHMENT_NOT_FOUND'})
     check=context.conn.execute(text('''SELECT state FROM rtm_case_mail_attachment_checks
