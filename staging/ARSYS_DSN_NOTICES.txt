@@ -59,6 +59,17 @@ Baseline candidates are observations, not applied cursors. For a mailbox
 without existing cursors, review and initialize these before activating sync;
 never reset an existing cursor.
 
+Initialize an absent mailbox baseline with scripts/rtm_case_mail_initialize.py
+--baseline 'INBOX:<uidvalidity>:<last_uid>,Sent:<uidvalidity>:<last_uid>' --apply.
+Use values observed in the preflight and reviewed before any test message.
+The helper repeats the read-only transport check, requires mail flags off,
+checks remote UID identity, and inserts all folders in one transaction.
+It preserves the reviewed boundary when newer messages arrive. A retry leaves
+existing cursors unchanged; partial or incompatible existing state is rejected.
+Omitting --apply only checks the proposal. This does not activate mail, send,
+import messages, or create schema. Afterward verify the rows read-only before
+enabling the scoped worker and conducting an authorized real-message test.
+
 Trust boundary
 A valid ARC seal authenticates the sealer and signed content, not necessarily
 the sender claimed by the original message. Do not promote these notices to
