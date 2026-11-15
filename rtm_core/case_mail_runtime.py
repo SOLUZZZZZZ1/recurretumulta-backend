@@ -45,7 +45,11 @@ def configuration(source=None):
     source=os.environ if source is None else source
     if source.get('RTM_ENABLE_CASE_MAIL')!='1' or source.get('RTM_CASE_MAIL_WORKER_ENABLED')!='1':
         raise MailRejected('MAIL_WORKER_NOT_ENABLED')
-    policy=load_policy(source,service_name='rtm-case-mail-pilot')
+    # The existing authenticated OPS cron runs the queue inside this exact web
+    # service. Keep the separate worker and isolated TEST identities intact.
+    embedded=(source.get('RENDER_SERVICE_NAME')=='recurretumulta-backend'
+        and source.get('RENDER_SERVICE_ID')=='srv-d5fu32hr0fns73c3oa0g')
+    policy=load_policy(source,service_name='recurretumulta-backend' if embedded else 'rtm-case-mail-pilot')
     if not policy:raise MailRejected('MAIL_CASEWORK_PROFILE_REQUIRED')
     mailbox=configured_mailbox(source)
     if source.get('RTM_CASE_MAIL_DEDICATED_CONFIRMED')!='1':

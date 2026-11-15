@@ -44,6 +44,21 @@ controlled send/receive test tied to an actual RTM outgoing. Keep the current
 mailbox cursor: do not reset it to import old unrelated messages. The manual
 webmail sample has no established live RTM outgoing match.
 
+The existing authenticated OPS cron may run the mail queue in the exact
+production web service srv-d5fu32hr0fns73c3oa0g. All mailbox, expiry, case and
+activation guards still apply. The separate worker/TEST identities remain
+unchanged; another web-service ID cannot opt into the embedded queue.
+
+With the current scope valid, run:
+python -B scripts/rtm_case_mail_preflight.py --connect
+This checks TLS logins and EXAMINE metadata only. It never sends email,
+downloads message bodies, starts a queue or writes the database. The two
+activation flags are only overridden in an in-memory configuration copy;
+the running process/environment is unchanged. Output contains no credentials.
+Baseline candidates are observations, not applied cursors. For a mailbox
+without existing cursors, review and initialize these before activating sync;
+never reset an existing cursor.
+
 Trust boundary
 A valid ARC seal authenticates the sealer and signed content, not necessarily
 the sender claimed by the original message. Do not promote these notices to

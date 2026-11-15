@@ -31,3 +31,13 @@ class WorkerProfileTest(unittest.TestCase):
         with self.assertRaises(CaseworkConfigurationError):configuration(env)
         env=self.environment();env['RTM_CASEWORK_ALLOWED_CASE_IDS']+=','+str(uuid4())
         with self.assertRaises(CaseworkConfigurationError):configuration(env)
+    def test_exact_production_web_service_can_run_the_existing_cron(self):
+        env=self.environment();env.update(RENDER_SERVICE_NAME='recurretumulta-backend',RENDER_SERVICE_ID='srv-d5fu32hr0fns73c3oa0g')
+        self.assertEqual(configuration(env).case_id,env['RTM_CASEWORK_ALLOWED_CASE_IDS'])
+        for key in ('RTM_ENABLE_CASE_MAIL','RTM_CASE_MAIL_WORKER_ENABLED'):
+            disabled={**env,key:'0'}
+            with self.assertRaises(MailRejected):configuration(disabled)
+        for changes in ({'RENDER_SERVICE_ID':'srv-other'}, {'RENDER_SERVICE_NAME':'recurretumulta-backend-1'},
+                        {'RTM_ENV':'staging'}, {'RTM_CASEWORK_EXPIRES_AT':'2020-01-01T00:00:00+00:00'},
+                        {'RTM_CASEWORK_ALLOWED_CASE_IDS':env['RTM_CASEWORK_ALLOWED_CASE_IDS']+','+str(uuid4())}):
+            with self.assertRaises(CaseworkConfigurationError):configuration({**env,**changes})
