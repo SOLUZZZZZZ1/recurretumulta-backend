@@ -39,7 +39,7 @@ class PaidCaseDocumentTests(unittest.TestCase):
         body = io.BytesIO(data)
         storage = Mock();storage.get_object.return_value={'Body':body,'ContentLength':len(data)}
         with patch('b2_storage.get_b2_bucket',return_value='synthetic-test'), patch('b2_storage.get_s3_client',return_value=storage) as client_factory:
-            actual, observed, state = read_custody(record)
+            actual, observed, state = read_custody(record, request_timeout_seconds=5)
             self.assertEqual(actual, data)
             self.assertEqual(len(observed), 64)
             self.assertEqual(state, 'not_recorded')
