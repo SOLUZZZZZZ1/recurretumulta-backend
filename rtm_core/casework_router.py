@@ -19,6 +19,8 @@ from rtm_core.document_viewer import document_row, read_custody, render
 from rtm_core.operator_auth_router import load_operator_session_with_device_possession, _runtime_config
 from rtm_core.casework_policy import load_policy, permits_case
 from rtm_core.paid_study import StudyInput, read_history, read_operation, save_assessment, reconcile_operation
+from rtm_core.management_contract import ManagementRejected
+from rtm_core.management_policy import configuration as management_configuration
 from workspace_read import build_workspace, scalar, MissingCase
 from sqlalchemy import text
 import hashlib
@@ -49,6 +51,24 @@ class CaseworkRoute(APIRoute):
 
 
 router = APIRouter(prefix='/ops/core/cases', tags=['ops-paid-casework'], route_class=CaseworkRoute)
+
+
+def management_journey_available(source=None):
+    source = os.environ if source is None else source
+    required_flags = (
+        'RTM_ENABLE_MANAGEMENT_JOURNEY',
+        'RTM_ENABLE_MANAGEMENT_RECONCILIATION',
+        'RTM_MANAGEMENT_DRAFT_READY',
+        'RTM_MANAGEMENT_GENERATION_WORKER_ENABLED',
+        'RTM_MANAGEMENT_MAIL_VERIFIED',
+    )
+    if any(source.get(flag) != '1' for flag in required_flags):
+        return False
+    try:
+        management_configuration(source)
+    except (ManagementRejected, ValueError, KeyError, TypeError):
+        return False
+    return True
 
 
 def configured_policy():
@@ -145,6 +165,7 @@ def read_casework(context=Depends(require_casework)):
                 'store':'ops_final_resources', 'truncated':len(resources)>100,
                 'items':[{k:scalar(v) for k,v in row.items()} for row in resources[:100]]},
             'capabilities':{'study_write':permits_case(context.policy,context.session,context.case_id,write=True),
+                            'management_journey':management_journey_available(),
                             'resource_generation':False,'client_delivery':False,'payment_creation':False,
                             'document_export':False,'presentation':False}}
 
