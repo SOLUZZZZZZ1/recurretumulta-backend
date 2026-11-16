@@ -98,8 +98,8 @@ def require_casework(case_id: str, request: Request, conn=Depends(casework_conne
 
 
 def document_title(kind):
-    return {'identity_front':'Identidad · anverso', 'identity_back':'Identidad · reverso',
-            'authorization_signed':'Autorización firmada', 'original':'Documento aportado'
+    return {'identity_front':'Identidad Â· anverso', 'identity_back':'Identidad Â· reverso',
+            'authorization_signed':'AutorizaciÃ³n firmada', 'original':'Documento aportado'
             }.get(kind, 'Documento del expediente')
 
 
@@ -182,7 +182,7 @@ def reconcile_study_operation(operation_id: UUID, context=Depends(require_casewo
 @router.get('/{case_id}/documents/{document_id}/view')
 def view_document(document_id: str, context=Depends(require_casework)):
     row = document_row(context.conn, context.case_id, document_id)
-    data, observed, recorded_state = read_custody(row)
+    data, observed, recorded_state = read_custody(row, request_timeout_seconds=5)
     metadata = render(data, row['mime'])
     return JSONResponse({'ok':True, 'contract':'rtm_ops_document_view_v1',
         'case_id':context.case_id, 'document_id':document_id, 'title':document_title(row['kind']),
@@ -199,10 +199,11 @@ def view_document_page(document_id: str, page_number: int,
     if not if_match:
         raise HTTPException(428, {'code':'DOCUMENT_VIEW_PRECONDITION_REQUIRED'})
     row = document_row(context.conn, context.case_id, document_id)
-    data, observed, _ = read_custody(row)
+    data, observed, _ = read_custody(row, request_timeout_seconds=5)
     if not hmac.compare_digest(if_match, '"'+observed+'"'):
         raise HTTPException(412, {'code':'DOCUMENT_CHANGED_REOPEN_VIEWER'})
     png = render(data, row['mime'], page=page_number, width=width)
     return Response(png, media_type='image/png', headers={
         'Content-Disposition':f'inline; filename="page-{page_number}.png"',
         'ETag':'"'+observed+'"'})
+

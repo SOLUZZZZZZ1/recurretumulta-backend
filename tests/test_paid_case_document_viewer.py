@@ -38,12 +38,13 @@ class PaidCaseDocumentTests(unittest.TestCase):
                   'size_bytes':len(data),'sha256':None}
         body = io.BytesIO(data)
         storage = Mock();storage.get_object.return_value={'Body':body,'ContentLength':len(data)}
-        with patch('b2_storage.get_b2_bucket',return_value='synthetic-test'), patch('b2_storage.get_s3_client',return_value=storage):
-            actual, observed, state = read_custody(record)
+        with patch('b2_storage.get_b2_bucket',return_value='synthetic-test'), patch('b2_storage.get_s3_client',return_value=storage) as client_factory:
+            actual, observed, state = read_custody(record, request_timeout_seconds=5)
             self.assertEqual(actual, data)
             self.assertEqual(len(observed), 64)
             self.assertEqual(state, 'not_recorded')
             self.assertTrue(body.closed)
+            client_factory.assert_called_once_with(request_timeout_seconds=5)
 
     def test_cross_case_key_and_hash_mismatch_do_not_return_content(self):
         data = image_bytes()
@@ -88,3 +89,4 @@ class PaidCaseDocumentTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
