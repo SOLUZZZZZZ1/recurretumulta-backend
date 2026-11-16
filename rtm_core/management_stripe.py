@@ -74,12 +74,17 @@ def checkout_url(session):
         url=session.get('url')
         session_id=str(session.get('id') or '')
         parsed=urlsplit(url or '')
-        # Stripe has returned both the current /c/pay/<session> URL and the
-        # older /pay/<session> form. Trust only Stripe's hosted Checkout origin
-        # and a path bound to the exact session we just verified.
-        expected_path=re.fullmatch(r'/(?:c/)?pay/('+re.escape(session_id)+r')',parsed.path)
+        # Stripe controls all subdomains of stripe.com. Accept its Checkout
+        # route variants only when the path contains the exact verified session
+        # ID immediately after a `pay` segment.
+        hostname=parsed.hostname or ''
+        path_segments=[part for part in parsed.path.split('/') if part]
+        expected_path=any(part=='pay' and index+1<len(path_segments)
+                          and path_segments[index+1]==session_id
+                          for index,part in enumerate(path_segments))
         if (not isinstance(url,str) or session.get('status')!='open'
-                or parsed.scheme!='https' or parsed.hostname!='checkout.stripe.com'
+                or parsed.scheme!='https'
+                or not (hostname=='stripe.com' or hostname.endswith('.stripe.com'))
                 or parsed.username or parsed.password or parsed.port not in (None,443)
                 or not session_id.startswith('cs_') or not expected_path):
             raise ValueError()
