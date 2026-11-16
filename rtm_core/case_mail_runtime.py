@@ -260,20 +260,25 @@ def sync_folder(engine,config,folder,storage,*,imap_factory=imaplib.IMAP4_SSL,se
 
 
 def tick(engine,*,source=None,storage=None,sender_verifier=None):
+    source=os.environ if source is None else source
     config=configuration(source);storage=storage or B2MailStorage(config.mailbox)
-    from rtm_core.case_mail_attachments import retry_pending
+    # Controlled journey runs can drain prepared outbound messages without
+    # importing inbox mail or processing attachments into the case.
+    outbox_only=source.get('RTM_CASE_MAIL_OUTBOX_ONLY')=='1'
     result={'ok':True,'folders':{},'attachments':None,'outgoing':None}
-    if sender_verifier is None:
-        from rtm_core.case_mail_authentication import authenticated_sender
-        sender_verifier=authenticated_sender
-    for folder in config.folders:
-        try:result['folders'][folder]={'ok':True,'processed':sync_folder(engine,config,folder,storage,sender_verifier=sender_verifier)}
-        except Exception:
-            result['ok']=False;result['folders'][folder]={'ok':False,'code':'MAIL_SYNC_INCOMPLETE'}
-    try:
-        result['attachments']=retry_pending(engine,config.mailbox,storage,case_id=config.case_id)
-        if result['attachments']['unavailable']:result['ok']=False
-    except Exception:result['ok']=False;result['attachments']={'code':'MAIL_VALIDATION_INCOMPLETE'}
+    if not outbox_only:
+        from rtm_core.case_mail_attachments import retry_pending
+        if sender_verifier is None:
+            from rtm_core.case_mail_authentication import authenticated_sender
+            sender_verifier=authenticated_sender
+        for folder in config.folders:
+            try:result['folders'][folder]={'ok':True,'processed':sync_folder(engine,config,folder,storage,sender_verifier=sender_verifier)}
+            except Exception:
+                result['ok']=False;result['folders'][folder]={'ok':False,'code':'MAIL_SYNC_INCOMPLETE'}
+        try:
+            result['attachments']=retry_pending(engine,config.mailbox,storage,case_id=config.case_id)
+            if result['attachments']['unavailable']:result['ok']=False
+        except Exception:result['ok']=False;result['attachments']={'code':'MAIL_VALIDATION_INCOMPLETE'}
     try:result['outgoing']=send_one(engine,config,storage)
     except Exception:result['ok']=False;result['outgoing']={'code':'MAIL_OUTBOX_INCOMPLETE'}
     return result
