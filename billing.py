@@ -5,6 +5,7 @@ import stripe
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import text
+from starlette.concurrency import run_in_threadpool
 
 from database import get_engine
 from ai.expediente_engine import run_expediente_ai
@@ -466,6 +467,11 @@ async def stripe_webhook(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Webhook inválido")
 
+    # Database work must not block the ASGI event loop (including case recovery).
+    return await run_in_threadpool(_handle_verified_stripe_event, event)
+
+
+def _handle_verified_stripe_event(event):
     if event["type"] in {"checkout.session.completed", "checkout.session.async_payment_succeeded"}:
         session = event["data"]["object"]
         # The independently versioned balance contract has its own verified
@@ -479,6 +485,7 @@ async def stripe_webhook(request: Request):
         case_id = session["metadata"]["case_id"]
         engine = get_engine()
         with engine.begin() as conn:
+            conn.execute(text("SET LOCAL lock_timeout = '5s'"))
             # A repeated or late INITIAL notification must also preserve the
             # recorded receipt and the study already being worked on.
             recorded = conn.execute(text("SELECT payment_status,stripe_session_id,stripe_payment_intent "
@@ -525,7 +532,16 @@ async def stripe_webhook(request: Request):
                 },
             )
 
-            _run_post_payment_modo_dios(conn, case_id)
+            # Commit the receipt and activate OPS promptly. The legacy AI engine
+            # opens another connection and inserts an event referencing this case.
+            # Running it while FOR UPDATE is held makes it wait for this very
+            # transaction, which cannot commit until the AI call returns.
+            # Initial document analysis already ran on upload; further study is
+            # initiated through the existing OPS workflow, outside this webhook.
+            _append_event(conn, case_id, "post_payment_analysis_deferred", {
+                "reason": "ops_review_after_payment",
+                "status": "manual_review",
+            })
 
     elif event["type"] == "checkout.session.expired":
         session=event["data"]["object"]
