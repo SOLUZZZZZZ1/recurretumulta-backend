@@ -17,12 +17,22 @@ def get_b2_bucket() -> str:
     return _env("B2_BUCKET")
 
 
-def get_s3_client():
+def get_s3_client(*, request_timeout_seconds: Optional[int] = None):
+    if request_timeout_seconds is not None and (
+            type(request_timeout_seconds) is not int or not 1 <= request_timeout_seconds <= 5):
+        raise ValueError("request timeout must be an integer from 1 to 5 seconds")
     endpoint = _env("B2_ENDPOINT")
     key_id = _env("B2_KEY_ID")
     app_key = _env("B2_APPLICATION_KEY")
 
-    cfg = Config(signature_version="s3v4", s3={"addressing_style": "path"})
+    options = {"signature_version": "s3v4", "s3": {"addressing_style": "path"}}
+    if request_timeout_seconds is not None:
+        options.update({
+            "connect_timeout": request_timeout_seconds,
+            "read_timeout": request_timeout_seconds,
+            "retries": {"total_max_attempts": 1},
+        })
+    cfg = Config(**options)
 
     return boto3.client(
         "s3",
@@ -99,3 +109,4 @@ def presign_get_url(bucket: str, key: str, expires_seconds: int = 300, filename:
         Params=params,
         ExpiresIn=int(expires_seconds),
     )
+
