@@ -71,11 +71,19 @@ def check_session(session, row, *, paid=False):
 
 def checkout_url(session):
     try:
-        parsed=urlsplit(session.get('url') or '')
-        if (session.get('status')!='open' or parsed.scheme!='https' or parsed.hostname!='checkout.stripe.com'
-                or parsed.username or parsed.password or parsed.port or not parsed.path.startswith('/c/')):
+        url=session.get('url')
+        session_id=str(session.get('id') or '')
+        parsed=urlsplit(url or '')
+        # Stripe has returned both the current /c/pay/<session> URL and the
+        # older /pay/<session> form. Trust only Stripe's hosted Checkout origin
+        # and a path bound to the exact session we just verified.
+        expected_path=re.fullmatch(r'/(?:c/)?pay/('+re.escape(session_id)+r')',parsed.path)
+        if (not isinstance(url,str) or session.get('status')!='open'
+                or parsed.scheme!='https' or parsed.hostname!='checkout.stripe.com'
+                or parsed.username or parsed.password or parsed.port not in (None,443)
+                or not session_id.startswith('cs_') or not expected_path):
             raise ValueError()
-        return session['url']
+        return url
     except ValueError:
         raise ManagementRejected('CHECKOUT_URL_UNVERIFIED') from None
 
