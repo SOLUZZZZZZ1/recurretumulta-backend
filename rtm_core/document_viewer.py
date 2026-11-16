@@ -48,7 +48,9 @@ def read_custody(row):
         size = row['size_bytes']
         if type(size) is not int or not 0 < size <= MAX_BYTES:
             raise ValueError()
-        response = get_s3_client().get_object(Bucket=bucket, Key=key)
+        # Bound synchronous OPS reads so an unavailable B2 endpoint cannot
+        # leave the protected document viewer waiting indefinitely.
+        response = get_s3_client(request_timeout_seconds=5).get_object(Bucket=bucket, Key=key)
         body = response['Body']
         if response.get('ContentLength') != size:
             raise ValueError()
@@ -106,3 +108,4 @@ def render(data, mime, *, page=None, width=1400):
         raise HTTPException(422, {'code': 'DOCUMENT_RENDER_UNAVAILABLE'}) from None
     finally:
         RENDER_SLOT.release()
+
