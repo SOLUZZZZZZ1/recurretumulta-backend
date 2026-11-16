@@ -1010,6 +1010,8 @@ def get_case_detail(
             "case_type": authority_meta[2],
             "authorization_evidence_status": authority["authorization_evidence_status"],
             "signed_authority_verified": authority["signed_authority_verified"],
+            "candidate_document_id": authority["candidate_document_id"],
+            "candidate_attestation_sha256": authority["candidate_attestation_sha256"],
             "post_filing": local_post_filing_projection(conn, case_id),
             "actions": {
                 "presenter_available": presenter_available_for_scope(
