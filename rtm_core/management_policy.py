@@ -30,13 +30,13 @@ def configuration(source=None, *, for_notification=False, mode=None, for_worker=
     # Notifications can reconcile an existing obligation after OPS access expires;
     # they never create a checkout, extend access, generate or submit a resource.
     if not for_notification:
-        try:
-            worker_service = 'rtm-case-mail-pilot'
+        worker_service = 'rtm-case-mail-pilot'
         if (for_worker and source.get('RENDER_SERVICE_NAME') == 'recurretumulta-backend'
                 and source.get('RENDER_SERVICE_ID') == 'srv-d5fu32hr0fns73c3oa0g'
                 and source.get('RTM_ENABLE_MANAGEMENT_JOURNEY') == '1'):
             worker_service = 'recurretumulta-backend'
-        existing = load_policy(source, service_name=worker_service if for_worker else 'recurretumulta-backend')
+        try:
+            existing = load_policy(source, service_name=worker_service if for_worker else 'recurretumulta-backend')
         except ValueError:
             raise ManagementRejected('MANAGEMENT_ACCESS_NOT_ACTIVE', 403) from None
         if not existing:
