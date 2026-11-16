@@ -35,7 +35,7 @@ def document_row(conn, case_id, document_id):
     return row
 
 
-def read_custody(row):
+def read_custody(row, *, request_timeout_seconds=None):
     from b2_storage import get_b2_bucket, get_s3_client
     body = None
     try:
@@ -50,7 +50,9 @@ def read_custody(row):
             raise ValueError()
         # Bound synchronous OPS reads so an unavailable B2 endpoint cannot
         # leave the protected document viewer waiting indefinitely.
-        response = get_s3_client(request_timeout_seconds=5).get_object(Bucket=bucket, Key=key)
+        client = (get_s3_client(request_timeout_seconds=request_timeout_seconds)
+                  if request_timeout_seconds is not None else get_s3_client())
+        response = client.get_object(Bucket=bucket, Key=key)
         body = response['Body']
         if response.get('ContentLength') != size:
             raise ValueError()
